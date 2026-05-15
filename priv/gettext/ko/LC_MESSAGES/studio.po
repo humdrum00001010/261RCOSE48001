@@ -15,12 +15,7 @@ msgstr ""
 "Language: ko\n"
 "Plural-Forms: nplurals=1; plural=0;\n"
 
-#: lib/contract_web/live/studio/components/document_list.ex:101
-#, elixir-autogen, elixir-format
-msgid "+ 새 문서 / + New document"
-msgstr ""
-
-#: lib/contract_web/live/studio/components/document_list.ex:139
+#: lib/contract_web/live/studio/components/document_list.ex:136
 #, elixir-autogen, elixir-format
 msgid "Document tree"
 msgstr ""
@@ -28,51 +23,6 @@ msgstr ""
 #: lib/contract_web/live/studio/components/document_list.ex:77
 #, elixir-autogen, elixir-format
 msgid "Documents"
-msgstr ""
-
-#: lib/contract_web/live/studio/components/document_list.ex:121
-#, elixir-autogen, elixir-format
-msgid "계약 유형을 골라 첫 초안을 시작하세요 / Pick a contract type to start your first draft."
-msgstr ""
-
-#: lib/contract_web/live/studio/components/document_list.ex:348
-#, elixir-autogen, elixir-format
-msgid "방금 / just now"
-msgstr ""
-
-#: lib/contract_web/live/studio/components/document_list.ex:150
-#, elixir-autogen, elixir-format
-msgid "보관 / Archived"
-msgstr ""
-
-#: lib/contract_web/live/studio/components/document_list.ex:85
-#, elixir-autogen, elixir-format
-msgid "사건 / Matter"
-msgstr ""
-
-#: lib/contract_web/live/studio/components/document_list.ex:329
-#, elixir-autogen, elixir-format
-msgid "사건 미선택 / No matter selected"
-msgstr ""
-
-#: lib/contract_web/live/studio/components/document_list.ex:104
-#, elixir-autogen, elixir-format
-msgid "새 문서 / New"
-msgstr ""
-
-#: lib/contract_web/live/studio/components/document_list.ex:135
-#, elixir-autogen, elixir-format
-msgid "새 문서 / New document"
-msgstr ""
-
-#: lib/contract_web/live/studio/components/document_list.ex:118
-#, elixir-autogen, elixir-format
-msgid "아직 문서가 없습니다 / No documents yet"
-msgstr ""
-
-#: lib/contract_web/live/studio/components/document_list.ex:143
-#, elixir-autogen, elixir-format
-msgid "활성 / Active"
 msgstr ""
 
 #: lib/contract_web/live/studio/components/preview_overlay.ex:436
@@ -291,6 +241,7 @@ msgstr "사건 필드와 연결"
 msgid "Marks"
 msgstr "주석"
 
+#: lib/contract_web/live/studio/components/document_list.ex:132
 #: lib/contract_web/live/studio/components/modal_host.ex:942
 #, elixir-autogen, elixir-format
 msgid "New document"
@@ -682,3 +633,48 @@ msgstr ""
 #, elixir-autogen, elixir-format
 msgid "표시된 메모 없음"
 msgstr ""
+
+#: lib/contract_web/live/studio/components/document_list.ex:101
+#, elixir-autogen, elixir-format
+msgid "+ New document"
+msgstr "+ 새 문서"
+
+#: lib/contract_web/live/studio/components/document_list.ex:140
+#, elixir-autogen, elixir-format
+msgid "Active"
+msgstr "활성"
+
+#: lib/contract_web/live/studio/components/document_list.ex:147
+#, elixir-autogen, elixir-format
+msgid "Archived"
+msgstr "보관"
+
+#: lib/contract_web/live/studio/components/document_list.ex:85
+#, elixir-autogen, elixir-format
+msgid "Matter"
+msgstr "사건"
+
+#: lib/contract_web/live/studio/components/document_list.ex:104
+#, elixir-autogen, elixir-format
+msgid "New"
+msgstr "새 문서"
+
+#: lib/contract_web/live/studio/components/document_list.ex:118
+#, elixir-autogen, elixir-format
+msgid "No documents yet"
+msgstr "아직 문서가 없습니다"
+
+#: lib/contract_web/live/studio/components/document_list.ex:326
+#, elixir-autogen, elixir-format
+msgid "No matter selected"
+msgstr "사건 미선택"
+
+#: lib/contract_web/live/studio/components/document_list.ex:121
+#, elixir-autogen, elixir-format
+msgid "Pick a contract type to start your first draft."
+msgstr "계약 유형을 골라 첫 초안을 시작하세요"
+
+#: lib/contract_web/live/studio/components/document_list.ex:345
+#, elixir-autogen, elixir-format
+msgid "just now"
+msgstr "방금"

@@ -82,7 +82,7 @@ defmodule ContractWeb.Live.Studio.Components.DocumentList do
       <header class="px-4 pt-4 pb-2 flex items-start justify-between gap-2">
         <div class="min-w-0">
           <p class="text-[0.65rem] font-medium tracking-wide uppercase text-base-content/50">
-            {dgettext("studio", "사건 / Matter")}
+            {dgettext("studio", "Matter")}
           </p>
           <h2
             class="text-sm font-semibold tracking-tight truncate"
@@ -98,10 +98,10 @@ defmodule ContractWeb.Live.Studio.Components.DocumentList do
           phx-value-modal="new_document"
           class="btn btn-xs btn-ghost shrink-0"
           data-role="new-document-btn"
-          aria-label={dgettext("studio", "+ 새 문서 / + New document")}
+          aria-label={dgettext("studio", "+ New document")}
         >
           <span aria-hidden="true">+</span>
-          <span class="hidden sm:inline">{dgettext("studio", "새 문서 / New")}</span>
+          <span class="hidden sm:inline">{dgettext("studio", "New")}</span>
         </button>
       </header>
 
@@ -115,13 +115,10 @@ defmodule ContractWeb.Live.Studio.Components.DocumentList do
           data-role="documents-empty"
         >
           <p class="text-sm font-medium">
-            {dgettext("studio", "아직 문서가 없습니다 / No documents yet")}
+            {dgettext("studio", "No documents yet")}
           </p>
           <p class="mt-1 text-xs text-base-content/60">
-            {dgettext(
-              "studio",
-              "계약 유형을 골라 첫 초안을 시작하세요 / Pick a contract type to start your first draft."
-            )}
+            {dgettext("studio", "Pick a contract type to start your first draft.")}
           </p>
           <button
             :if={@can_create?}
@@ -132,7 +129,7 @@ defmodule ContractWeb.Live.Studio.Components.DocumentList do
             data-role="new-document-empty-cta"
           >
             <span aria-hidden="true">+</span>
-            {dgettext("studio", "새 문서 / New document")}
+            {dgettext("studio", "New document")}
           </button>
         </div>
       <% else %>
@@ -140,14 +137,14 @@ defmodule ContractWeb.Live.Studio.Components.DocumentList do
           <.document_group
             :if={@active_documents != []}
             id={"#{@id}-active"}
-            heading={dgettext("studio", "활성 / Active")}
+            heading={dgettext("studio", "Active")}
             documents={@active_documents}
             selected_document_id={@studio_state.selected_document_id}
           />
           <.document_group
             :if={@archived_documents != []}
             id={"#{@id}-archived"}
-            heading={dgettext("studio", "보관 / Archived")}
+            heading={dgettext("studio", "Archived")}
             documents={@archived_documents}
             selected_document_id={@studio_state.selected_document_id}
             muted?={true}
@@ -326,7 +323,7 @@ defmodule ContractWeb.Live.Studio.Components.DocumentList do
 
   defp matter_name(%{matter: %{name: name}}) when is_binary(name), do: name
 
-  defp matter_name(_), do: dgettext("studio", "사건 미선택 / No matter selected")
+  defp matter_name(_), do: dgettext("studio", "No matter selected")
 
   defp container_class(:drawer) do
     "h-full overflow-y-auto bg-base-100"
@@ -345,7 +342,7 @@ defmodule ContractWeb.Live.Studio.Components.DocumentList do
     diff = DateTime.diff(DateTime.utc_now(), t, :second)
 
     cond do
-      diff < 60 -> dgettext("studio", "방금 / just now")
+      diff < 60 -> dgettext("studio", "just now")
       diff < 3600 -> "#{div(diff, 60)}m"
       diff < 86_400 -> "#{div(diff, 3600)}h"
       diff < 604_800 -> "#{div(diff, 86_400)}d"

@@ -16,6 +16,18 @@ defmodule ContractWeb.Live.Studio.Components.DocumentListTest do
   alias Contract.Studio.State
   alias ContractWeb.Live.Studio.Components.DocumentList
 
+  # The studio surface is Korean-primary. `config/test.exs` pins the
+  # global UI locale to "en" so the gen.auth + dashboard suites match
+  # the English msgids that serve as translation source-of-truth. The
+  # studio component renders assert on Korean msgstrs, so we explicitly
+  # flip the process-local Gettext locale to "ko" for each test here.
+  # Each test runs in its own process so no teardown is necessary —
+  # `Gettext.put_locale/2` writes to the process dictionary.
+  setup do
+    Gettext.put_locale(ContractWeb.Gettext, "ko")
+    :ok
+  end
+
   # --- persona-perm fixtures (mirror Contract.PersonaFactory) ----------
 
   defp lawyer_scope(user, matter \\ nil) do
@@ -280,6 +292,71 @@ defmodule ContractWeb.Live.Studio.Components.DocumentListTest do
         )
 
       assert html =~ "사건 미선택"
+    end
+  end
+
+  # --- 7. i18n: single-language rendering (no bilingual concatenation) -
+
+  describe "i18n — single-language rendering" do
+    test "renders Korean-only labels in :ko locale (no bilingual concatenation)" do
+      # `setup` already put locale to "ko"; re-asserting here for clarity.
+      Gettext.put_locale(ContractWeb.Gettext, "ko")
+
+      user = user_fixture()
+      matter = %{id: Ecto.UUID.generate(), name: "i18n matter"}
+
+      html =
+        render_component(DocumentList,
+          id: "doc-list",
+          studio_state: blank_state(matter_id: matter.id),
+          current_scope: lawyer_scope(user, matter)
+        )
+
+      # Korean msgstrs are present.
+      assert html =~ "사건"
+      assert html =~ "아직 문서가 없습니다"
+      assert html =~ "계약 유형을 골라 첫 초안을 시작하세요"
+
+      # English msgids must NOT leak into the :ko render.
+      refute html =~ "MATTER"
+      refute html =~ "No documents yet"
+      refute html =~ "Pick a contract type"
+
+      # The slash-separated bilingual form must not appear anywhere.
+      refute html =~ "사건 / MATTER"
+      refute html =~ "사건 / Matter"
+      refute html =~ "/ MATTER"
+      refute html =~ "/ Matter"
+      refute html =~ "아직 문서가 없습니다 / No documents yet"
+      refute html =~ "/ No documents yet"
+    end
+
+    test "renders English fallback labels in :en locale" do
+      Gettext.put_locale(ContractWeb.Gettext, "en")
+
+      user = user_fixture()
+      matter = %{id: Ecto.UUID.generate(), name: "en matter"}
+
+      html =
+        render_component(DocumentList,
+          id: "doc-list",
+          studio_state: blank_state(matter_id: matter.id),
+          current_scope: lawyer_scope(user, matter)
+        )
+
+      # English msgids appear (msgstr is empty in en/LC_MESSAGES → falls back to msgid).
+      assert html =~ "Matter"
+      assert html =~ "No documents yet"
+      assert html =~ "Pick a contract type to start your first draft."
+
+      # Korean msgstrs do NOT leak into the :en render.
+      refute html =~ "사건"
+      refute html =~ "아직 문서가 없습니다"
+      refute html =~ "계약 유형"
+
+      # And the bilingual slash form is gone here too.
+      refute html =~ "/ MATTER"
+      refute html =~ "사건 / Matter"
     end
   end
 end
