@@ -9,7 +9,7 @@ defmodule Contract.Accounts.UserNotifier do
     email =
       new()
       |> to(recipient)
-      |> from({"Contract", "contact@example.com"})
+      |> from(Mailer.from())
       |> subject(subject)
       |> text_body(body)
 

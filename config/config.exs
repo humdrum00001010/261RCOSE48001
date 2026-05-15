@@ -67,6 +67,19 @@ config :contract, ContractWeb.Endpoint,
 # at the `config/runtime.exs`.
 config :contract, Contract.Mailer, adapter: Swoosh.Adapters.Local
 
+# Oban background jobs. Queue capacities are tuned for Contract Studio
+# workloads per SPEC.md §6 (Upstage parse, DOCX/PDF export, async OpenAI
+# turns, system jobs).
+config :contract, Oban,
+  repo: Contract.Repo,
+  queues: [
+    import: 5,
+    export: 3,
+    agent: 8,
+    system: 2
+  ],
+  plugins: [Oban.Plugins.Pruner, {Oban.Plugins.Cron, crontab: []}]
+
 # Configure esbuild (the version is required)
 config :esbuild,
   version: "0.25.4",

@@ -1,12 +1,13 @@
 import Config
 
-# Configure your database
+# Configure your database. Runtime values are re-applied in config/runtime.exs;
+# the fallbacks here cover bare `mix ecto.*` invocations without a populated .env.
 config :contract, Contract.Repo,
-  username: System.get_env("DB_USERNAME") || "antonio",
-  password: System.get_env("DB_PASSWORD") || "",
+  username: System.get_env("DB_USERNAME") || "contract",
+  password: System.get_env("DB_PASSWORD") || "contract",
   hostname: System.get_env("DB_HOST") || "localhost",
   port: String.to_integer(System.get_env("DB_PORT") || "5432"),
-  database: System.get_env("DB_NAME") || "antonio",
+  database: System.get_env("DB_NAME") || "contract",
   stacktrace: true,
   show_sensitive_data_on_connection_error: true,
   pool_size: 10

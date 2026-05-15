@@ -1,51 +1,146 @@
 import Config
 
-# config/runtime.exs is executed for all environments, including
-# during releases. It is executed after compilation and before the
-# system starts, so it is typically used to load production configuration
-# and secrets from environment variables or elsewhere. Do not define
-# any compile-time configuration in here, as it won't be applied.
-# The block below contains prod specific runtime configuration.
+# config/runtime.exs is executed for all environments, including during
+# releases. It runs after compilation and before the system starts, so
+# it's the right place to pull secrets from .env / the process environment.
+#
+# `config/config.exs` already hydrates System env vars from `.env` via
+# Contract.Env semantics, so `System.get_env/1` here works identically
+# in dev/test/prod.
 
-# ## Using releases
-#
-# If you use `mix release`, you need to explicitly enable the server
-# by passing the PHX_SERVER=true when you start it:
-#
-#     PHX_SERVER=true bin/contract start
-#
-# Alternatively, you can use `mix phx.gen.release` to generate a `bin/server`
-# script that automatically sets the env var above.
+# ---------------------------------------------------------------------------
+# Endpoint binding
+# ---------------------------------------------------------------------------
 if System.get_env("PHX_SERVER") do
   config :contract, ContractWeb.Endpoint, server: true
 end
 
 config :contract, ContractWeb.Endpoint,
-  http: [port: String.to_integer(System.get_env("PORT", "4000"))]
+  http: [
+    port:
+      String.to_integer(
+        System.get_env("SERVER_PORT") || System.get_env("PORT") || "4000"
+      )
+  ]
 
-if config_env() == :prod do
-  database_url =
-    System.get_env("DATABASE_URL") ||
-      raise """
-      environment variable DATABASE_URL is missing.
-      For example: ecto://USER:PASS@HOST/DATABASE
-      """
-
-  maybe_ipv6 = if System.get_env("ECTO_IPV6") in ~w(true 1), do: [:inet6], else: []
-
+# ---------------------------------------------------------------------------
+# Repo (env-driven, dev + prod alike)
+# ---------------------------------------------------------------------------
+if config_env() != :test do
   config :contract, Contract.Repo,
-    # ssl: true,
-    url: database_url,
-    pool_size: String.to_integer(System.get_env("POOL_SIZE") || "10"),
-    # For machines with several cores, consider starting multiple pools of `pool_size`
-    # pool_count: 4,
-    socket_options: maybe_ipv6
+    hostname: System.get_env("DB_HOST", "localhost"),
+    port: String.to_integer(System.get_env("DB_PORT", "5432")),
+    database: System.get_env("DB_NAME", "contract"),
+    username: System.get_env("DB_USERNAME", "contract"),
+    password: System.get_env("DB_PASSWORD", ""),
+    pool_size: String.to_integer(System.get_env("POOL_SIZE", "10")),
+    show_sensitive_data_on_connection_error: config_env() != :prod
+end
 
-  # The secret key base is used to sign/encrypt cookies and other secrets.
-  # A default value is used in config/dev.exs and config/test.exs but you
-  # want to use a different value for prod and you most likely don't want
-  # to check this value into version control, so we use an environment
-  # variable instead.
+# ---------------------------------------------------------------------------
+# Mailer — Swoosh SMTP, Worksmobile (port 465 implicit TLS), OTP-28 hardened
+# ---------------------------------------------------------------------------
+# Only configure SMTP when MAIL_HOST is present (prod/dev with .env).
+# `:dev` keeps Swoosh.Adapters.Local when env is missing; `:test` always
+# uses Swoosh.Adapters.Test (set in config/test.exs).
+if config_env() != :test and System.get_env("MAIL_HOST") not in [nil, ""] do
+  config :contract, Contract.Mailer,
+    adapter: Swoosh.Adapters.SMTP,
+    relay: System.fetch_env!("MAIL_HOST"),
+    port: String.to_integer(System.fetch_env!("MAIL_PORT")),
+    ssl: true,
+    tls: :never,
+    auth: :always,
+    username: System.fetch_env!("MAIL_USERNAME"),
+    password: System.fetch_env!("MAIL_PASSWORD"),
+    retries: 2,
+    no_mx_lookups: true,
+    sockopts: [
+      versions: [:"tlsv1.2", :"tlsv1.3"],
+      verify: :verify_peer,
+      cacerts: :public_key.cacerts_get(),
+      depth: 3,
+      customize_hostname_check: [
+        match_fun: :public_key.pkix_verify_hostname_match_fun(:https)
+      ],
+      server_name_indication: System.fetch_env!("MAIL_HOST") |> String.to_charlist()
+    ]
+
+  config :swoosh, :api_client, Swoosh.ApiClient.Finch
+  config :swoosh, local: false
+end
+
+if System.get_env("MAIL_FROM_ADDRESS") not in [nil, ""] do
+  config :contract,
+         :mail_from,
+         {System.get_env("MAIL_FROM_NAME", "Contract"),
+          System.fetch_env!("MAIL_FROM_ADDRESS")}
+end
+
+# ---------------------------------------------------------------------------
+# Cloudflare R2 (via ex_aws + ex_aws_s3)
+# ---------------------------------------------------------------------------
+if System.get_env("R2_ACCESS_KEY_ID") not in [nil, ""] do
+  config :ex_aws,
+    access_key_id: System.fetch_env!("R2_ACCESS_KEY_ID"),
+    secret_access_key: System.fetch_env!("R2_SECRET_ACCESS_KEY"),
+    region: System.get_env("R2_REGION", "auto"),
+    json_codec: Jason
+
+  config :ex_aws, :s3,
+    scheme: "https://",
+    host: URI.parse(System.fetch_env!("R2_ENDPOINT")).host,
+    port: 443,
+    region: System.get_env("R2_REGION", "auto")
+
+  config :contract, :r2,
+    bucket: System.fetch_env!("R2_BUCKET"),
+    endpoint: System.fetch_env!("R2_ENDPOINT"),
+    force_path_style: System.get_env("R2_FORCE_PATH_STYLE", "true") == "true"
+end
+
+# ---------------------------------------------------------------------------
+# OpenAI / Upstage / Korean Law MCP
+# ---------------------------------------------------------------------------
+if System.get_env("OPENAI_API_KEY") not in [nil, ""] do
+  config :contract, :openai,
+    api_key: System.fetch_env!("OPENAI_API_KEY"),
+    model: System.get_env("OPENAI_MODEL", "gpt-5-mini"),
+    reasoning_effort: System.get_env("OPENAI_REASONING_EFFORT", "high")
+end
+
+if System.get_env("UPSTAGE_API_KEY") not in [nil, ""] do
+  config :contract, :upstage,
+    api_key: System.fetch_env!("UPSTAGE_API_KEY"),
+    endpoint: "https://api.upstage.ai/v1/document-ai/document-parse"
+end
+
+if System.get_env("LAW_OC") not in [nil, ""] do
+  config :contract, :law_mcp,
+    oc: System.fetch_env!("LAW_OC"),
+    server_url: "https://korean-law-mcp.fly.dev/mcp",
+    server_label: "korean-law"
+end
+
+# Stash the current Mix env so Contract.Application can branch on it
+# (the `/dev/theme` LiveView route gate reads this).
+config :contract, :env, config_env()
+
+# ---------------------------------------------------------------------------
+# Production-only: endpoint URL + secret_key_base + DATABASE_URL override
+# ---------------------------------------------------------------------------
+if config_env() == :prod do
+  database_url = System.get_env("DATABASE_URL")
+
+  if database_url do
+    maybe_ipv6 = if System.get_env("ECTO_IPV6") in ~w(true 1), do: [:inet6], else: []
+
+    config :contract, Contract.Repo,
+      url: database_url,
+      pool_size: String.to_integer(System.get_env("POOL_SIZE") || "10"),
+      socket_options: maybe_ipv6
+  end
+
   secret_key_base =
     System.get_env("SECRET_KEY_BASE") ||
       raise """
@@ -53,68 +148,17 @@ if config_env() == :prod do
       You can generate one by calling: mix phx.gen.secret
       """
 
-  host = System.get_env("PHX_HOST") || "example.com"
+  app_url = URI.parse(System.get_env("APP_BASE_URL", "https://example.com"))
+  host = System.get_env("PHX_HOST") || app_url.host || "example.com"
+  scheme = app_url.scheme || "https"
+  url_port = if scheme == "https", do: 443, else: 80
 
   config :contract, :dns_cluster_query, System.get_env("DNS_CLUSTER_QUERY")
 
   config :contract, ContractWeb.Endpoint,
-    url: [host: host, port: 443, scheme: "https"],
+    url: [host: host, port: url_port, scheme: scheme],
     http: [
-      # Enable IPv6 and bind on all interfaces.
-      # Set it to  {0, 0, 0, 0, 0, 0, 0, 1} for local network only access.
-      # See the documentation on https://hexdocs.pm/bandit/Bandit.html#t:options/0
-      # for details about using IPv6 vs IPv4 and loopback vs public addresses.
       ip: {0, 0, 0, 0, 0, 0, 0, 0}
     ],
     secret_key_base: secret_key_base
-
-  # ## SSL Support
-  #
-  # To get SSL working, you will need to add the `https` key
-  # to your endpoint configuration:
-  #
-  #     config :contract, ContractWeb.Endpoint,
-  #       https: [
-  #         ...,
-  #         port: 443,
-  #         cipher_suite: :strong,
-  #         keyfile: System.get_env("SOME_APP_SSL_KEY_PATH"),
-  #         certfile: System.get_env("SOME_APP_SSL_CERT_PATH")
-  #       ]
-  #
-  # The `cipher_suite` is set to `:strong` to support only the
-  # latest and more secure SSL ciphers. This means old browsers
-  # and clients may not be supported. You can set it to
-  # `:compatible` for wider support.
-  #
-  # `:keyfile` and `:certfile` expect an absolute path to the key
-  # and cert in disk or a relative path inside priv, for example
-  # "priv/ssl/server.key". For all supported SSL configuration
-  # options, see https://hexdocs.pm/plug/Plug.SSL.html#configure/1
-  #
-  # We also recommend setting `force_ssl` in your config/prod.exs,
-  # ensuring no data is ever sent via http, always redirecting to https:
-  #
-  #     config :contract, ContractWeb.Endpoint,
-  #       force_ssl: [hsts: true]
-  #
-  # Check `Plug.SSL` for all available options in `force_ssl`.
-
-  # ## Configuring the mailer
-  #
-  # In production you need to configure the mailer to use a different adapter.
-  # Here is an example configuration for Mailgun:
-  #
-  #     config :contract, Contract.Mailer,
-  #       adapter: Swoosh.Adapters.Mailgun,
-  #       api_key: System.get_env("MAILGUN_API_KEY"),
-  #       domain: System.get_env("MAILGUN_DOMAIN")
-  #
-  # Most non-SMTP adapters require an API client. Swoosh supports Req, Hackney,
-  # and Finch out-of-the-box. This configuration is typically done at
-  # compile-time in your config/prod.exs:
-  #
-  #     config :swoosh, :api_client, Swoosh.ApiClient.Req
-  #
-  # See https://hexdocs.pm/swoosh/Swoosh.html#module-installation for details.
 end

@@ -50,7 +50,7 @@ defmodule ContractWeb.Router do
     post "/commands", ContractWeb.NotImplementedPlug, label: "/slack/commands"
   end
 
-  # Enable LiveDashboard and Swoosh mailbox preview in development
+  # Enable LiveDashboard, Swoosh mailbox preview, and the theme swatch in dev.
   if Application.compile_env(:contract, :dev_routes) do
     # If you want to use the LiveDashboard in production, you should put
     # it behind authentication and allow only admins to access it.
@@ -58,6 +58,15 @@ defmodule ContractWeb.Router do
     # you can use Plug.BasicAuth to set up some basic authentication
     # as long as you are also using SSL (which you should anyway).
     import Phoenix.LiveDashboard.Router
+
+    scope "/dev", ContractWeb do
+      pipe_through :browser
+
+      live_session :dev_only,
+        on_mount: [{ContractWeb.UserAuth, :mount_current_scope}] do
+        live "/theme", Dev.ThemePreviewLive
+      end
+    end
 
     scope "/dev" do
       pipe_through :browser

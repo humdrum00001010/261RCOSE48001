@@ -9,12 +9,12 @@ config :bcrypt_elixir, :log_rounds, 1
 # to provide built-in test partitioning in CI environment.
 # Run `mix help test` for more information.
 config :contract, Contract.Repo,
-  username: System.get_env("DB_USERNAME") || "antonio",
-  password: System.get_env("DB_PASSWORD") || "",
+  username: System.get_env("DB_USERNAME") || "contract",
+  password: System.get_env("DB_PASSWORD") || "contract",
   hostname: System.get_env("DB_HOST") || "localhost",
   port: String.to_integer(System.get_env("DB_PORT") || "5432"),
   database:
-    (System.get_env("DB_TEST_NAME") || "#{System.get_env("DB_NAME") || "antonio"}_test") <>
+    (System.get_env("DB_TEST_NAME") || "#{System.get_env("DB_NAME") || "contract"}_test") <>
       "#{System.get_env("MIX_TEST_PARTITION")}",
   pool: Ecto.Adapters.SQL.Sandbox,
   pool_size: System.schedulers_online() * 2
@@ -28,6 +28,9 @@ config :contract, ContractWeb.Endpoint,
 
 # In test we don't send emails
 config :contract, Contract.Mailer, adapter: Swoosh.Adapters.Test
+
+# Oban: disable queues + plugins; tests opt-in via Oban.Testing helpers.
+config :contract, Oban, testing: :manual
 
 # Disable swoosh api client as it is only required for production adapters
 config :swoosh, :api_client, false

@@ -7,14 +7,20 @@ defmodule Contract.Application do
 
   @impl true
   def start(_type, _args) do
+    # Fail fast in :prod if required env vars are missing; warn in :dev/:test.
+    :ok = Contract.Config.assert_loaded!(env())
+
     children = [
       ContractWeb.Telemetry,
+      {Phoenix.PubSub, name: Contract.PubSub},
       Contract.Repo,
       {DNSCluster, query: Application.get_env(:contract, :dns_cluster_query) || :ignore},
-      {Phoenix.PubSub, name: Contract.PubSub},
-      # Start a worker by calling: Contract.Worker.start_link(arg)
-      # {Contract.Worker, arg},
-      # Start to serve requests, typically the last entry
+      # Finch pool used by Swoosh.ApiClient.Finch. openai_ex / req each
+      # manage their own pools internally, so one pool here is enough.
+      {Finch, name: Swoosh.Finch},
+      {Oban, Application.fetch_env!(:contract, Oban)},
+      # Wave 2 placeholder:
+      # Contract.SessionSupervisor,
       ContractWeb.Endpoint
     ]
 
@@ -30,5 +36,9 @@ defmodule Contract.Application do
   def config_change(changed, _new, removed) do
     ContractWeb.Endpoint.config_change(changed, removed)
     :ok
+  end
+
+  defp env do
+    Application.get_env(:contract, :env, :dev)
   end
 end
