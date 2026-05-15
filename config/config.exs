@@ -47,6 +47,37 @@ config :contract,
   ecto_repos: [Contract.Repo],
   generators: [timestamp_type: :utc_datetime, binary_id: true]
 
+# Provider IO + Agent runtime. Each block reads the matching env vars at
+# runtime via `Application.fetch_env!/2`; tests override these in `config/test.exs`.
+config :contract, :upstage,
+  endpoint: "https://api.upstage.ai/v1/document-ai/document-parse",
+  api_key: System.get_env("UPSTAGE_API_KEY")
+
+config :contract, :openai,
+  api_key: System.get_env("OPENAI_API_KEY"),
+  base_url: System.get_env("OPENAI_BASE_URL", "https://api.openai.com/v1"),
+  default_model: "gpt-5-mini",
+  reasoning_effort: "high"
+
+config :contract, :law_mcp,
+  endpoint: System.get_env("LAW_MCP_URL", "https://korean-law-mcp.fly.dev/mcp"),
+  oc: System.get_env("LAW_OC", "openapi")
+
+config :contract, :r2,
+  bucket: System.get_env("R2_BUCKET", "contract-studio-prod"),
+  account_id: System.get_env("R2_ACCOUNT_ID"),
+  access_key_id: System.get_env("R2_ACCESS_KEY_ID"),
+  secret_access_key: System.get_env("R2_SECRET_ACCESS_KEY"),
+  endpoint: System.get_env("R2_ENDPOINT")
+
+# Driver overrides — tests swap these for mock implementations.
+config :contract, :io_drivers,
+  http: Contract.IO.HTTP.Req,
+  openai: Contract.IO.OpenAI,
+  upstage: Contract.IO.Upstage,
+  law_mcp: Contract.IO.LawMCP,
+  r2: Contract.IO.R2
+
 # Configure the endpoint
 config :contract, ContractWeb.Endpoint,
   url: [host: "localhost"],

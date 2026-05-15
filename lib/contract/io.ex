@@ -4,30 +4,31 @@ defmodule Contract.IO do
   Cloudflare R2 storage, korean-law-mcp citation lookups, and export
   renderers.
 
-  Track A2 (feat/io) fills these out. See SPEC.md §22.
+  This module is a thin dispatcher to sub-modules under `Contract.IO.*`
+  per SPEC.md §22.
   """
 
   alias Contract.Types, as: T
 
-  @type export :: term()
-
-  @spec import_upload(T.ctx(), T.matter_id(), T.upload()) :: T.result(Contract.Action.t())
-  def import_upload(_ctx, _matter_id, _upload),
-    do: raise("Contract.IO.import_upload/3 not implemented")
+  @spec import_upload(T.ctx(), T.matter_id(), T.upload()) ::
+          T.result(Contract.Action.t())
+  def import_upload(ctx, matter_id, upload),
+    do: Contract.IO.Upstage.import_upload(ctx, matter_id, upload)
 
   @spec parse_source(T.ctx(), source_ref :: String.t(), T.opts()) :: T.result(map())
-  def parse_source(_ctx, _source_ref, _opts),
-    do: raise("Contract.IO.parse_source/3 not implemented")
+  def parse_source(ctx, source_ref, opts \\ []),
+    do: Contract.IO.Upstage.parse_source(ctx, source_ref, opts)
 
-  @spec search_law(T.ctx(), query :: String.t(), T.opts()) :: T.result(map())
-  def search_law(_ctx, _query, _opts),
-    do: raise("Contract.IO.search_law/3 not implemented")
+  @spec search_law(T.ctx(), query :: String.t(), T.opts()) :: T.result(list())
+  def search_law(ctx, query, opts \\ []),
+    do: Contract.IO.LawMCP.search_law(ctx, query, opts)
 
-  @spec verify_citation(T.ctx(), citation :: String.t(), T.opts()) :: T.result(map())
-  def verify_citation(_ctx, _citation, _opts),
-    do: raise("Contract.IO.verify_citation/3 not implemented")
+  @spec verify_citation(T.ctx(), citation :: String.t(), T.opts()) :: T.result(list())
+  def verify_citation(ctx, citation, opts \\ []),
+    do: Contract.IO.LawMCP.verify_citations(ctx, citation, opts)
 
-  @spec export(T.ctx(), T.document_id(), format :: atom(), T.opts()) :: T.result(export())
-  def export(_ctx, _document_id, _format, _opts),
-    do: raise("Contract.IO.export/4 not implemented")
+  @spec export(T.ctx(), T.document_id(), format :: atom(), T.opts()) ::
+          T.result(Contract.Export.t())
+  def export(ctx, document_id, format, opts \\ []),
+    do: Contract.IO.R2.export(ctx, document_id, format, opts)
 end

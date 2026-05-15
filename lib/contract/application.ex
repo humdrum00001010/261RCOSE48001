@@ -21,7 +21,10 @@ defmodule Contract.Application do
       {Oban, Application.fetch_env!(:contract, Oban)},
       # Wave 2 placeholder:
       # Contract.SessionSupervisor,
-      ContractWeb.Endpoint
+      ContractWeb.Endpoint,
+      # Wave 1A2 Agent runtime: per-run GenServer registry + transient supervisor.
+      {Registry, keys: :unique, name: Contract.Agent.Registry},
+      Contract.Agent.RunSupervisor
     ]
 
     # See https://hexdocs.pm/elixir/Supervisor.html

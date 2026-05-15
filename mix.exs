@@ -76,7 +76,10 @@ defmodule Contract.MixProject do
       {:hackney, "~> 1.20"},
       {:sweet_xml, "~> 0.7"},
       {:oban, "~> 2.18"},
-      {:dotenvy, "~> 1.0"}
+      {:dotenvy, "~> 1.0"},
+      {:stream_data, "~> 1.1", only: [:test, :dev]},
+      {:bypass, "~> 2.1", only: :test},
+      {:mox, "~> 1.2", only: :test}
     ]
   end
 
@@ -91,7 +94,7 @@ defmodule Contract.MixProject do
       setup: ["deps.get", "ecto.setup", "assets.setup", "assets.build"],
       "ecto.setup": ["ecto.create", "ecto.migrate", "run priv/repo/seeds.exs"],
       "ecto.reset": ["ecto.drop", "ecto.setup"],
-      test: ["ecto.create --quiet", "ecto.migrate --quiet", "test"],
+      test: test_alias(),
       "assets.setup": ["tailwind.install --if-missing", "esbuild.install --if-missing"],
       "assets.build": ["compile", "tailwind contract", "esbuild contract"],
       "assets.deploy": [
@@ -99,7 +102,20 @@ defmodule Contract.MixProject do
         "esbuild contract --minify",
         "phx.digest"
       ],
-      precommit: ["compile --warnings-as-errors", "deps.unlock --unused", "format", "test"]
+      precommit: ["compile --warnings-as-errors", "deps.unlock --unused", "format", "test"],
+      "test.pure": ["test --no-start"]
     ]
+  end
+
+  # The `test` alias normally runs `ecto.create --quiet && ecto.migrate --quiet`
+  # before the test task. Pure-mechanics test suites (Engine, ChangeInput,
+  # etc.) do not need a database; setting `SKIP_DB=1` lets CI / sandboxes run
+  # `mix test` without Postgres.
+  defp test_alias do
+    if System.get_env("SKIP_DB") in ["1", "true"] do
+      ["test --no-start"]
+    else
+      ["ecto.create --quiet", "ecto.migrate --quiet", "test"]
+    end
   end
 end

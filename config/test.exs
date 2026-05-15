@@ -48,3 +48,38 @@ config :phoenix_live_view,
 # Sort query params output of verified routes for robust url comparisons
 config :phoenix,
   sort_verified_routes_query_params: true
+
+# Provider stubs / fake credentials so config-time fetches succeed.
+config :contract, :upstage,
+  endpoint: "http://localhost:0/v1/document-ai/document-parse",
+  api_key: "test-upstage-key"
+
+config :contract, :openai,
+  api_key: "test-openai-key",
+  base_url: "http://localhost:0/v1",
+  default_model: "gpt-5-mini",
+  reasoning_effort: "high"
+
+config :contract, :law_mcp,
+  endpoint: "http://localhost:0/mcp",
+  oc: "openapi"
+
+config :contract, :r2,
+  bucket: "test-bucket",
+  account_id: "test-account",
+  access_key_id: "test-access-key",
+  secret_access_key: "test-secret",
+  endpoint: "http://localhost:0"
+
+# Mox-based OpenAI driver for the Agent runtime tests.
+config :contract, :io_drivers,
+  http: Contract.IO.HTTP.Req,
+  openai: Contract.IO.OpenAIMock,
+  upstage: Contract.IO.Upstage,
+  law_mcp: Contract.IO.LawMCP,
+  r2: Contract.IO.R2
+
+config :ex_aws,
+  access_key_id: "test-access-key",
+  secret_access_key: "test-secret",
+  region: "auto"

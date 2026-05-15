@@ -11,6 +11,19 @@ defmodule Contract.Action do
 
   @type t :: %__MODULE__{}
 
+  # Action kinds that always require a `document_id` to be resolvable.
+  @document_scoped_kinds [
+    :edit_document,
+    :rename_document,
+    :update_metadata,
+    :set_contract_type,
+    :add_mark,
+    :update_mark,
+    :revoke_change,
+    :resolve_revoke,
+    :request_export
+  ]
+
   @primary_key false
 
   embedded_schema do
@@ -43,7 +56,10 @@ defmodule Contract.Action do
     field :change_id, :binary_id
     field :agent_run_id, :binary_id
 
-    field :actor_type, Ecto.Enum, values: [:user, :agent, :lawyer, :slack, :system]
+    field :actor_type, Ecto.Enum,
+      values: [:user, :agent, :lawyer, :slack, :system],
+      default: :user
+
     field :actor_id, :binary_id
 
     field :base_revision, :integer
@@ -52,6 +68,12 @@ defmodule Contract.Action do
     field :payload, :map, default: %{}
     field :message, :string
   end
+
+  @doc """
+  The Action.kind values that require a `:document_id` on the action.
+  """
+  @spec document_scoped_kinds() :: [atom()]
+  def document_scoped_kinds, do: @document_scoped_kinds
 
   @spec changeset(t(), T.attrs()) :: Ecto.Changeset.t()
   def changeset(action, attrs) do
@@ -69,6 +91,27 @@ defmodule Contract.Action do
       :payload,
       :message
     ])
-    |> validate_required([:kind, :actor_type])
+    |> validate_required([:kind])
+    |> ensure_actor_type_default()
+    |> validate_required([:actor_type])
+    |> validate_length(:idempotency_key, min: 6, max: 128)
+    |> validate_document_id_when_required()
+  end
+
+  defp ensure_actor_type_default(changeset) do
+    case get_field(changeset, :actor_type) do
+      nil -> put_change(changeset, :actor_type, :user)
+      _ -> changeset
+    end
+  end
+
+  defp validate_document_id_when_required(changeset) do
+    kind = get_field(changeset, :kind)
+
+    if kind in @document_scoped_kinds do
+      validate_required(changeset, [:document_id])
+    else
+      changeset
+    end
   end
 end
