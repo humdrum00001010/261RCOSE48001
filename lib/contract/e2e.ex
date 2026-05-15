@@ -24,16 +24,30 @@ if Application.compile_env(:contract, :test_auth, false) do
     """
     @spec reset!() :: :ok
     def reset! do
+      # Wave-4 schema reality:
+      #   * `snapshots` has NO `matter_id` column — it's keyed by document_id
+      #     only. We need to join through documents to find the snapshots
+      #     belonging to e2e matters.
+      #   * `changes`, `revoke_requests`, and `documents` all have `matter_id`.
+
       safe_query!(
         "DELETE FROM changes WHERE matter_id IN (SELECT id FROM matters WHERE name = 'e2e')"
       )
 
-      safe_query!(
-        "DELETE FROM snapshots WHERE matter_id IN (SELECT id FROM matters WHERE name = 'e2e')"
-      )
+      safe_query!("""
+      DELETE FROM snapshots
+       WHERE document_id IN (
+               SELECT id FROM documents
+                WHERE matter_id IN (SELECT id FROM matters WHERE name = 'e2e')
+             )
+      """)
 
       safe_query!(
         "DELETE FROM revoke_requests WHERE matter_id IN (SELECT id FROM matters WHERE name = 'e2e')"
+      )
+
+      safe_query!(
+        "DELETE FROM field_lineages WHERE document_id IN (SELECT id FROM documents WHERE matter_id IN (SELECT id FROM matters WHERE name = 'e2e'))"
       )
 
       safe_query!(
@@ -71,6 +85,7 @@ if Application.compile_env(:contract, :test_auth, false) do
         e in Postgrex.Error ->
           case e.postgres do
             %{code: :undefined_table} -> :ok
+            %{code: :undefined_column} -> :ok
             _ -> reraise(e, __STACKTRACE__)
           end
       end
