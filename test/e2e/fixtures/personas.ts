@@ -33,16 +33,35 @@ export interface SignInResponse {
  * Signs the given `page` (i.e. its BrowserContext) in as `persona`. The
  * session cookie set by the server is automatically retained in the
  * BrowserContext for the rest of the test.
+ *
+ * Retries on 5xx: `Contract.PersonaFactory.build/1` has a small email-collision
+ * window (random suffix space ~10k) that can flake under parallel sign-ins.
+ * Retrying with a fresh request usually resolves on the next attempt — the
+ * suffix re-rolls every call.
  */
 export async function signInAs(page: Page, persona: Persona): Promise<SignInResponse> {
-  const resp = await page.request.post(`/test/personas/${persona}/sign_in`, {
-    failOnStatusCode: true
-  });
-  expect(resp.status()).toBe(200);
-  const body = (await resp.json()) as SignInResponse;
-  expect(body.ok).toBe(true);
-  expect(body.persona).toBe(persona);
-  return body;
+  const maxAttempts = 5;
+  let lastStatus = 0;
+  let lastText = '';
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const resp = await page.request.post(`/test/personas/${persona}/sign_in`);
+    lastStatus = resp.status();
+    if (lastStatus === 200) {
+      const body = (await resp.json()) as SignInResponse;
+      expect(body.ok).toBe(true);
+      expect(body.persona).toBe(persona);
+      return body;
+    }
+    lastText = await resp.text().catch(() => '');
+    // Back off briefly so the random email suffix shifts to a different
+    // millisecond bucket on the next try.
+    await new Promise((r) => setTimeout(r, 50 * attempt));
+  }
+
+  throw new Error(
+    `signInAs(${persona}) failed after ${maxAttempts} attempts. Last status=${lastStatus}, body=${lastText.slice(0, 200)}`
+  );
 }
 
 /**

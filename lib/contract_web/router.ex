@@ -41,6 +41,17 @@ defmodule ContractWeb.Router do
       post "/personas/:persona/sign_in", TestAuthController, :sign_in
       post "/reset", TestAuthController, :reset
     end
+
+    # Test-only DB inspection: Playwright reads Studio rows over HTTPS to
+    # assert backend state. Same compile-time gating as the auth shim —
+    # the controller module elides in :prod and the routes 404.
+    scope "/test/db", ContractWeb do
+      pipe_through :test_auth
+      get "/changes/:document_id", TestDbController, :changes
+      get "/revoke_requests/:document_id", TestDbController, :revoke_requests
+      get "/documents", TestDbController, :documents
+      get "/oban_jobs", TestDbController, :oban_jobs
+    end
   end
 
   scope "/", ContractWeb do
