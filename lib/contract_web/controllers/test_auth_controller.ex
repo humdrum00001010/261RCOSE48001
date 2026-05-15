@@ -55,11 +55,19 @@ if Application.compile_env(:contract, :test_auth, false) do
       json(conn, %{ok: true})
     end
 
-    defp safe_persona_atom(name) do
-      {:ok, String.to_existing_atom(name)}
-    rescue
-      ArgumentError -> :error
+    defp safe_persona_atom(name) when is_binary(name) do
+      # We can't use `String.to_existing_atom/1` here — the
+      # `Contract.PersonaFactory` module may not be loaded yet on the
+      # first request, so the atom keys for `@personas` are absent from
+      # the runtime atom table. Instead, match `name` against the string
+      # form of each known persona and project to the original atom.
+      case Enum.find(PersonaFactory.personas(), fn p -> Atom.to_string(p) == name end) do
+        nil -> :error
+        atom -> {:ok, atom}
+      end
     end
+
+    defp safe_persona_atom(_), do: :error
 
     defp gate_test_auth(conn, _opts) do
       if Application.get_env(:contract, :test_auth, false) do
