@@ -63,6 +63,10 @@ test.describe('Scenario 6: Cmd+K palette (mobile: chat-command button)', () => {
       );
 
       if (viewport === 'desktop') {
+        // Make sure the page has focus before pressing — without a
+        // prior click, `page.keyboard.press` can land on a detached
+        // event target and never reach the window keydown listener.
+        await page.locator('body').click({ position: { x: 10, y: 10 } });
         await page.keyboard.press('Control+KeyK');
       } else {
         const cmdBtn = page.locator('[data-role="chat-command"]').first();
