@@ -1,52 +1,83 @@
 <Layouts.app flash={@flash} current_scope={@current_scope} variant="default">
   <%!--
-    Wave 3C0-E landing — structural rewrite.
+    Wave 3C0-F landing — hero re-tightened (still no SaaS pop).
 
-    The page is deliberately dense and quiet: a label heading, a tight
-    paragraph, an inline text link into sign-up — NO button-pair hero,
+    The page remains deliberately dense and quiet — NO button-pair hero,
     NO 3-column feature cards, NO pricing block, NO bottom marketing
-    CTA. Reference points are westlaw.com, lexisnexis.com, the
-    Bloomberg Terminal product page, and Quip's enterprise mode —
-    NOT SaaS-marketing surfaces.
+    CTA. Reference points remain westlaw.com, lexisnexis.com, the
+    Bloomberg Terminal product page, and Quip's enterprise mode.
+
+    Wave 3C0-F adjusts the above-fold so it reads as a hero BAND rather
+    than blending into the body: a slightly larger headline ladder, a
+    framing subtitle ("누구를 위한 도구인가"), inline links bumped to
+    text-base, and the small hero illustration is pulled up to sit
+    beside the copy on `lg:` (7:5 split). The "확약" section now opens
+    after a labelled hairline divider so the eye knows the hero ends.
 
     Korean is primary. The page controller pins the locale to "ko" so
     dgettext("landing", …) resolves through ko/landing.po. The English
     msgids are the fallback if a Korean msgstr is empty.
   --%>
   <div class="max-w-4xl mx-auto px-6 py-10 lg:py-14">
-    <%!-- Above-fold: label + headline + paragraph + a single inline link. --%>
-    <section class="border-b border-base-200 pb-10 mb-10">
-      <p class="text-xs uppercase tracking-[0.2em] text-base-content/60 mb-4">
-        {dgettext("landing", "Contract Studio")}
-      </p>
-      <h1 class="font-serif text-2xl sm:text-3xl lg:text-4xl font-medium leading-snug text-balance max-w-3xl mb-5">
-        {dgettext("landing", "검토를 묻는 초안 — 침묵하지 않는 계약서 에이전트")}
-      </h1>
-      <p class="text-sm sm:text-base text-base-content/80 leading-relaxed max-w-2xl mb-5">
-        {dgettext(
-          "landing",
-          "Contract Studio는 한국 법조인을 위한 법률 문서 스튜디오입니다. 에이전트는 편집에 앞서 모호한 지점을 질문하고, 법제처 인용을 검증하며, 변경 이력을 빠짐없이 남깁니다."
-        )}
-      </p>
-      <p class="text-sm">
-        <.link navigate={~p"/users/register"} class="link link-primary underline-offset-4">
-          {dgettext("landing", "도입 검토 →")}
-        </.link>
-        <span class="mx-2 text-base-content/30">·</span>
-        <.link navigate={~p"/users/log-in"} class="link link-hover text-base-content/70">
-          {dgettext("landing", "로그인")}
-        </.link>
-      </p>
-      <p class="text-xs text-base-content/50 mt-5">
-        {dgettext("landing", "비공개 베타. 초청제로 운영합니다.")}
-      </p>
+    <%!-- Above-fold hero band: kicker + headline + subtitle + paragraph + inline links, with a small illustration on the right at lg:. --%>
+    <section class="pb-12 mb-12">
+      <div class="grid grid-cols-1 lg:grid-cols-12 gap-8 lg:gap-10 items-start">
+        <div class="lg:col-span-7">
+          <p class="text-xs uppercase tracking-[0.2em] text-base-content/60 mb-4">
+            {dgettext("landing", "Contract Studio")}
+          </p>
+          <h1 class="font-serif text-3xl sm:text-4xl lg:text-[2.75rem] font-medium leading-tight max-w-3xl mb-4 break-keep">
+            {dgettext("landing", "검토를 묻는 초안 — 침묵하지 않는 계약서 에이전트")}
+          </h1>
+          <p class="font-serif text-base sm:text-lg text-base-content/70 leading-snug max-w-2xl mb-5">
+            {dgettext(
+              "landing",
+              "한국 변호사, 사내 법무, 그리고 작은 로펌을 위한 도구."
+            )}
+          </p>
+          <p class="text-sm sm:text-base text-base-content/80 leading-relaxed max-w-2xl mb-5">
+            {dgettext(
+              "landing",
+              "Contract Studio는 한국 법조인을 위한 법률 문서 스튜디오입니다. 에이전트는 편집에 앞서 모호한 지점을 질문하고, 법제처 인용을 검증하며, 변경 이력을 빠짐없이 남깁니다."
+            )}
+          </p>
+          <p class="text-base">
+            <.link navigate={~p"/users/register"} class="link link-primary underline-offset-4">
+              {dgettext("landing", "도입 검토 →")}
+            </.link>
+            <span class="mx-2 text-base-content/30">·</span>
+            <.link navigate={~p"/users/log-in"} class="link link-hover text-base-content/70">
+              {dgettext("landing", "로그인")}
+            </.link>
+          </p>
+          <p class="text-xs text-base-content/50 mt-5">
+            {dgettext("landing", "비공개 베타. 초청제로 운영합니다.")}
+          </p>
+        </div>
+        <div class="lg:col-span-5">
+          <img
+            src={~p"/images/landing/hero.png"}
+            alt={dgettext("landing", "편집 이전에 질문이 제시된 계약 문단의 도식.")}
+            class="w-full max-w-xs h-auto opacity-90 mx-auto lg:mx-0"
+            width="1024"
+            height="1024"
+            loading="eager"
+          />
+        </div>
+      </div>
     </section>
 
-    <%!-- Commitments: definition list, hairline-separated, no cards. --%>
-    <section class="mb-10">
-      <h2 class="font-serif text-lg sm:text-xl font-medium mb-5">
+    <%!-- Section-break divider — small label + hairline so the eye knows the hero ends and the commitments begin. --%>
+    <div class="flex items-center gap-4 mb-8">
+      <span class="text-xs uppercase tracking-[0.2em] text-base-content/50 whitespace-nowrap">
         {dgettext("landing", "확약")}
-      </h2>
+      </span>
+      <hr class="flex-1 border-base-300" />
+    </div>
+
+    <%!-- Commitments: definition list, hairline-separated, no cards. The
+         section heading has been promoted to a labelled divider above. --%>
+    <section class="mb-10">
       <dl class="divide-y divide-base-200 border-y border-base-200">
         <div class="py-4 grid grid-cols-1 lg:grid-cols-[220px_1fr] gap-1 lg:gap-8">
           <dt class="text-sm font-medium text-base-content">
@@ -124,21 +155,6 @@
         )}
       </p>
     </section>
-
-    <%!-- One small image — thumbnail-sized accompaniment, not focal. --%>
-    <figure class="mb-10 max-w-sm">
-      <img
-        src={~p"/images/landing/hero.png"}
-        alt={dgettext("landing", "편집 이전에 질문이 제시된 계약 문단의 도식.")}
-        class="w-full h-auto opacity-90"
-        width="1024"
-        height="1024"
-        loading="lazy"
-      />
-      <figcaption class="text-xs text-base-content/60 mt-2 leading-relaxed">
-        {dgettext("landing", "에이전트는 편집 전에 질문합니다.")}
-      </figcaption>
-    </figure>
 
     <%!-- Footer of the landing body — one text link, no CTA block. --%>
     <section class="border-t border-base-200 pt-6 text-sm text-base-content/80">
