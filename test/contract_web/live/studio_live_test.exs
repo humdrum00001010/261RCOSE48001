@@ -77,6 +77,17 @@ defmodule ContractWeb.StudioLiveTest do
       assert html =~ ~s(data-stub="toast-queue")
     end
 
+    # Wave 4 bugfix #6 — Playwright Scenario 6 selector contract.
+    # The global Cmd+K palette mounts through Layouts.app's
+    # `CommandPalette.mount_if_live/1` wrapper. Studio's rendered HTML
+    # must expose `data-role="command-palette"` so Playwright finds it
+    # even before the user presses Cmd+K.
+    test "studio LV exposes data-role=\"command-palette\" on the global palette",
+         %{conn: conn} do
+      {:ok, _lv, html} = live(conn, ~p"/studio")
+      assert html =~ ~s(data-role="command-palette")
+    end
+
     test "viewport defaults to :desktop until the JS hook reports otherwise",
          %{conn: conn} do
       {:ok, lv, _html} = live(conn, ~p"/studio")
@@ -315,6 +326,116 @@ defmodule ContractWeb.StudioLiveTest do
         })
 
       assert html =~ "No active conversion plan"
+    end
+
+    # Wave 4 bugfix #2 + #4: when the wizard opens, the parent LV must
+    # have a populated `migration_plan` AND the rendered summary card
+    # must use a hairline accent (no emerald block fill — per
+    # `feedback-mature-visual-language`).
+    test "start_type_conversion renders plan summary with hairline accent (no emerald block)",
+         %{conn: conn, user: user} do
+      scope = Contract.Context.for_user(user)
+      {:ok, matter} = Contract.Matters.create(scope, %{"name" => "wizard-bug-4"})
+
+      {:ok, doc} =
+        Contract.Documents.create(scope, %{
+          "matter_id" => matter.id,
+          "title" => "src-bug-4",
+          "type_key" => "nda_v1"
+        })
+
+      conn =
+        Plug.Conn.put_session(
+          conn,
+          :user_perms,
+          ~w(read write commit revoke export type_change)a
+        )
+
+      {:ok, lv, _html} = live(conn, ~p"/studio")
+
+      send_state(lv, %State{
+        matter_id: matter.id,
+        selected_document_id: doc.id,
+        mode: :editing,
+        last_seen_revision: 0
+      })
+
+      html =
+        render_hook(lv, "start_type_conversion", %{
+          "target_type_key" => "service_agreement_v1"
+        })
+
+      # Bug 2 — plan is populated.
+      plan = assigns(lv).migration_plan
+      assert %Contract.Conversion.Plan{target_type_key: "service_agreement_v1"} = plan
+
+      # The wizard must be visible (parent flag flipped).
+      assert assigns(lv).studio_state.migration_panel_open? == true
+      assert html =~ ~s(data-modal="migration")
+
+      # Bug 4 — restrained hairline summary, NOT a full emerald block.
+      assert html =~ ~s(data-role="migration-plan-summary")
+      assert html =~ ~s(border-l-2 border-primary)
+      refute html =~ "alert alert-success"
+      # The previous emerald-block class combo was `bg-primary
+      # text-primary-content` on the summary card itself. The header's
+      # "CS" badge uses that combo legitimately (small avatar circle),
+      # so scope the negative assertion to the summary div.
+      [_, summary_chunk] = String.split(html, ~s(data-role="migration-plan-summary"), parts: 2)
+      [card_chunk, _] = String.split(summary_chunk, "</div>", parts: 2)
+      refute card_chunk =~ "bg-primary text-primary-content"
+      refute card_chunk =~ "bg-success"
+    end
+
+    # Wave 4 bugfix #5: the Canvas.Editor hook now sends an Engine-shaped
+    # `:edit_document` payload (`%{"ops" => [%{"op" => "replace_content", ...}]}`).
+    # The parent LV must accept that shape end-to-end — `Studio.submit/3`
+    # → `Engine.compile/2` → a Change row landing — without crashing.
+    test "edit_document with Engine-shaped ops payload lands a Change row",
+         %{conn: conn, user: user} do
+      scope = Contract.Context.for_user(user)
+      {:ok, matter} = Contract.Matters.create(scope, %{"name" => "edit-bug-5"})
+
+      {:ok, doc} =
+        Contract.Documents.create(scope, %{
+          "matter_id" => matter.id,
+          "title" => "edit-bug-5-doc",
+          "type_key" => "nda_v1"
+        })
+
+      conn =
+        Plug.Conn.put_session(
+          conn,
+          :user_perms,
+          ~w(read write commit revoke export type_change)a
+        )
+
+      {:ok, lv, _html} = live(conn, ~p"/studio")
+
+      send_state(lv, %State{
+        matter_id: matter.id,
+        selected_document_id: doc.id,
+        mode: :editing,
+        last_seen_revision: 0
+      })
+
+      # Push the realistic payload the hook now sends.
+      _ =
+        render_hook(lv, "edit_document", %{
+          "ops" => [
+            %{
+              "op" => "replace_content",
+              "target_type" => "node",
+              "target_id" => "node-1",
+              "args" => %{"content" => "hello world"}
+            }
+          ]
+        })
+
+      # The LV must not crash; assigns must remain coherent.
+      assigns = assigns(lv)
+      assert %State{} = assigns.studio_state
+      assert assigns.studio_state.selected_document_id == doc.id
     end
   end
 

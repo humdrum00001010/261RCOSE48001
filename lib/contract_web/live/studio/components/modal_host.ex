@@ -100,6 +100,13 @@ defmodule ContractWeb.Live.Studio.Components.ModalHost do
   # off via `start_type_conversion`.
   attr :migration_plan, :any, default: nil
 
+  # Parent LV uses `send_update/2` to seed these when the wizard opens
+  # (Wave 4 bug #2 + #3). Defaulting them to `nil` keeps the existing
+  # render_component contract — the wizard's local state stays the
+  # source of truth when nothing is sent.
+  attr :migration_target, :any, default: nil
+  attr :field_strategies, :any, default: nil
+
   # --- LiveComponent callbacks -------------------------------------------
 
   @impl true
@@ -143,6 +150,24 @@ defmodule ContractWeb.Live.Studio.Components.ModalHost do
       case Map.get(assigns, :initial_modal_param) do
         nil -> socket
         param -> assign(socket, :modal_param, param)
+      end
+
+    # The parent LV uses send_update/2 to seed `:migration_target` and
+    # `:field_strategies` when the wizard opens (Wave 4 bug #2 + #3) —
+    # accept those overrides here so step 3's "Create variant" button is
+    # enabled and the "전략이 지정된 필드 수" counter is non-zero from
+    # the first paint, without the user touching every dropdown.
+    socket =
+      case Map.get(assigns, :migration_target) do
+        nil -> socket
+        target -> assign(socket, :migration_target, target)
+      end
+
+    socket =
+      case Map.get(assigns, :field_strategies) do
+        nil -> socket
+        strategies when is_map(strategies) -> assign(socket, :field_strategies, strategies)
+        _ -> socket
       end
 
     {:ok, socket}
@@ -690,31 +715,42 @@ defmodule ContractWeb.Live.Studio.Components.ModalHost do
       </.form>
 
       <%= if @migration_plan do %>
-        <div class="alert alert-success mt-3" data-role="migration-plan-summary">
-          <div class="text-sm space-y-1">
-            <p>
-              <span class="font-medium">{dgettext("studio", "Source type:")}</span>
-              <span class="font-mono">{@migration_plan.source_type_key || "—"}</span>
-            </p>
-            <p>
-              <span class="font-medium">{dgettext("studio", "Target type:")}</span>
-              <span class="font-mono">{@migration_plan.target_type_key}</span>
-            </p>
-            <p>
-              <span class="font-medium">{dgettext("studio", "Fields to consider:")}</span>
-              <span>{length(@migration_plan.field_plans || [])}</span>
-            </p>
-            <p :if={@migration_plan.impact && @migration_plan.impact[:compatible?] == false}
-               class="text-warning"
-               data-role="migration-incompatible-warning"
-            >
-              {dgettext("studio", "These types are not declared compatible — every field defaults to Ask user.")}
-            </p>
-          </div>
+        <%!--
+          Mature-visual-language: NO emerald-block fill. Per
+          `feedback-mature-visual-language` the wizard summary is a
+          restrained hairline accent — left border + base-200 wash, no
+          DaisyUI alert chip. The compatibility warning still uses the
+          warning swatch (intentional alert).
+        --%>
+        <div
+          class="border-l-2 border-primary bg-base-200 p-4 rounded-md text-sm mt-3 space-y-1"
+          data-role="migration-plan-summary"
+        >
+          <p>
+            <span class="font-medium">{dgettext("studio", "Source type:")}</span>
+            <span class="font-mono">{@migration_plan.source_type_key || "—"}</span>
+          </p>
+          <p>
+            <span class="font-medium">{dgettext("studio", "Target type:")}</span>
+            <span class="font-mono">{@migration_plan.target_type_key}</span>
+          </p>
+          <p>
+            <span class="font-medium">{dgettext("studio", "Fields to consider:")}</span>
+            <span>{length(@migration_plan.field_plans || [])}</span>
+          </p>
+          <p :if={@migration_plan.impact && @migration_plan.impact[:compatible?] == false}
+             class="text-warning"
+             data-role="migration-incompatible-warning"
+          >
+            {dgettext("studio", "These types are not declared compatible — every field defaults to Ask user.")}
+          </p>
         </div>
       <% else %>
-        <div class="alert alert-info mt-3" data-role="migration-plan-prompt">
-          <span>{dgettext("studio", "Choose a target type then run the planner.")}</span>
+        <div
+          class="border-l-2 border-base-300 bg-base-200/60 p-4 rounded-md text-sm mt-3"
+          data-role="migration-plan-prompt"
+        >
+          <span class="text-base-content/70">{dgettext("studio", "Choose a target type then run the planner.")}</span>
         </div>
       <% end %>
 

@@ -179,6 +179,35 @@ defmodule ContractWeb.Components.CommandPaletteTest do
       refute html =~ ~s(data-role="palette-box")
     end
 
+    # Wave 4 bugfix #6 — Playwright Scenario 6 selector contract.
+    # The palette root must carry `data-role="command-palette"`
+    # unconditionally so `expect(palette).toBeVisible()` resolves at
+    # both closed (trigger-button only) and open (modal) states. The
+    # palette is permanently mounted; visibility of the modal is keyed
+    # off `@open?` separately.
+    test "root container exposes data-role=\"command-palette\" when closed", %{user: user} do
+      html =
+        render_component(CommandPalette,
+          id: "cmd-k-palette",
+          current_scope: lawyer_scope(user)
+        )
+
+      assert html =~ ~s(data-role="command-palette")
+      assert html =~ ~s(data-open="false")
+    end
+
+    test "root container still exposes data-role=\"command-palette\" when open", %{user: user} do
+      html =
+        render_component(CommandPalette,
+          id: "cmd-k-palette",
+          current_scope: lawyer_scope(user),
+          initial_open?: true
+        )
+
+      assert html =~ ~s(data-role="command-palette")
+      assert html =~ ~s(data-open="true")
+    end
+
     test "with initial_open?, renders the modal and the input", %{user: user} do
       html =
         render_component(CommandPalette,

@@ -4,6 +4,18 @@ defmodule ContractWeb.UserSessionController do
   alias Contract.Accounts
   alias ContractWeb.UserAuth
 
+  # Default perm set for confirmed production users. Mirrors what
+  # `Contract.PersonaFactory.spec(:lawyer)` ships for the Playwright
+  # `:lawyer` persona, minus `:agent_run` (gated server-side until billing
+  # lands). `MatterScope` threads this into `current_scope.perms` so
+  # Studio writes / revokes / exports / conversions are unlocked for
+  # real (non-Persona) users.
+  #
+  # A future role-based pass will refine this (tenant_admin, viewer,
+  # billing-gated agent_run, …). For now every confirmed user gets the
+  # standard lawyer-set.
+  @default_perms ~w(read write commit revoke export type_change)a
+
   def create(conn, %{"_action" => "confirmed"} = params) do
     create(conn, params, "User confirmed successfully.")
   end
@@ -20,7 +32,7 @@ defmodule ContractWeb.UserSessionController do
 
         conn
         |> put_flash(:info, info)
-        |> UserAuth.log_in_user(user, user_params)
+        |> UserAuth.log_in_user(user, user_params, %{user_perms: production_perms_for(user)})
 
       _ ->
         conn
@@ -36,7 +48,7 @@ defmodule ContractWeb.UserSessionController do
     if user = Accounts.get_user_by_email_and_password(email, password) do
       conn
       |> put_flash(:info, info)
-      |> UserAuth.log_in_user(user, user_params)
+      |> UserAuth.log_in_user(user, user_params, %{user_perms: production_perms_for(user)})
     else
       # In order to prevent user enumeration attacks, don't disclose whether the email is registered.
       conn
@@ -45,6 +57,13 @@ defmodule ContractWeb.UserSessionController do
       |> redirect(to: ~p"/users/log-in")
     end
   end
+
+  # Per-user perm derivation. Today every confirmed user gets the
+  # standard lawyer-set so the merged sprite has writeable Studio for
+  # real (non-Persona) logins. A future role-based pass will refine
+  # this — see SPEC §6.
+  defp production_perms_for(%Accounts.User{}), do: @default_perms
+  defp production_perms_for(_), do: @default_perms
 
   def update_password(conn, %{"user" => user_params} = params) do
     user = conn.assigns.current_scope.user

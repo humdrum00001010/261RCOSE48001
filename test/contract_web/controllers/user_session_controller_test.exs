@@ -2,6 +2,7 @@ defmodule ContractWeb.UserSessionControllerTest do
   use ContractWeb.ConnCase, async: true
 
   import Contract.AccountsFixtures
+  import Phoenix.LiveViewTest, only: [live: 2]
   alias Contract.Accounts
 
   setup do
@@ -126,6 +127,68 @@ defmodule ContractWeb.UserSessionControllerTest do
                "The link is invalid or it has expired."
 
       assert redirected_to(conn) == ~p"/users/log-in"
+    end
+  end
+
+  describe "POST /users/log-in — :user_perms seeding (Wave 4 bugfix #1)" do
+    # Real (non-Persona) users must get a perm set into the session at
+    # login time so MatterScope can thread it onto current_scope.perms,
+    # otherwise Studio writes/revokes/exports/conversions stay disabled.
+    # See `Contract.PersonaFactory.spec(:lawyer)` for the canonical set.
+
+    test "password log-in seeds :user_perms with :write and :revoke", %{conn: conn, user: user} do
+      user = set_password(user)
+
+      conn =
+        post(conn, ~p"/users/log-in", %{
+          "user" => %{"email" => user.email, "password" => valid_user_password()}
+        })
+
+      perms = get_session(conn, :user_perms)
+      assert is_list(perms)
+      assert :write in perms
+      assert :revoke in perms
+      # Sanity: standard production set
+      assert :read in perms
+      assert :commit in perms
+      assert :export in perms
+      assert :type_change in perms
+    end
+
+    test "magic-link log-in seeds :user_perms too", %{conn: conn, user: user} do
+      {token, _hashed_token} = generate_user_magic_link_token(user)
+
+      conn =
+        post(conn, ~p"/users/log-in", %{
+          "user" => %{"token" => token}
+        })
+
+      perms = get_session(conn, :user_perms)
+      assert is_list(perms)
+      assert :write in perms
+      assert :revoke in perms
+    end
+
+    test "after log-in, Studio LV's current_scope.perms is populated", %{
+      conn: conn,
+      user: user
+    } do
+      user = set_password(user)
+
+      conn =
+        post(conn, ~p"/users/log-in", %{
+          "user" => %{"email" => user.email, "password" => valid_user_password()}
+        })
+
+      # Drive the same conn through the Studio LV and inspect the
+      # mounted scope. This is the load-bearing assertion: the bugfix
+      # is moot unless MatterScope sees `:user_perms` in the session.
+      assert get_session(conn, :user_token)
+      {:ok, lv, _html} = live(conn, ~p"/studio")
+      perms = :sys.get_state(lv.pid).socket.assigns.current_scope.perms
+      assert is_list(perms)
+      assert :write in perms
+      assert :revoke in perms
     end
   end
 

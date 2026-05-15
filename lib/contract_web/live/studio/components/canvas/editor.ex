@@ -187,7 +187,22 @@ defmodule ContractWeb.Live.Studio.Components.Canvas.Editor do
             const content = el.innerText
             this.dirty.delete(nodeId)
             this.timers.delete(nodeId)
-            this.pushEvent("edit_document", {node_id: nodeId, content: content})
+            // SPEC §13: the Engine's :edit_document compile path reads
+            // `payload.ops` as a list of Operation maps. The previous
+            // shape — {node_id, content} — left `ops: []` empty so no
+            // Change row landed, AND it tripped LV's extractMeta on the
+            // JS side (the dispatcher expected a richer payload).
+            // Send the Engine-shaped operation directly; the parent
+            // LV's event_to_action funnel keeps payload as-is and
+            // passes it to Studio.submit/3 → Engine.compile/2.
+            this.pushEvent("edit_document", {
+              ops: [{
+                op: "replace_content",
+                target_type: "node",
+                target_id: nodeId,
+                args: {content: content}
+              }]
+            })
           },
 
           destroyed() {

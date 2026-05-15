@@ -31,13 +31,30 @@ defmodule ContractWeb.UserAuth do
 
   Redirects to the session's `:user_return_to` path
   or falls back to the `signed_in_path/1`.
+
+  Accepts an optional `extra_session` map (or keyword list); each entry
+  is put into the session AFTER `renew_session` clears it. This is how
+  `ContractWeb.UserSessionController.create/2` threads `:user_perms`
+  into the session for real (non-Persona) users — the perm set is
+  otherwise lost when `renew_session` wipes the session at log-in
+  time. See `Contract.PersonaFactory` and `ContractWeb.MatterScope`
+  for the read side.
   """
-  def log_in_user(conn, user, params \\ %{}) do
+  def log_in_user(conn, user, params \\ %{}, extra_session \\ %{}) do
     user_return_to = get_session(conn, :user_return_to)
 
     conn
     |> create_or_extend_session(user, params)
+    |> put_extra_session(extra_session)
     |> redirect(to: user_return_to || signed_in_path(conn))
+  end
+
+  defp put_extra_session(conn, extra) when is_list(extra) do
+    put_extra_session(conn, Map.new(extra))
+  end
+
+  defp put_extra_session(conn, extra) when is_map(extra) do
+    Enum.reduce(extra, conn, fn {k, v}, acc -> put_session(acc, k, v) end)
   end
 
   @doc """

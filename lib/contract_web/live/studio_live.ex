@@ -226,6 +226,25 @@ defmodule ContractWeb.StudioLive do
       true ->
         case Contract.Conversion.plan(scope, document_id, target_type_key, []) do
           {:ok, plan} ->
+            # Seed @field_strategies from the plan's default strategy per
+            # field so the wizard's step-3 summary ("전략이 지정된 필드 수: N")
+            # is non-zero from the first paint, and so step 3's "Create
+            # variant" button is enabled without the user touching every
+            # dropdown. Map keys are `source_field_id`, values are the
+            # strategy atom rendered as a string (matches the
+            # `set_field_strategy` event payload shape).
+            strategies =
+              (plan.field_plans || [])
+              |> Map.new(fn fp ->
+                {fp.source_field_id, Atom.to_string(fp.strategy)}
+              end)
+
+            send_update(ContractWeb.Live.Studio.Components.ModalHost,
+              id: "modal-host",
+              migration_target: target_type_key,
+              field_strategies: strategies
+            )
+
             socket =
               socket
               |> assign(:migration_plan, plan)

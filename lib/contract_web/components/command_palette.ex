@@ -259,7 +259,12 @@ defmodule ContractWeb.Components.CommandPalette do
   @impl true
   def render(assigns) do
     ~H"""
-    <div id={@id} phx-hook=".Palette" data-open={to_string(@open?)}>
+    <div
+      id={@id}
+      phx-hook=".Palette"
+      data-role="command-palette"
+      data-open={to_string(@open?)}
+    >
       <script :type={Phoenix.LiveView.ColocatedHook} name=".Palette">
         export default {
           mounted() {

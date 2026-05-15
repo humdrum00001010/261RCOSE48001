@@ -300,6 +300,71 @@ defmodule ContractWeb.Live.Studio.Components.ModalHostTest do
       assert html =~ ~s(data-role="migration-create-variant")
       assert html =~ ~s(phx-submit="create_variant")
     end
+
+    # Wave 4 bugfix #3: the wizard's step-3 summary counter
+    # ("Fields with explicit strategies: N") must match the seeded
+    # strategies map immediately. The parent LV uses send_update/2 to
+    # pass `migration_target` + `field_strategies` into ModalHost as
+    # soon as the planner returns. In render_component, those assigns
+    # are passed directly.
+    test "step :confirm with seeded field_strategies + migration_target enables Create variant" do
+      strategies = %{
+        "effective_date" => "link_to_matter_field",
+        "party_a" => "copy_once",
+        "party_b" => "copy_once"
+      }
+
+      html =
+        render_component(ModalHost,
+          id: "modal-host",
+          studio_state: %State{mode: :editing, migration_panel_open?: true},
+          current_scope: scope_for_user(),
+          initial_migration_step: :confirm,
+          migration_target: "service_agreement_v1",
+          field_strategies: strategies
+        )
+
+      assert html =~ ~s(data-role="migration-summary")
+      # The summary's "Fields with explicit strategies:" counter should
+      # equal the size of the seeded strategies map (3) — not 0.
+      assert html =~ ">3<"
+      # Target also threads into the hidden form input.
+      assert html =~ ~s(name="target_type_key" value="service_agreement_v1")
+      # Create variant button must NOT be disabled — bugfix #2 + #3.
+      refute html =~ ~r/<button[^>]*disabled[^>]*data-role="migration-create-variant"|<button[^>]*data-role="migration-create-variant"[^>]*disabled/
+    end
+
+    # Wave 4 bugfix #4 — the step 1 plan summary card must use the
+    # restrained hairline-accent palette ("border-l-2 border-primary
+    # bg-base-200"). No more full emerald block fill. Westlaw-silhouette
+    # test: the wizard, viewed at a distance, shows only document
+    # information, not a saturated success chip.
+    test "step :plan summary card uses hairline accent (no emerald-block fill)" do
+      plan = %Contract.Conversion.Plan{
+        source_document_id: Ecto.UUID.generate(),
+        source_type_key: "nda_v1",
+        target_type_key: "service_agreement_v1",
+        strategies: Contract.Conversion.allowed_strategies(),
+        field_plans: [],
+        impact: %{compatible?: true}
+      }
+
+      html =
+        render_component(ModalHost,
+          id: "modal-host",
+          studio_state: %State{mode: :editing, migration_panel_open?: true},
+          current_scope: scope_for_user(),
+          migration_plan: plan
+        )
+
+      assert html =~ ~s(data-role="migration-plan-summary")
+      assert html =~ "border-l-2 border-primary"
+      # Restrained: no DaisyUI success/emerald alert chip, no primary
+      # block fill (would violate `feedback-mature-visual-language`).
+      refute html =~ "alert alert-success"
+      refute html =~ "bg-primary text-primary-content"
+      refute html =~ "bg-success"
+    end
   end
 
   # ---------------------------------------------------------------------
