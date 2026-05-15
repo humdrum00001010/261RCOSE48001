@@ -1,11 +1,11 @@
 import { test, expect } from '@playwright/test';
 import { signInAs, resetE2EState } from '../../fixtures/personas';
 import {
-  findOrSkipDocument,
   getDocuments,
   openStudio,
   pollUntil
 } from '../../fixtures/studio';
+import { seedMatterAndDocument } from '../../fixtures/seeds';
 
 /**
  * Scenario 6 — Cmd+K palette → set contract type.
@@ -30,14 +30,18 @@ test.describe('Scenario 6: Cmd+K palette (mobile: chat-command button)', () => {
       await resetE2EState(request);
       await signInAs(page, 'lawyer');
 
-      const document = await findOrSkipDocument(request);
-      test.skip(
-        document === null,
-        'No documents present — Cmd+K palette requires a target document.'
-      );
-      if (!document) return;
+      const { document } = await seedMatterAndDocument(page, {
+        title: 'Cmd+K palette scenario doc',
+        type_key: 'nda_v1'
+      });
 
-      await openStudio(page, document);
+      await openStudio(page, {
+        id: document.id,
+        matter_id: document.matter_id,
+        name: document.title,
+        type_key: document.type_key,
+        inserted_at: ''
+      });
 
       if (viewport === 'desktop') {
         await page.keyboard.press('Control+KeyK');

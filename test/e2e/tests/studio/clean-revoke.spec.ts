@@ -1,11 +1,11 @@
 import { test, expect } from '@playwright/test';
 import { signInAs, resetE2EState } from '../../fixtures/personas';
 import {
-  findOrSkipDocument,
   getChanges,
   openStudio,
   pollUntil
 } from '../../fixtures/studio';
+import { seedMatterAndDocument } from '../../fixtures/seeds';
 
 /**
  * Scenario 2 — clean revoke (no overlap).
@@ -27,14 +27,26 @@ test.describe('Scenario 2: clean revoke', () => {
       await resetE2EState(request);
       await signInAs(page, 'lawyer');
 
-      const document = await findOrSkipDocument(request);
-      test.skip(
-        document === null,
-        'No documents present — clean-revoke requires the Wave 3C1 documents migration on the public sprite.'
-      );
-      if (!document) return;
+      // Seed an inline matter + document via the test-only POST routes
+      // so the scenario is self-contained and doesn't depend on the
+      // sprite DB having a pre-existing row. The seeder is gated by
+      // `compile_env(:test_auth)` — production builds 404.
+      // Use `page` here (not `request`) so the seed call rides the
+      // same cookie jar as `signInAs(page, ...)` — otherwise the
+      // controller falls back to minting a throwaway persona, which
+      // can flake on PersonaFactory email collisions.
+      const { document } = await seedMatterAndDocument(page, {
+        title: 'Clean-revoke scenario doc',
+        type_key: 'nda_v1'
+      });
 
-      await openStudio(page, document);
+      await openStudio(page, {
+        id: document.id,
+        matter_id: document.matter_id,
+        name: document.title,
+        type_key: document.type_key,
+        inserted_at: ''
+      });
 
       // Capture baseline change-count so we can wait for the edit + revoke
       // pair specifically (not whatever else might already exist).

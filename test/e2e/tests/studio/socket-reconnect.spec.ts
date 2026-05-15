@@ -1,11 +1,11 @@
 import { test, expect } from '@playwright/test';
 import { signInAs, resetE2EState } from '../../fixtures/personas';
 import {
-  findOrSkipDocument,
   getChanges,
   openStudio,
   pollUntil
 } from '../../fixtures/studio';
+import { seedMatterAndDocument } from '../../fixtures/seeds';
 
 /**
  * Scenario 5 — socket reconnect + sync.
@@ -32,14 +32,18 @@ test.describe('Scenario 5: socket reconnect + Studio.sync', () => {
       await resetE2EState(request);
       await signInAs(page, 'lawyer');
 
-      const document = await findOrSkipDocument(request);
-      test.skip(
-        document === null,
-        'No documents present — socket-reconnect requires the Wave 3C1 documents migration.'
-      );
-      if (!document) return;
+      const { document } = await seedMatterAndDocument(page, {
+        title: 'Socket-reconnect scenario doc',
+        type_key: 'nda_v1'
+      });
 
-      await openStudio(page, document);
+      await openStudio(page, {
+        id: document.id,
+        matter_id: document.matter_id,
+        name: document.title,
+        type_key: document.type_key,
+        inserted_at: ''
+      });
 
       // Capture starting head revision.
       const baseline = await getChanges(request, document.id);

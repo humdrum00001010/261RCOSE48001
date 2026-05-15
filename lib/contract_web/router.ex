@@ -51,6 +51,8 @@ defmodule ContractWeb.Router do
       get "/revoke_requests/:document_id", TestDbController, :revoke_requests
       get "/documents", TestDbController, :documents
       get "/oban_jobs", TestDbController, :oban_jobs
+      post "/matters", TestDbController, :seed_matter
+      post "/documents", TestDbController, :seed_document
     end
   end
 

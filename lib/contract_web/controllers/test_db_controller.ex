@@ -27,7 +27,7 @@ if Application.compile_env(:contract, :test_auth, false) do
 
     use ContractWeb, :controller
 
-    alias Contract.Repo
+    alias Contract.{Accounts, Context, Documents, Matters, PersonaFactory, Repo}
 
     plug :gate_test_auth
 
@@ -117,6 +117,82 @@ if Application.compile_env(:contract, :test_auth, false) do
       json(conn, %{ok: true, queue: queue, jobs: rows})
     end
 
+    @doc """
+    `POST /test/db/matters`
+
+    Seeds a Matter for the current Playwright session. Returns the new
+    matter's `id` and `name`. The owner is taken from the session's
+    `user_token`; if no session is present the controller builds a
+    throwaway lawyer persona on the fly so the route still works for the
+    smoke flow.
+
+    Body params:
+      * `name` (optional) — display name; defaults to `"E2E matter <n>"`.
+    """
+    def seed_matter(conn, params) do
+      scope = ensure_scope!(conn)
+
+      attrs = %{
+        "name" => Map.get(params, "name") || "E2E matter #{System.unique_integer([:positive])}"
+      }
+
+      case Matters.create(scope, attrs) do
+        {:ok, matter} ->
+          json(conn, %{ok: true, id: matter.id, name: matter.name})
+
+        {:error, %Ecto.Changeset{} = cs} ->
+          conn |> put_status(422) |> json(%{ok: false, errors: format_errors(cs)})
+
+        {:error, reason} ->
+          conn |> put_status(422) |> json(%{ok: false, error: inspect(reason)})
+      end
+    end
+
+    @doc """
+    `POST /test/db/documents`
+
+    Seeds a Document inside an existing Matter. Required body params:
+      * `matter_id` — the seeded matter's id.
+
+    Optional body params:
+      * `title` — defaults to `"E2E document <n>"`.
+      * `type_key` — defaults to `"nda_v1"`.
+    """
+    def seed_document(conn, params) do
+      scope = ensure_scope!(conn)
+
+      case Map.get(params, "matter_id") do
+        nil ->
+          conn
+          |> put_status(422)
+          |> json(%{ok: false, error: "matter_id is required"})
+
+        matter_id ->
+          attrs = %{
+            "matter_id" => matter_id,
+            "title" => Map.get(params, "title") || "E2E document #{System.unique_integer([:positive])}",
+            "type_key" => Map.get(params, "type_key") || "nda_v1"
+          }
+
+          case Documents.create(scope, attrs) do
+            {:ok, doc} ->
+              json(conn, %{
+                ok: true,
+                id: doc.id,
+                matter_id: doc.matter_id,
+                type_key: doc.type_key,
+                title: doc.title
+              })
+
+            {:error, %Ecto.Changeset{} = cs} ->
+              conn |> put_status(422) |> json(%{ok: false, errors: format_errors(cs)})
+
+            {:error, reason} ->
+              conn |> put_status(422) |> json(%{ok: false, error: inspect(reason)})
+          end
+      end
+    end
+
     # ----------------------------------------------------------------------------
     # internals
     # ----------------------------------------------------------------------------
@@ -165,6 +241,65 @@ if Application.compile_env(:contract, :test_auth, false) do
         {:ok, bin} -> bin
         :error -> <<0::128>>
       end
+    end
+
+    # Build a `%Context{}` for the seeder. Prefers the real signed-in
+    # user pulled from the session cookie set by
+    # `ContractWeb.TestAuthController.sign_in/2`. If no session is
+    # present (Playwright forgot to sign in first), we mint a throwaway
+    # lawyer persona so the route still produces a useful row — the
+    # ACL gate in `Contract.Matters.create/2` requires a real user.
+    defp ensure_scope!(conn) do
+      case current_scope_from_session(conn) do
+        %Context{user: %{}} = scope -> scope
+        _ -> fallback_scope()
+      end
+    end
+
+    defp current_scope_from_session(conn) do
+      case get_session(conn, :user_token) do
+        nil ->
+          nil
+
+        token ->
+          case Accounts.get_user_by_session_token(token) do
+            {user, _inserted_at} -> Context.for_user(user)
+            _ -> nil
+          end
+      end
+    rescue
+      # `fetch_session/2` may not have been called (e.g. test forgot to
+      # init_test_session). Treat as "no session" rather than crashing.
+      ArgumentError -> nil
+    end
+
+    # Build a throwaway persona; retry on the well-known
+    # `unsafe_validate_unique` email-collision flake. `PersonaFactory`'s
+    # random suffix space is ~10k, so parallel Playwright workers
+    # occasionally collide. After a handful of retries the suffix has
+    # rerolled enough times that a second collision is vanishingly
+    # likely.
+    defp fallback_scope, do: fallback_scope(5)
+
+    defp fallback_scope(0) do
+      raise "fallback_scope: PersonaFactory.build/1 collided 5 times in a row"
+    end
+
+    defp fallback_scope(retries_left) do
+      %{user: user} = PersonaFactory.build(:lawyer)
+      Context.for_user(user)
+    rescue
+      MatchError -> fallback_scope(retries_left - 1)
+    end
+
+    # Converts an Ecto.Changeset's errors to a JSON-friendly map of
+    # `field -> [messages]`.
+    defp format_errors(%Ecto.Changeset{} = cs) do
+      Ecto.Changeset.traverse_errors(cs, fn {msg, opts} ->
+        Enum.reduce(opts, msg, fn {k, v}, acc ->
+          String.replace(acc, "%{#{k}}", to_string(v))
+        end)
+      end)
     end
 
     defp gate_test_auth(conn, _opts) do
