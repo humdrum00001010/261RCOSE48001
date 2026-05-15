@@ -1,0 +1,224 @@
+## English landing-page strings for Contract Studio.
+##
+## Source of truth for marketing copy. Keep msgstrs identical to msgids
+## here — Gettext fallback uses msgid when msgstr is empty, but having
+## them written out makes localisation diffs cleaner.
+##
+## When adding a string, register it on the page first via gettext("…"),
+## then run `mix gettext.extract --merge` to push it into landing.pot
+## and merge into landing.po (en/ + ko/).
+msgid ""
+msgstr ""
+"Language: en\n"
+"Plural-Forms: nplurals=2; plural=n != 1;\n"
+
+#: lib/contract_web/controllers/page_html/home.html.heex:32
+#, elixir-autogen, elixir-format
+msgid "Closed beta. Korean lawyers only, by invitation."
+msgstr "Closed beta. Korean lawyers only, by invitation."
+
+#: lib/contract_web/controllers/page_html/home.html.heex:240
+#, elixir-autogen, elixir-format
+msgid "Contact sales"
+msgstr "Contact sales"
+
+#: lib/contract_web/controllers/page_html/home.html.heex:16
+#, elixir-autogen, elixir-format
+msgid "Contract Studio is an AI-led legal-document studio. The agent grills you for clarity, cites 법제처 with proof, and never silently rewrites your contracts."
+msgstr "Contract Studio is an AI-led legal-document studio. The agent grills you for clarity, cites 법제처 with proof, and never silently rewrites your contracts."
+
+#: lib/contract_web/controllers/page_html/home.html.heex:129
+#, elixir-autogen, elixir-format
+msgid "Convert NDA → Franchise without losing your work. The contract type is a key; conversions migrate fields with full lineage, so you can always trace where a clause came from."
+msgstr "Convert NDA → Franchise without losing your work. The contract type is a key; conversions migrate fields with full lineage, so you can always trace where a clause came from."
+
+# --- Final CTA ---
+#: lib/contract_web/controllers/page_html/home.html.heex:252
+#, elixir-autogen, elixir-format
+msgid "Draft with proof, not vibes."
+msgstr "Draft with proof, not vibes."
+
+#: lib/contract_web/controllers/page_html/home.html.heex:13
+#, elixir-autogen, elixir-format
+msgid "Drafting that asks before it edits."
+msgstr "Drafting that asks before it edits."
+
+#: lib/contract_web/controllers/page_html/home.html.heex:204
+#, elixir-autogen, elixir-format
+msgid "Email support"
+msgstr "Email support"
+
+#: lib/contract_web/controllers/page_html/home.html.heex:264
+#, elixir-autogen, elixir-format
+msgid "Email the team"
+msgstr "Email the team"
+
+#: lib/contract_web/controllers/page_html/home.html.heex:231
+#, elixir-autogen, elixir-format
+msgid "Enterprise"
+msgstr "Enterprise"
+
+#: lib/contract_web/controllers/page_html/home.html.heex:163
+#, elixir-autogen, elixir-format
+msgid "Every change is a row. Who proposed it, which question it answers, what it touched, and how to undo it. The audit log is the source of truth — not a derived afterthought."
+msgstr "Every change is a row. Who proposed it, which question it answers, what it touched, and how to undo it. The audit log is the source of truth — not a derived afterthought."
+
+#: lib/contract_web/controllers/page_html/home.html.heex:115
+#, elixir-autogen, elixir-format
+msgid "Every 조문 cited is cross-checked against the 법제처 open API through 17 dedicated tools. Hallucinated citations don't make it to the page — they're flagged and the draft is held."
+msgstr "Every 조문 cited is cross-checked against the 법제처 open API through 17 dedicated tools. Hallucinated citations don't make it to the page — they're flagged and the draft is held."
+
+#: lib/contract_web/controllers/page_html/home.html.heex:223
+#, elixir-autogen, elixir-format
+msgid "Everything in Solo"
+msgstr "Everything in Solo"
+
+#: lib/contract_web/controllers/page_html/home.html.heex:213
+#, elixir-autogen, elixir-format
+msgid "Firm"
+msgstr "Firm"
+
+#: lib/contract_web/controllers/page_html/home.html.heex:199
+#, elixir-autogen, elixir-format
+msgid "For one lawyer. Single matter workspace, unlimited documents."
+msgstr "For one lawyer. Single matter workspace, unlimited documents."
+
+#: lib/contract_web/controllers/page_html/home.html.heex:220
+#, elixir-autogen, elixir-format
+msgid "For small firms. Shared matters, role-based access, audit export."
+msgstr "For small firms. Shared matters, role-based access, audit export."
+
+# --- Hero ---
+#: lib/contract_web/controllers/page_html/home.html.heex:10
+#, elixir-autogen, elixir-format
+msgid "For solo Korean lawyers, in-house counsel, and small firms"
+msgstr "For solo Korean lawyers, in-house counsel, and small firms"
+
+#: lib/contract_web/controllers/page_html/home.html.heex:22
+#, elixir-autogen, elixir-format
+msgid "Get started"
+msgstr "Get started"
+
+#: lib/contract_web/controllers/page_html/home.html.heex:97
+#: lib/contract_web/controllers/page_html/home.html.heex:202
+#, elixir-autogen, elixir-format
+msgid "Grill-me agent"
+msgstr "Grill-me agent"
+
+# --- Secondary features ---
+#: lib/contract_web/controllers/page_html/home.html.heex:146
+#, elixir-autogen, elixir-format
+msgid "Hard-IR parsing, not LLM guessing"
+msgstr "Hard-IR parsing, not LLM guessing"
+
+#: lib/contract_web/controllers/page_html/home.html.heex:25
+#, elixir-autogen, elixir-format
+msgid "Log in"
+msgstr "Log in"
+
+#: lib/contract_web/controllers/page_html/home.html.heex:180
+#, elixir-autogen, elixir-format
+msgid "Per-seat. No usage games."
+msgstr "Per-seat. No usage games."
+
+#: lib/contract_web/controllers/page_html/home.html.heex:73
+#, elixir-autogen, elixir-format
+msgid "Preview — agent prompt before a clause edit"
+msgstr "Preview — agent prompt before a clause edit"
+
+#: lib/contract_web/controllers/page_html/home.html.heex:183
+#, elixir-autogen, elixir-format
+msgid "Prices below are placeholders while we finalise the beta. Real numbers ship with the public release."
+msgstr "Prices below are placeholders while we finalise the beta. Real numbers ship with the public release."
+
+# --- Pricing ---
+#: lib/contract_web/controllers/page_html/home.html.heex:177
+#, elixir-autogen, elixir-format
+msgid "Pricing"
+msgstr "Pricing"
+
+#: lib/contract_web/controllers/page_html/home.html.heex:159
+#, elixir-autogen, elixir-format
+msgid "Provenance, baked in"
+msgstr "Provenance, baked in"
+
+#: lib/contract_web/controllers/page_html/home.html.heex:210
+#, elixir-autogen, elixir-format
+msgid "Recommended"
+msgstr "Recommended"
+
+#: lib/contract_web/controllers/page_html/home.html.heex:261
+#, elixir-autogen, elixir-format
+msgid "Request access"
+msgstr "Request access"
+
+#: lib/contract_web/controllers/page_html/home.html.heex:255
+#, elixir-autogen, elixir-format
+msgid "Request an invitation. We'll set up your workspace, walk you through the agent, and listen carefully to what's missing."
+msgstr "Request an invitation. We'll set up your workspace, walk you through the agent, and listen carefully to what's missing."
+
+#: lib/contract_web/controllers/page_html/home.html.heex:237
+#, elixir-autogen, elixir-format
+msgid "SSO, dedicated R2 bucket, on-prem 법제처 mirror, custom contract types."
+msgstr "SSO, dedicated R2 bucket, on-prem 법제처 mirror, custom contract types."
+
+#: lib/contract_web/controllers/page_html/home.html.heex:28
+#, elixir-autogen, elixir-format
+msgid "See how it works"
+msgstr "See how it works"
+
+#: lib/contract_web/controllers/page_html/home.html.heex:224
+#, elixir-autogen, elixir-format
+msgid "Shared matter workspaces"
+msgstr "Shared matter workspaces"
+
+#: lib/contract_web/controllers/page_html/home.html.heex:225
+#, elixir-autogen, elixir-format
+msgid "Slack / MCP ingress"
+msgstr "Slack / MCP ingress"
+
+#: lib/contract_web/controllers/page_html/home.html.heex:192
+#, elixir-autogen, elixir-format
+msgid "Solo"
+msgstr "Solo"
+
+#: lib/contract_web/controllers/page_html/home.html.heex:234
+#, elixir-autogen, elixir-format
+msgid "Talk to us"
+msgstr "Talk to us"
+
+#: lib/contract_web/controllers/page_html/home.html.heex:88
+#, elixir-autogen, elixir-format
+msgid "Three commitments the rest of the market won't make."
+msgstr "Three commitments the rest of the market won't make."
+
+#: lib/contract_web/controllers/page_html/home.html.heex:125
+#, elixir-autogen, elixir-format
+msgid "Type conversions, not text diffs"
+msgstr "Type conversions, not text diffs"
+
+#: lib/contract_web/controllers/page_html/home.html.heex:150
+#, elixir-autogen, elixir-format
+msgid "Uploads route through Upstage Document Parse. Clause boundaries, headings, and tables come back with bounding boxes — structure the LLM doesn't have to invent. Hallucinated layout is not an option."
+msgstr "Uploads route through Upstage Document Parse. Clause boundaries, headings, and tables come back with bounding boxes — structure the LLM doesn't have to invent. Hallucinated layout is not an option."
+
+# --- Feature triptych ---
+#: lib/contract_web/controllers/page_html/home.html.heex:85
+#, elixir-autogen, elixir-format
+msgid "What's different"
+msgstr "What's different"
+
+#: lib/contract_web/controllers/page_html/home.html.heex:101
+#, elixir-autogen, elixir-format
+msgid "When the agent sees ambiguity, it stops and asks. No silent rewrites, no \"I assumed you meant…\". You answer; then it edits, with a question-and-answer trail attached to every change."
+msgstr "When the agent sees ambiguity, it stops and asks. No silent rewrites, no \"I assumed you meant…\". You answer; then it edits, with a question-and-answer trail attached to every change."
+
+#: lib/contract_web/controllers/page_html/home.html.heex:111
+#, elixir-autogen, elixir-format
+msgid "법제처 citation verification"
+msgstr "법제처 citation verification"
+
+#: lib/contract_web/controllers/page_html/home.html.heex:203
+#, elixir-autogen, elixir-format
+msgid "법제처 verification"
+msgstr ""

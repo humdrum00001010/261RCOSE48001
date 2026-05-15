@@ -54,6 +54,12 @@ defmodule ContractWeb.Endpoint do
   plug Plug.RequestId
   plug Plug.Telemetry, event_prefix: [:phoenix, :endpoint]
 
+  # For /mcp the inbound MCP plug needs the raw JSON-RPC body (so it can
+  # respond with a JSON-RPC -32700 parse error instead of a generic 400).
+  # We stash the raw body in assigns and zero out body_params so
+  # Plug.Parsers below is a no-op for /mcp.
+  plug ContractWeb.MCP.RawBodyReader
+
   plug Plug.Parsers,
     parsers: [:urlencoded, :multipart, :json],
     pass: ["*/*"],

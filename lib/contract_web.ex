@@ -86,10 +86,11 @@ defmodule ContractWeb do
       import Phoenix.HTML
       # Core UI components
       import ContractWeb.CoreComponents
+      import ContractWeb.AuthComponents
 
       # Common modules used in templates
       alias Phoenix.LiveView.JS
-      alias ContractWeb.Layouts
+      alias ContractWeb.{Brand, Layouts}
 
       # Routes generation with the ~p sigil
       unquote(verified_routes())

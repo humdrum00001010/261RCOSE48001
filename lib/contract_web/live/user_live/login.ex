@@ -6,91 +6,122 @@ defmodule ContractWeb.UserLive.Login do
   @impl true
   def render(assigns) do
     ~H"""
-    <Layouts.app flash={@flash} current_scope={@current_scope}>
-      <div class="mx-auto max-w-sm space-y-4">
-        <div class="text-center">
-          <.header>
-            <p>Log in</p>
-            <:subtitle>
+    <Layouts.app flash={@flash} current_scope={@current_scope} variant="split">
+      <.auth_split>
+        <:aside>
+          <h2 class="text-2xl font-semibold tracking-tight leading-snug">
+            Drafting that asks before it edits.
+          </h2>
+          <p class="text-base-content/70 mt-3 leading-relaxed">
+            Pick up where you left off. The agent's pending questions, your matter timeline, and every uncommitted edit are right where you parked them.
+          </p>
+          <ul class="text-sm text-base-content/60 space-y-2 mt-6">
+            <li class="flex gap-2"><.icon name="hero-check" class="size-4 text-primary shrink-0 mt-0.5" /> 법제처 citations verified before they hit the page.</li>
+            <li class="flex gap-2"><.icon name="hero-check" class="size-4 text-primary shrink-0 mt-0.5" /> No silent rewrites. Every change is a row.</li>
+          </ul>
+        </:aside>
+
+        <:form>
+          <div class="space-y-1">
+            <h1 class="text-2xl font-semibold tracking-tight">
+              <%= if @current_scope do %>
+                Re-authenticate
+              <% else %>
+                Log in
+              <% end %>
+            </h1>
+            <p class="text-sm text-base-content/60">
               <%= if @current_scope do %>
                 You need to reauthenticate to perform sensitive actions on your account.
               <% else %>
-                Don't have an account? <.link
-                  navigate={~p"/users/register"}
-                  class="font-semibold text-brand hover:underline"
-                  phx-no-format
-                >Sign up</.link> for an account now.
+                New here?
+                <.link navigate={~p"/users/register"} class="font-medium text-primary hover:underline" phx-no-format>Sign up</.link>
+                — Contract Studio is invite-only for the closed beta.
               <% end %>
-            </:subtitle>
-          </.header>
-        </div>
-
-        <div :if={local_mail_adapter?()} class="alert alert-info">
-          <.icon name="hero-information-circle" class="size-6 shrink-0" />
-          <div>
-            <p>You are running the local mail adapter.</p>
-            <p>
-              To see sent emails, visit <.link href="/dev/mailbox" class="underline">the mailbox page</.link>.
             </p>
           </div>
-        </div>
 
-        <.form
-          :let={f}
-          for={@form}
-          id="login_form_magic"
-          action={~p"/users/log-in"}
-          phx-submit="submit_magic"
-        >
-          <.input
-            readonly={!!@current_scope}
-            field={f[:email]}
-            type="email"
-            label="Email"
-            autocomplete="username"
-            spellcheck="false"
-            required
-            phx-mounted={JS.focus()}
-          />
-          <.button class="btn btn-primary w-full">
-            Log in with email <span aria-hidden="true">→</span>
-          </.button>
-        </.form>
+          <div :if={local_mail_adapter?()} class="alert alert-info mt-4">
+            <.icon name="hero-information-circle" class="size-5 shrink-0" />
+            <div>
+              <p class="font-medium">Local mail adapter is active.</p>
+              <p class="text-sm">
+                Magic links land in <.link href="/dev/mailbox" class="underline">the dev mailbox</.link>, not real email.
+              </p>
+            </div>
+          </div>
 
-        <div class="divider">or</div>
+          <div class="mt-6 space-y-6">
+            <.form
+              :let={f}
+              for={@form}
+              id="login_form_magic"
+              action={~p"/users/log-in"}
+              phx-submit="submit_magic"
+              class="space-y-3"
+            >
+              <.input
+                readonly={!!@current_scope}
+                field={f[:email]}
+                type="email"
+                label="Email"
+                autocomplete="username"
+                spellcheck="false"
+                required
+                phx-mounted={JS.focus()}
+              />
+              <.button class="btn btn-primary w-full">
+                Log in with email <span aria-hidden="true">→</span>
+              </.button>
+              <p class="text-xs text-base-content/50">
+                We'll send a one-time link. No password required.
+              </p>
+            </.form>
 
-        <.form
-          :let={f}
-          for={@form}
-          id="login_form_password"
-          action={~p"/users/log-in"}
-          phx-submit="submit_password"
-          phx-trigger-action={@trigger_submit}
-        >
-          <.input
-            readonly={!!@current_scope}
-            field={f[:email]}
-            type="email"
-            label="Email"
-            autocomplete="username"
-            spellcheck="false"
-            required
-          />
-          <.input
-            field={@form[:password]}
-            type="password"
-            label="Password"
-            autocomplete="current-password"
-            spellcheck="false"
-          />
-          <.button class="btn btn-primary w-full" name={@form[:remember_me].name} value="true">
-            Log in and stay logged in <span aria-hidden="true">→</span>
-          </.button>
-          <.button class="btn btn-primary btn-soft w-full mt-2">
-            Log in only this time
-          </.button>
-        </.form>
-      </div>
+            <div class="divider text-xs text-base-content/40">or use a password</div>
+
+            <.form
+              :let={f}
+              for={@form}
+              id="login_form_password"
+              action={~p"/users/log-in"}
+              phx-submit="submit_password"
+              phx-trigger-action={@trigger_submit}
+              class="space-y-3"
+            >
+              <.input
+                readonly={!!@current_scope}
+                field={f[:email]}
+                type="email"
+                label="Email"
+                autocomplete="username"
+                spellcheck="false"
+                required
+              />
+              <.input
+                field={@form[:password]}
+                type="password"
+                label="Password"
+                autocomplete="current-password"
+                spellcheck="false"
+              />
+              <.button class="btn btn-primary w-full" name={@form[:remember_me].name} value="true">
+                Log in and stay logged in <span aria-hidden="true">→</span>
+              </.button>
+              <.button class="btn btn-ghost w-full">
+                Log in only this time
+              </.button>
+            </.form>
+          </div>
+
+          <p class="text-xs text-base-content/50 mt-8 text-center">
+            Trouble signing in?
+            <a href="mailto:support@contractstudio.example" class="underline hover:text-base-content">
+              Email support
+            </a>
+          </p>
+        </:form>
+      </.auth_split>
     </Layouts.app>
     """
   end

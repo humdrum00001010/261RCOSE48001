@@ -17,6 +17,12 @@ defmodule ContractWeb.Router do
     plug :accepts, ["json"]
   end
 
+  # External MCP / Slack ingress pipeline. No CSRF, no session — MCP and
+  # Slack are API-only. SPEC.md §4 / §21.
+  pipeline :mcp do
+    plug :accepts, ["json", "event-stream"]
+  end
+
   # Playwright-only auth shim. Routes 404 at compile time in :prod because
   # `Application.compile_env(:contract, :test_auth, false)` is false there
   # (the controller module won't exist). Uses a bespoke pipeline that
@@ -47,21 +53,26 @@ defmodule ContractWeb.Router do
   scope "/", ContractWeb do
     pipe_through [:browser, :require_authenticated_user]
 
-    live_session :studio,
+    live_session :authenticated,
       on_mount: [{ContractWeb.UserAuth, :require_authenticated}] do
+      live "/dashboard", DashboardLive
       live "/studio", StudioLive
       live "/matters/:matter_id/studio", StudioLive
       live "/matters/:matter_id/documents/:document_id", StudioLive
     end
   end
 
-  # External ingress — Gateway track (separate worktree) will implement these
-  # properly. Until then they return 501 Not Implemented.
-  scope "/mcp" do
-    pipe_through :api
-    forward "/", ContractWeb.NotImplementedPlug, label: "/mcp"
+  # Inbound MCP server (SPEC.md §4, §21). Streamable HTTP transport: accepts
+  # JSON-RPC 2.0 bodies, returns either application/json or
+  # text/event-stream based on the request Accept header. Auth is bearer
+  # only (route_ref tokens or user api tokens) — no session, no CSRF.
+  scope "/mcp", ContractWeb.MCP do
+    pipe_through :mcp
+    forward "/", MCPPlug
   end
 
+  # Slack ingress remains a 501 stub for this build (Slack track is out of
+  # scope for Wave 3C2 per user directive 2026-05-15).
   scope "/slack" do
     pipe_through :api
     post "/events", ContractWeb.NotImplementedPlug, label: "/slack/events"

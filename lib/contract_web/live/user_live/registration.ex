@@ -7,37 +7,67 @@ defmodule ContractWeb.UserLive.Registration do
   @impl true
   def render(assigns) do
     ~H"""
-    <Layouts.app flash={@flash} current_scope={@current_scope}>
-      <div class="mx-auto max-w-sm">
-        <div class="text-center">
-          <.header>
-            Register for an account
-            <:subtitle>
-              Already registered?
-              <.link navigate={~p"/users/log-in"} class="font-semibold text-brand hover:underline">
+    <Layouts.app flash={@flash} current_scope={@current_scope} variant="split">
+      <.auth_split>
+        <:aside>
+          <h2 class="text-2xl font-semibold tracking-tight leading-snug">
+            Closed beta for Korean lawyers.
+          </h2>
+          <p class="text-base-content/70 mt-3 leading-relaxed">
+            Registration is by invitation. We're working closely with a small group of solo lawyers and in-house counsel to shape the agent's questions, the type system, and the citation tooling.
+          </p>
+          <ul class="text-sm text-base-content/60 space-y-2 mt-6">
+            <li class="flex gap-2"><.icon name="hero-check" class="size-4 text-primary shrink-0 mt-0.5" /> Bilingual workspace, English-first.</li>
+            <li class="flex gap-2"><.icon name="hero-check" class="size-4 text-primary shrink-0 mt-0.5" /> 법제처 cross-checking on every Korean-law citation.</li>
+            <li class="flex gap-2"><.icon name="hero-check" class="size-4 text-primary shrink-0 mt-0.5" /> Your data stays in a dedicated R2 bucket. No training on it.</li>
+          </ul>
+        </:aside>
+
+        <:form>
+          <div class="space-y-1">
+            <h1 class="text-2xl font-semibold tracking-tight">
+              Register for an account
+            </h1>
+            <p class="text-sm text-base-content/60">
+              Already on the list?
+              <.link navigate={~p"/users/log-in"} class="font-medium text-primary hover:underline">
                 Log in
               </.link>
-              to your account now.
-            </:subtitle>
-          </.header>
-        </div>
+            </p>
+          </div>
 
-        <.form for={@form} id="registration_form" phx-submit="save" phx-change="validate">
-          <.input
-            field={@form[:email]}
-            type="email"
-            label="Email"
-            autocomplete="username"
-            spellcheck="false"
-            required
-            phx-mounted={JS.focus()}
-          />
+          <.form
+            for={@form}
+            id="registration_form"
+            phx-submit="save"
+            phx-change="validate"
+            class="mt-6 space-y-3"
+          >
+            <.input
+              field={@form[:email]}
+              type="email"
+              label="Work email"
+              autocomplete="username"
+              spellcheck="false"
+              required
+              phx-mounted={JS.focus()}
+            />
+            <.button phx-disable-with="Creating account..." class="btn btn-primary w-full">
+              Create my account
+            </.button>
+            <p class="text-xs text-base-content/50 pt-1">
+              We'll email a confirmation link. No password yet — you can add one later in Settings.
+            </p>
+          </.form>
 
-          <.button phx-disable-with="Creating account..." class="btn btn-primary w-full">
-            Create an account
-          </.button>
-        </.form>
-      </div>
+          <p class="text-xs text-base-content/50 mt-8 text-center">
+            Need help getting in?
+            <a href="mailto:hello@contractstudio.example" class="underline hover:text-base-content">
+              Email the team
+            </a>
+          </p>
+        </:form>
+      </.auth_split>
     </Layouts.app>
     """
   end

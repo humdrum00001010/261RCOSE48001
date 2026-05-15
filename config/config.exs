@@ -140,6 +140,13 @@ config :logger, :default_formatter,
 # Use Jason for JSON parsing in Phoenix
 config :phoenix, :json_library, Jason
 
+# Register the SSE MIME type so the `/mcp` pipeline's `:accepts ["json",
+# "event-stream"]` filter can negotiate `text/event-stream` requests. See
+# SPEC.md §21.
+config :mime, :types, %{
+  "text/event-stream" => ["event-stream"]
+}
+
 # Import environment specific config. This must remain at the bottom
 # of this file so it overrides the configuration defined above.
 import_config "#{config_env()}.exs"

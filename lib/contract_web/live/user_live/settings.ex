@@ -8,63 +8,94 @@ defmodule ContractWeb.UserLive.Settings do
   @impl true
   def render(assigns) do
     ~H"""
-    <Layouts.app flash={@flash} current_scope={@current_scope}>
-      <div class="text-center">
-        <.header>
-          Account Settings
-          <:subtitle>Manage your account email address and password settings</:subtitle>
-        </.header>
+    <Layouts.app flash={@flash} current_scope={@current_scope} variant="narrow">
+      <div class="space-y-1 mb-8">
+        <p class="text-xs font-medium tracking-wide uppercase text-base-content/50">
+          Account
+        </p>
+        <h1 class="text-2xl font-semibold tracking-tight">Settings</h1>
+        <p class="text-sm text-base-content/60">
+          Manage your email address and password. Sensitive changes require a fresh login.
+        </p>
       </div>
 
-      <.form for={@email_form} id="email_form" phx-submit="update_email" phx-change="validate_email">
-        <.input
-          field={@email_form[:email]}
-          type="email"
-          label="Email"
-          autocomplete="username"
-          spellcheck="false"
-          required
-        />
-        <.button variant="primary" phx-disable-with="Changing...">Change Email</.button>
-      </.form>
+      <section class="rounded-box border border-base-200 bg-base-100 p-6 space-y-4">
+        <div>
+          <h2 class="font-semibold tracking-tight">Email address</h2>
+          <p class="text-sm text-base-content/60">
+            Used for login, magic links, and audit-log attribution.
+          </p>
+        </div>
+        <.form
+          for={@email_form}
+          id="email_form"
+          phx-submit="update_email"
+          phx-change="validate_email"
+          class="space-y-3"
+        >
+          <.input
+            field={@email_form[:email]}
+            type="email"
+            label="Email"
+            autocomplete="username"
+            spellcheck="false"
+            required
+          />
+          <.button variant="primary" phx-disable-with="Changing...">Change Email</.button>
+        </.form>
+      </section>
 
-      <div class="divider" />
+      <section class="rounded-box border border-base-200 bg-base-100 p-6 space-y-4 mt-6">
+        <div>
+          <h2 class="font-semibold tracking-tight">Password</h2>
+          <p class="text-sm text-base-content/60">
+            Optional — you can keep using magic links. If you set a password, both methods work.
+          </p>
+        </div>
+        <.form
+          for={@password_form}
+          id="password_form"
+          action={~p"/users/update-password"}
+          method="post"
+          phx-change="validate_password"
+          phx-submit="update_password"
+          phx-trigger-action={@trigger_submit}
+          class="space-y-3"
+        >
+          <input
+            name={@password_form[:email].name}
+            type="hidden"
+            id="hidden_user_email"
+            spellcheck="false"
+            value={@current_email}
+          />
+          <.input
+            field={@password_form[:password]}
+            type="password"
+            label="New password"
+            autocomplete="new-password"
+            spellcheck="false"
+            required
+          />
+          <.input
+            field={@password_form[:password_confirmation]}
+            type="password"
+            label="Confirm new password"
+            autocomplete="new-password"
+            spellcheck="false"
+          />
+          <.button variant="primary" phx-disable-with="Saving...">
+            Save Password
+          </.button>
+        </.form>
+      </section>
 
-      <.form
-        for={@password_form}
-        id="password_form"
-        action={~p"/users/update-password"}
-        method="post"
-        phx-change="validate_password"
-        phx-submit="update_password"
-        phx-trigger-action={@trigger_submit}
-      >
-        <input
-          name={@password_form[:email].name}
-          type="hidden"
-          id="hidden_user_email"
-          spellcheck="false"
-          value={@current_email}
-        />
-        <.input
-          field={@password_form[:password]}
-          type="password"
-          label="New password"
-          autocomplete="new-password"
-          spellcheck="false"
-          required
-        />
-        <.input
-          field={@password_form[:password_confirmation]}
-          type="password"
-          label="Confirm new password"
-          autocomplete="new-password"
-          spellcheck="false"
-        />
-        <.button variant="primary" phx-disable-with="Saving...">
-          Save Password
-        </.button>
-      </.form>
+      <p class="text-xs text-base-content/50 mt-8 text-center">
+        Need help?
+        <a href="mailto:support@contractstudio.example" class="underline hover:text-base-content">
+          Email support
+        </a>
+      </p>
     </Layouts.app>
     """
   end
