@@ -55,7 +55,11 @@ defmodule ContractWeb.Router do
     pipe_through [:browser, :require_authenticated_user]
 
     live_session :authenticated,
-      on_mount: [{ContractWeb.UserAuth, :require_authenticated}, ContractWeb.Locale] do
+      on_mount: [
+        {ContractWeb.UserAuth, :require_authenticated},
+        ContractWeb.Locale,
+        {ContractWeb.MatterScope, :assign_scope}
+      ] do
       live "/dashboard", DashboardLive
       live "/studio", StudioLive
       live "/matters/:matter_id/studio", StudioLive

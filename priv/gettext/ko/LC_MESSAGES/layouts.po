@@ -166,8 +166,6 @@ msgstr "문제가 발생했습니다."
 msgid "Status"
 msgstr "상태"
 
-#. TODO native-speaker review — "Studio" is the in-product editor's
-#. wordmark-adjacent label; left English-romanised in Hangul ("스튜디오").
 #: lib/contract_web/components/layouts.ex:140
 #: lib/contract_web/components/layouts.ex:229
 #, elixir-autogen, elixir-format
@@ -194,8 +192,6 @@ msgstr "인터넷 연결을 찾을 수 없습니다"
 msgid "© %{year} Contract Studio. All rights reserved."
 msgstr "© %{year} Contract Studio. 모든 권리 보유."
 
-#. Korean copy is already the msgid; msgstr mirrors it so the merge
-#. step doesn't drop the line on subsequent extractions.
 #: lib/contract_web/components/layouts.ex:349
 #, elixir-autogen, elixir-format
 msgid "한국어 UI · English fallback"

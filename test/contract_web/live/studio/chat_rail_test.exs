@@ -1,0 +1,345 @@
+defmodule ContractWeb.Live.Studio.Components.ChatRailTest do
+  @moduledoc """
+  Component-level tests for the Studio chat rail (Wave 3C1 / chat-rail).
+
+  Two test surfaces:
+
+    * `render_component/2` — pure static rendering of the component (header
+      pill, observer banner, mobile layout, send-button regression).
+    * `live_isolated/3` with a wrapping LV — drives `:agent_stream` /
+      `:agent_completed` through a stream so we can assert streaming + final
+      bubbles + GrillRail mount.
+  """
+
+  use ContractWeb.ConnCase, async: true
+
+  import Phoenix.LiveViewTest
+
+  alias Contract.Context
+  alias Contract.Studio.State
+  alias ContractWeb.Live.Studio.Components.ChatRail
+
+  # ---------------------------------------------------------------------------
+  # Wrapper LV — owns a stream and embeds ChatRail. Used for tests that need
+  # to insert into `@streams.chat_messages`.
+  # ---------------------------------------------------------------------------
+
+  defmodule WrapperLive do
+    use ContractWeb, :live_view
+
+    # We're nested inside an ExUnit test module that uses ContractWeb.ConnCase,
+    # which imports Plug.Conn — that import leaks here and clashes with
+    # Phoenix.Component.assign/3. Disambiguate by aliasing.
+    alias Phoenix.Component, as: PC
+    alias Phoenix.LiveView, as: PLV
+    alias ContractWeb.Live.Studio.Components.ChatRail
+
+    @impl true
+    def mount(_params, session, socket) do
+      scope =
+        session["scope"] ||
+          %Context{user: nil, perms: ~w(read write commit revoke agent_run export type_change)a}
+
+      state =
+        session["studio_state"] ||
+          %State{
+            mode: :briefing,
+            last_seen_revision: 0,
+            agent_run_id: nil
+          }
+
+      socket =
+        socket
+        |> PC.assign(:scope, scope)
+        |> PC.assign(:studio_state, state)
+        |> PC.assign(:chat_layout, session["layout"] || :default)
+        |> PC.assign(:grill_active?, session["grill_active?"] || nil)
+        |> PC.assign(:test_pid, session["test_pid"])
+        |> PLV.stream_configure(:chat_messages, dom_id: &"chat-msg-#{&1.id}")
+        |> PLV.stream(:chat_messages, [])
+
+      {:ok, socket}
+    end
+
+    @impl true
+    def handle_info({:insert, msg}, socket) do
+      {:noreply, PLV.stream_insert(socket, :chat_messages, msg)}
+    end
+
+    def handle_info({:set_state, state}, socket) do
+      {:noreply, PC.assign(socket, :studio_state, state)}
+    end
+
+    def handle_info({:set_grill, value}, socket) do
+      {:noreply, PC.assign(socket, :grill_active?, value)}
+    end
+
+    @impl true
+    def handle_event("send_chat_message", params, socket) do
+      if pid = socket.assigns[:test_pid], do: send(pid, {:captured, "send_chat_message", params})
+      {:noreply, socket}
+    end
+
+    def handle_event(_event, _params, socket), do: {:noreply, socket}
+
+    @impl true
+    def render(assigns) do
+      ~H"""
+      <div id="wrapper">
+        <.live_component
+          module={ChatRail}
+          id="chat-rail"
+          studio_state={@studio_state}
+          streams={%{chat_messages: @streams.chat_messages}}
+          current_scope={@scope}
+          layout={@chat_layout}
+          grill_active?={@grill_active?}
+        />
+      </div>
+      """
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # Scope fixtures (mirror Contract.PersonaFactory).
+  # ---------------------------------------------------------------------------
+
+  defp lawyer_scope,
+    do: %Context{
+      user: nil,
+      perms: ~w(read write commit revoke export type_change agent_run)a
+    }
+
+  defp agent_supervised_scope,
+    do: %Context{
+      user: nil,
+      perms: ~w(read write commit revoke agent_run)a
+    }
+
+  defp default_state,
+    do: %State{mode: :briefing, last_seen_revision: 0, agent_run_id: nil}
+
+  defp empty_stream do
+    # `render_component/2` accepts any enumerable in place of a stream; LV
+    # iterates the assigned value like `{dom_id, item}` pairs.
+    []
+  end
+
+  # ===========================================================================
+  # render_component/2 cases
+  # ===========================================================================
+
+  describe "static rendering" do
+    test "case 1 — empty chat shows the welcome message" do
+      html =
+        render_component(ChatRail,
+          id: "chat-rail",
+          studio_state: default_state(),
+          streams: %{chat_messages: empty_stream()},
+          current_scope: lawyer_scope()
+        )
+
+      assert html =~ ~s(data-role="chat-welcome")
+      # Korean copy primary.
+      assert html =~ "에이전트"
+      # The stream container is present and empty (no chat-message articles).
+      refute html =~ ~s(data-role="chat-message")
+    end
+
+    test "case 4 — send button is type=button (NOT submit) — mobile regression" do
+      html =
+        render_component(ChatRail,
+          id: "chat-rail",
+          studio_state: default_state(),
+          streams: %{chat_messages: empty_stream()},
+          current_scope: lawyer_scope()
+        )
+
+      # The send button must NEVER be type=submit. The form's phx-submit is
+      # intercepted by the .ChatInput hook so the mobile keyboard never
+      # collapses on send.
+      assert html =~ ~s(data-role="chat-send")
+
+      # Extract the send button element. It must carry type="button".
+      assert Regex.match?(
+               ~r/<button[^>]*data-role="chat-send"[^>]*type="button"|<button[^>]*type="button"[^>]*data-role="chat-send"/s,
+               html
+             ),
+             "expected the send button to be type=\"button\"; got: " <>
+               (Regex.run(~r/<button[^>]*data-role="chat-send"[^>]*>/, html) |> inspect())
+
+      # And critically: nowhere in the form does a submit-type button appear.
+      refute html =~ ~s(type="submit")
+    end
+
+    test "case 6 — mobile layout pins the input footer to the safe-area bottom" do
+      html =
+        render_component(ChatRail,
+          id: "chat-rail",
+          studio_state: default_state(),
+          streams: %{chat_messages: empty_stream()},
+          current_scope: lawyer_scope(),
+          layout: :mobile_full
+        )
+
+      assert html =~ ~s(data-layout="mobile")
+      # Full-viewport height marker.
+      assert html =~ "h-[100dvh]"
+      # Safe-area inset on the footer.
+      assert html =~ "env(safe-area-inset-bottom)"
+      # No desktop fixed-width rail.
+      refute html =~ "w-[360px]"
+    end
+
+    test "agent_supervised persona sees the observer-mode banner" do
+      html =
+        render_component(ChatRail,
+          id: "chat-rail",
+          studio_state: default_state(),
+          streams: %{chat_messages: empty_stream()},
+          current_scope: agent_supervised_scope()
+        )
+
+      assert html =~ ~s(data-role="observer-banner")
+      assert html =~ "관찰 모드"
+    end
+
+    test "lawyer persona does NOT see the observer banner" do
+      html =
+        render_component(ChatRail,
+          id: "chat-rail",
+          studio_state: default_state(),
+          streams: %{chat_messages: empty_stream()},
+          current_scope: lawyer_scope()
+        )
+
+      refute html =~ ~s(data-role="observer-banner")
+    end
+
+    test "agent status pill reflects studio_state.agent_run_id" do
+      idle_html =
+        render_component(ChatRail,
+          id: "chat-rail",
+          studio_state: %State{default_state() | agent_run_id: nil},
+          streams: %{chat_messages: empty_stream()},
+          current_scope: lawyer_scope()
+        )
+
+      assert idle_html =~ ~s(data-status="idle")
+
+      run_id = Ecto.UUID.generate()
+
+      busy_html =
+        render_component(ChatRail,
+          id: "chat-rail",
+          studio_state: %State{default_state() | agent_run_id: run_id},
+          streams: %{chat_messages: empty_stream()},
+          current_scope: lawyer_scope()
+        )
+
+      assert busy_html =~ ~s(data-status="responding")
+    end
+  end
+
+  # ===========================================================================
+  # live_isolated/3 cases — stream + GrillRail
+  # ===========================================================================
+
+  describe "streamed flow (via wrapper LV)" do
+    test "case 2 — agent stream event accumulates as a transient bubble", %{conn: conn} do
+      {:ok, lv, html} =
+        live_isolated(conn, WrapperLive,
+          session: %{
+            "scope" => lawyer_scope(),
+            "studio_state" => %State{default_state() | agent_run_id: Ecto.UUID.generate()}
+          }
+        )
+
+      refute html =~ ~s(data-role="chat-message")
+
+      run_id = "run-1"
+
+      bubble = %{
+        id: "agent-#{run_id}-1",
+        agent_run_id: run_id,
+        role: :agent,
+        event: %{delta: "Hello, "},
+        transient?: true
+      }
+
+      send(lv.pid, {:insert, bubble})
+      html = render(lv)
+
+      assert html =~ ~s(data-role="chat-message")
+      assert html =~ ~s(data-transient="true")
+      assert html =~ "Hello, "
+
+      bubble2 = %{
+        id: "agent-#{run_id}-2",
+        agent_run_id: run_id,
+        role: :agent,
+        event: %{delta: "world."},
+        transient?: true
+      }
+
+      send(lv.pid, {:insert, bubble2})
+      html = render(lv)
+
+      # Both transient bubbles are present in the streamed list.
+      assert html =~ "Hello, "
+      assert html =~ "world."
+    end
+
+    test "case 3 — agent_completed bubble is rendered as non-transient",
+         %{conn: conn} do
+      {:ok, lv, _html} =
+        live_isolated(conn, WrapperLive, session: %{"scope" => lawyer_scope()})
+
+      run_id = "run-2"
+
+      final = %{
+        id: "agent-#{run_id}-final",
+        agent_run_id: run_id,
+        role: :agent,
+        result: %{body: "Final answer."},
+        transient?: false
+      }
+
+      send(lv.pid, {:insert, final})
+      html = render(lv)
+
+      assert html =~ "Final answer."
+      assert html =~ ~s(data-transient="false")
+      refute html =~ ~s(data-transient="true")
+    end
+
+    test "case 5 — phx-submit on the form emits send_chat_message with the body",
+         %{conn: conn} do
+      {:ok, lv, _html} =
+        live_isolated(conn, WrapperLive,
+          session: %{"scope" => lawyer_scope(), "test_pid" => self()}
+        )
+
+      lv
+      |> form("#chat-rail-form", %{"message" => "hi agent"})
+      |> render_submit()
+
+      assert_receive {:captured, "send_chat_message", %{"message" => "hi agent"}}
+    end
+
+    test "case 7 — GrillRail mounts when grill_active? is true", %{conn: conn} do
+      {:ok, lv, html} =
+        live_isolated(conn, WrapperLive, session: %{"scope" => lawyer_scope()})
+
+      # Off by default.
+      refute html =~ ~s(id="chat-rail-grill")
+      refute html =~ ~s(data-component="grill-rail")
+
+      send(lv.pid, {:set_grill, true})
+      html = render(lv)
+
+      assert html =~ ~s(id="chat-rail-grill")
+      assert html =~ ~s(data-component="grill-rail")
+    end
+  end
+end

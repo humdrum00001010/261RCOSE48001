@@ -38,7 +38,6 @@ msgstr "안건 하나에는 한 의뢰의 문서, 증거, 에이전트 작업이
 msgid "Active matters"
 msgstr "진행 중인 안건"
 
-#. TODO native-speaker review — alt text for empty-state illustration.
 #: lib/contract_web/live/dashboard_live.ex:238
 #, elixir-autogen, elixir-format
 msgid "An empty folder with a quill, signalling no matters yet."
@@ -59,8 +58,6 @@ msgstr "모달 닫기"
 msgid "Dashboard"
 msgstr "대시보드"
 
-#. TODO native-speaker review — "Wave 3C2" is an internal milestone
-#. tag; keep verbatim or strip in user-facing copy?
 #: lib/contract_web/live/dashboard_live.ex:62
 #, elixir-autogen, elixir-format
 msgid "Document creation for %{type_key} is queued. Persistence ships with Wave 3C2."
@@ -116,9 +113,6 @@ msgstr "아직 등록된 안건이 없습니다"
 msgid "Open Studio"
 msgstr "스튜디오 열기"
 
-#. TODO native-speaker review — "agent runs" is a coined product term.
-#. Alternatives: "에이전트 실행", "AI 처리". Draft preserves the
-#. operational "작업" framing.
 #: lib/contract_web/live/dashboard_live.ex:211
 #, elixir-autogen, elixir-format
 msgid "Open agent runs"
@@ -154,8 +148,6 @@ msgstr "변경 사항이 발생하면 이곳에 활동이 누적됩니다."
 msgid "close"
 msgstr "닫기"
 
-#. TODO native-speaker review — "rev N" is a developer-style revision
-#. tag. Keeping "rev" English; "%{n}판" or "리비전 %{n}" are alternatives.
 #: lib/contract_web/live/dashboard_live.ex:318
 #: lib/contract_web/live/dashboard_live.ex:361
 #, elixir-autogen, elixir-format
