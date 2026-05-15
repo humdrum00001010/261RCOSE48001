@@ -16,6 +16,7 @@ ExUnit.start(
     :live,
     :live_openai,
     :live_law_mcp,
+    :live_upstage,
     :browser,
     :external_hwpx,
     :requires_chromium,

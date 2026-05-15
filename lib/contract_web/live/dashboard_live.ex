@@ -22,6 +22,7 @@ defmodule ContractWeb.DashboardLive do
 
   alias Contract.Change
   alias Contract.ContractTypes
+  alias Contract.Documents.Document
   alias Contract.Repo
 
   @impl true
@@ -66,18 +67,46 @@ defmodule ContractWeb.DashboardLive do
   defp load_data(socket) do
     matters = list_matters(socket.assigns.current_scope)
     recent_documents = list_recent_documents(socket.assigns.current_scope)
+    ftc_templates = list_ftc_templates()
     activity = list_activity(socket.assigns.current_scope)
     open_agent_runs = count_open_agent_runs()
 
     socket
     |> assign(:matters, matters)
     |> assign(:recent_documents, recent_documents)
+    |> assign(:ftc_templates, ftc_templates)
     |> assign(:activity, activity)
     |> assign(:stats, %{
       active_matters: length(matters),
       documents: length(recent_documents),
       open_agent_runs: open_agent_runs
     })
+  end
+
+  # System-owned `:template` documents seeded by `Contract.Workers.FtcSeedJob`
+  # (Wave 5). They live in the special "FTC 표준약관" matter owned by the
+  # synthetic `system@contract.local` user. Surfacing them on the dashboard
+  # gives every persona a one-click entry point to spawn a new document
+  # from a canonical FTC template.
+  defp list_ftc_templates do
+    matter_name = Contract.Workers.FtcSeedJob.templates_matter_name()
+
+    from(d in Document,
+      join: m in Contract.Matters.Matter,
+      on: d.matter_id == m.id,
+      where: m.name == ^matter_name and d.status == :template,
+      order_by: [asc: d.type_key],
+      select: %{
+        document_id: d.id,
+        title: d.title,
+        type_key: d.type_key,
+        metadata: d.metadata
+      }
+    )
+    |> Repo.all()
+  rescue
+    DBConnection.ConnectionError -> []
+    Postgrex.Error -> []
   end
 
   defp list_matters(scope) do
@@ -318,6 +347,43 @@ defmodule ContractWeb.DashboardLive do
               </li>
             </ul>
           <% end %>
+        </section>
+
+        <%!-- ---------------------------------------------------------- --%>
+        <%!-- FTC standard contracts (Wave 5)                             --%>
+        <%!-- ---------------------------------------------------------- --%>
+        <section :if={@ftc_templates != []} id="ftc-templates">
+          <header class="flex items-end justify-between mb-4">
+            <h2 class="text-lg font-semibold tracking-tight">
+              {dgettext("dashboard", "FTC standard contracts")}
+            </h2>
+            <span class="text-xs text-base-content/50">
+              {dgettext("dashboard", "%{count} templates", count: length(@ftc_templates))}
+            </span>
+          </header>
+
+          <ul id="ftc-templates-list" class="rounded-box border border-base-200 md:divide-y md:divide-base-200 bg-base-100 space-y-2 md:space-y-0 p-2 md:p-0">
+            <li
+              :for={tpl <- @ftc_templates}
+              class="rounded-box md:rounded-none border border-base-200 md:border-0 bg-base-100 px-4 py-3 flex flex-col md:flex-row md:items-center gap-2 md:gap-4 hover:bg-base-200/30"
+            >
+              <div class="flex items-center gap-3 min-w-0 md:flex-1">
+                <.icon name="hero-document-duplicate" class="size-4 text-primary/70 shrink-0" />
+                <.link
+                  navigate={~p"/matters/_/documents/#{tpl.document_id}"}
+                  class="text-sm font-medium hover:underline truncate block"
+                >
+                  {tpl.title}
+                </.link>
+              </div>
+              <div class="flex items-center justify-between md:justify-end gap-2 md:gap-4 pl-7 md:pl-0">
+                <span class="badge badge-primary badge-sm font-mono">{tpl.type_key}</span>
+                <span class="text-xs text-base-content/50 md:w-32 md:text-right">
+                  {dgettext("dashboard", "FTC template")}
+                </span>
+              </div>
+            </li>
+          </ul>
         </section>
 
         <%!-- ---------------------------------------------------------- --%>
