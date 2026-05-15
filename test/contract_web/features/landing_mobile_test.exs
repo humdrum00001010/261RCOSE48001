@@ -18,7 +18,7 @@ defmodule ContractWeb.LandingMobileTest do
     |> Wallaby.Browser.resize_window(375, 667)
     |> Wallaby.Browser.visit("/")
     |> assert_has(Query.css("label[for='mobile-nav-drawer']"))
-    |> assert_has(Query.css("input#mobile-nav-drawer"))
+    |> assert_has(Query.css("input#mobile-nav-drawer", visible: false))
   end
 
   feature "hero image renders on mobile viewport", %{session: session} do
