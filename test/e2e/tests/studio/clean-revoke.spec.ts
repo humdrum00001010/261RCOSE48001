@@ -66,25 +66,37 @@ test.describe('Scenario 2: clean revoke', () => {
       }
 
       await page.evaluate((docId) => {
+        // Use `pushHookEvent` (not `pushEvent`) — `view.pushEvent` is a
+        // private LV API whose first argument is a `type` discriminator
+        // and second is a DOM `el`; calling it with `(name, payload)`
+        // routes `payload` into `extractMeta(el, ...)` which then
+        // crashes on `el.attributes.length`. `pushHookEvent(el, ctx,
+        // event, payload)` is the proper outside-the-hook entrypoint.
+        // Engine-shaped payload per SPEC §13 — `:edit_document` reads
+        // `payload.ops` as a list of Operation maps.
         const lv = (window as unknown as {
           liveSocket?: {
-            main?: { childNodes?: unknown };
-            owner?: (el: Element) => { pushEvent: (n: string, p: Record<string, unknown>) => void };
+            owner?: (el: Element) => {
+              pushHookEvent: (
+                el: Element,
+                ctx: unknown,
+                event: string,
+                payload: Record<string, unknown>
+              ) => unknown;
+            };
           };
         }).liveSocket;
         const root = document.querySelector('[data-phx-main]');
         if (!root) throw new Error('Studio LV root not mounted');
-        const view = (lv as unknown as {
-          owner?: (el: Element) => { pushEvent: (n: string, p: Record<string, unknown>) => void };
-        }).owner?.(root);
-        view?.pushEvent('edit_document', {
+        const view = lv?.owner?.(root);
+        view?.pushHookEvent(root, null, 'edit_document', {
           document_id: docId,
           ops: [
             {
-              op: 'replace_field',
-              path: ['fields', 'effective_date'],
-              from: null,
-              to: '2026-01-01'
+              op: 'replace_content',
+              target_type: 'node',
+              target_id: 'node-effective-date',
+              args: { content: '2026-01-01' }
             }
           ]
         });

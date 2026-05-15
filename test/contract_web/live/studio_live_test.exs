@@ -80,12 +80,13 @@ defmodule ContractWeb.StudioLiveTest do
     # Wave 4 bugfix #6 — Playwright Scenario 6 selector contract.
     # The global Cmd+K palette mounts through Layouts.app's
     # `CommandPalette.mount_if_live/1` wrapper. Studio's rendered HTML
-    # must expose `data-role="command-palette"` so Playwright finds it
-    # even before the user presses Cmd+K.
-    test "studio LV exposes data-role=\"command-palette\" on the global palette",
+    # must expose the root data-role so the JS hook can bind. The
+    # modal-box `data-role="command-palette"` (without `-root`) only
+    # appears once the user has pressed Cmd/Ctrl+K.
+    test "studio LV exposes the global command palette root",
          %{conn: conn} do
       {:ok, _lv, html} = live(conn, ~p"/studio")
-      assert html =~ ~s(data-role="command-palette")
+      assert html =~ ~s(data-role="command-palette-root")
     end
 
     test "viewport defaults to :desktop until the JS hook reports otherwise",

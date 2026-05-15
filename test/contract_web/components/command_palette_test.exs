@@ -180,23 +180,32 @@ defmodule ContractWeb.Components.CommandPaletteTest do
     end
 
     # Wave 4 bugfix #6 — Playwright Scenario 6 selector contract.
-    # The palette root must carry `data-role="command-palette"`
-    # unconditionally so `expect(palette).toBeVisible()` resolves at
-    # both closed (trigger-button only) and open (modal) states. The
-    # palette is permanently mounted; visibility of the modal is keyed
-    # off `@open?` separately.
-    test "root container exposes data-role=\"command-palette\" when closed", %{user: user} do
+    # The root container is permanently mounted and exposes a hook +
+    # `data-open` for state tracking; the modal box (with the visible
+    # palette UI) is only rendered when `@open?` flips. Playwright
+    # presses Cmd/Ctrl+K then waits for `[data-role="command-palette"]`
+    # to be visible — so the data-role must land on a sized element,
+    # which only exists in the open state. The root keeps its own
+    # `data-role="command-palette-root"` so closed-state tests can
+    # still locate the mounted hook.
+    test "closed palette renders root with data-role=\"command-palette-root\" + data-open=\"false\"",
+         %{user: user} do
       html =
         render_component(CommandPalette,
           id: "cmd-k-palette",
           current_scope: lawyer_scope(user)
         )
 
-      assert html =~ ~s(data-role="command-palette")
+      assert html =~ ~s(data-role="command-palette-root")
       assert html =~ ~s(data-open="false")
+      # Modal box (with the trailing-quote variant of the data-role)
+      # is NOT in the DOM when closed.
+      refute html =~ ~s(data-role="command-palette" )
+      refute html =~ ~s(data-role="command-palette">)
     end
 
-    test "root container still exposes data-role=\"command-palette\" when open", %{user: user} do
+    test "open palette renders modal box with data-role=\"command-palette\"",
+         %{user: user} do
       html =
         render_component(CommandPalette,
           id: "cmd-k-palette",
@@ -204,8 +213,14 @@ defmodule ContractWeb.Components.CommandPaletteTest do
           initial_open?: true
         )
 
-      assert html =~ ~s(data-role="command-palette")
+      # Both data-roles are present when open:
+      #   - root carries `command-palette-root` + `data-open="true"`
+      #   - modal-box carries `command-palette` (sized → Playwright-visible)
+      assert html =~ ~s(data-role="command-palette-root")
       assert html =~ ~s(data-open="true")
+      # Modal-box selector — close-quote then space or `>`.
+      assert html =~ ~s(data-role="command-palette" ) or
+               html =~ ~s(data-role="command-palette">)
     end
 
     test "with initial_open?, renders the modal and the input", %{user: user} do

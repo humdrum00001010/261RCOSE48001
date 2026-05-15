@@ -262,7 +262,7 @@ defmodule ContractWeb.Components.CommandPalette do
     <div
       id={@id}
       phx-hook=".Palette"
-      data-role="command-palette"
+      data-role="command-palette-root"
       data-open={to_string(@open?)}
     >
       <script :type={Phoenix.LiveView.ColocatedHook} name=".Palette">
@@ -300,6 +300,7 @@ defmodule ContractWeb.Components.CommandPalette do
         role="dialog"
         aria-modal="true"
         aria-label="Command palette"
+        data-role="command-palette"
       >
         <div
           id={"#{@id}-keys-escape"}
