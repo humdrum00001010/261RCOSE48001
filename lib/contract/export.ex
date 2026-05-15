@@ -1,36 +1,59 @@
 defmodule Contract.Export do
   @moduledoc """
-  Minimal export record returned by `Contract.IO.export/4`.
+  Minimal export record returned by `Contract.IO.export/4` and by the
+  asynchronous `Contract.Workers.ExportJob` (Wave 4).
 
-  Wave 4 will replace this with a full Oban job (`Contract.Export.Job`).
-  For now it carries the four fields callers need post-upload: the export
-  id, the R2 key, a presigned download URL, and the format atom.
+  ## Fields
+
+    * `:id` — synthetic UUID for the export.
+    * `:document_id` — source document.
+    * `:format` — `:hwpx | :html | :pdf | :docx | :md`.
+    * `:key` — R2 storage key (e.g. `exports/<uuid>.pdf`).
+    * `:url` — presigned download URL.
+    * `:requester_id` — actor that triggered the export (for PubSub fan-out).
+
+  `:document_id` and `:requester_id` are populated by the async ExportJob
+  path; the synchronous `Contract.IO.R2.export/4` path (carried over from
+  earlier waves) leaves them `nil` because its caller passes them out of
+  band.
   """
 
   @type t :: %__MODULE__{
-          id: Ecto.UUID.t(),
-          key: String.t(),
-          url: String.t(),
-          format: atom()
+          id: Ecto.UUID.t() | nil,
+          document_id: Ecto.UUID.t() | nil,
+          key: String.t() | nil,
+          url: String.t() | nil,
+          format: atom() | nil,
+          requester_id: Ecto.UUID.t() | nil
         }
 
-  defstruct [:id, :key, :url, :format]
+  defstruct [:id, :document_id, :key, :url, :format, :requester_id]
 end
 
 defmodule Contract.Export.Renderer do
   @moduledoc """
-  Stub renderer. Wave 4 owns the real implementation for DOCX/PDF/HTML/MD.
+  Format dispatcher.
 
-  The `:hwpx` branch is live (`Contract.Export.HWPX`) — it dispatches to the
-  hand-rolled OWPML writer when a caller has a `Contract.Runtime.State` to
-  hand off. Callers without a state still get the stub body (the writer
-  needs a projection; the 1-arg `render/1` shape only carries an id).
+  Two entry points:
 
-  Callers may pass `:render_fun` to `Contract.IO.R2.export/4` to override
-  the renderer entirely (e.g. when the caller has a real projection in hand
-  and wants to bypass the stub indirection).
+    * `render/1` — legacy 1-arg shape used by `Contract.IO.R2.export/4`'s
+      default render_fun. Returns the stub body for non-:hwpx formats so
+      the upload path stays exercised by tests that don't hand off a
+      `Runtime.State`.
+
+    * `render/3` — typed entry point: takes a `Contract.Runtime.State`,
+      a format atom, and opts. Dispatches to the matching format module
+      (HWPX / HTML / PDF / DOCX). This is what the async ExportJob path
+      and any caller-with-state-in-hand should use.
   """
 
+  alias Contract.Runtime.State
+
+  @doc """
+  Legacy 1-arg renderer. Returns `{:ok, body, content_type}` for the
+  stub formats. Kept for callers (notably `Contract.IO.R2.export/4`'s
+  default `:render_fun`) that lack a `%Runtime.State{}` in scope.
+  """
   @spec render(map()) :: {:ok, binary(), String.t()} | {:error, term()}
   def render(%{document_id: id, format: format}) do
     body = "EXPORT-STUB document=#{id} format=#{format}"
@@ -39,32 +62,55 @@ defmodule Contract.Export.Renderer do
   end
 
   @doc """
-  Direct dispatch when a `Contract.Runtime.State` is in hand.
-
-  This is the typed entry point — `Contract.IO.R2.export/4` accepts a
-  `:render_fun` override that wraps this for the HWPX format.
+  Typed entry point: dispatches a `%Contract.Runtime.State{}` to the
+  matching format module.
   """
-  @spec render(Contract.Runtime.State.t(), atom(), keyword()) ::
+  @spec render(State.t(), atom(), keyword()) ::
           {:ok, binary(), String.t()} | {:error, term()}
-  def render(state, :hwpx, opts) do
+  def render(state, format, opts \\ [])
+
+  def render(%State{} = state, :hwpx, opts) do
     case Contract.Export.HWPX.render(state, opts) do
       {:ok, body} -> {:ok, body, content_type(:hwpx)}
       {:error, _} = err -> err
     end
   end
 
-  def render(_state, format, _opts) do
-    {:error, {:format_not_implemented, format}}
+  def render(%State{} = state, :html, opts) do
+    case Contract.Export.HTML.render(state, opts) do
+      {:ok, body} -> {:ok, body, content_type(:html)}
+      {:error, _} = err -> err
+    end
   end
 
-  defp content_type(:pdf), do: "application/pdf"
+  def render(%State{} = state, :pdf, opts) do
+    case Contract.Export.PDF.render(state, opts) do
+      {:ok, body} -> {:ok, body, content_type(:pdf)}
+      {:error, _} = err -> err
+    end
+  end
 
-  defp content_type(:docx),
+  def render(%State{} = state, :docx, opts) do
+    case Contract.Export.DOCX.render(state, opts) do
+      {:ok, body} -> {:ok, body, content_type(:docx)}
+      {:error, _} = err -> err
+    end
+  end
+
+  def render(_state, format, _opts) do
+    {:error, {:unsupported_format, format}}
+  end
+
+  @doc "Content-type for a given export format."
+  @spec content_type(atom()) :: String.t()
+  def content_type(:pdf), do: "application/pdf"
+
+  def content_type(:docx),
     do: "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
-  defp content_type(:html), do: "text/html"
-  defp content_type(:md), do: "text/markdown"
-  defp content_type(:markdown), do: "text/markdown"
-  defp content_type(:hwpx), do: "application/hwp+zip"
-  defp content_type(_), do: "application/octet-stream"
+  def content_type(:html), do: "text/html; charset=utf-8"
+  def content_type(:md), do: "text/markdown"
+  def content_type(:markdown), do: "text/markdown"
+  def content_type(:hwpx), do: "application/hwp+zip"
+  def content_type(_), do: "application/octet-stream"
 end

@@ -112,9 +112,24 @@ defmodule Contract.Runtime do
     Contract.Agent.start(ctx, action)
   end
 
-  def apply(ctx, %Action{kind: :request_export} = action) do
-    format = export_format(action)
-    Contract.IO.export(ctx, action.document_id, format, [])
+  def apply(_ctx, %Action{kind: :request_export} = action) do
+    cond do
+      is_nil(action.document_id) ->
+        {:error, :missing_document_id}
+
+      true ->
+        format = export_format(action)
+
+        args = %{
+          "document_id" => action.document_id,
+          "format" => Atom.to_string(format),
+          "requester_id" => action.actor_id
+        }
+
+        args
+        |> Contract.Workers.ExportJob.new()
+        |> Oban.insert()
+    end
   end
 
   def apply(ctx, %Action{kind: :start_type_conversion} = action) do

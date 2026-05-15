@@ -5,8 +5,22 @@
 # `:external_hwpx` shells out to a third-party `pyhwpxlib` binary to
 # validate generated HWPX bytes against an external parser. Excluded by
 # default; run with `mix test --include external_hwpx`.
+#
+# `:requires_chromium` / `:requires_pandoc` (Wave 4 export) shell out to
+# headless Chromium-for-Testing and pandoc respectively. Default `mix
+# test` skips them; run with `mix test --include requires_chromium` or
+# `--include requires_pandoc` on the sprite (which ships both binaries).
 ExUnit.start(
-  exclude: [:live_smtp, :live, :live_openai, :live_law_mcp, :browser, :external_hwpx]
+  exclude: [
+    :live_smtp,
+    :live,
+    :live_openai,
+    :live_law_mcp,
+    :browser,
+    :external_hwpx,
+    :requires_chromium,
+    :requires_pandoc
+  ]
 )
 
 # Engine and other pure-mechanics tests run without the database. We only

@@ -182,3 +182,14 @@ if config_env() == :prod do
     ],
     secret_key_base: secret_key_base
 end
+
+# ---------------------------------------------------------------------------
+# Export binaries (Chromium-for-Testing → PDF, pandoc → DOCX)
+# ---------------------------------------------------------------------------
+# Wired in every environment (including :test) so the format modules can
+# resolve a path before falling back to PATH lookup. The format-specific
+# tests that actually shell out are tagged `:requires_chromium` /
+# `:requires_pandoc` and excluded from the default suite.
+config :contract,
+  chromium_path: System.get_env("CHROMIUM_PATH", "/usr/local/bin/chromium"),
+  pandoc_path: System.get_env("PANDOC_PATH", "/usr/bin/pandoc")

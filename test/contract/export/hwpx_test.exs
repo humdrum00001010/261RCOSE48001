@@ -563,7 +563,9 @@ defmodule Contract.Export.HWPXTest do
   # --------------------------------------------------------------------------
 
   test "Renderer.render/3 returns {:error, ...} for unsupported formats" do
-    assert {:error, {:format_not_implemented, :pdf}} =
-             Contract.Export.Renderer.render(empty_state(), :pdf, [])
+    # Wave 4 routes :pdf to Contract.Export.PDF; the unsupported-format
+    # branch now only fires for genuinely unknown atoms.
+    assert {:error, {:unsupported_format, :totally_made_up}} =
+             Contract.Export.Renderer.render(empty_state(), :totally_made_up, [])
   end
 end
