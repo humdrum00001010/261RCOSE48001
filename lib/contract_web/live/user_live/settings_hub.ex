@@ -48,8 +48,10 @@ defmodule ContractWeb.UserLive.SettingsHub do
             </h1>
             <p class="text-sm text-base-content/60">
               {dgettext("settings", "Signed in as")}
-              <span class="text-base-content/90">{@current_scope.user.email}</span>.
-              {dgettext("settings", "Pick a category on the left, or jump in below.")}
+              <span class="text-base-content/90">{@current_scope.user.email}</span>. {dgettext(
+                "settings",
+                "Pick a category on the left, or jump in below."
+              )}
             </p>
           </div>
 
@@ -65,6 +67,12 @@ defmodule ContractWeb.UserLive.SettingsHub do
               description={dgettext("settings", "Issue and revoke MCP route_ref tokens.")}
               icon="hero-key"
               navigate={~p"/settings/api-tokens"}
+            />
+            <.quick_card
+              title={dgettext("settings", "Integrations")}
+              description={dgettext("settings", "Slack and other external service connections.")}
+              icon="hero-puzzle-piece"
+              navigate={~p"/settings/integrations"}
             />
             <.quick_card_disabled
               title={dgettext("settings", "Appearance")}
@@ -139,6 +147,12 @@ defmodule ContractWeb.UserLive.SettingsHub do
           navigate={~p"/settings/api-tokens"}
           active?={@active_item == :api_tokens}
         />
+        <.sidebar_item
+          label={dgettext("settings", "Integrations")}
+          icon="hero-puzzle-piece-mini"
+          navigate={~p"/settings/integrations"}
+          active?={@active_item == :integrations}
+        />
         <.sidebar_item_disabled
           label={dgettext("settings", "Appearance")}
           icon="hero-paint-brush-mini"
@@ -170,7 +184,8 @@ defmodule ContractWeb.UserLive.SettingsHub do
           "flex items-center gap-2 px-3 py-2 rounded-md border-l-2 transition-colors",
           if(@active?,
             do: "border-emerald-500 bg-base-200/60 font-semibold text-base-content",
-            else: "border-transparent text-base-content/70 hover:text-base-content hover:bg-base-200/40"
+            else:
+              "border-transparent text-base-content/70 hover:text-base-content hover:bg-base-200/40"
           )
         ]}
         aria-current={if @active?, do: "page", else: "false"}

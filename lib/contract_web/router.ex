@@ -135,9 +135,16 @@ defmodule ContractWeb.Router do
       live "/users/settings/confirm-email/:token", UserLive.Settings, :confirm_email
       live "/settings", UserLive.SettingsHub, :index
       live "/settings/api-tokens", UserLive.ApiTokens, :index
+      live "/settings/integrations", UserLive.Integrations, :index
     end
 
     post "/users/update-password", UserSessionController, :update_password
+
+    # Slack OAuth user-token flow (Wave 6). OUTBOUND only — Slack ingress
+    # at /slack/* stays at 501 per the project Slack-MCP memory.
+    get "/auth/slack/start", SlackOAuthController, :start
+    get "/auth/slack/callback", SlackOAuthController, :callback
+    post "/auth/slack/disconnect", SlackOAuthController, :disconnect
   end
 
   scope "/", ContractWeb do

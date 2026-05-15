@@ -44,6 +44,16 @@ defmodule Contract.IO.OpenAITest do
     end
   end
 
+  describe "slack_mcp_tool/1 (Wave 6)" do
+    test "returns nil when no Contract.Context is passed" do
+      assert OpenAI.slack_mcp_tool(nil) == nil
+    end
+
+    test "returns nil for a non-Context value (defensive)" do
+      assert OpenAI.slack_mcp_tool(:not_a_scope) == nil
+    end
+  end
+
   describe "one_shot/2" do
     test "POSTs Responses-API payload with auth + model + reasoning + law MCP tool", %{
       bypass: bypass
@@ -179,7 +189,10 @@ defmodule Contract.IO.OpenAITest do
 
         conn
         |> Plug.Conn.put_resp_content_type("text/event-stream")
-        |> Plug.Conn.resp(200, "event: response.completed\ndata: {\"type\":\"response.completed\"}\n\n")
+        |> Plug.Conn.resp(
+          200,
+          "event: response.completed\ndata: {\"type\":\"response.completed\"}\n\n"
+        )
       end)
 
       assert {:ok, %{stream: stream}} = OpenAI.stream_chat(%{input: "ping"})

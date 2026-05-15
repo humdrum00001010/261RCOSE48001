@@ -70,7 +70,55 @@ defmodule Contract.IO.OpenAI do
     }
   end
 
+  @doc """
+  Builds the Slack-hosted MCP tool entry per Wave 6. Returns `nil` if the
+  request-scoped `Contract.Context` does not have a stored Slack token
+  for the user — callers should drop nils before sending the tool list.
+
+  Write-capable tools (chat:write, reactions:write, …) are gated behind
+  the Responses-API `require_approval` flag so the agent must surface an
+  approval step to the user before invoking them.
+  """
+  @spec slack_mcp_tool(Contract.Context.t() | nil) :: map() | nil
+  def slack_mcp_tool(%Contract.Context{} = ctx) do
+    case Contract.Integrations.Slack.token_for(ctx) do
+      {:ok, token} ->
+        %{
+          type: "mcp",
+          server_label: "slack",
+          server_url: System.get_env("SLACK_MCP_URL") || "https://mcp.slack.com/mcp",
+          require_approval: %{always: %{tool_names: slack_write_tool_names()}},
+          headers: %{"Authorization" => "Bearer " <> token}
+        }
+
+      {:error, _} ->
+        nil
+    end
+  end
+
+  def slack_mcp_tool(_), do: nil
+
   # --- internals ---------------------------------------------------------
+
+  # Write-capable Slack tool names that REQUIRE user approval before
+  # invocation. Derived from `SLACK_MCP_WRITE_SCOPES` — Slack MCP tool
+  # names follow `slack_<verb>_<resource>` shape (see Slack's hosted MCP
+  # docs); we include the conservative set that maps 1:1 to the write
+  # scopes in `.env`.
+  defp slack_write_tool_names do
+    [
+      "slack_post_message",
+      "slack_update_message",
+      "slack_delete_message",
+      "slack_add_reaction",
+      "slack_remove_reaction",
+      "slack_create_channel",
+      "slack_archive_channel",
+      "slack_invite_to_channel",
+      "slack_create_canvas",
+      "slack_edit_canvas"
+    ]
+  end
 
   defp build_request(params, opts) do
     cfg = Application.fetch_env!(:contract, :openai)
@@ -84,9 +132,24 @@ defmodule Contract.IO.OpenAI do
 
     extra_tools = Keyword.get(opts, :extra_tools, [])
     include_law = Keyword.get(opts, :include_law_mcp?, true)
+    include_slack = Keyword.get(opts, :include_slack_mcp?, true)
+    ctx = Keyword.get(opts, :ctx)
 
     base_tools = if include_law, do: [law_mcp_tool(opts)], else: []
-    tools = base_tools ++ List.wrap(Map.get(params, :tools, [])) ++ List.wrap(extra_tools)
+
+    slack_tools =
+      if include_slack do
+        case slack_mcp_tool(ctx) do
+          nil -> []
+          tool -> [tool]
+        end
+      else
+        []
+      end
+
+    tools =
+      base_tools ++
+        slack_tools ++ List.wrap(Map.get(params, :tools, [])) ++ List.wrap(extra_tools)
 
     request =
       params
@@ -99,8 +162,10 @@ defmodule Contract.IO.OpenAI do
 
   defp normalize_stream(body_stream) do
     body_stream
-    |> Stream.flat_map(fn events when is_list(events) -> events
-                          event -> [event] end)
+    |> Stream.flat_map(fn
+      events when is_list(events) -> events
+      event -> [event]
+    end)
     |> Stream.map(&normalize_event/1)
     |> Stream.reject(&is_nil/1)
   end
