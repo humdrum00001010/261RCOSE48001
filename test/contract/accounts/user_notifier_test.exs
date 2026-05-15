@@ -14,11 +14,11 @@ defmodule Contract.Accounts.UserNotifierTest do
   `localhost`.
   """
   use Contract.DataCase, async: false
-
-  import Swoosh.TestAssertions
+  use Oban.Testing, repo: Contract.Repo
 
   alias Contract.Accounts
   alias Contract.AccountsFixtures
+  alias Contract.Workers.MailerJob
   alias ContractWeb.Endpoint
 
   @public_host "contract-studio-v7zk.sprites.app"
@@ -50,12 +50,30 @@ defmodule Contract.Accounts.UserNotifierTest do
     # Mimic the call shape from ContractWeb.UserLive.Login / Registration:
     # `&url(~p"/users/log-in/#{&1}")`. `Phoenix.VerifiedRoutes.url/1` ultimately
     # delegates to `Endpoint.url/0`, which reads the `:url` config we just stubbed.
-    {:ok, email} =
+    # As of the async-mailer wave the call enqueues an Oban job instead of
+    # delivering inline; drain it synchronously to flush the email into the
+    # Swoosh test inbox.
+    {:ok, %Oban.Job{}} =
       Accounts.deliver_login_instructions(
         user,
         &(Endpoint.url() <> "/users/log-in/" <> &1)
       )
 
+    assert_enqueued(
+      worker: MailerJob,
+      args: %{"kind" => "login_instructions", "args" => %{"user_id" => user.id}}
+    )
+
+    assert %{success: 1} = Oban.drain_queue(queue: :mailer)
+
+    # Pull the email straight from the mailbox so we can inspect both the
+    # subject and the body off a single struct. `Swoosh.Adapters.Test`
+    # delivers each email as a `{:email, %Swoosh.Email{}}` message to the
+    # current process (and its $callers, which covers the inline-drained
+    # Oban worker).
+    assert_receive {:email, email}, 100
+
+    assert email.subject == "Confirmation instructions"
     body = email.text_body
 
     assert body =~ "https://#{@public_host}/users/log-in/",
@@ -63,7 +81,5 @@ defmodule Contract.Accounts.UserNotifierTest do
 
     refute body =~ "localhost",
            "email body must not contain localhost — got:\n#{body}"
-
-    assert_email_sent(subject: "Confirmation instructions")
   end
 end

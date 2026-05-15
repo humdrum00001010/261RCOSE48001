@@ -107,7 +107,8 @@ config :contract, Oban,
     import: 5,
     export: 3,
     agent: 8,
-    system: 2
+    system: 2,
+    mailer: 4
   ],
   plugins: [Oban.Plugins.Pruner, {Oban.Plugins.Cron, crontab: []}]
 

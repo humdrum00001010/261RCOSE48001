@@ -50,6 +50,27 @@ defmodule ContractWeb.UserLive.RegistrationTest do
                ~r/An email was sent to .*, please access it to confirm your account/
     end
 
+    @tag :timing
+    test "registration save returns within 200ms (email is enqueued, not synchronously sent)",
+         %{conn: conn} do
+      # The async-mailer wave (`Contract.Workers.MailerJob`) moves the SMTP
+      # call out of `handle_event("save", ...)`. Pre-fix, this submit blocked
+      # 2-5 s on Worksmobile port 465; post-fix, it should return well under
+      # 200 ms because all the LV does is `Oban.insert/1`.
+      #
+      # Excludable via `--exclude timing` to avoid CI flakes; the assertion
+      # is a per-test sanity check, not a property.
+      {:ok, lv, _html} = live(conn, ~p"/users/register")
+
+      email = unique_user_email()
+      form = form(lv, "#registration_form", user: valid_user_attributes(email: email))
+
+      {micros, _result} = :timer.tc(fn -> render_submit(form) end)
+
+      assert micros < 200_000,
+             "expected registration save to return within 200ms but took #{div(micros, 1000)}ms"
+    end
+
     test "renders errors for duplicated email", %{conn: conn} do
       {:ok, lv, _html} = live(conn, ~p"/users/register")
 

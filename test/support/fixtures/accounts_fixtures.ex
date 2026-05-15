@@ -58,7 +58,21 @@ defmodule Contract.AccountsFixtures do
   end
 
   def extract_user_token(fun) do
-    {:ok, captured_email} = fun.(&"[TOKEN]#{&1}[TOKEN]")
+    # `fun.(url_builder)` enqueues an Oban :mailer job (see
+    # `Contract.Accounts.UserNotifier`). Drain synchronously so the
+    # email lands in the Swoosh test inbox, then pull it out and
+    # split the embedded `[TOKEN]…[TOKEN]` marker.
+    {:ok, %Oban.Job{}} = fun.(&"[TOKEN]#{&1}[TOKEN]")
+    %{success: 1} = Oban.drain_queue(queue: :mailer)
+
+    captured_email =
+      receive do
+        {:email, email} -> email
+      after
+        0 ->
+          raise "expected the drained :mailer job to deliver an email via Swoosh.Adapters.Test"
+      end
+
     [_, token | _] = String.split(captured_email.text_body, "[TOKEN]")
     token
   end
