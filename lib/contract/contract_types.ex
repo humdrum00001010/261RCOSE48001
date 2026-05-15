@@ -1,68 +1,141 @@
 defmodule Contract.ContractTypes do
   @moduledoc """
-  Catalog of contract types known to the Studio. Each type has a stable
-  `type_key` (the snake_case slug persisted on every Document/projection)
-  plus presentational metadata.
+  Compile-time registry of contract types known to the Studio.
 
-  TODO(Wave 3C2): this is a stub. The real type registry will live in a
-  separate module that compiles `priv/contract_types/*.toml` definitions
-  (field maps, default templates, conversion routes) at app start. The
-  web shell only needs `list/2` for the "New Document" modal — kept here
-  so the dashboard can render even before the registry exists.
+  The registry is loaded once at compile time by walking every TOML file
+  in `priv/contract_types/*.toml`, decoding each one through the
+  pure-Elixir `:toml` library, and building a `Contract.ContractTypes.TypeSpec`
+  struct. The resulting map is then frozen into a module attribute so all
+  reads at runtime are O(1) constant-folded lookups with zero IO.
+
+  ## Recompiling on TOML edits
+
+  Every TOML file is registered as an `@external_resource`, so editing a
+  spec under `priv/contract_types/` triggers a recompile of this module
+  on the next `mix compile`. There is no in-process reload — production
+  type catalogue updates ship via a new release.
+
+  ## Public API
+
+  Matches SPEC.md §18 (scope-aware `ctx` first argument). The two
+  arity-2 readers (`list/2`, `get/2`) and the binary helper
+  (`compatible?/2`) are the only entry points that callers should depend
+  on — the underlying storage is an implementation detail.
   """
 
-  @type type_entry :: %{
-          type_key: String.t(),
-          name: String.t(),
-          name_ko: String.t(),
-          description: String.t()
-        }
+  alias Contract.ContractTypes.TypeSpec
 
-  @stub_types [
-    %{
-      type_key: "nda_v1",
-      name: "Non-Disclosure Agreement",
-      name_ko: "비밀유지계약서",
-      description: "Bilateral or unilateral NDA. Term, scope, carve-outs, exit obligations."
-    },
-    %{
-      type_key: "franchise_v1",
-      name: "Franchise Agreement",
-      name_ko: "가맹계약서",
-      description: "공정거래위원회-aligned franchise template. Territory, fees, IP licence, renewal."
-    },
-    %{
-      type_key: "service_agreement_v1",
-      name: "Service Agreement",
-      name_ko: "용역계약서",
-      description: "General professional services. Scope, deliverables, payment, liability."
-    },
-    %{
-      type_key: "employment_v1",
-      name: "Employment Contract",
-      name_ko: "근로계약서",
-      description: "Standard form aligned with 근로기준법. Wage, hours, termination."
-    },
-    %{
-      type_key: "supply_v1",
-      name: "Supply Agreement",
-      name_ko: "물품공급계약서",
-      description: "Goods supply, delivery terms, warranties, force majeure."
-    }
-  ]
+  @types_dir Application.app_dir(:contract, "priv/contract_types")
+
+  # Files matched by this wildcard at compile time become external resources;
+  # editing any of them invalidates this module's compile cache.
+  @toml_paths @types_dir |> Path.join("*.toml") |> Path.wildcard() |> Enum.sort()
+
+  for path <- @toml_paths do
+    @external_resource path
+  end
+
+  @types (for path <- @toml_paths, into: %{} do
+            case Toml.decode_file(path) do
+              {:ok, data} ->
+                spec = TypeSpec.from_toml(data, path)
+                {spec.key, spec}
+
+              {:error, reason} ->
+                raise "failed to decode #{path}: #{inspect(reason)}"
+            end
+          end)
+
+  # If two TOML files declare the same `key`, the map collapses them and we
+  # lose one silently. Fail the compile instead.
+  @type_count length(@toml_paths)
+
+  if map_size(@types) != @type_count do
+    raise "duplicate key detected across #{@type_count} TOML files in #{@types_dir} " <>
+            "(loaded #{map_size(@types)} unique keys)"
+  end
 
   @doc """
-  Returns the list of contract type entries available for new-document
-  creation. The `_ctx` and `_opts` arguments mirror the eventual
-  context-scoped signature so callers don't need to change when the
-  real registry lands.
-  """
-  @spec list(term(), keyword()) :: [type_entry()]
-  def list(_ctx \\ nil, _opts \\ []), do: @stub_types
+  Returns the list of all loaded contract type specs.
 
-  @doc "Look up a single type entry by its `type_key`. Returns nil if unknown."
-  @spec get(String.t()) :: type_entry() | nil
-  def get(type_key) when is_binary(type_key) do
-    Enum.find(@stub_types, &(&1.type_key == type_key))
+  ## Options
+
+    * `:family` — keep only specs whose `family` atom matches. Pass a
+      single atom or a list of atoms.
+    * `:source` — keep only specs whose `source` atom matches. Pass a
+      single atom or a list of atoms.
+
+  Results are sorted by `key` for stable rendering. Wrapped in the
+  `T.result/1` shape (`{:ok, list}`) per SPEC.md §18.
+  """
+  @spec list(Contract.Types.ctx(), Contract.Types.opts()) ::
+          Contract.Types.result([TypeSpec.t()])
+  def list(_ctx \\ nil, opts \\ []) when is_list(opts) do
+    families = opts |> Keyword.get(:family) |> normalise()
+    sources = opts |> Keyword.get(:source) |> normalise()
+
+    filtered =
+      @types
+      |> Map.values()
+      |> Enum.filter(fn spec ->
+        (families == :any or spec.family in families) and
+          (sources == :any or spec.source in sources)
+      end)
+      |> Enum.sort_by(& &1.key)
+
+    {:ok, filtered}
   end
+
+  @doc """
+  Fetch a single spec by its string `key`.
+
+  Returns `{:ok, spec}` on a hit or `{:error, :not_found}` on a miss —
+  the `T.result/1` shape mandated by SPEC.md §18.
+  """
+  @spec get(Contract.Types.ctx(), Contract.Types.contract_type_key()) ::
+          Contract.Types.result(TypeSpec.t())
+  def get(_ctx \\ nil, key) when is_binary(key) do
+    case Map.fetch(@types, key) do
+      {:ok, spec} -> {:ok, spec}
+      :error -> {:error, :not_found}
+    end
+  end
+
+  @doc """
+  True iff each type lists the other in its `compatible_with` set.
+
+  Symmetric by construction: this prevents accidentally exposing a
+  one-way conversion path that only one side has audited.
+  """
+  @spec compatible?(String.t(), String.t()) :: boolean()
+  def compatible?(from_key, to_key) when is_binary(from_key) and is_binary(to_key) do
+    with {:ok, from} <- Map.fetch(@types, from_key),
+         {:ok, to} <- Map.fetch(@types, to_key) do
+      to_key in from.compatible_with and from_key in to.compatible_with
+    else
+      :error -> false
+    end
+  end
+
+  @doc """
+  Return all specs as a plain list. Convenience for tests and tooling
+  that don't care about ordering or filtering.
+  """
+  @spec all() :: [TypeSpec.t()]
+  def all, do: Map.values(@types)
+
+  @doc """
+  Return the set of TOML paths that were loaded at compile time.
+
+  Primarily for tests that want to assert the registry actually picked
+  up every shipped file.
+  """
+  @spec __toml_paths__() :: [String.t()]
+  def __toml_paths__, do: @toml_paths
+
+  # ---- internals --------------------------------------------------------
+
+  defp normalise(nil), do: :any
+  defp normalise(value) when is_atom(value), do: [value]
+  defp normalise(value) when is_list(value), do: value
 end

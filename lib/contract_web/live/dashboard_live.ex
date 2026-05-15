@@ -8,8 +8,8 @@ defmodule ContractWeb.DashboardLive do
   Matter and Document persistence are still on the Wave 3C2 roadmap, so
   this view operates against:
 
-    * `Contract.ContractTypes.list/2` — stubbed catalog for the
-      "New Document" modal.
+    * `Contract.ContractTypes.list/2` — compile-time TOML-backed type
+      registry, drives the "New Document" modal.
     * `Contract.Repo.aggregate/3` on the `changes` table — gives us a
       cheap "Open agent runs" count by tallying agent-actor changes
       with status `:active`.
@@ -30,11 +30,13 @@ defmodule ContractWeb.DashboardLive do
 
   @impl true
   def mount(_params, _session, socket) do
+    {:ok, contract_types} = ContractTypes.list(socket.assigns.current_scope)
+
     socket =
       socket
       |> assign(:page_title, "Dashboard")
       |> assign(:show_new_doc_modal, false)
-      |> assign(:contract_types, ContractTypes.list(socket.assigns.current_scope))
+      |> assign(:contract_types, contract_types)
       |> load_data()
 
     {:ok, socket}
@@ -172,15 +174,15 @@ defmodule ContractWeb.DashboardLive do
               Pick up where you left off, or open a new matter.
             </p>
           </div>
-          <div class="flex gap-2">
+          <div class="flex flex-wrap gap-2">
             <button
               type="button"
               phx-click="open_new_document"
-              class="btn btn-primary"
+              class="btn btn-primary flex-1 sm:flex-none"
             >
               <.icon name="hero-document-plus" class="size-4" /> New Document
             </button>
-            <.link navigate={~p"/studio"} class="btn btn-ghost">
+            <.link navigate={~p"/studio"} class="btn btn-ghost flex-1 sm:flex-none">
               Open Studio <span aria-hidden="true">→</span>
             </.link>
           </div>
@@ -213,9 +215,16 @@ defmodule ContractWeb.DashboardLive do
           <%= if @matters == [] do %>
             <div
               id="matters-empty"
-              class="rounded-box border border-dashed border-base-300 p-10 text-center bg-base-200/30"
+              class="rounded-box border border-dashed border-base-300 p-6 sm:p-10 text-center bg-base-200/30"
             >
-              <.icon name="hero-folder-open" class="size-8 text-base-content/30 mx-auto" />
+              <img
+                src={~p"/images/landing/dashboard-empty.png"}
+                alt="An empty folder with a quill, signalling no matters yet."
+                class="mx-auto w-32 sm:w-40 h-auto object-contain"
+                width="1024"
+                height="1024"
+                loading="lazy"
+              />
               <p class="font-medium mt-3">No matters yet</p>
               <p class="text-sm text-base-content/60 mt-1 max-w-sm mx-auto">
                 A matter holds the documents, evidence, and agent runs for a single client engagement.
@@ -229,7 +238,7 @@ defmodule ContractWeb.DashboardLive do
               </button>
             </div>
           <% else %>
-            <div id="matters-grid" class="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            <div id="matters-grid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
               <article :for={matter <- @matters} class="rounded-box border border-base-200 p-5 bg-base-100 hover:border-base-300 transition-colors">
                 <p class="font-semibold tracking-tight">{matter.name}</p>
                 <p class="text-sm text-base-content/60 mt-1">
@@ -259,10 +268,13 @@ defmodule ContractWeb.DashboardLive do
               No documents yet. Drag a PDF in, or start from a contract type.
             </div>
           <% else %>
-            <ul id="documents-list" class="rounded-box border border-base-200 divide-y divide-base-200 bg-base-100">
-              <li :for={doc <- @recent_documents} class="px-4 py-3 flex items-center gap-4 hover:bg-base-200/30">
-                <.icon name="hero-document-text" class="size-4 text-base-content/40 shrink-0" />
-                <div class="flex-1 min-w-0">
+            <ul id="documents-list" class="rounded-box border border-base-200 md:divide-y md:divide-base-200 bg-base-100 space-y-2 md:space-y-0 p-2 md:p-0">
+              <li
+                :for={doc <- @recent_documents}
+                class="rounded-box md:rounded-none border border-base-200 md:border-0 bg-base-100 px-4 py-3 flex flex-col md:flex-row md:items-center gap-2 md:gap-4 hover:bg-base-200/30"
+              >
+                <div class="flex items-center gap-3 min-w-0 md:flex-1">
+                  <.icon name="hero-document-text" class="size-4 text-base-content/40 shrink-0" />
                   <.link
                     navigate={~p"/matters/_/documents/#{doc.document_id}"}
                     class="text-sm font-medium hover:underline truncate block"
@@ -270,10 +282,12 @@ defmodule ContractWeb.DashboardLive do
                     {doc.title}
                   </.link>
                 </div>
-                <span class="badge badge-ghost badge-sm font-mono">{doc.type_key}</span>
-                <span class="text-xs text-base-content/50 w-32 text-right tabular-nums">
-                  rev {doc.last_revision} · {format_timestamp(doc.last_activity_at)}
-                </span>
+                <div class="flex items-center justify-between md:justify-end gap-2 md:gap-4 pl-7 md:pl-0">
+                  <span class="badge badge-ghost badge-sm font-mono">{doc.type_key}</span>
+                  <span class="text-xs text-base-content/50 md:w-32 md:text-right tabular-nums">
+                    rev {doc.last_revision} · {format_timestamp(doc.last_activity_at)}
+                  </span>
+                </div>
               </li>
             </ul>
           <% end %>
@@ -282,7 +296,7 @@ defmodule ContractWeb.DashboardLive do
         <%!-- ---------------------------------------------------------- --%>
         <%!-- Recent activity                                             --%>
         <%!-- ---------------------------------------------------------- --%>
-        <section id="recent-activity">
+        <section id="recent-activity" class="w-full lg:max-w-2xl">
           <header class="flex items-end justify-between mb-4">
             <h2 class="text-lg font-semibold tracking-tight">Recent activity</h2>
           </header>
@@ -349,18 +363,27 @@ defmodule ContractWeb.DashboardLive do
             </button>
           </div>
           <ul id="contract-type-list" class="mt-5 space-y-2">
+            <%!--
+              Wave 3C0-B: @contract_types is now a list of
+              %Contract.ContractTypes.TypeSpec{} structs loaded from
+              priv/contract_types/*.toml at compile time. The old stub
+              keys (.type_key/.name/.description) are now
+              .key/.name_en/.notes_en; the phx-value-type_key *attribute*
+              is unchanged because the event handler still expects that
+              param name.
+            --%>
             <li :for={type <- @contract_types}>
               <button
                 type="button"
                 phx-click="pick_type"
-                phx-value-type_key={type.type_key}
+                phx-value-type_key={type.key}
                 class="w-full text-left rounded-box border border-base-200 p-4 hover:border-primary hover:bg-base-200/40 transition-colors"
               >
                 <div class="flex items-baseline justify-between gap-3">
-                  <p class="font-medium">{type.name}</p>
-                  <span class="badge badge-ghost badge-sm font-mono">{type.type_key}</span>
+                  <p class="font-medium">{type.name_en}</p>
+                  <span class="badge badge-ghost badge-sm font-mono">{type.key}</span>
                 </div>
-                <p class="text-sm text-base-content/60 mt-1">{type.description}</p>
+                <p class="text-sm text-base-content/60 mt-1">{type.notes_en}</p>
                 <p class="text-xs text-base-content/40 mt-1">{type.name_ko}</p>
               </button>
             </li>

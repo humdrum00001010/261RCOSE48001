@@ -2,29 +2,29 @@
   <%!-- ----------------------------------------------------------------- --%>
   <%!-- Hero                                                               --%>
   <%!-- ----------------------------------------------------------------- --%>
-  <section class="pt-16 pb-20 sm:pt-24 sm:pb-28">
-    <div class="grid lg:grid-cols-12 gap-10 items-center">
-      <div class="lg:col-span-7 space-y-6">
+  <section class="pt-12 pb-16 sm:pt-20 sm:pb-24 lg:pt-24 lg:pb-28">
+    <div class="grid grid-cols-1 lg:grid-cols-12 gap-8 lg:gap-12 items-center">
+      <div class="lg:col-span-7 space-y-5 sm:space-y-6">
         <p class="inline-flex items-center gap-2 text-xs font-medium tracking-wide uppercase text-base-content/60">
           <span class="inline-block h-1.5 w-1.5 rounded-full bg-primary"></span>
           {dgettext("landing", "For solo Korean lawyers, in-house counsel, and small firms")}
         </p>
-        <h1 class="text-4xl sm:text-5xl lg:text-6xl font-semibold tracking-tight text-balance leading-[1.05]">
+        <h1 class="text-3xl sm:text-4xl lg:text-5xl xl:text-6xl font-semibold tracking-tight text-balance leading-[1.05]">
           {dgettext("landing", "Drafting that asks before it edits.")}
         </h1>
-        <p class="text-lg sm:text-xl text-base-content/70 max-w-2xl leading-relaxed">
-          {dgettext("landing", 
+        <p class="text-base sm:text-lg lg:text-xl text-base-content/70 max-w-2xl leading-relaxed">
+          {dgettext("landing",
             "Contract Studio is an AI-led legal-document studio. The agent grills you for clarity, cites 법제처 with proof, and never silently rewrites your contracts."
           )}
         </p>
-        <div class="flex flex-wrap items-center gap-3 pt-2">
-          <.link navigate={~p"/users/register"} class="btn btn-primary">
+        <div class="flex flex-col sm:flex-row sm:flex-wrap sm:items-center gap-3 pt-2">
+          <.link navigate={~p"/users/register"} class="btn btn-primary w-full sm:w-auto">
             {dgettext("landing", "Get started")} <span aria-hidden="true" class="ml-1">→</span>
           </.link>
-          <.link navigate={~p"/users/log-in"} class="btn btn-ghost">
+          <.link navigate={~p"/users/log-in"} class="btn btn-ghost w-full sm:w-auto">
             {dgettext("landing", "Log in")}
           </.link>
-          <a href="#features" class="btn btn-ghost text-base-content/70">
+          <a href="#features" class="btn btn-ghost w-full sm:w-auto text-base-content/70">
             {dgettext("landing", "See how it works")}
           </a>
         </div>
@@ -34,44 +34,15 @@
       </div>
 
       <div class="lg:col-span-5">
-        <div class="rounded-box border border-base-200 bg-base-200/40 overflow-hidden">
-          <div class="flex items-center gap-1.5 px-4 py-2.5 border-b border-base-200 bg-base-100/60">
-            <span class="h-2.5 w-2.5 rounded-full bg-base-300"></span>
-            <span class="h-2.5 w-2.5 rounded-full bg-base-300"></span>
-            <span class="h-2.5 w-2.5 rounded-full bg-base-300"></span>
-            <span class="ml-3 text-xs text-base-content/50 font-mono">
-              franchise_v1 · matter/seoul-2024-08
-            </span>
-          </div>
-          <div class="p-5 space-y-3 font-mono text-[0.8125rem] leading-relaxed text-base-content/80">
-            <div class="text-base-content/50"># Clause 12 — Territory</div>
-            <div>
-              <span class="bg-warning/15 text-warning-content/90 px-1 rounded">
-                grill-me:
-              </span>
-              <span class="text-base-content/80">
-                Is "Seoul metropolitan area" inclusive of Incheon and Gyeonggi-do for the
-                <span class="underline decoration-warning decoration-dotted">exclusive-territory</span>
-                grant?
-              </span>
-            </div>
-            <div class="text-base-content/50">
-              ↳ awaiting answer before edit · cited
-              <span class="text-primary">가맹사업법 §11(2)</span>
-              · 법제처 verified ✓
-            </div>
-            <div class="border-t border-base-200 my-3"></div>
-            <div class="text-base-content/50"># Clause 13 — Royalty</div>
-            <div>
-              <span class="text-base-content/40">royalty_rate:</span>
-              <span class="font-semibold">5.0%</span>
-              <span class="text-base-content/40 ml-2">of monthly gross</span>
-            </div>
-          </div>
-        </div>
-        <p class="text-xs text-base-content/50 mt-3 text-center">
-          {dgettext("landing", "Preview — agent prompt before a clause edit")}
-        </p>
+        <img
+          src={~p"/images/landing/hero.png"}
+          alt={dgettext("landing", "An AI agent annotating a legal contract with clarifying questions before any edit.")}
+          class="w-full h-auto rounded-box border border-base-200 bg-base-100"
+          width="1536"
+          height="1024"
+          loading="eager"
+          fetchpriority="high"
+        />
       </div>
     </div>
   </section>
@@ -79,54 +50,75 @@
   <%!-- ----------------------------------------------------------------- --%>
   <%!-- Feature triptych                                                   --%>
   <%!-- ----------------------------------------------------------------- --%>
-  <section id="features" class="py-20 border-t border-base-200">
-    <div class="max-w-2xl mb-12">
+  <section id="features" class="py-16 sm:py-20 border-t border-base-200">
+    <div class="max-w-2xl mb-10 sm:mb-12">
       <p class="text-xs font-medium tracking-wide uppercase text-primary mb-3">
         {dgettext("landing", "What's different")}
       </p>
-      <h2 class="text-3xl sm:text-4xl font-semibold tracking-tight leading-tight">
+      <h2 class="text-2xl sm:text-3xl lg:text-4xl font-semibold tracking-tight leading-tight">
         {dgettext("landing", "Three commitments the rest of the market won't make.")}
       </h2>
     </div>
 
-    <div class="grid md:grid-cols-3 gap-6">
-      <article class="rounded-box border border-base-200 p-6 space-y-3 hover:border-base-300 transition-colors">
-        <div class="flex items-center gap-2">
-          <.icon name="hero-question-mark-circle" class="size-5 text-primary" />
-          <h3 class="font-semibold tracking-tight">
-            {dgettext("landing", "Grill-me agent")}
-          </h3>
+    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+      <article class="rounded-box border border-base-200 p-6 space-y-4 hover:border-base-300 transition-colors">
+        <div class="aspect-square w-24 sm:w-28 bg-base-100 rounded-box overflow-hidden">
+          <img
+            src={~p"/images/landing/feature-grill-me.png"}
+            alt={dgettext("landing", "A hand pausing over a contract paragraph with three question marks above.")}
+            class="w-full h-full object-contain"
+            width="1024"
+            height="1024"
+            loading="lazy"
+          />
         </div>
+        <h3 class="font-semibold tracking-tight">
+          {dgettext("landing", "Grill-me agent")}
+        </h3>
         <p class="text-base-content/70 text-sm leading-relaxed">
-          {dgettext("landing", 
+          {dgettext("landing",
             "When the agent sees ambiguity, it stops and asks. No silent rewrites, no \"I assumed you meant…\". You answer; then it edits, with a question-and-answer trail attached to every change."
           )}
         </p>
       </article>
 
-      <article class="rounded-box border border-base-200 p-6 space-y-3 hover:border-base-300 transition-colors">
-        <div class="flex items-center gap-2">
-          <.icon name="hero-check-badge" class="size-5 text-primary" />
-          <h3 class="font-semibold tracking-tight">
-            {dgettext("landing", "법제처 citation verification")}
-          </h3>
+      <article class="rounded-box border border-base-200 p-6 space-y-4 hover:border-base-300 transition-colors">
+        <div class="aspect-square w-24 sm:w-28 bg-base-100 rounded-box overflow-hidden">
+          <img
+            src={~p"/images/landing/feature-citation.png"}
+            alt={dgettext("landing", "A contract clause stamped with a green checkmark next to a verified statute panel.")}
+            class="w-full h-full object-contain"
+            width="1024"
+            height="1024"
+            loading="lazy"
+          />
         </div>
+        <h3 class="font-semibold tracking-tight">
+          {dgettext("landing", "법제처 citation verification")}
+        </h3>
         <p class="text-base-content/70 text-sm leading-relaxed">
-          {dgettext("landing", 
+          {dgettext("landing",
             "Every 조문 cited is cross-checked against the 법제처 open API through 17 dedicated tools. Hallucinated citations don't make it to the page — they're flagged and the draft is held."
           )}
         </p>
       </article>
 
-      <article class="rounded-box border border-base-200 p-6 space-y-3 hover:border-base-300 transition-colors">
-        <div class="flex items-center gap-2">
-          <.icon name="hero-arrows-right-left" class="size-5 text-primary" />
-          <h3 class="font-semibold tracking-tight">
-            {dgettext("landing", "Type conversions, not text diffs")}
-          </h3>
+      <article class="rounded-box border border-base-200 p-6 space-y-4 hover:border-base-300 transition-colors">
+        <div class="aspect-square w-24 sm:w-28 bg-base-100 rounded-box overflow-hidden">
+          <img
+            src={~p"/images/landing/feature-conversion.png"}
+            alt={dgettext("landing", "Two document outlines connected by arrows showing field migration from NDA to Franchise.")}
+            class="w-full h-full object-contain"
+            width="1024"
+            height="1024"
+            loading="lazy"
+          />
         </div>
+        <h3 class="font-semibold tracking-tight">
+          {dgettext("landing", "Type conversions, not text diffs")}
+        </h3>
         <p class="text-base-content/70 text-sm leading-relaxed">
-          {dgettext("landing", 
+          {dgettext("landing",
             "Convert NDA → Franchise without losing your work. The contract type is a key; conversions migrate fields with full lineage, so you can always trace where a clause came from."
           )}
         </p>
@@ -137,17 +129,17 @@
   <%!-- ----------------------------------------------------------------- --%>
   <%!-- Secondary features                                                 --%>
   <%!-- ----------------------------------------------------------------- --%>
-  <section class="py-20 border-t border-base-200">
-    <div class="grid md:grid-cols-2 gap-10">
+  <section class="py-16 sm:py-20 border-t border-base-200">
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-8 sm:gap-10">
       <div class="space-y-4">
         <div class="flex items-center gap-2">
           <.icon name="hero-document-magnifying-glass" class="size-5 text-secondary" />
-          <h3 class="text-xl font-semibold tracking-tight">
+          <h3 class="text-lg sm:text-xl font-semibold tracking-tight">
             {dgettext("landing", "Hard-IR parsing, not LLM guessing")}
           </h3>
         </div>
         <p class="text-base-content/70 leading-relaxed">
-          {dgettext("landing", 
+          {dgettext("landing",
             "Uploads route through Upstage Document Parse. Clause boundaries, headings, and tables come back with bounding boxes — structure the LLM doesn't have to invent. Hallucinated layout is not an option."
           )}
         </p>
@@ -155,12 +147,12 @@
       <div class="space-y-4">
         <div class="flex items-center gap-2">
           <.icon name="hero-clipboard-document-list" class="size-5 text-secondary" />
-          <h3 class="text-xl font-semibold tracking-tight">
+          <h3 class="text-lg sm:text-xl font-semibold tracking-tight">
             {dgettext("landing", "Provenance, baked in")}
           </h3>
         </div>
         <p class="text-base-content/70 leading-relaxed">
-          {dgettext("landing", 
+          {dgettext("landing",
             "Every change is a row. Who proposed it, which question it answers, what it touched, and how to undo it. The audit log is the source of truth — not a derived afterthought."
           )}
         </p>
@@ -171,22 +163,22 @@
   <%!-- ----------------------------------------------------------------- --%>
   <%!-- Pricing teaser                                                     --%>
   <%!-- ----------------------------------------------------------------- --%>
-  <section id="pricing" class="py-20 border-t border-base-200">
-    <div class="max-w-2xl mb-10">
+  <section id="pricing" class="py-16 sm:py-20 border-t border-base-200">
+    <div class="max-w-2xl mb-8 sm:mb-10">
       <p class="text-xs font-medium tracking-wide uppercase text-primary mb-3">
         {dgettext("landing", "Pricing")}
       </p>
-      <h2 class="text-3xl sm:text-4xl font-semibold tracking-tight leading-tight">
+      <h2 class="text-2xl sm:text-3xl lg:text-4xl font-semibold tracking-tight leading-tight">
         {dgettext("landing", "Per-seat. No usage games.")}
       </h2>
       <p class="text-base-content/60 mt-3">
-        {dgettext("landing", 
+        {dgettext("landing",
           "Prices below are placeholders while we finalise the beta. Real numbers ship with the public release."
         )}
       </p>
     </div>
 
-    <div class="grid md:grid-cols-3 gap-6">
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
       <div class="rounded-box border border-base-200 p-6 space-y-4">
         <p class="text-xs font-medium tracking-wide uppercase text-base-content/50">
           {dgettext("landing", "Solo")}
@@ -205,7 +197,7 @@
         </ul>
       </div>
 
-      <div class="rounded-box border-2 border-primary p-6 space-y-4 relative">
+      <div class="rounded-box border-2 border-primary p-6 space-y-4 relative md:scale-105 md:shadow-md">
         <span class="absolute -top-3 right-6 badge badge-primary badge-sm">
           {dgettext("landing", "Recommended")}
         </span>
@@ -246,21 +238,21 @@
   <%!-- ----------------------------------------------------------------- --%>
   <%!-- Final CTA                                                          --%>
   <%!-- ----------------------------------------------------------------- --%>
-  <section class="py-20 border-t border-base-200">
+  <section class="py-16 sm:py-20 border-t border-base-200">
     <div class="rounded-box bg-base-200/50 px-6 sm:px-12 py-12 sm:py-16 text-center max-w-3xl mx-auto">
-      <h2 class="text-2xl sm:text-3xl font-semibold tracking-tight">
+      <h2 class="text-xl sm:text-2xl lg:text-3xl font-semibold tracking-tight">
         {dgettext("landing", "Draft with proof, not vibes.")}
       </h2>
       <p class="text-base-content/70 mt-3 max-w-xl mx-auto">
-        {dgettext("landing", 
+        {dgettext("landing",
           "Request an invitation. We'll set up your workspace, walk you through the agent, and listen carefully to what's missing."
         )}
       </p>
-      <div class="mt-6 flex flex-wrap justify-center gap-3">
-        <.link navigate={~p"/users/register"} class="btn btn-primary">
+      <div class="mt-6 flex flex-col sm:flex-row sm:flex-wrap justify-center gap-3">
+        <.link navigate={~p"/users/register"} class="btn btn-primary w-full sm:w-auto">
           {dgettext("landing", "Request access")}
         </.link>
-        <a href="mailto:hello@contractstudio.example" class="btn btn-ghost">
+        <a href="mailto:hello@contractstudio.example" class="btn btn-ghost w-full sm:w-auto">
           {dgettext("landing", "Email the team")}
         </a>
       </div>

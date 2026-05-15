@@ -77,6 +77,7 @@ defmodule Contract.MixProject do
       {:sweet_xml, "~> 0.7"},
       {:oban, "~> 2.18"},
       {:dotenvy, "~> 1.0"},
+      {:toml, "~> 0.7"},
       {:stream_data, "~> 1.1", only: [:test, :dev]},
       {:bypass, "~> 2.1", only: :test},
       {:mox, "~> 1.2", only: :test},

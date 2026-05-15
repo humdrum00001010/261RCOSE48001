@@ -98,23 +98,66 @@ defmodule ContractWeb.DashboardLiveTest do
     end
   end
 
-  describe "matters populated state" do
+  describe "documents + activity populated state" do
     setup :log_in_a_user
 
-    test "renders the matter grid when matters list is non-empty", %{conn: conn} do
-      # We can't seed real matters yet (Wave 3C2 owns that), but we *can*
-      # exercise the populated branch by patching the assign directly via
-      # Phoenix.LiveViewTest's `render/2` after mounting and replacing
-      # the assign. Instead we drive through the LV's public state by
-      # rendering the inline template directly.
-      {:ok, lv, _html} = live(conn, ~p"/dashboard")
+    # `Contract.Matters` doesn't exist yet (Wave 3C1), so we can't drive the
+    # *matters* populated branch directly. We *can*, however, exercise the
+    # `recent_documents` and `activity` populated branches by inserting raw
+    # rows into the `changes` table — the dashboard's stub
+    # `list_recent_documents/1` and `list_activity/1` read straight from it.
+    test "renders the documents list + activity feed when changes exist", %{conn: conn} do
+      doc_id_a = Ecto.UUID.generate()
+      doc_id_b = Ecto.UUID.generate()
 
-      # Simulate a matter assign through the test harness by injecting
-      # into the socket via async_redirect would couple too tightly to
-      # internals — verify the *empty* branch only here, and trust the
-      # template's `:if` to flip cleanly. See dashboard_live_render_test
-      # for the populated-state assertion (covered by Wave 3C1 Playwright).
-      assert render(lv) =~ "No matters yet"
+      Contract.Repo.insert!(%Contract.Change{
+        document_id: doc_id_a,
+        action_kind: "create_document",
+        actor_type: :user,
+        actor_id: Ecto.UUID.generate(),
+        applied_revision: 1,
+        message: "first commit on A"
+      })
+
+      Contract.Repo.insert!(%Contract.Change{
+        document_id: doc_id_a,
+        action_kind: "rename_document",
+        actor_type: :agent,
+        actor_id: Ecto.UUID.generate(),
+        applied_revision: 2,
+        message: "rename"
+      })
+
+      Contract.Repo.insert!(%Contract.Change{
+        document_id: doc_id_b,
+        action_kind: "create_document",
+        actor_type: :user,
+        actor_id: Ecto.UUID.generate(),
+        applied_revision: 1,
+        message: "first commit on B"
+      })
+
+      {:ok, _lv, html} = live(conn, ~p"/dashboard")
+
+      # Recent-documents section: populated branch.
+      assert html =~ ~s(id="documents-list")
+      refute html =~ ~s(id="documents-empty")
+      # The dashboard renders a per-document title built from the first 8
+      # chars of the document_id (see DashboardLive.decorate_document/1).
+      assert html =~ "Document " <> String.slice(doc_id_a, 0, 8)
+      assert html =~ "Document " <> String.slice(doc_id_b, 0, 8)
+
+      # Activity section: populated branch.
+      assert html =~ ~s(id="activity-feed")
+      refute html =~ ~s(id="activity-empty")
+      # Two distinct actor classes (user + agent) should be reflected.
+      assert html =~ "first commit on A"
+      assert html =~ "rename"
+
+      # Stat row: `documents` count should reflect the 2 distinct doc_ids,
+      # `active_matters` still 0 (no Matters schema yet).
+      assert html =~ "Documents"
+      assert html =~ "Active matters"
     end
   end
 

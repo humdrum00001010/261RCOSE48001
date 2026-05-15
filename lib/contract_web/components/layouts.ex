@@ -14,6 +14,8 @@ defmodule ContractWeb.Layouts do
   use ContractWeb, :html
 
   alias ContractWeb.Brand
+  alias ContractWeb.Components.Breadcrumbs
+  alias ContractWeb.Components.CommandPalette
 
   # Embed all files in layouts/* within this module.
   embed_templates "layouts/*"
@@ -39,19 +41,42 @@ defmodule ContractWeb.Layouts do
   attr :variant, :string, default: "default", values: ~w(default narrow split)
   attr :page_title, :string, default: nil
 
+  attr :breadcrumbs, :list,
+    default: [],
+    doc: "optional navigation trail rendered between the navbar and main content"
+
   slot :inner_block, required: true
 
   def app(assigns) do
     ~H"""
-    <.top_nav current_scope={@current_scope} />
+    <div class="drawer">
+      <input id="mobile-nav-drawer" type="checkbox" class="drawer-toggle" />
 
-    <main class={main_class(@variant)}>
-      <div class={inner_class(@variant)}>
-        {render_slot(@inner_block)}
+      <div class="drawer-content flex flex-col min-h-screen">
+        <.top_nav current_scope={@current_scope} />
+
+        <Breadcrumbs.breadcrumbs :if={@current_scope} trail={@breadcrumbs || []} />
+
+        <main class={main_class(@variant)}>
+          <div class={inner_class(@variant)}>
+            {render_slot(@inner_block)}
+          </div>
+        </main>
+
+        <.site_footer :if={@variant != "split"} />
       </div>
-    </main>
 
-    <.site_footer :if={@variant != "split"} />
+      <div class="drawer-side z-40">
+        <label
+          for="mobile-nav-drawer"
+          aria-label={gettext("Close menu")}
+          class="drawer-overlay"
+        ></label>
+        <.mobile_nav current_scope={@current_scope} />
+      </div>
+    </div>
+
+    <CommandPalette.mount_if_live current_scope={@current_scope} />
 
     <.flash_group flash={@flash} />
     """
@@ -75,18 +100,27 @@ defmodule ContractWeb.Layouts do
   def top_nav(assigns) do
     ~H"""
     <header class="border-b border-base-200 bg-base-100/85 backdrop-blur sticky top-0 z-30">
-      <div class="mx-auto max-w-7xl flex items-center gap-6 px-4 sm:px-6 lg:px-8 h-14">
+      <div class="mx-auto max-w-7xl flex items-center gap-3 sm:gap-6 px-4 sm:px-6 lg:px-8 h-14">
+        <label
+          for="mobile-nav-drawer"
+          class="btn btn-ghost btn-sm btn-square lg:hidden"
+          aria-label="Open menu"
+          aria-controls="mobile-nav-drawer"
+        >
+          <.icon name="hero-bars-3" class="size-5" />
+        </label>
+
         <.link navigate={~p"/"} class="flex items-center gap-2 shrink-0" aria-label="Contract Studio home">
           <Brand.wordmark size="base" />
         </.link>
 
-        <nav :if={!signed_in?(@current_scope)} class="hidden md:flex items-center gap-6 text-sm text-base-content/70">
+        <nav :if={!signed_in?(@current_scope)} class="hidden lg:flex items-center gap-6 text-sm text-base-content/70">
           <a href="#features" class="hover:text-base-content">Features</a>
           <a href="#pricing" class="hover:text-base-content">Pricing</a>
           <a href="#docs" class="hover:text-base-content">Docs</a>
         </nav>
 
-        <nav :if={signed_in?(@current_scope)} class="hidden md:flex items-center gap-6 text-sm text-base-content/70">
+        <nav :if={signed_in?(@current_scope)} class="hidden lg:flex items-center gap-6 text-sm text-base-content/70">
           <.link navigate={~p"/dashboard"} class="hover:text-base-content">Dashboard</.link>
           <.link navigate={~p"/studio"} class="hover:text-base-content">Studio</.link>
         </nav>
@@ -117,7 +151,7 @@ defmodule ContractWeb.Layouts do
               </ul>
             </div>
           <% else %>
-            <.link navigate={~p"/users/log-in"} class="btn btn-ghost btn-sm">Log in</.link>
+            <.link navigate={~p"/users/log-in"} class="hidden sm:inline-flex btn btn-ghost btn-sm">Log in</.link>
             <.link navigate={~p"/users/register"} class="btn btn-primary btn-sm">
               Register
             </.link>
@@ -125,6 +159,71 @@ defmodule ContractWeb.Layouts do
         </div>
       </div>
     </header>
+    """
+  end
+
+  attr :current_scope, :map, default: nil
+
+  @doc """
+  Mobile drawer-side nav. Renders the same link set as the top nav, in
+  a vertical menu visible only when the user toggles the hamburger on
+  `< lg` viewports.
+  """
+  def mobile_nav(assigns) do
+    ~H"""
+    <aside
+      id="mobile-nav"
+      class="min-h-full w-72 bg-base-100 border-r border-base-200 p-6 space-y-6 flex flex-col"
+    >
+      <div class="flex items-center justify-between">
+        <Brand.wordmark size="base" />
+        <label
+          for="mobile-nav-drawer"
+          class="btn btn-ghost btn-sm btn-square"
+          aria-label="Close menu"
+        >
+          <.icon name="hero-x-mark" class="size-5" />
+        </label>
+      </div>
+
+      <%= if signed_in?(@current_scope) do %>
+        <p class="text-xs uppercase tracking-wide text-base-content/50">Account</p>
+        <p class="text-sm text-base-content/80 truncate">{@current_scope.user.email}</p>
+
+        <nav class="flex flex-col gap-1 text-sm">
+          <.link navigate={~p"/dashboard"} class="px-3 py-2 rounded-box hover:bg-base-200">
+            Dashboard
+          </.link>
+          <.link navigate={~p"/studio"} class="px-3 py-2 rounded-box hover:bg-base-200">
+            Studio
+          </.link>
+          <.link navigate={~p"/users/settings"} class="px-3 py-2 rounded-box hover:bg-base-200">
+            Settings
+          </.link>
+        </nav>
+
+        <div class="mt-auto pt-4 border-t border-base-200">
+          <.link href={~p"/users/log-out"} method="delete" class="btn btn-ghost btn-sm w-full justify-start">
+            <.icon name="hero-arrow-right-on-rectangle" class="size-4" /> Log out
+          </.link>
+        </div>
+      <% else %>
+        <nav class="flex flex-col gap-1 text-sm">
+          <a href="/#features" class="px-3 py-2 rounded-box hover:bg-base-200">Features</a>
+          <a href="/#pricing" class="px-3 py-2 rounded-box hover:bg-base-200">Pricing</a>
+          <a href="/#docs" class="px-3 py-2 rounded-box hover:bg-base-200">Docs</a>
+        </nav>
+
+        <div class="mt-auto pt-4 border-t border-base-200 flex flex-col gap-2">
+          <.link navigate={~p"/users/log-in"} class="btn btn-ghost btn-sm w-full">
+            Log in
+          </.link>
+          <.link navigate={~p"/users/register"} class="btn btn-primary btn-sm w-full">
+            Register
+          </.link>
+        </div>
+      <% end %>
+    </aside>
     """
   end
 
