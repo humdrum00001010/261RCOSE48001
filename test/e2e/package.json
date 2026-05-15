@@ -1,0 +1,18 @@
+{
+  "name": "contract-e2e",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Playwright e2e harness for Contract Studio. Drives a real Chromium against the public sprite URL (https://contract-studio-v7zk.sprites.app/). NOT localhost.",
+  "scripts": {
+    "test": "playwright test",
+    "test:headed": "playwright test --headed",
+    "test:trace": "playwright test --trace on",
+    "report": "playwright show-report"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.50.0",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0"
+  }
+}

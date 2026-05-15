@@ -1,5 +1,10 @@
 import Config
 
+# Playwright e2e: enables the `/test/personas/:p/sign_in` + `/test/reset`
+# routes (gated by `Application.compile_env(:contract, :test_auth)`).
+# Mirrored in `:test`; explicitly `false` in `:prod`.
+config :contract, :test_auth, true
+
 # Configure your database. Runtime values are re-applied in config/runtime.exs;
 # the fallbacks here cover bare `mix ecto.*` invocations without a populated .env.
 config :contract, Contract.Repo,

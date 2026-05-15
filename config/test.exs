@@ -1,5 +1,10 @@
 import Config
 
+# Playwright e2e: enables the `/test/personas/:p/sign_in` + `/test/reset`
+# routes (gated by `Application.compile_env(:contract, :test_auth)`).
+# Mirrored in `:dev`; explicitly `false` in `:prod`.
+config :contract, :test_auth, true
+
 # Only in tests, remove the complexity from the password hashing algorithm
 config :bcrypt_elixir, :log_rounds, 1
 

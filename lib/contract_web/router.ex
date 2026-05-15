@@ -17,6 +17,25 @@ defmodule ContractWeb.Router do
     plug :accepts, ["json"]
   end
 
+  # Playwright-only auth shim. Routes 404 at compile time in :prod because
+  # `Application.compile_env(:contract, :test_auth, false)` is false there
+  # (the controller module won't exist). Uses a bespoke pipeline that
+  # fetches the session (so we can write the user_token cookie) but skips
+  # CSRF so Playwright's bare `POST /test/personas/.../sign_in` succeeds
+  # without an HTML round-trip.
+  if Application.compile_env(:contract, :test_auth, false) do
+    pipeline :test_auth do
+      plug :accepts, ["json"]
+      plug :fetch_session
+    end
+
+    scope "/test", ContractWeb do
+      pipe_through :test_auth
+      post "/personas/:persona/sign_in", TestAuthController, :sign_in
+      post "/reset", TestAuthController, :reset
+    end
+  end
+
   scope "/", ContractWeb do
     pipe_through :browser
 
