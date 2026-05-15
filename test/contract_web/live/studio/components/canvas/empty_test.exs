@@ -78,6 +78,40 @@ defmodule ContractWeb.Live.Studio.Components.Canvas.EmptyTest do
       refute html =~ ~s(phx-value-modal="upload")
     end
 
+    test "renders + 새 문서 link when current_scope.perms includes :write" do
+      user = user_fixture()
+
+      scope = %Context{
+        Context.for_user(user)
+        | perms: ~w(read write)a
+      }
+
+      html = render_empty(current_scope: scope)
+
+      assert html =~ "+ 새 문서"
+      assert html =~ "PDF 가져오기"
+    end
+
+    test "hides + 새 문서 link when current_scope.perms == [:read]" do
+      user = user_fixture()
+      scope = %Context{Context.for_user(user) | perms: ~w(read)a}
+
+      html = render_empty(current_scope: scope)
+
+      refute html =~ "+ 새 문서"
+      refute html =~ "PDF 가져오기"
+    end
+
+    test "hides links when current_scope.perms is nil (defensive)" do
+      user = user_fixture()
+      scope = %Context{Context.for_user(user) | perms: nil}
+
+      html = render_empty(current_scope: scope)
+
+      refute html =~ "+ 새 문서"
+      refute html =~ "PDF 가져오기"
+    end
+
     test "Korean strings are precomposed Hangul syllables (no jamo decomposition)" do
       html = render_empty([])
 

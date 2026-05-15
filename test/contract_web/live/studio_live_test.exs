@@ -44,6 +44,30 @@ defmodule ContractWeb.StudioLiveTest do
       assert :sys.get_state(lv.pid).socket.assigns.current_scope.matter.id == matter_id
     end
 
+    test "MatterScope threads :user_perms from session onto current_scope.perms (lawyer-style) and renders + 새 문서 link",
+         %{conn: conn} do
+      # Persona sign-in (TestAuthController) writes :user_perms into the
+      # session. Simulate that here — the lawyer-shaped perm set must
+      # land on current_scope and unlock the Canvas.Empty actions.
+      lawyer_perms = ~w(read write commit revoke export type_change agent_run)a
+      conn = Plug.Conn.put_session(conn, :user_perms, lawyer_perms)
+
+      {:ok, lv, html} = live(conn, ~p"/studio")
+
+      assert :sys.get_state(lv.pid).socket.assigns.current_scope.perms == lawyer_perms
+      assert html =~ "+ 새 문서"
+      assert html =~ "PDF 가져오기"
+    end
+
+    test "without :user_perms in session, current_scope.perms is nil and Canvas.Empty actions are hidden",
+         %{conn: conn} do
+      {:ok, lv, html} = live(conn, ~p"/studio")
+
+      assert :sys.get_state(lv.pid).socket.assigns.current_scope.perms == nil
+      refute html =~ "+ 새 문서"
+      refute html =~ "PDF 가져오기"
+    end
+
     test "mounts the modal-host and toast-queue components", %{conn: conn} do
       {:ok, _lv, html} = live(conn, ~p"/studio")
       # ModalHost has graduated from stub → real component (Wave 3C1

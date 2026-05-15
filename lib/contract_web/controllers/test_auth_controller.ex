@@ -27,17 +27,20 @@ if Application.compile_env(:contract, :test_auth, false) do
       with {:ok, persona} <- safe_persona_atom(persona_name) do
         %{user: user} = PersonaFactory.build(persona)
         token = Accounts.generate_user_session_token(user)
+        %{perms: perms} = PersonaFactory.spec(persona)
 
         conn
         |> configure_session(renew: true)
         |> clear_session()
         |> put_session(:user_token, token)
         |> put_session(:live_socket_id, "users_sessions:#{Base.url_encode64(token)}")
+        |> put_session(:user_perms, perms)
         |> json(%{
           ok: true,
           persona: persona_name,
           user_id: user.id,
-          email: user.email
+          email: user.email,
+          perms: Enum.map(perms, &Atom.to_string/1)
         })
       else
         :error ->
