@@ -29,6 +29,25 @@ if config_env() != :test do
     ]
 end
 
+# Public-facing URL used by `Phoenix.VerifiedRoutes.url/1` (i.e. the absolute
+# URLs embedded in gen.auth confirmation / magic-link / update-email emails).
+# Without this, `ContractWeb.Endpoint`'s `:url` defaults to `localhost`
+# (set in `config/config.exs`), which leaks into outbound emails when the
+# app is running behind a per-sprite hostname like
+# `https://contract-studio-v7zk.sprites.app`.
+#
+# Test env is intentionally skipped — gen.auth's generated tests and the
+# Wallaby browser tests pin `localhost:4002` explicitly.
+if config_env() != :test do
+  app_base_url = System.fetch_env!("APP_BASE_URL")
+  %URI{scheme: scheme, host: host, port: port} = URI.parse(app_base_url)
+  scheme = scheme || "https"
+  endpoint_port = port || if(scheme == "https", do: 443, else: 80)
+
+  config :contract, ContractWeb.Endpoint,
+    url: [host: host, port: endpoint_port, scheme: scheme]
+end
+
 # ---------------------------------------------------------------------------
 # Repo (env-driven, dev + prod alike)
 # ---------------------------------------------------------------------------
@@ -154,15 +173,10 @@ if config_env() == :prod do
       You can generate one by calling: mix phx.gen.secret
       """
 
-  app_url = URI.parse(System.get_env("APP_BASE_URL", "https://example.com"))
-  host = System.get_env("PHX_HOST") || app_url.host || "example.com"
-  scheme = app_url.scheme || "https"
-  url_port = if scheme == "https", do: 443, else: 80
-
   config :contract, :dns_cluster_query, System.get_env("DNS_CLUSTER_QUERY")
 
+  # Note: `:url` is wired above (from APP_BASE_URL) for all non-test envs.
   config :contract, ContractWeb.Endpoint,
-    url: [host: host, port: url_port, scheme: scheme],
     http: [
       ip: {0, 0, 0, 0, 0, 0, 0, 0}
     ],

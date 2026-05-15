@@ -1,0 +1,69 @@
+defmodule Contract.Accounts.UserNotifierTest do
+  @moduledoc """
+  Regression test for the localhost-in-emails bug.
+
+  `Contract.Accounts.UserNotifier` builds emails whose body contains an
+  absolute URL produced via `ContractWeb.url(~p"/users/log-in/<token>")`.
+  That helper reads `ContractWeb.Endpoint`'s `:url` config — so if `:url`
+  defaults to `localhost`, the public sprite recipients get an unreachable
+  link.
+
+  This test pins `:url` to the per-sprite hostname (mimicking what
+  `runtime.exs` does when `APP_BASE_URL` is set) and asserts the email
+  body contains `https://contract-studio-v7zk.sprites.app/...` and NOT
+  `localhost`.
+  """
+  use Contract.DataCase, async: false
+
+  import Swoosh.TestAssertions
+
+  alias Contract.Accounts
+  alias Contract.AccountsFixtures
+  alias ContractWeb.Endpoint
+
+  @public_host "contract-studio-v7zk.sprites.app"
+
+  setup do
+    original = Application.get_env(:contract, Endpoint) || []
+
+    updated =
+      Keyword.put(original, :url, host: @public_host, port: 443, scheme: "https")
+
+    Application.put_env(:contract, Endpoint, updated)
+    # Phoenix caches `:url` in a `:persistent_term` populated at boot; we must
+    # call `config_change/2` so the supervisor re-runs `warmup_persistent/1`
+    # and `Endpoint.url/0` returns the new value. The `changed` arg is the
+    # standard Application config_change shape: `[{Module, new_config}]`.
+    :ok = Endpoint.config_change([{Endpoint, updated}], [])
+
+    on_exit(fn ->
+      Application.put_env(:contract, Endpoint, original)
+      Endpoint.config_change([{Endpoint, original}], [])
+    end)
+
+    :ok
+  end
+
+  test "login-instructions email contains the public sprite URL, not localhost" do
+    user = AccountsFixtures.unconfirmed_user_fixture()
+
+    # Mimic the call shape from ContractWeb.UserLive.Login / Registration:
+    # `&url(~p"/users/log-in/#{&1}")`. `Phoenix.VerifiedRoutes.url/1` ultimately
+    # delegates to `Endpoint.url/0`, which reads the `:url` config we just stubbed.
+    {:ok, email} =
+      Accounts.deliver_login_instructions(
+        user,
+        &(Endpoint.url() <> "/users/log-in/" <> &1)
+      )
+
+    body = email.text_body
+
+    assert body =~ "https://#{@public_host}/users/log-in/",
+           "expected the email body to embed the public sprite URL but got:\n#{body}"
+
+    refute body =~ "localhost",
+           "email body must not contain localhost — got:\n#{body}"
+
+    assert_email_sent(subject: "Confirmation instructions")
+  end
+end
