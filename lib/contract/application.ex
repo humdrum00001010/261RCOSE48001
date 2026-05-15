@@ -19,12 +19,13 @@ defmodule Contract.Application do
       # manage their own pools internally, so one pool here is enough.
       {Finch, name: Swoosh.Finch},
       {Oban, Application.fetch_env!(:contract, Oban)},
-      # Wave 2 placeholder:
-      # Contract.SessionSupervisor,
       ContractWeb.Endpoint,
       # Wave 1A2 Agent runtime: per-run GenServer registry + transient supervisor.
       {Registry, keys: :unique, name: Contract.Agent.Registry},
-      Contract.Agent.RunSupervisor
+      Contract.Agent.RunSupervisor,
+      # Wave 2 Persistence runtime: per-document Session registry + transient supervisor.
+      {Registry, keys: :unique, name: Contract.Session.Registry},
+      {DynamicSupervisor, strategy: :one_for_one, name: Contract.Session.Supervisor}
     ]
 
     # See https://hexdocs.pm/elixir/Supervisor.html

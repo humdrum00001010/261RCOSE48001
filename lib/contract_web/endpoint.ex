@@ -40,6 +40,17 @@ defmodule ContractWeb.Endpoint do
     param_key: "request_logger",
     cookie_key: "request_logger"
 
+  # Test-only sandbox endpoint. Wallaby's browser session hits `/sandbox`
+  # with a user-agent header carrying SQL sandbox metadata so it shares the
+  # same Ecto checkout as the test process. `compile_env` ensures this plug
+  # is fully elided from prod / dev builds.
+  if Application.compile_env(:contract, :sql_sandbox) do
+    plug Phoenix.Ecto.SQL.Sandbox,
+      at: "/sandbox",
+      header: "user-agent",
+      repo: Contract.Repo
+  end
+
   plug Plug.RequestId
   plug Plug.Telemetry, event_prefix: [:phoenix, :endpoint]
 

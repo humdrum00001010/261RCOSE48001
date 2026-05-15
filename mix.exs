@@ -79,7 +79,8 @@ defmodule Contract.MixProject do
       {:dotenvy, "~> 1.0"},
       {:stream_data, "~> 1.1", only: [:test, :dev]},
       {:bypass, "~> 2.1", only: :test},
-      {:mox, "~> 1.2", only: :test}
+      {:mox, "~> 1.2", only: :test},
+      {:wallaby, "~> 0.30", only: :test, runtime: false}
     ]
   end
 

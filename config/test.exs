@@ -19,12 +19,41 @@ config :contract, Contract.Repo,
   pool: Ecto.Adapters.SQL.Sandbox,
   pool_size: System.schedulers_online() * 2
 
-# We don't run a server during test. If one is required,
-# you can enable the server option below.
+# Wallaby drives a real browser against the test endpoint, so the HTTP
+# server must be running for `:browser`-tagged feature tests. Plain ConnTest
+# / LiveViewTest cases don't need the server but tolerate `server: true`.
 config :contract, ContractWeb.Endpoint,
   http: [ip: {127, 0, 0, 1}, port: 4002],
   secret_key_base: "fdSwy2CndhpkOt1n+miKuBzwIMBkBxzGfg7azoR3klip6hL9cvK0cL69X7pnOQLF",
-  server: false
+  server: true
+
+# Wallaby driver + Chromium.
+#   * `:path`   — chromedriver executable. Wallaby PATH-resolves this, so
+#                 a bare "chromedriver" works as long as it's on $PATH.
+#                 Override via CHROMEDRIVER_PATH for pinned binaries.
+#   * `:binary` — Chrome / Chromium executable. CHROMEDRIVER does NOT
+#                 PATH-resolve `binary` — it passes the literal string to
+#                 the underlying chrome process. So this must be an
+#                 absolute path. Override via CHROME_BINARY_PATH.
+#   * `:headless` — keep `true` for CI / sprite.
+config :wallaby,
+  driver: Wallaby.Chrome,
+  chromedriver: [
+    headless: true,
+    path: System.get_env("CHROMEDRIVER_PATH") || "chromedriver",
+    binary:
+      System.get_env("CHROME_BINARY_PATH") ||
+        (System.find_executable("chromium") ||
+           System.find_executable("chrome") ||
+           System.find_executable("google-chrome") ||
+           "/usr/local/bin/chromium")
+  ],
+  otp_app: :contract,
+  base_url: "http://localhost:4002"
+
+# Mounts the Phoenix.Ecto.SQL.Sandbox plug under `/sandbox` so the real
+# browser session can pin to the same Ecto sandbox owner as the test.
+config :contract, :sql_sandbox, true
 
 # In test we don't send emails
 config :contract, Contract.Mailer, adapter: Swoosh.Adapters.Test

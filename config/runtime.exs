@@ -15,13 +15,19 @@ if System.get_env("PHX_SERVER") do
   config :contract, ContractWeb.Endpoint, server: true
 end
 
-config :contract, ContractWeb.Endpoint,
-  http: [
-    port:
-      String.to_integer(
-        System.get_env("SERVER_PORT") || System.get_env("PORT") || "4000"
-      )
-  ]
+# Port override is dev/prod only. The `:test` env pins :4002 in
+# `config/test.exs` so Wallaby + the Phoenix.Ecto.SQL.Sandbox plug can
+# target a stable endpoint, regardless of whatever SERVER_PORT/PORT
+# happens to be set in `.env` for the dev sprite.
+if config_env() != :test do
+  config :contract, ContractWeb.Endpoint,
+    http: [
+      port:
+        String.to_integer(
+          System.get_env("SERVER_PORT") || System.get_env("PORT") || "4000"
+        )
+    ]
+end
 
 # ---------------------------------------------------------------------------
 # Repo (env-driven, dev + prod alike)
