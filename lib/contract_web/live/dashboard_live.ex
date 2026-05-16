@@ -214,6 +214,11 @@ defmodule ContractWeb.DashboardLive do
     Postgrex.Error -> []
   end
 
+  # Single source of truth for the dashboard's recent-documents row cap.
+  # Mirrors `Contract.Documents.list_recent_for_scope/2`'s default; kept
+  # explicit here so the template can show it in the footer.
+  defp recent_documents_limit, do: 20
+
   defp list_recent_documents(scope) do
     # Wave 4.6: matters_by_id is used by the table to render the "Matter"
     # column — we batch-load the matter rows the scope can see and stitch
@@ -223,8 +228,11 @@ defmodule ContractWeb.DashboardLive do
       |> Contract.Matters.list_for_scope()
       |> Map.new(fn m -> {m.id, m} end)
 
+    # Small task #80 (2026-05-16): cap at 20 rows. Test seed data had been
+    # accumulating in long-running envs and the dashboard table was rendering
+    # hundreds of rows. Pass an explicit `limit:` opt so this is grep-able.
     scope
-    |> Contract.Documents.list_recent_for_scope(8)
+    |> Contract.Documents.list_recent_for_scope(limit: recent_documents_limit())
     |> Enum.map(fn d ->
       matter = Map.get(matters_by_id, d.matter_id)
 
@@ -411,6 +419,13 @@ defmodule ContractWeb.DashboardLive do
                 </tbody>
               </table>
             </div>
+            <p
+              :if={length(@recent_documents) >= recent_documents_limit()}
+              data-role="recent-documents-footer"
+              class="mt-2 text-xs text-base-content/50 text-right"
+            >
+              {dgettext("dashboard", "최근 %{n}개 표시 중", n: recent_documents_limit())}
+            </p>
           <% end %>
         </section>
 

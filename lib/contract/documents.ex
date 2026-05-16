@@ -56,7 +56,13 @@ defmodule Contract.Documents do
 
   @doc """
   List the most recent documents visible to the scope, across all
-  matters the scope can see. Limit defaults to 8.
+  matters the scope can see.
+
+  Accepts either a positive integer (legacy positional API — kept so the
+  existing test suite and any other callers don't break) or a keyword
+  list with `:limit`. The default limit is `20`, which caps the dashboard
+  recents table after accumulated test seed data was discovered to be
+  rendering hundreds of rows (small task #80, 2026-05-16).
 
   Includes documents whose matter is hidden (system-created Workspaces
   auto-synthesized by `create_with_auto_matter/2`) — the matter is
@@ -64,8 +70,22 @@ defmodule Contract.Documents do
   real product and MUST surface in recents. ACL is still enforced via
   the tenant filter on `Matters.list_for_scope/2`.
   """
-  @spec list_recent_for_scope(Context.t(), pos_integer()) :: [Document.t()]
-  def list_recent_for_scope(%Context{} = scope, limit \\ 8) when is_integer(limit) do
+  @default_recent_limit 20
+
+  @spec list_recent_for_scope(Context.t(), pos_integer() | keyword()) :: [Document.t()]
+  def list_recent_for_scope(scope, opts_or_limit \\ [])
+
+  def list_recent_for_scope(%Context{} = scope, limit)
+      when is_integer(limit) and limit > 0 do
+    do_list_recent_for_scope(scope, limit)
+  end
+
+  def list_recent_for_scope(%Context{} = scope, opts) when is_list(opts) do
+    limit = Keyword.get(opts, :limit, @default_recent_limit)
+    do_list_recent_for_scope(scope, limit)
+  end
+
+  defp do_list_recent_for_scope(%Context{} = scope, limit) when is_integer(limit) and limit > 0 do
     matter_ids =
       Matters.list_for_scope(scope, include_hidden: true) |> Enum.map(& &1.id)
 
