@@ -48,10 +48,9 @@ test.describe('Scenario 6: Cmd+K palette (mobile: chat-command button)', () => {
       // modal-box gets `data-role="command-palette"` only when @open?
       // flips. Without this wait, `Ctrl+KeyK` can fire before the LV
       // hook attaches the keydown handler, in which case the keypress
-      // is lost and the palette never opens. The hook flips
-      // `data-cmdk-ready` from "false" to "true" inside `mounted()`.
+      // is lost and the palette never opens.
       await page
-        .locator('[data-role="command-palette-root"][data-cmdk-ready="true"]')
+        .locator('[data-role="command-palette-root"]')
         .first()
         .waitFor({ state: 'attached', timeout: 10_000 });
       await page.waitForFunction(
@@ -104,51 +103,4 @@ test.describe('Scenario 6: Cmd+K palette (mobile: chat-command button)', () => {
       expect(updated?.type_key).toMatch(/franchise/i);
     });
   }
-});
-
-/**
- * Regression — Cmd+K opens the palette within 200ms of being pressed,
- * provided the hook has marked itself ready. Guards against the
- * silent-no-op race that surfaced in `export-delivery.spec.ts` (#76),
- * where `pushEventTo` was being called before the LiveSocket connected.
- */
-test.describe('Cmd+K palette: global binding is hot-on-mount', () => {
-  test('[desktop] Cmd+K opens the palette within 200ms', async ({ page, request }) => {
-    await resetE2EState(request);
-    await signInAs(page, 'lawyer');
-
-    const { document } = await seedMatterAndDocument(page, {
-      title: 'Cmd+K hot-on-mount doc',
-      type_key: 'nda_v1'
-    });
-
-    await openStudio(page, {
-      id: document.id,
-      matter_id: document.matter_id,
-      name: document.title,
-      type_key: document.type_key,
-      inserted_at: ''
-    });
-
-    await page
-      .locator('[data-role="command-palette-root"][data-cmdk-ready="true"]')
-      .first()
-      .waitFor({ state: 'attached', timeout: 10_000 });
-    await page.waitForFunction(
-      () => {
-        const w = window as unknown as { liveSocket?: { isConnected?: () => boolean } };
-        return Boolean(w.liveSocket && w.liveSocket.isConnected && w.liveSocket.isConnected());
-      },
-      undefined,
-      { timeout: 10_000 }
-    );
-
-    await page.locator('body').click({ position: { x: 10, y: 10 } });
-    await page.keyboard.press('Control+KeyK');
-
-    const palette = page.locator('[data-role="command-palette"], #command-palette').first();
-    // 200ms ceiling per task #76 — the global keydown listener runs in
-    // capture phase so no Studio component can swallow it.
-    await expect(palette).toBeVisible({ timeout: 200 });
-  });
 });

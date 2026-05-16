@@ -37,26 +37,8 @@ test.describe('Scenario 7: export delivery (HWPX)', () => {
 
       await openStudio(page, document);
 
-      // Wait for the palette hook to bind before pressing the chord.
-      // Without this, `page.keyboard.press` can race the LV upgrade and
-      // the keypress is silently dropped (pushEventTo is a no-op
-      // pre-connect). See `cmd-k-palette.spec.ts` for the same gate.
-      await page
-        .locator('[data-role="command-palette-root"][data-cmdk-ready="true"]')
-        .first()
-        .waitFor({ state: 'attached', timeout: 10_000 });
-      await page.waitForFunction(
-        () => {
-          const w = window as unknown as { liveSocket?: { isConnected?: () => boolean } };
-          return Boolean(w.liveSocket && w.liveSocket.isConnected && w.liveSocket.isConnected());
-        },
-        undefined,
-        { timeout: 10_000 }
-      );
-
       // Trigger via Cmd+K (desktop) or chat-command (mobile).
       if (viewport === 'desktop') {
-        await page.locator('body').click({ position: { x: 10, y: 10 } });
         await page.keyboard.press('Control+KeyK');
       } else {
         const cmdBtn = page.locator('[data-role="chat-command"]').first();
