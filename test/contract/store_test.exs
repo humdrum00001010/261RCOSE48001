@@ -415,6 +415,193 @@ defmodule Contract.StoreTest do
     end
   end
 
+  describe "document set_attr propagation (Task #81)" do
+    # When Engine emits a `:set_attr` op against `target_type: :document`,
+    # Store.append must mirror the affected attribute(s) onto the
+    # `documents` SQL row so dashboard/list queries don't see stale
+    # title/type_key/status. The propagation runs inside the same
+    # `Repo.transaction/1` as the Change insert.
+
+    alias Contract.Documents
+
+    defp setup_document_row(matter_id, owner_id \\ nil) do
+      owner_id = owner_id || Ecto.UUID.generate()
+      doc_id = Ecto.UUID.generate()
+
+      {:ok, _matter} =
+        %Contract.Matters.Matter{id: matter_id}
+        |> Contract.Matters.Matter.changeset(%{
+          "name" => "M-#{System.unique_integer([:positive])}",
+          "owner_id" => owner_id
+        })
+        |> Contract.Repo.insert()
+
+      {:ok, _doc} =
+        %Contract.Documents.Document{id: doc_id}
+        |> Contract.Documents.Document.changeset(%{
+          "matter_id" => matter_id,
+          "title" => "Initial",
+          "type_key" => "nda_v1",
+          "status" => "active"
+        })
+        |> Contract.Repo.insert()
+
+      {doc_id, owner_id}
+    end
+
+    defp set_attr_change(doc_id, base_revision, key, value, opts \\ []) do
+      %Change{
+        matter_id: Ecto.UUID.generate(),
+        document_id: doc_id,
+        action_kind: "set_attr_doc",
+        actor_type: :user,
+        actor_id: Ecto.UUID.generate(),
+        base_revision: base_revision,
+        applied_revision: nil,
+        idempotency_key: Keyword.get(opts, :idempotency_key, "set-#{key}-#{base_revision}"),
+        ops: [
+          %{
+            "op" => "set_attr",
+            "target_type" => "document",
+            "target_id" => doc_id,
+            "args" => %{"key" => Atom.to_string(key), "value" => value}
+          }
+        ],
+        marks: [],
+        message: nil,
+        affected_refs: [],
+        preimage: %{},
+        inverse_ops: [],
+        status: :active
+      }
+    end
+
+    test "set_attr :title updates the documents row" do
+      matter_id = Ecto.UUID.generate()
+      {doc_id, _owner_id} = setup_document_row(matter_id)
+      lease = acquire_lease(doc_id)
+
+      change = set_attr_change(doc_id, 0, :title, "Renamed Title")
+      assert {:ok, _persisted} = Store.append(doc_id, change, lease.fencing_token)
+
+      row = Contract.Repo.get(Contract.Documents.Document, doc_id)
+      assert row.title == "Renamed Title"
+    end
+
+    test "set_attr :type_key updates the documents row" do
+      matter_id = Ecto.UUID.generate()
+      {doc_id, _owner_id} = setup_document_row(matter_id)
+      lease = acquire_lease(doc_id)
+
+      change = set_attr_change(doc_id, 0, :type_key, "service_agreement_v1")
+      assert {:ok, _persisted} = Store.append(doc_id, change, lease.fencing_token)
+
+      row = Contract.Repo.get(Contract.Documents.Document, doc_id)
+      assert row.type_key == "service_agreement_v1"
+    end
+
+    test "set_attr :status updates the documents row" do
+      matter_id = Ecto.UUID.generate()
+      {doc_id, _owner_id} = setup_document_row(matter_id)
+      lease = acquire_lease(doc_id)
+
+      change = set_attr_change(doc_id, 0, :status, "archived")
+      assert {:ok, _persisted} = Store.append(doc_id, change, lease.fencing_token)
+
+      row = Contract.Repo.get(Contract.Documents.Document, doc_id)
+      assert row.status == :archived
+    end
+
+    test "multiple set_attr ops in one Change all propagate" do
+      matter_id = Ecto.UUID.generate()
+      {doc_id, _owner_id} = setup_document_row(matter_id)
+      lease = acquire_lease(doc_id)
+
+      change = %Change{
+        matter_id: matter_id,
+        document_id: doc_id,
+        action_kind: "bulk_set_attr",
+        actor_type: :user,
+        actor_id: Ecto.UUID.generate(),
+        base_revision: 0,
+        applied_revision: nil,
+        idempotency_key: "bulk-#{doc_id}",
+        ops: [
+          %{
+            "op" => "set_attr",
+            "target_type" => "document",
+            "target_id" => doc_id,
+            "args" => %{"key" => "title", "value" => "Bulk Title"}
+          },
+          %{
+            "op" => "set_attr",
+            "target_type" => "document",
+            "target_id" => doc_id,
+            "args" => %{"key" => "type_key", "value" => "msa_v1"}
+          },
+          %{
+            "op" => "set_attr",
+            "target_type" => "document",
+            "target_id" => doc_id,
+            "args" => %{"key" => "status", "value" => "archived"}
+          }
+        ],
+        marks: [],
+        message: nil,
+        affected_refs: [],
+        preimage: %{},
+        inverse_ops: [],
+        status: :active
+      }
+
+      assert {:ok, _} = Store.append(doc_id, change, lease.fencing_token)
+
+      row = Contract.Repo.get(Contract.Documents.Document, doc_id)
+      assert row.title == "Bulk Title"
+      assert row.type_key == "msa_v1"
+      assert row.status == :archived
+    end
+
+    test "non-attr ops (e.g. create_node) leave the documents row untouched" do
+      matter_id = Ecto.UUID.generate()
+      {doc_id, _owner_id} = setup_document_row(matter_id)
+      lease = acquire_lease(doc_id)
+
+      # build_create_change builds a :create_node op, NOT a :set_attr op.
+      change = build_create_change(doc_id, matter_id: matter_id, idempotency_key: "create-only")
+      assert {:ok, _} = Store.append(doc_id, change, lease.fencing_token)
+
+      row = Contract.Repo.get(Contract.Documents.Document, doc_id)
+      # untouched — title/type_key/status are still the seed values
+      assert row.title == "Initial"
+      assert row.type_key == "nda_v1"
+      assert row.status == :active
+    end
+
+    test "Documents.get/2 reflects the propagated title" do
+      matter_id = Ecto.UUID.generate()
+      {doc_id, owner_id} = setup_document_row(matter_id)
+      lease = acquire_lease(doc_id)
+
+      # The seeded matter has tenant_id: nil so any non-nil scope can
+      # read it via the ACL gate.
+      scope = %Contract.Context{
+        user: %Contract.Accounts.User{id: owner_id, email: "owner@x"},
+        tenant: nil
+      }
+
+      assert {:ok, _} =
+               Store.append(
+                 doc_id,
+                 set_attr_change(doc_id, 0, :title, "After Propagation"),
+                 lease.fencing_token
+               )
+
+      assert {:ok, %Documents.Document{title: "After Propagation"}} =
+               Documents.get(scope, doc_id)
+    end
+  end
+
   describe "change_to_input/1" do
     test "decodes string ops back into Operation structs with atom kinds" do
       doc = new_document_id()

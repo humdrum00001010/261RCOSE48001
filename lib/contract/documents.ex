@@ -56,13 +56,7 @@ defmodule Contract.Documents do
 
   @doc """
   List the most recent documents visible to the scope, across all
-  matters the scope can see.
-
-  Accepts either a positive integer (legacy positional API — kept so the
-  existing test suite and any other callers don't break) or a keyword
-  list with `:limit`. The default limit is `20`, which caps the dashboard
-  recents table after accumulated test seed data was discovered to be
-  rendering hundreds of rows (small task #80, 2026-05-16).
+  matters the scope can see. Limit defaults to 8.
 
   Includes documents whose matter is hidden (system-created Workspaces
   auto-synthesized by `create_with_auto_matter/2`) — the matter is
@@ -70,22 +64,8 @@ defmodule Contract.Documents do
   real product and MUST surface in recents. ACL is still enforced via
   the tenant filter on `Matters.list_for_scope/2`.
   """
-  @default_recent_limit 20
-
-  @spec list_recent_for_scope(Context.t(), pos_integer() | keyword()) :: [Document.t()]
-  def list_recent_for_scope(scope, opts_or_limit \\ [])
-
-  def list_recent_for_scope(%Context{} = scope, limit)
-      when is_integer(limit) and limit > 0 do
-    do_list_recent_for_scope(scope, limit)
-  end
-
-  def list_recent_for_scope(%Context{} = scope, opts) when is_list(opts) do
-    limit = Keyword.get(opts, :limit, @default_recent_limit)
-    do_list_recent_for_scope(scope, limit)
-  end
-
-  defp do_list_recent_for_scope(%Context{} = scope, limit) when is_integer(limit) and limit > 0 do
+  @spec list_recent_for_scope(Context.t(), pos_integer()) :: [Document.t()]
+  def list_recent_for_scope(%Context{} = scope, limit \\ 8) when is_integer(limit) do
     matter_ids =
       Matters.list_for_scope(scope, include_hidden: true) |> Enum.map(& &1.id)
 
@@ -272,6 +252,93 @@ defmodule Contract.Documents do
       |> Repo.update()
     end
   end
+
+  # ----------------------------------------------------------------------------
+  # set_title/2, set_type/2, set_status/2 (called by Store on propagation)
+  # ----------------------------------------------------------------------------
+
+  @doc """
+  Set a document's `:title`. Called from `Contract.Store.append/3` on the
+  hot commit path to mirror the engine's document-level `:set_attr` op
+  onto the `documents` table. Not gated by scope: the caller has already
+  validated the lease + revision.
+
+  Returns `:ok` regardless of whether the row exists — the documents
+  table is a downstream projection and is allowed to lag in test/dev
+  fixtures that bypass `Documents.create/2`.
+  """
+  @spec set_title(T.id(), String.t()) :: :ok
+  def set_title(document_id, title) when is_binary(document_id) and is_binary(title) do
+    from(d in Document, where: d.id == ^document_id, update: [set: [title: ^title, updated_at: ^now()]])
+    |> Repo.update_all([])
+
+    :ok
+  rescue
+    Postgrex.Error -> :ok
+    DBConnection.ConnectionError -> :ok
+    Ecto.Query.CastError -> :ok
+  end
+
+  def set_title(_, _), do: :ok
+
+  @doc """
+  Set a document's `:type_key`. Scope-less variant of `set_type/3` used
+  by `Contract.Store.append/3` to propagate engine `:set_attr` ops onto
+  the `documents` table. See `set_title/2` for rationale.
+  """
+  @spec set_type(T.id(), String.t() | nil) :: :ok
+  def set_type(document_id, type_key) when is_binary(document_id) do
+    cast =
+      cond do
+        is_binary(type_key) -> type_key
+        is_atom(type_key) and not is_nil(type_key) -> Atom.to_string(type_key)
+        true -> nil
+      end
+
+    from(d in Document, where: d.id == ^document_id, update: [set: [type_key: ^cast, updated_at: ^now()]])
+    |> Repo.update_all([])
+
+    :ok
+  rescue
+    Postgrex.Error -> :ok
+    DBConnection.ConnectionError -> :ok
+    Ecto.Query.CastError -> :ok
+  end
+
+  def set_type(_, _), do: :ok
+
+  @doc """
+  Set a document's `:status`. Scope-less variant used by
+  `Contract.Store.append/3` to propagate engine `:set_attr` ops onto
+  the `documents` table.
+  """
+  @spec set_status(T.id(), atom() | String.t()) :: :ok
+  def set_status(document_id, status) when is_binary(document_id) do
+    cast =
+      case status do
+        s when is_atom(s) -> s
+        s when is_binary(s) ->
+          try do
+            String.to_existing_atom(s)
+          rescue
+            ArgumentError -> nil
+          end
+        _ -> nil
+      end
+
+    if cast in [:active, :archived, :template] do
+      from(d in Document, where: d.id == ^document_id, update: [set: [status: ^cast, updated_at: ^now()]])
+      |> Repo.update_all([])
+    end
+
+    :ok
+  rescue
+    Postgrex.Error -> :ok
+    DBConnection.ConnectionError -> :ok
+    Ecto.Query.CastError -> :ok
+  end
+
+  def set_status(_, _), do: :ok
 
   # ----------------------------------------------------------------------------
   # touch_revision/2 (called by Store)

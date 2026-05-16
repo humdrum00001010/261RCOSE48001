@@ -227,6 +227,12 @@ defmodule Contract.Store do
 
     case %Change{} |> Change.changeset(attrs) |> Repo.insert() do
       {:ok, %Change{} = persisted} ->
+        # Mirror document-level :set_attr ops onto the `documents` table
+        # row inside the SAME transaction as the Change insert. Keeps the
+        # in-memory projection (Runtime.State) and the SQL row consistent.
+        # Engine module bodies are untouched — propagation is purely a
+        # Store-boundary concern. See Task #81.
+        :ok = propagate_to_documents(document_id, persisted)
         persisted
 
       {:error, %Ecto.Changeset{errors: errors} = changeset} ->
@@ -238,6 +244,44 @@ defmodule Contract.Store do
         else
           Repo.rollback({:insert_failed, changeset})
         end
+    end
+  end
+
+  # ----------------------------------------------------------------------------
+  # propagate_to_documents/2
+  #
+  # The engine's `:set_attr` op on a `:document` target mutates the
+  # in-memory `Runtime.State` projection — but the `documents` SQL row
+  # (title, type_key, status) is a separate downstream surface used by
+  # dashboard lists, /studio, the command palette, etc. Without
+  # propagation those queries would see stale values. Runs inside the
+  # outer `Repo.transaction/1` so the row + Change row commit atomically.
+  # ----------------------------------------------------------------------------
+
+  defp propagate_to_documents(document_id, %Change{ops: ops}) when is_list(ops) do
+    ops
+    |> Enum.map(&decode_op/1)
+    |> Enum.filter(&document_set_attr?/1)
+    |> Enum.each(&apply_document_attr(document_id, &1))
+
+    :ok
+  end
+
+  defp propagate_to_documents(_document_id, _change), do: :ok
+
+  defp document_set_attr?(%Operation{op: :set_attr, target_type: :document}), do: true
+  defp document_set_attr?(_), do: false
+
+  defp apply_document_attr(doc_id, %Operation{args: args}) do
+    key = atomize_value(Map.get(args, :key) || Map.get(args, "key"))
+    value = Map.get(args, :value) || Map.get(args, "value")
+
+    case key do
+      :title when is_binary(value) -> Contract.Documents.set_title(doc_id, value)
+      :type_key -> Contract.Documents.set_type(doc_id, value)
+      :status -> Contract.Documents.set_status(doc_id, value)
+      # other keys (node_order, metadata, ...) stay in the projection only
+      _ -> :ok
     end
   end
 

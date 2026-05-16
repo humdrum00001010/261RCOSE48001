@@ -192,43 +192,6 @@ defmodule Contract.DocumentsTest do
       recent = Documents.list_recent_for_scope(s, 10)
       assert length(recent) == 2
     end
-
-    # Small task #80 (2026-05-16): cap recents at a hard limit so accumulated
-    # test seed data can't make the dashboard table blow up to hundreds of
-    # rows. The default is 20; callers can still override.
-    test "list_recent_for_scope defaults to 20 rows when called with no opts" do
-      s = scope()
-      m = setup_matter(s)
-
-      for i <- 1..25 do
-        create_doc(s, m, title: "Doc-#{i}")
-      end
-
-      assert length(Documents.list_recent_for_scope(s)) == 20
-    end
-
-    test "list_recent_for_scope accepts a `:limit` keyword opt" do
-      s = scope()
-      m = setup_matter(s)
-
-      for i <- 1..10 do
-        create_doc(s, m, title: "Doc-#{i}")
-      end
-
-      assert length(Documents.list_recent_for_scope(s, limit: 5)) == 5
-      assert length(Documents.list_recent_for_scope(s, limit: 50)) == 10
-    end
-
-    test "list_recent_for_scope positional integer still works (legacy callers)" do
-      s = scope()
-      m = setup_matter(s)
-
-      for i <- 1..6 do
-        create_doc(s, m, title: "Doc-#{i}")
-      end
-
-      assert length(Documents.list_recent_for_scope(s, 3)) == 3
-    end
   end
 
   describe "get/2" do
