@@ -21,7 +21,7 @@ defmodule Contract.Matters do
   alias Contract.Types, as: T
 
   # ----------------------------------------------------------------------------
-  # list_for_scope/1
+  # list_for_scope/1,2
   # ----------------------------------------------------------------------------
 
   @doc """
@@ -30,10 +30,25 @@ defmodule Contract.Matters do
     * Matters where `tenant_id IS NULL` are always visible.
     * Matters where `tenant_id = scope.tenant.id` are visible.
     * Archived matters are filtered out.
+
+  Per SPEC.md §1/§4 (Document-primary pivot, 2026-05-15): matters with
+  `metadata.hidden_from_user = true` (i.e. system-created workspaces
+  auto-synthesized by `Contract.Documents.create_with_auto_matter/2`) are
+  filtered out of the default user view — the user-facing label is
+  "Workspace" or hidden, and the auto-matter is an internal context
+  container, not a UX surface.
+
+  Pass `include_hidden: true` to bypass the hidden filter (e.g. lawyer
+  packet surfaces, admin tooling). Backwards-compatible: existing
+  user-created matters have no `hidden_from_user` flag and stay visible.
   """
   @spec list_for_scope(Context.t()) :: [Matter.t()]
-  def list_for_scope(%Context{} = scope) do
+  @spec list_for_scope(Context.t(), keyword()) :: [Matter.t()]
+  def list_for_scope(scope, opts \\ [])
+
+  def list_for_scope(%Context{} = scope, opts) when is_list(opts) do
     tenant_id = tenant_id_of(scope)
+    include_hidden = Keyword.get(opts, :include_hidden, false)
 
     base = from m in Matter, where: m.status == :active, order_by: [desc: m.updated_at]
 
@@ -41,6 +56,14 @@ defmodule Contract.Matters do
       case tenant_id do
         nil -> from m in base, where: is_nil(m.tenant_id)
         id -> from m in base, where: is_nil(m.tenant_id) or m.tenant_id == ^id
+      end
+
+    query =
+      if include_hidden do
+        query
+      else
+        from m in query,
+          where: fragment("(?->>'hidden_from_user')::bool IS NOT TRUE", m.metadata)
       end
 
     Repo.all(query)

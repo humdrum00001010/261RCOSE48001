@@ -50,20 +50,22 @@ defmodule ContractWeb.DashboardLive do
 
   # Per SPEC.md §18 a document is created untyped (`type_key: nil`); the
   # type is set later via `Action(:set_contract_type)` by the user (Cmd+K)
-  # or the agent. The dashboard's "New document" affordance therefore
-  # only collects a title and the implicit matter; the type picker is
-  # gone.
+  # or the agent. Per SPEC.md Document-primary pivot (2026-05-15) the
+  # user is NOT asked to pick a Matter — `create_with_auto_matter/2`
+  # synthesizes a hidden Workspace if needed, or reuses the current
+  # scope's matter when the user is already inside an existing Workspace
+  # context (e.g. `/workspaces/:matter_id/...`).
   def handle_event("create_new_document", %{"title" => title} = params, socket)
       when is_binary(title) do
     scope = socket.assigns.current_scope
-    matter_id = params["matter_id"]
+    matter_id = resolve_matter_id(scope, params["matter_id"])
 
     attrs =
       %{"title" => title}
       |> maybe_put("matter_id", matter_id)
 
-    case create_untyped_document(scope, attrs) do
-      {:ok, _doc} ->
+    case Contract.Documents.create_with_auto_matter(scope, attrs) do
+      {:ok, doc, matter} ->
         {:noreply,
          socket
          |> assign(:show_new_doc_modal, false)
@@ -74,34 +76,45 @@ defmodule ContractWeb.DashboardLive do
              "dashboard",
              "New document created. Pick a contract type with Cmd+K, or let the agent suggest one."
            )
-         )}
+         )
+         |> push_navigate(to: document_path(matter, doc))}
 
       {:error, _reason} ->
         {:noreply,
          socket
          |> put_flash(
            :error,
-           dgettext("dashboard", "Could not create the document. Pick a matter first.")
+           dgettext("dashboard", "Could not create the document.")
          )}
     end
   end
 
-  defp create_untyped_document(scope, %{"matter_id" => matter_id} = attrs)
-       when is_binary(matter_id) do
-    Contract.Documents.create(scope, attrs)
+  # Resolve the matter_id we should pass to `create_with_auto_matter/2`:
+  #
+  #   * explicit param wins (legacy form submissions that include it),
+  #   * else if the scope is already inside a non-system Matter context
+  #     (e.g. mounted under `/workspaces/:matter_id/...`), reuse that id
+  #     so we don't synthesize a duplicate Workspace,
+  #   * else nil — let the backend auto-create a hidden Workspace.
+  defp resolve_matter_id(_scope, explicit) when is_binary(explicit) and explicit != "",
+    do: explicit
+
+  defp resolve_matter_id(%Contract.Context{matter: %{id: id} = matter}, _) when is_binary(id) do
+    if system_created?(matter), do: nil, else: id
   end
 
-  # No matter_id supplied — fall back to the most recently-touched
-  # matter visible to the scope. Pure UX nicety; the user can still
-  # change matter from Studio once the document is open.
-  defp create_untyped_document(scope, attrs) do
-    case Contract.Matters.list_for_scope(scope) do
-      [%{id: id} | _] ->
-        Contract.Documents.create(scope, Map.put(attrs, "matter_id", id))
+  defp resolve_matter_id(_scope, _), do: nil
 
-      _ ->
-        {:error, :no_matter}
-    end
+  defp system_created?(%{metadata: %{"system_created" => true}}), do: true
+  defp system_created?(%{metadata: %{system_created: true}}), do: true
+  defp system_created?(_), do: false
+
+  # Document-first navigation target. The proper `/documents/:id` route
+  # lands via Impl B; until then, route through the legacy nested
+  # matter path so the existing StudioLive mount still hydrates state.
+  defp document_path(matter, doc) do
+    matter_id = matter && matter.id
+    ~p"/matters/#{matter_id}/documents/#{doc.id}"
   end
 
   defp maybe_put(map, _key, nil), do: map
@@ -647,6 +660,14 @@ defmodule ContractWeb.DashboardLive do
 
             <p class="text-xs text-base-content/60" data-role="new-document-type-hint">
               {dgettext("dashboard", "Type is set later by you or the agent.")}
+            </p>
+
+            <%!-- SPEC.md Document-primary pivot (2026-05-15): the user is no --%>
+            <%!-- longer asked to pick a Matter. A hidden Workspace is        --%>
+            <%!-- auto-created on submit; this hint surfaces that mechanic    --%>
+            <%!-- without ever showing the word "Matter" in casual UI.        --%>
+            <p class="text-xs text-base-content/60" data-role="new-document-workspace-hint">
+              {dgettext("dashboard", "워크스페이스가 자동으로 생성됩니다")}
             </p>
 
             <div class="flex justify-end gap-2 pt-2">

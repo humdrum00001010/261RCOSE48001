@@ -57,10 +57,17 @@ defmodule Contract.Documents do
   @doc """
   List the most recent documents visible to the scope, across all
   matters the scope can see. Limit defaults to 8.
+
+  Includes documents whose matter is hidden (system-created Workspaces
+  auto-synthesized by `create_with_auto_matter/2`) — the matter is
+  hidden from UI lists, but the Documents inside it are the user's
+  real product and MUST surface in recents. ACL is still enforced via
+  the tenant filter on `Matters.list_for_scope/2`.
   """
   @spec list_recent_for_scope(Context.t(), pos_integer()) :: [Document.t()]
   def list_recent_for_scope(%Context{} = scope, limit \\ 8) when is_integer(limit) do
-    matter_ids = Matters.list_for_scope(scope) |> Enum.map(& &1.id)
+    matter_ids =
+      Matters.list_for_scope(scope, include_hidden: true) |> Enum.map(& &1.id)
 
     if matter_ids == [] do
       []
@@ -129,6 +136,89 @@ defmodule Contract.Documents do
       |> Document.changeset(attrs)
       |> Repo.insert()
     end
+  end
+
+  # ----------------------------------------------------------------------------
+  # create_with_auto_matter/2 (SPEC.md Document-primary pivot, 2026-05-15)
+  # ----------------------------------------------------------------------------
+
+  @doc """
+  Create a Document without requiring the user to pick a Matter.
+
+  Per SPEC.md §1/§4/§22/§28 (Document-primary pivot, 2026-05-15): the
+  user must NOT be required to pick a Matter to create a Document. If
+  `attrs["matter_id"]` is set, this delegates to `create/2` (the existing
+  matter is reused, no new matter synthesized). Otherwise the backend
+  auto-creates a hidden Matter to host the resulting Document — the
+  auto-matter is filtered out of `Contract.Matters.list_for_scope/1`
+  unless `include_hidden: true` is passed.
+
+  The auto-matter's `name` is derived from the document title (e.g.
+  `"Workspace · My NDA"`) or falls back to `"Workspace · <YYYY-MM-DD>"`
+  when no title is supplied. `metadata` is stamped with:
+
+      %{
+        "system_created" => true,
+        "hidden_from_user" => true,
+        "source" => "auto_on_document_create"
+      }
+
+  so downstream queries can identify and filter these rows.
+
+  Returns `{:ok, document, matter}` on success. The matter is included
+  in the return tuple so callers can route to `/workspaces/:matter_id/...`
+  if needed; most callers should route to `/documents/:document_id`.
+  """
+  @spec create_with_auto_matter(Context.t(), map()) ::
+          {:ok, Document.t(), Matter.t()}
+          | {:error, Ecto.Changeset.t() | :forbidden | :not_found}
+  def create_with_auto_matter(%Context{} = scope, attrs) when is_map(attrs) do
+    attrs = stringify_keys(attrs)
+    matter_id = Map.get(attrs, "matter_id")
+
+    cond do
+      is_binary(matter_id) and matter_id != "" ->
+        # Caller passed an explicit matter — reuse it, do NOT synthesize.
+        with {:ok, doc} <- create(scope, attrs),
+             {:ok, matter} <- Matters.get(scope, matter_id) do
+          {:ok, doc, matter}
+        end
+
+      true ->
+        # No matter_id — auto-create a hidden Matter, then the Document.
+        title = Map.get(attrs, "title")
+
+        matter_attrs = %{
+          "name" => auto_matter_name(title),
+          "metadata" => %{
+            "system_created" => true,
+            "hidden_from_user" => true,
+            "source" => "auto_on_document_create"
+          }
+        }
+
+        with {:ok, matter} <- Matters.create(scope, matter_attrs),
+             doc_attrs = Map.put(attrs, "matter_id", matter.id),
+             {:ok, doc} <- create(scope, doc_attrs) do
+          {:ok, doc, matter}
+        end
+    end
+  end
+
+  # Build a stable, human-readable name for an auto-created Matter from
+  # the Document title. Empty/nil titles fall back to today's date so the
+  # row still has a non-empty :name (required by Matter changeset).
+  defp auto_matter_name(title) when is_binary(title) do
+    case String.trim(title) do
+      "" -> "Workspace · " <> today_iso()
+      trimmed -> "Workspace · " <> trimmed
+    end
+  end
+
+  defp auto_matter_name(_), do: "Workspace · " <> today_iso()
+
+  defp today_iso do
+    Date.utc_today() |> Date.to_iso8601()
   end
 
   # ----------------------------------------------------------------------------
@@ -201,11 +291,13 @@ defmodule Contract.Documents do
 
   @doc """
   Search documents by case-insensitive title substring within the scope.
-  Returns at most `limit` rows (default 20).
+  Returns at most `limit` rows (default 20). Includes documents in
+  hidden (auto-created) Workspaces — see `list_recent_for_scope/2`.
   """
   @spec search(Context.t(), String.t(), pos_integer()) :: [Document.t()]
   def search(%Context{} = scope, query, limit \\ 20) when is_binary(query) do
-    matter_ids = Matters.list_for_scope(scope) |> Enum.map(& &1.id)
+    matter_ids =
+      Matters.list_for_scope(scope, include_hidden: true) |> Enum.map(& &1.id)
 
     if matter_ids == [] do
       []

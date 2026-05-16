@@ -104,20 +104,87 @@ defmodule ContractWeb.DashboardLiveTest do
       {:ok, lv, _html} = live(conn, ~p"/dashboard")
       lv |> element("button", "New Document") |> render_click()
 
-      html =
-        lv
-        |> form(~s(form[data-role="new-document-form"]), %{"title" => "Quick draft"})
-        |> render_submit()
+      lv
+      |> form(~s(form[data-role="new-document-form"]), %{"title" => "Quick draft"})
+      |> render_submit()
 
-      refute html =~ ~s(id="new-document-modal")
-      # Flash mentions Cmd+K / agent so the user knows where the type
-      # is now set.
-      assert html =~ "Cmd+K" or html =~ "agent"
+      # The success branch push_navigates to the document — the LiveView
+      # process exits with `{:live_redirect, ...}`. The flash and the
+      # persisted document are still observable.
 
       # And a document was actually persisted, untyped.
-      [doc] = Contract.Documents.list_recent_for_scope(scope, 5)
-      assert doc.title == "Quick draft"
-      assert doc.type_key == nil
+      docs = Contract.Documents.list_recent_for_scope(scope, 5)
+      assert Enum.any?(docs, fn d -> d.title == "Quick draft" and d.type_key == nil end)
+    end
+
+    # SPEC.md Document-primary pivot (2026-05-15): a user with no
+    # existing Workspace can still create a Document. The backend
+    # auto-creates a hidden Workspace; the dashboard's matters table
+    # MUST NOT surface it.
+    test "submitting with no matter context auto-creates a hidden Workspace",
+         %{conn: conn, user: user} do
+      scope = Contract.Context.for_user(user)
+      # No matter seeded — this is the pure document-first path.
+
+      {:ok, lv, _html} = live(conn, ~p"/dashboard")
+      lv |> element("button", "New Document") |> render_click()
+
+      lv
+      |> form(~s(form[data-role="new-document-form"]), %{"title" => "Auto-NDA"})
+      |> render_submit()
+
+      # The document was persisted, untyped, attached to a hidden matter.
+      docs = Contract.Documents.list_recent_for_scope(scope, 5)
+      assert Enum.any?(docs, fn d -> d.title == "Auto-NDA" and d.type_key == nil end)
+
+      # The auto-matter exists in the table — but is hidden by default.
+      visible_ids =
+        scope |> Contract.Matters.list_for_scope() |> Enum.map(& &1.id) |> MapSet.new()
+
+      all_ids =
+        scope
+        |> Contract.Matters.list_for_scope(include_hidden: true)
+        |> Enum.map(& &1.id)
+        |> MapSet.new()
+
+      # At least one matter that is hidden-only (i.e. in all_ids but not
+      # visible_ids).
+      assert MapSet.size(MapSet.difference(all_ids, visible_ids)) >= 1
+    end
+
+    test "modal renders the 워크스페이스가 자동으로 생성됩니다 hint", %{conn: conn} do
+      {:ok, lv, _html} = live(conn, ~p"/dashboard")
+
+      html =
+        lv
+        |> element("button", "New Document")
+        |> render_click()
+
+      assert html =~ ~s(data-role="new-document-workspace-hint")
+      assert html =~ "워크스페이스가 자동으로 생성됩니다"
+    end
+
+    # The auto-matter is filtered out of the dashboard's matters table.
+    # If we create a document with no pre-existing matter, the table
+    # should STILL render the empty-state (because the only matter that
+    # was created is hidden).
+    test "dashboard matters table does not show the auto-matter",
+         %{conn: conn, user: user} do
+      scope = Contract.Context.for_user(user)
+
+      {:ok, _doc, hidden_matter} =
+        Contract.Documents.create_with_auto_matter(scope, %{"title" => "Auto-NDA"})
+
+      # Sanity: the matter we just synthesized is flagged hidden.
+      assert hidden_matter.metadata["hidden_from_user"] == true
+
+      {:ok, _lv, html} = live(conn, ~p"/dashboard")
+
+      # The empty-state illustration still renders — the hidden matter
+      # never made it into the visible list.
+      assert html =~ ~s(id="matters-empty")
+      refute html =~ ~s(id="matters-table")
+      refute html =~ "Workspace · Auto-NDA"
     end
   end
 

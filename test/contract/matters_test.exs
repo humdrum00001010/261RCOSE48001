@@ -70,6 +70,48 @@ defmodule Contract.MattersTest do
       refute ma.id in ids_b
     end
 
+    # SPEC.md Document-primary pivot (2026-05-15): matters with
+    # `metadata.hidden_from_user = true` (system-created Workspaces
+    # auto-synthesized on Document creation) are filtered out of the
+    # default user view. They remain in the table — fetchable via
+    # `get/2` and visible via `include_hidden: true` — they just don't
+    # surface in casual UI.
+    test "excludes system_created matters with hidden_from_user metadata" do
+      s = scope()
+
+      {:ok, visible} = Matters.create(s, %{"name" => "User-picked"})
+
+      {:ok, hidden} =
+        Matters.create(s, %{
+          "name" => "Workspace · auto",
+          "metadata" => %{
+            "system_created" => true,
+            "hidden_from_user" => true,
+            "source" => "auto_on_document_create"
+          }
+        })
+
+      ids = s |> Matters.list_for_scope() |> Enum.map(& &1.id)
+      assert visible.id in ids
+      refute hidden.id in ids
+    end
+
+    test "include_hidden: true returns auto-matters too" do
+      s = scope()
+
+      {:ok, hidden} =
+        Matters.create(s, %{
+          "name" => "Workspace · auto",
+          "metadata" => %{
+            "system_created" => true,
+            "hidden_from_user" => true
+          }
+        })
+
+      ids = s |> Matters.list_for_scope(include_hidden: true) |> Enum.map(& &1.id)
+      assert hidden.id in ids
+    end
+
     test "tenant-nil matters are visible to any scope" do
       a = scope()
 
