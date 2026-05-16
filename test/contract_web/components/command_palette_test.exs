@@ -166,17 +166,19 @@ defmodule ContractWeb.Components.CommandPaletteTest do
       %{user: user}
     end
 
-    test "renders the trigger button (closed by default)", %{user: user} do
+    test "renders closed-by-default (no modal box)", %{user: user} do
       html =
         render_component(CommandPalette,
           id: "cmd-k-palette",
           current_scope: lawyer_scope(user)
         )
 
-      assert html =~ ~s(data-role="palette-trigger")
-      assert html =~ "⌘K"
-      # No modal-open container when closed.
+      # The trigger button now lives in the navbar (`top_nav/1`) and
+      # NOT inside the LiveComponent — see `command_palette_trigger/1`.
+      # The LiveComponent renders only the keybind hook + the modal
+      # (when open). When closed, no modal box is present.
       refute html =~ ~s(data-role="palette-box")
+      assert html =~ ~s(data-role="command-palette-root")
     end
 
     # Wave 4 bugfix #6 — Playwright Scenario 6 selector contract.

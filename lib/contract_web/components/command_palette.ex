@@ -134,6 +134,36 @@ defmodule ContractWeb.Components.CommandPalette do
 
   defp controller_render?, do: Process.get(:plug_masked_csrf_token) != nil
 
+  @doc """
+  Stateless navbar trigger for the command palette.
+
+  Renders a button styled to match the other `top_nav/1` items
+  (`inline-flex items-center h-9` — same baseline as the theme-toggle
+  pill and the persona dropdown). Clicking it pushes the `"toggle"`
+  event to the palette `LiveComponent` (`#cmd-k-palette`) — same handler
+  the Cmd/Ctrl+K keybind ultimately invokes via the JS hook.
+
+  The trigger is intentionally decoupled from the `LiveComponent` body
+  (which carries its own modal + keybind hook) so the button can live
+  inside the navbar and not float at the viewport. The two share state
+  via the LiveComponent's `"toggle"` handler — keybind and click are
+  independent surfaces wired to the same server-side function.
+  """
+  def command_palette_trigger(assigns) do
+    ~H"""
+    <button
+      type="button"
+      class="inline-flex items-center h-9 px-3 text-sm text-base-content/60 hover:text-base-content gap-1 font-mono rounded-box hover:bg-base-200/60"
+      phx-click="toggle"
+      phx-target="#cmd-k-palette"
+      aria-label="Open command palette"
+      data-role="palette-trigger"
+    >
+      <span>⌘K</span>
+    </button>
+    """
+  end
+
   # --- LiveComponent callbacks -------------------------------------------
 
   @impl true
@@ -312,16 +342,6 @@ defmodule ContractWeb.Components.CommandPalette do
           }
         }
       </script>
-      <button
-        type="button"
-        class="btn btn-ghost btn-xs gap-1 font-mono text-base-content/70 hover:text-base-content fixed top-3 right-3 z-40 backdrop-blur bg-base-100/70 border border-base-200/50"
-        phx-click="toggle"
-        phx-target={@myself}
-        aria-label="Open command palette"
-        data-role="palette-trigger"
-      >
-        <span>⌘K</span>
-      </button>
 
       <div
         :if={@open?}

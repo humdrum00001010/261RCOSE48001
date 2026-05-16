@@ -149,6 +149,7 @@ defmodule ContractWeb.Layouts do
           <.theme_toggle />
 
           <%= if signed_in?(@current_scope) do %>
+            <CommandPalette.command_palette_trigger />
             <div class="dropdown dropdown-end">
               <div
                 tabindex="0"
