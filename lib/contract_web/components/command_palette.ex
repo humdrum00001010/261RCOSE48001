@@ -264,21 +264,37 @@ defmodule ContractWeb.Components.CommandPalette do
       phx-hook=".Palette"
       data-role="command-palette-root"
       data-open={to_string(@open?)}
+      data-cmdk-ready="false"
     >
       <script :type={Phoenix.LiveView.ColocatedHook} name=".Palette">
         export default {
           mounted() {
+            // The global Cmd/Ctrl+K listener is bound on `mounted()`
+            // regardless of palette visibility. The handler is a no-op
+            // until `this.el` is still in the DOM and the LiveSocket
+            // is connected — `pushEventTo` silently drops otherwise.
             this.handler = (e) => {
+              if (!this.el || !this.el.isConnected) return
               const isModKey = e.metaKey || e.ctrlKey
               if (isModKey && e.key && e.key.toLowerCase() === "k") {
                 e.preventDefault()
+                e.stopPropagation()
                 this.pushEventTo(this.el, "toggle", {})
               }
             }
-            window.addEventListener("keydown", this.handler)
+            // Capture phase so we beat any document-level keydown
+            // handlers that might call `stopPropagation` (e.g.
+            // contenteditable canvas in Studio).
+            window.addEventListener("keydown", this.handler, true)
+            // Mark the root as ready so Playwright/integration tests
+            // can wait for the binding to attach before pressing the
+            // chord. Without this, a `page.keyboard.press` issued
+            // immediately after `goto` can race the LV upgrade and the
+            // keypress is dropped (silent `pushEventTo` no-op).
+            this.el.setAttribute("data-cmdk-ready", "true")
           },
           destroyed() {
-            window.removeEventListener("keydown", this.handler)
+            window.removeEventListener("keydown", this.handler, true)
           }
         }
       </script>
