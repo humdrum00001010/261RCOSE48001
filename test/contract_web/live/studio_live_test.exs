@@ -206,6 +206,63 @@ defmodule ContractWeb.StudioLiveTest do
     end
   end
 
+  # ---------------------------------------------------------------------------
+  # SPEC.md §10 — no-document agent prompt (Wave Document-Pivot Impl D)
+  # ---------------------------------------------------------------------------
+  describe "agent_option_picked (no-document quick-start, SPEC.md §10)" do
+    setup :log_in_a_user
+
+    test "renders the 5-option no-document welcome at /studio (no doc selected)",
+         %{conn: conn} do
+      {:ok, _lv, html} = live(conn, ~p"/studio")
+
+      assert html =~ ~s(data-role="chat-no-doc-welcome")
+      # All 5 chip keys are present.
+      assert html =~ ~s(phx-value-key="upload")
+      assert html =~ ~s(phx-value-key="recent")
+      assert html =~ ~s(phx-value-key="blank")
+      assert html =~ ~s(phx-value-key="draft_from_discussion")
+      assert html =~ ~s(phx-value-key="variant_from_other")
+    end
+
+    test "upload option opens the upload modal", %{conn: conn} do
+      {:ok, lv, _html} = live(conn, ~p"/studio")
+      assert :sys.get_state(lv.pid).socket.assigns.studio_state.upload_panel_open? == false
+
+      _ = render_hook(lv, "agent_option_picked", %{"key" => "upload"})
+
+      assert :sys.get_state(lv.pid).socket.assigns.studio_state.upload_panel_open? == true
+    end
+
+    test "recent option opens the document-picker modal", %{conn: conn} do
+      {:ok, lv, _html} = live(conn, ~p"/studio")
+      assert :sys.get_state(lv.pid).socket.assigns.studio_state.document_picker_open? == false
+
+      _ = render_hook(lv, "agent_option_picked", %{"key" => "recent"})
+
+      assert :sys.get_state(lv.pid).socket.assigns.studio_state.document_picker_open? == true
+    end
+
+    test "draft_from_discussion option flashes a stub info message", %{conn: conn} do
+      {:ok, lv, _html} = live(conn, ~p"/studio")
+
+      html = render_hook(lv, "agent_option_picked", %{"key" => "draft_from_discussion"})
+
+      assert html =~ "논의 모드는 곧 추가됩니다."
+    end
+
+    test "variant_from_other option opens the document-picker with the variant-source flag",
+         %{conn: conn} do
+      {:ok, lv, _html} = live(conn, ~p"/studio")
+
+      _ = render_hook(lv, "agent_option_picked", %{"key" => "variant_from_other"})
+
+      state = :sys.get_state(lv.pid).socket.assigns.studio_state
+      assert state.document_picker_open? == true
+      assert Map.get(state, :variant_source_picker?) == true
+    end
+  end
+
   describe "event_to_action/3 (dispatch funnel)" do
     setup :base_assigns
 

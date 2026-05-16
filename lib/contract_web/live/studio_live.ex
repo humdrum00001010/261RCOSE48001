@@ -368,6 +368,43 @@ defmodule ContractWeb.StudioLive do
     end
   end
 
+  # ---------------------------------------------------------------------------
+  # No-document agent prompt — SPEC.md §10. ChatRail renders 5 quick-start
+  # chips when `studio_state.mode == :no_document`; each chip fires
+  # `agent_option_picked` with a `key`. We route to the corresponding modal
+  # or to a Documents.create flow.
+  # ---------------------------------------------------------------------------
+
+  def handle_event("agent_option_picked", %{"key" => "upload"}, socket) do
+    {:noreply, update_modal(socket, "upload", true)}
+  end
+
+  def handle_event("agent_option_picked", %{"key" => "recent"}, socket) do
+    {:noreply, update_modal(socket, "document_picker", true)}
+  end
+
+  def handle_event("agent_option_picked", %{"key" => "blank"}, socket) do
+    create_blank_document(socket)
+  end
+
+  def handle_event("agent_option_picked", %{"key" => "draft_from_discussion"}, socket) do
+    # Matter-Brief mode is not built yet — stub with an informational flash.
+    {:noreply, put_flash(socket, :info, "논의 모드는 곧 추가됩니다.")}
+  end
+
+  def handle_event("agent_option_picked", %{"key" => "variant_from_other"}, socket) do
+    socket =
+      socket
+      |> put_state_flag(:variant_source_picker?, true)
+      |> update_modal("document_picker", true)
+
+    {:noreply, socket}
+  end
+
+  def handle_event("agent_option_picked", _params, socket) do
+    {:noreply, socket}
+  end
+
   def handle_event(event, params, socket) do
     case event_to_action(event, params, socket.assigns) do
       {:ok, %Action{} = action} ->
@@ -378,6 +415,52 @@ defmodule ContractWeb.StudioLive do
 
       {:error, reason} ->
         {:noreply, put_flash(socket, :error, "Unknown action: #{inspect(reason)}")}
+    end
+  end
+
+  # Helper: create a blank document, then navigate to it. If
+  # `Contract.Documents.create_with_auto_matter/2` exists (Impl A), use it.
+  # Otherwise require a matter on the scope/state and fall back to
+  # `Documents.create/2`.
+  defp create_blank_document(socket) do
+    scope = socket.assigns.current_scope
+    state = socket.assigns.studio_state
+
+    cond do
+      function_exported?(Contract.Documents, :create_with_auto_matter, 2) ->
+        case apply(Contract.Documents, :create_with_auto_matter, [
+               scope,
+               %{title: "새 문서"}
+             ]) do
+          {:ok, doc, matter} ->
+            {:noreply,
+             push_navigate(socket, to: ~p"/matters/#{matter.id}/documents/#{doc.id}")}
+
+          {:ok, doc} ->
+            mid = doc.matter_id
+            {:noreply, push_navigate(socket, to: ~p"/matters/#{mid}/documents/#{doc.id}")}
+
+          {:error, _} ->
+            {:noreply, put_flash(socket, :error, "문서 생성에 실패했습니다.")}
+        end
+
+      true ->
+        matter_id =
+          (state && state.matter_id) ||
+            (scope && scope.matter && Map.get(scope.matter, :id))
+
+        if is_nil(matter_id) do
+          {:noreply, put_flash(socket, :error, "안건이 선택되지 않았습니다.")}
+        else
+          case Contract.Documents.create(scope, %{matter_id: matter_id, title: "새 문서"}) do
+            {:ok, doc} ->
+              {:noreply,
+               push_navigate(socket, to: ~p"/matters/#{matter_id}/documents/#{doc.id}")}
+
+            {:error, _} ->
+              {:noreply, put_flash(socket, :error, "문서 생성에 실패했습니다.")}
+          end
+        end
     end
   end
 

@@ -216,6 +216,85 @@ defmodule ContractWeb.Live.Studio.Components.ChatRailTest do
       refute html =~ ~s(data-role="observer-banner")
     end
 
+    test "no-document mode shows the 5-option agent welcome prompt (SPEC.md §10)" do
+      no_doc_state = %State{mode: :no_document, last_seen_revision: 0, agent_run_id: nil}
+
+      html =
+        render_component(ChatRail,
+          id: "chat-rail",
+          studio_state: no_doc_state,
+          streams: %{chat_messages: empty_stream()},
+          current_scope: lawyer_scope()
+        )
+
+      # The no-doc welcome panel renders (and the generic welcome is hidden).
+      assert html =~ ~s(data-role="chat-no-doc-welcome")
+      refute html =~ ~s(data-role="chat-welcome")
+
+      # All 5 option labels are present.
+      assert html =~ "기존 계약서 업로드"
+      assert html =~ "최근 문서 열기"
+      assert html =~ "빈 계약서 만들기"
+      assert html =~ "논의에서 시작"
+      assert html =~ "다른 문서에서 변형 만들기"
+
+      # Each chip emits agent_option_picked with the right key.
+      assert html =~ ~s(phx-click="agent_option_picked")
+      assert html =~ ~s(phx-value-key="upload")
+      assert html =~ ~s(phx-value-key="recent")
+      assert html =~ ~s(phx-value-key="blank")
+      assert html =~ ~s(phx-value-key="draft_from_discussion")
+      assert html =~ ~s(phx-value-key="variant_from_other")
+
+      # The headline copy is present.
+      assert html =~ "새 문서를 시작합니다. 어떻게 시작할까요?"
+      assert html =~ "무엇으로 시작할까요?"
+    end
+
+    test "no-document Korean copy is clean precomposed Hangul (no jamo decomposition)" do
+      no_doc_state = %State{mode: :no_document, last_seen_revision: 0, agent_run_id: nil}
+
+      html =
+        render_component(ChatRail,
+          id: "chat-rail",
+          studio_state: no_doc_state,
+          streams: %{chat_messages: empty_stream()},
+          current_scope: lawyer_scope()
+        )
+
+      # Every CJK Hangul syllable code-point should fall in the precomposed
+      # Hangul Syllables block (U+AC00..U+D7A3). The Hangul Jamo block
+      # (U+1100..U+11FF, U+3130..U+318F) means the source was NFD-decomposed,
+      # which renders as broken consonant/vowel chains on screen.
+      jamo_chars =
+        html
+        |> String.to_charlist()
+        |> Enum.filter(fn cp ->
+          (cp >= 0x1100 and cp <= 0x11FF) or
+            (cp >= 0x3130 and cp <= 0x318F) or
+            (cp >= 0xA960 and cp <= 0xA97F) or
+            (cp >= 0xD7B0 and cp <= 0xD7FF)
+        end)
+
+      assert jamo_chars == [],
+             "expected no Hangul jamo (decomposed) code points in chat_rail no-doc welcome HTML; " <>
+               "found #{inspect(jamo_chars)}"
+    end
+
+    test "non-no-document modes still render the generic welcome (not the 5-option panel)" do
+      html =
+        render_component(ChatRail,
+          id: "chat-rail",
+          studio_state: %State{default_state() | mode: :briefing},
+          streams: %{chat_messages: empty_stream()},
+          current_scope: lawyer_scope()
+        )
+
+      assert html =~ ~s(data-role="chat-welcome")
+      refute html =~ ~s(data-role="chat-no-doc-welcome")
+      refute html =~ "기존 계약서 업로드"
+    end
+
     test "agent status pill reflects studio_state.agent_run_id" do
       idle_html =
         render_component(ChatRail,

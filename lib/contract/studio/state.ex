@@ -26,6 +26,12 @@ defmodule Contract.Studio.State do
     field :upload_panel_open?, :boolean, default: false
     field :type_picker_open?, :boolean, default: false
 
+    # When the user picks "다른 문서에서 변형 만들기" from the no-document
+    # agent prompt (SPEC.md §10), we open the document_picker modal and
+    # set this flag so the modal knows the next pick should kick off a
+    # type-conversion flow rather than just open the document.
+    field :variant_source_picker?, :boolean, default: false
+
     field :agent_run_id, :binary_id
 
     field :mode, Ecto.Enum, values: [:no_document, :briefing, :editing, :reviewing]
@@ -45,6 +51,7 @@ defmodule Contract.Studio.State do
       :migration_panel_open?,
       :upload_panel_open?,
       :type_picker_open?,
+      :variant_source_picker?,
       :agent_run_id,
       :mode
     ])
