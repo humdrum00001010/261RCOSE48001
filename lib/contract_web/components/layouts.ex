@@ -101,10 +101,10 @@ defmodule ContractWeb.Layouts do
   def top_nav(assigns) do
     ~H"""
     <header class="border-b border-base-200 bg-base-100/85 backdrop-blur sticky top-0 z-30">
-      <div class="mx-auto max-w-7xl flex items-center gap-3 sm:gap-6 px-4 sm:px-6 lg:px-8 h-14">
+      <div class="mx-auto max-w-7xl flex flex-nowrap items-center gap-3 sm:gap-6 px-4 sm:px-6 lg:px-8 h-14">
         <label
           for="mobile-nav-drawer"
-          class="btn btn-ghost btn-sm btn-square lg:hidden"
+          class="btn btn-ghost btn-sm btn-square lg:hidden inline-flex items-center justify-center h-9 min-h-9 w-9"
           aria-label={dgettext("layouts", "Open menu")}
           aria-controls="mobile-nav-drawer"
         >
@@ -113,7 +113,7 @@ defmodule ContractWeb.Layouts do
 
         <.link
           navigate={~p"/"}
-          class="flex items-center gap-2 shrink-0"
+          class="inline-flex items-center gap-2 shrink-0 h-9"
           aria-label={dgettext("layouts", "Contract Studio home")}
         >
           <Brand.wordmark size="base" />
@@ -121,34 +121,40 @@ defmodule ContractWeb.Layouts do
 
         <nav
           :if={!signed_in?(@current_scope)}
-          class="hidden lg:flex items-center gap-6 text-sm text-base-content/70"
+          class="hidden lg:inline-flex items-center gap-6 text-sm text-base-content/70 h-9"
         >
-          <a href="#docs" class="hover:text-base-content">{dgettext("layouts", "Docs")}</a>
-          <a href="#changelog" class="hover:text-base-content">
+          <a href="#docs" class="inline-flex items-center hover:text-base-content">
+            {dgettext("layouts", "Docs")}
+          </a>
+          <a href="#changelog" class="inline-flex items-center hover:text-base-content">
             {dgettext("layouts", "Changelog")}
           </a>
         </nav>
 
         <nav
           :if={signed_in?(@current_scope)}
-          class="hidden lg:flex items-center gap-6 text-sm text-base-content/70"
+          class="hidden lg:inline-flex items-center gap-6 text-sm text-base-content/70 h-9"
         >
-          <.link navigate={~p"/dashboard"} class="hover:text-base-content">
+          <.link navigate={~p"/dashboard"} class="inline-flex items-center hover:text-base-content">
             {dgettext("layouts", "Dashboard")}
           </.link>
-          <.link navigate={~p"/studio"} class="hover:text-base-content">
+          <.link navigate={~p"/studio"} class="inline-flex items-center hover:text-base-content">
             {dgettext("layouts", "Studio")}
           </.link>
         </nav>
 
         <div class="flex-1" />
 
-        <div class="flex items-center gap-2">
+        <div class="flex flex-nowrap items-center gap-2">
           <.theme_toggle />
 
           <%= if signed_in?(@current_scope) do %>
             <div class="dropdown dropdown-end">
-              <div tabindex="0" role="button" class="btn btn-ghost btn-sm gap-2">
+              <div
+                tabindex="0"
+                role="button"
+                class="btn btn-ghost btn-sm gap-2 inline-flex items-center h-9 min-h-9"
+              >
                 <Brand.mark size="sm" />
                 <span class="hidden sm:inline text-sm text-base-content/80">
                   {persona_label(@current_scope)}
@@ -178,10 +184,16 @@ defmodule ContractWeb.Layouts do
               </ul>
             </div>
           <% else %>
-            <.link navigate={~p"/users/log-in"} class="hidden sm:inline-flex btn btn-ghost btn-sm">
+            <.link
+              navigate={~p"/users/log-in"}
+              class="hidden sm:inline-flex btn btn-ghost btn-sm items-center h-9 min-h-9"
+            >
               {dgettext("layouts", "Log in")}
             </.link>
-            <.link navigate={~p"/users/register"} class="btn btn-primary btn-sm">
+            <.link
+              navigate={~p"/users/register"}
+              class="btn btn-primary btn-sm inline-flex items-center h-9 min-h-9"
+            >
               {dgettext("layouts", "Register")}
             </.link>
           <% end %>
@@ -425,11 +437,11 @@ defmodule ContractWeb.Layouts do
   """
   def theme_toggle(assigns) do
     ~H"""
-    <div class="card relative flex flex-row items-center border-2 border-base-300 bg-base-300 rounded-full">
+    <div class="relative inline-flex flex-row items-center border-2 border-base-300 bg-base-300 rounded-full h-9">
       <div class="absolute w-1/3 h-full rounded-full border-1 border-base-200 bg-base-100 brightness-200 left-0 [[data-theme=studio]_&]:left-1/3 [[data-theme=studio-dark]_&]:left-2/3 transition-[left]" />
 
       <button
-        class="flex p-2 cursor-pointer w-1/3"
+        class="inline-flex items-center justify-center px-2 h-full cursor-pointer w-1/3 relative"
         phx-click={JS.dispatch("phx:set-theme")}
         data-phx-theme="system"
         aria-label={dgettext("layouts", "System theme")}
@@ -438,7 +450,7 @@ defmodule ContractWeb.Layouts do
       </button>
 
       <button
-        class="flex p-2 cursor-pointer w-1/3"
+        class="inline-flex items-center justify-center px-2 h-full cursor-pointer w-1/3 relative"
         phx-click={JS.dispatch("phx:set-theme")}
         data-phx-theme="studio"
         aria-label={dgettext("layouts", "Light theme")}
@@ -447,7 +459,7 @@ defmodule ContractWeb.Layouts do
       </button>
 
       <button
-        class="flex p-2 cursor-pointer w-1/3"
+        class="inline-flex items-center justify-center px-2 h-full cursor-pointer w-1/3 relative"
         phx-click={JS.dispatch("phx:set-theme")}
         data-phx-theme="studio-dark"
         aria-label={dgettext("layouts", "Dark theme")}
