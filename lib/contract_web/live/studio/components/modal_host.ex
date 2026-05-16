@@ -16,20 +16,23 @@ defmodule ContractWeb.Live.Studio.Components.ModalHost do
       studio_state.upload_panel_open?     → new-document upload form
       studio_state.migration_panel_open?  → type-conversion wizard (3-step)
       reconcile_modal_open?               → revoke-overlap reconciliation
+      studio_state.type_picker_open?      → set-contract-type picker
       modal_param == "new_document"       → create new document picker
       modal_param == "export"             → export format picker
-      modal_param == "type_picker"        → set-contract-type picker
 
-  The first five are driven from parent assigns. The last three live as
+  The first six are driven from parent assigns. The last two live as
   local component state (`:modal_param`) because the parent's
   `update_modal/3` does not map them onto `studio_state`. The parent's
-  `open_modal` event with `phx-value-modal=new_document` (or `export` /
-  `type_picker`) is also captured here via `phx-target={@myself}` so
-  the parent does not need a new state field. The type-picker is
-  additionally opened by the global Cmd+K command palette — the parent
-  LV's `handle_event("command_palette_picked", %{"kind" =>
-  "set_contract_type"}, ...)` calls `send_update/2` with
-  `modal_param: "type_picker"` when no `type_key` is supplied.
+  `open_modal` event with `phx-value-modal=new_document` (or `export`)
+  is also captured here via `phx-target={@myself}` so the parent does
+  not need a new state field. The type-picker is also opened by the
+  global Cmd+K command palette — the parent LV's
+  `handle_event("command_palette_picked", %{"kind" =>
+  "set_contract_type"}, ...)` flips
+  `studio_state.type_picker_open?` to true when no `type_key` is
+  supplied, and each picker row fires `set_contract_type` with the
+  chosen `type_key` (which the parent's `event_to_action/3` funnel
+  then converts into an Action and flips the flag back to false).
 
   ## Event vocabulary emitted
 
@@ -200,10 +203,6 @@ defmodule ContractWeb.Live.Studio.Components.ModalHost do
     {:noreply, assign(socket, :modal_param, "export")}
   end
 
-  def handle_event("open_modal", %{"modal" => "type_picker"}, socket) do
-    {:noreply, assign(socket, :modal_param, "type_picker")}
-  end
-
   def handle_event("set_modal_param", %{"value" => value}, socket) do
     {:noreply, assign(socket, :modal_param, value)}
   end
@@ -244,7 +243,7 @@ defmodule ContractWeb.Live.Studio.Components.ModalHost do
   # (local state). For state-driven modals, Esc bubbles to the parent
   # LV via phx-window-keydown="close_modal" (see render_*).
   def handle_event("key", %{"key" => "Escape"}, socket) do
-    if socket.assigns.modal_param in ["new_document", "export", "type_picker"] do
+    if socket.assigns.modal_param in ["new_document", "export"] do
       {:noreply,
        socket
        |> assign(:modal_param, nil)
@@ -267,8 +266,9 @@ defmodule ContractWeb.Live.Studio.Components.ModalHost do
       truthy?(state && state.metadata_panel_open?) or
       truthy?(state && state.upload_panel_open?) or
       truthy?(state && state.migration_panel_open?) or
+      truthy?(state && state.type_picker_open?) or
       truthy?(assigns[:reconcile_modal_open?]) or
-      assigns[:modal_param] in ["new_document", "export", "type_picker"]
+      assigns[:modal_param] in ["new_document", "export"]
   end
 
   defp truthy?(true), do: true
@@ -356,14 +356,14 @@ defmodule ContractWeb.Live.Studio.Components.ModalHost do
           {render_upload_panel(assigns)}
         <% @studio_state && @studio_state.migration_panel_open? -> %>
           {render_migration_wizard(assigns)}
+        <% @studio_state && @studio_state.type_picker_open? -> %>
+          {render_type_picker(assigns)}
         <% @reconcile_modal_open? -> %>
           {render_reconcile_modal(assigns)}
         <% @modal_param == "new_document" -> %>
           {render_new_document_modal(assigns)}
         <% @modal_param == "export" -> %>
           {render_export_modal(assigns)}
-        <% @modal_param == "type_picker" -> %>
-          {render_type_picker(assigns)}
         <% true -> %>
           <%!-- No modal active. --%>
       <% end %>
@@ -1219,7 +1219,8 @@ defmodule ContractWeb.Live.Studio.Components.ModalHost do
           <li :for={{label, key} <- @contract_types} id={"type-picker-#{key}"}>
             <button
               type="button"
-              phx-click="set_contract_type"
+              phx-click="command_palette_picked"
+              phx-value-kind="set_contract_type"
               phx-value-type_key={key}
               data-type-key={key}
               data-role="type-picker-row"

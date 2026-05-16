@@ -24,6 +24,7 @@ defmodule Contract.Studio.State do
     field :metadata_panel_open?, :boolean, default: false
     field :migration_panel_open?, :boolean, default: false
     field :upload_panel_open?, :boolean, default: false
+    field :type_picker_open?, :boolean, default: false
 
     field :agent_run_id, :binary_id
 
@@ -43,6 +44,7 @@ defmodule Contract.Studio.State do
       :metadata_panel_open?,
       :migration_panel_open?,
       :upload_panel_open?,
+      :type_picker_open?,
       :agent_run_id,
       :mode
     ])

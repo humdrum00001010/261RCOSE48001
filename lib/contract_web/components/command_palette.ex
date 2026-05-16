@@ -550,13 +550,6 @@ defmodule ContractWeb.Components.CommandPalette do
     {:noreply, close(socket)}
   end
 
-  defp stringify_keys(map) when is_map(map) do
-    Map.new(map, fn
-      {k, v} when is_atom(k) -> {Atom.to_string(k), v}
-      {k, v} -> {k, v}
-    end)
-  end
-
   defp fire(%Command{action: {:mode, :info, target}}, socket) do
     {:noreply,
      socket
@@ -583,6 +576,13 @@ defmodule ContractWeb.Components.CommandPalette do
   end
 
   defp fire(_cmd, socket), do: {:noreply, socket}
+
+  defp stringify_keys(map) when is_map(map) do
+    Map.new(map, fn
+      {k, v} when is_atom(k) -> {Atom.to_string(k), v}
+      {k, v} -> {k, v}
+    end)
+  end
 
   defp open(socket) do
     socket

@@ -226,29 +226,33 @@ defmodule ContractWeb.StudioLive do
       ) do
     case Map.get(params, "type_key") do
       type_key when is_binary(type_key) and type_key != "" ->
-        # User has a type_key — dispatch as a normal set_contract_type Action.
+        # User has a type_key — dispatch as a normal set_contract_type Action,
+        # then close the type-picker if it was open (so picking a row in the
+        # modal completes the round-trip).
         case event_to_action(
                "set_contract_type",
                Map.put(params, "type_key", type_key),
                socket.assigns
              ) do
-          {:ok, %Action{} = action} -> {:noreply, dispatch(socket, action)}
+          {:ok, %Action{} = action} ->
+            socket =
+              socket
+              |> dispatch(action)
+              |> put_state_flag(:type_picker_open?, false)
+
+            {:noreply, socket}
+
           {:error, reason} ->
             {:noreply,
              put_flash(socket, :error, "Could not set contract type: #{inspect(reason)}")}
         end
 
       _ ->
-        # No type_key → open the type-picker modal on the ModalHost. The
-        # ModalHost holds `modal_param` as local state; `send_update/2`
-        # is the standard way for the parent LV (or, in this case, a
-        # sibling component's event handler) to flip that state.
-        send_update(Components.ModalHost,
-          id: "modal-host",
-          modal_param: "type_picker"
-        )
-
-        {:noreply, socket}
+        # No type_key → open the type-picker modal. Driven by a flag on
+        # `studio_state` (mirroring metadata/migration panels) so the
+        # ModalHost re-renders synchronously on the next paint without
+        # needing a `send_update/2` round-trip.
+        {:noreply, put_state_flag(socket, :type_picker_open?, true)}
     end
   end
 
@@ -991,6 +995,9 @@ defmodule ContractWeb.StudioLive do
 
   defp update_modal(socket, "upload", value),
     do: put_state_flag(socket, :upload_panel_open?, value)
+
+  defp update_modal(socket, "type_picker", value),
+    do: put_state_flag(socket, :type_picker_open?, value)
 
   defp update_modal(socket, "reconcile", value),
     do: assign(socket, :reconcile_modal_open?, value)
