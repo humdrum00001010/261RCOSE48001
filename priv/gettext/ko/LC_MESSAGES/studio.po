@@ -190,7 +190,7 @@ msgstr "문서 미리보기"
 msgid "Edit document metadata"
 msgstr "문서 메타데이터 편집"
 
-#: lib/contract_web/live/studio/components/chat_rail.ex:219
+#: lib/contract_web/live/studio/components/chat_rail.ex:290
 #, elixir-autogen, elixir-format
 msgid "Enter로 전송 · Shift+Enter로 줄바꿈"
 msgstr ""
@@ -367,6 +367,7 @@ msgstr "대상 유형"
 msgid "Target type:"
 msgstr "대상 유형:"
 
+#: lib/contract_web/live/studio/components/context_reservoir.ex:196
 #: lib/contract_web/live/studio/components/modal_host.ex:534
 #: lib/contract_web/live/studio/components/modal_host.ex:1133
 #, elixir-autogen, elixir-format
@@ -419,6 +420,8 @@ msgstr ""
 msgid "Your answer"
 msgstr ""
 
+#: lib/contract_web/live/studio/components/context_reservoir.ex:585
+#: lib/contract_web/live/studio/components/context_reservoir.ex:586
 #: lib/contract_web/live/studio/components/modal_host.ex:935
 #: lib/contract_web/live/studio/components/modal_host.ex:1125
 #, elixir-autogen, elixir-format
@@ -430,7 +433,7 @@ msgstr "—"
 msgid "검토 모드 / Review"
 msgstr ""
 
-#: lib/contract_web/live/studio/components/chat_rail.ex:108
+#: lib/contract_web/live/studio/components/chat_rail.ex:110
 #, elixir-autogen, elixir-format
 msgid "관찰 모드 — 메시지는 다른 사용자가 받습니다"
 msgstr ""
@@ -440,7 +443,7 @@ msgstr ""
 msgid "다른 사용자의 변경이 먼저 적용되었습니다. 입력 내용을 서버 값으로 되돌렸습니다."
 msgstr ""
 
-#: lib/contract_web/live/studio/components/chat_rail.ex:300
+#: lib/contract_web/live/studio/components/chat_rail.ex:371
 #, elixir-autogen, elixir-format
 msgid "대기 중"
 msgstr ""
@@ -470,12 +473,12 @@ msgstr ""
 msgid "메모"
 msgstr ""
 
-#: lib/contract_web/live/studio/components/chat_rail.ex:193
+#: lib/contract_web/live/studio/components/chat_rail.ex:264
 #, elixir-autogen, elixir-format
 msgid "메시지"
 msgstr ""
 
-#: lib/contract_web/live/studio/components/chat_rail.ex:204
+#: lib/contract_web/live/studio/components/chat_rail.ex:275
 #, elixir-autogen, elixir-format
 msgid "메시지를 입력하세요…"
 msgstr ""
@@ -520,8 +523,8 @@ msgstr ""
 msgid "변호사 / Lawyer"
 msgstr ""
 
-#: lib/contract_web/live/studio/components/chat_rail.ex:213
-#: lib/contract_web/live/studio/components/chat_rail.ex:215
+#: lib/contract_web/live/studio/components/chat_rail.ex:284
+#: lib/contract_web/live/studio/components/chat_rail.ex:286
 #, elixir-autogen, elixir-format
 msgid "보내기"
 msgstr ""
@@ -551,7 +554,7 @@ msgstr "알림"
 msgid "알림 닫기"
 msgstr "알림 닫기"
 
-#: lib/contract_web/live/studio/components/chat_rail.ex:80
+#: lib/contract_web/live/studio/components/chat_rail.ex:82
 #, elixir-autogen, elixir-format
 msgid "에이전트"
 msgstr ""
@@ -566,12 +569,12 @@ msgstr ""
 msgid "에이전트가 질문 중입니다. 답하시면 편집이 적용됩니다."
 msgstr "에이전트가 질문 중입니다. 답하시면 편집이 적용됩니다."
 
-#: lib/contract_web/live/studio/components/chat_rail.ex:134
+#: lib/contract_web/live/studio/components/chat_rail.ex:137
 #, elixir-autogen, elixir-format
 msgid "에이전트에게 무엇이든 물어보세요 — 초안, 마크, 내보내기."
 msgstr ""
 
-#: lib/contract_web/live/studio/components/chat_rail.ex:301
+#: lib/contract_web/live/studio/components/chat_rail.ex:372
 #, elixir-autogen, elixir-format
 msgid "응답 중…"
 msgstr ""
@@ -641,6 +644,7 @@ msgstr "아직 문서가 없습니다"
 msgid "Pick a contract type to start your first draft."
 msgstr "계약 유형을 골라 첫 초안을 시작하세요"
 
+#: lib/contract_web/live/studio/components/context_reservoir.ex:639
 #: lib/contract_web/live/studio/components/document_list.ex:348
 #, elixir-autogen, elixir-format
 msgid "just now"
@@ -726,3 +730,239 @@ msgstr "워크스페이스"
 #, elixir-autogen, elixir-format
 msgid "왼쪽에서 문서를 고르거나, 새 계약서를 시작합니다."
 msgstr "왼쪽에서 문서를 고르거나, 새 계약서를 시작합니다."
+
+#: lib/contract_web/live/studio/components/chat_rail.ex:160
+#, elixir-autogen, elixir-format
+msgid " — PDF, HWP, HWPX를 드래그하거나 선택"
+msgstr ""
+
+#: lib/contract_web/live/studio/components/chat_rail.ex:184
+#, elixir-autogen, elixir-format
+msgid " — 기존 문서의 유형 변환"
+msgstr ""
+
+#: lib/contract_web/live/studio/components/chat_rail.ex:178
+#, elixir-autogen, elixir-format
+msgid " — 사실관계, 거래 배경부터 정리한 뒤 초안"
+msgstr ""
+
+#: lib/contract_web/live/studio/components/chat_rail.ex:172
+#, elixir-autogen, elixir-format
+msgid " — 처음부터 작성"
+msgstr ""
+
+#: lib/contract_web/live/studio/components/chat_rail.ex:166
+#, elixir-autogen, elixir-format
+msgid " — 최근 작업한 문서로 이동"
+msgstr ""
+
+#: lib/contract_web/live/studio/components/chat_rail.ex:158
+#: lib/contract_web/live/studio/components/chat_rail.ex:414
+#, elixir-autogen, elixir-format
+msgid "기존 계약서 업로드"
+msgstr ""
+
+#: lib/contract_web/live/studio/components/chat_rail.ex:176
+#: lib/contract_web/live/studio/components/chat_rail.ex:417
+#, elixir-autogen, elixir-format
+msgid "논의에서 시작"
+msgstr ""
+
+#: lib/contract_web/live/studio/components/chat_rail.ex:182
+#: lib/contract_web/live/studio/components/chat_rail.ex:418
+#, elixir-autogen, elixir-format
+msgid "다른 문서에서 변형 만들기"
+msgstr ""
+
+#: lib/contract_web/live/studio/components/chat_rail.ex:189
+#, elixir-autogen, elixir-format
+msgid "무엇으로 시작할까요?"
+msgstr ""
+
+#: lib/contract_web/live/studio/components/chat_rail.ex:170
+#: lib/contract_web/live/studio/components/chat_rail.ex:416
+#, elixir-autogen, elixir-format
+msgid "빈 계약서 만들기"
+msgstr ""
+
+#: lib/contract_web/live/studio/components/chat_rail.ex:155
+#, elixir-autogen, elixir-format
+msgid "새 문서를 시작합니다. 어떻게 시작할까요?"
+msgstr ""
+
+#: lib/contract_web/live/studio/components/chat_rail.ex:164
+#: lib/contract_web/live/studio/components/chat_rail.ex:415
+#, elixir-autogen, elixir-format
+msgid "최근 문서 열기"
+msgstr ""
+
+#: lib/contract_web/live/studio/components/context_reservoir.ex:327
+#, elixir-autogen, elixir-format
+msgid "Answer"
+msgstr "답변하기"
+
+#: lib/contract_web/live/studio/components/context_reservoir.ex:192
+#, elixir-autogen, elixir-format
+msgid "Brief"
+msgstr "개요"
+
+#: lib/contract_web/live/studio/components/context_reservoir.ex:132
+#, elixir-autogen, elixir-format
+msgid "Context reservoir"
+msgstr "맥락 저장소"
+
+#: lib/contract_web/live/studio/components/context_reservoir.ex:214
+#, elixir-autogen, elixir-format
+msgid "Counterparty"
+msgstr "상대방"
+
+#: lib/contract_web/live/studio/components/context_reservoir.ex:592
+#, elixir-autogen, elixir-format
+msgid "Document"
+msgstr "문서"
+
+#: lib/contract_web/live/studio/components/context_reservoir.ex:400
+#, elixir-autogen, elixir-format
+msgid "Evidence"
+msgstr "근거"
+
+#: lib/contract_web/live/studio/components/context_reservoir.ex:494
+#, elixir-autogen, elixir-format
+msgid "Export warnings"
+msgstr "내보내기 경고"
+
+#: lib/contract_web/live/studio/components/context_reservoir.ex:223
+#, elixir-autogen, elixir-format
+msgid "No brief yet."
+msgstr "개요가 아직 없습니다."
+
+#: lib/contract_web/live/studio/components/context_reservoir.ex:306
+#, elixir-autogen, elixir-format
+msgid "Open questions"
+msgstr "미해결 질문"
+
+#: lib/contract_web/live/studio/components/context_reservoir.ex:506
+#, elixir-autogen, elixir-format
+msgid "Packet"
+msgstr "검토 패킷"
+
+#: lib/contract_web/live/studio/components/context_reservoir.ex:202
+#, elixir-autogen, elixir-format
+msgid "Purpose"
+msgstr "목적"
+
+#: lib/contract_web/live/studio/components/context_reservoir.ex:484
+#, elixir-autogen, elixir-format
+msgid "Readiness"
+msgstr "준비 상태"
+
+#: lib/contract_web/live/studio/components/context_reservoir.ex:424
+#, elixir-autogen, elixir-format
+msgid "Recent changes"
+msgstr "최근 변경"
+
+#: lib/contract_web/live/studio/components/context_reservoir.ex:454
+#, elixir-autogen, elixir-format
+msgid "Recent revokes"
+msgstr "최근 되돌림"
+
+#: lib/contract_web/live/studio/components/context_reservoir.ex:345
+#, elixir-autogen, elixir-format
+msgid "Related documents"
+msgstr "관련 문서"
+
+#: lib/contract_web/live/studio/components/context_reservoir.ex:242
+#, elixir-autogen, elixir-format
+msgid "Shared fields"
+msgstr "공유 필드"
+
+#: lib/contract_web/live/studio/components/context_reservoir.ex:500
+#, elixir-autogen, elixir-format
+msgid "Source-modified"
+msgstr "원본 수정"
+
+#: lib/contract_web/live/studio/components/context_reservoir.ex:378
+#, elixir-autogen, elixir-format
+msgid "Sources"
+msgstr "원본"
+
+#: lib/contract_web/live/studio/components/context_reservoir.ex:206
+#, elixir-autogen, elixir-format
+msgid "Status"
+msgstr "상태"
+
+#: lib/contract_web/live/studio/components/context_reservoir.ex:488
+#, elixir-autogen, elixir-format
+msgid "Unresolved"
+msgstr "미해결"
+
+#: lib/contract_web/live/studio/components/context_reservoir.ex:210
+#, elixir-autogen, elixir-format
+msgid "User role"
+msgstr "내 역할"
+
+#: lib/contract_web/live/studio/components/context_reservoir.ex:610
+#, elixir-autogen, elixir-format
+msgid "citation"
+msgstr "인용"
+
+#: lib/contract_web/live/studio/components/context_reservoir.ex:596
+#, elixir-autogen, elixir-format
+msgid "current draft"
+msgstr "현재 초안"
+
+#: lib/contract_web/live/studio/components/context_reservoir.ex:611
+#, elixir-autogen, elixir-format
+msgid "gov"
+msgstr "정부"
+
+#: lib/contract_web/live/studio/components/context_reservoir.ex:605
+#, elixir-autogen, elixir-format
+msgid "import"
+msgstr "가져옴"
+
+#: lib/contract_web/live/studio/components/context_reservoir.ex:616
+#, elixir-autogen, elixir-format
+msgid "in progress"
+msgstr "진행 중"
+
+#: lib/contract_web/live/studio/components/context_reservoir.ex:609
+#, elixir-autogen, elixir-format
+msgid "law"
+msgstr "법령"
+
+#: lib/contract_web/live/studio/components/context_reservoir.ex:615
+#: lib/contract_web/live/studio/components/context_reservoir.ex:619
+#, elixir-autogen, elixir-format
+msgid "not started"
+msgstr "시작 전"
+
+#: lib/contract_web/live/studio/components/context_reservoir.ex:599
+#, elixir-autogen, elixir-format
+msgid "packet"
+msgstr "패킷"
+
+#: lib/contract_web/live/studio/components/context_reservoir.ex:604
+#, elixir-autogen, elixir-format
+msgid "parse"
+msgstr "파싱"
+
+#: lib/contract_web/live/studio/components/context_reservoir.ex:617
+#, elixir-autogen, elixir-format
+msgid "ready"
+msgstr "준비 완료"
+
+#: lib/contract_web/live/studio/components/context_reservoir.ex:597
+#, elixir-autogen, elixir-format
+msgid "source"
+msgstr "원본"
+
+#: lib/contract_web/live/studio/components/context_reservoir.ex:603
+#, elixir-autogen, elixir-format
+msgid "upload"
+msgstr "업로드"
+
+#: lib/contract_web/live/studio/components/context_reservoir.ex:598
+#, elixir-autogen, elixir-format
+msgid "variant"
+msgstr "변형"

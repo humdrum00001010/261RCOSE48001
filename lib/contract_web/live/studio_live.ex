@@ -105,16 +105,6 @@ defmodule ContractWeb.StudioLive do
       {:ok, {studio_state, projection}} ->
         _ = Studio.subscribe(scope, studio_state)
 
-        # SPEC.md §11: "if LiveView crashes or misses messages, [the
-        # reservoir] must be rebuilt from Store + ChangeLog on
-        # mount/reconnect." Best-effort — leave studio_state as-is on
-        # failure so the UI still renders.
-        studio_state =
-          case safe_refresh_reservoir(scope, studio_state) do
-            {:ok, refreshed} -> refreshed
-            _ -> studio_state
-          end
-
         breadcrumbs = build_breadcrumbs(scope, studio_state, projection)
 
         socket =
@@ -690,14 +680,12 @@ defmodule ContractWeb.StudioLive do
     |> stream_insert(:changes, change, at: 0)
     |> push_editor_last_change(change)
     |> recompute_grill_assigns()
-    |> refresh_reservoir_if_needed()
   end
 
   def handle_protocol_message({:change_revoked, %Contract.Change{} = change}, socket) do
     socket
     |> stream_insert(:changes, change, at: 0)
     |> push_event("editor:change-revoked", %{change_id: change.id})
-    |> refresh_reservoir_if_needed()
   end
 
   def handle_protocol_message({:revision_conflict, change_id, node_id}, socket) do
@@ -726,7 +714,6 @@ defmodule ContractWeb.StudioLive do
     socket
     |> update(:projection, fn proj -> Map.put(proj, :marks, marks) end)
     |> recompute_grill_assigns()
-    |> refresh_reservoir_if_needed()
   end
 
   def handle_protocol_message({:agent_stream, agent_run_id, stream_event}, socket) do
@@ -760,7 +747,6 @@ defmodule ContractWeb.StudioLive do
     end)
     |> stream_insert(:chat_messages, bubble)
     |> recompute_grill_assigns()
-    |> refresh_reservoir_if_needed()
   end
 
   def handle_protocol_message({:agent_failed, agent_run_id, reason}, socket) do
@@ -826,16 +812,11 @@ defmodule ContractWeb.StudioLive do
   end
 
   def handle_protocol_message({:import_completed, document}, socket) do
-    socket
-    |> stream_insert(:toasts, build_toast(:info, "Import completed", import_summary(document)))
-    |> refresh_reservoir_if_needed()
-  end
-
-  # SPEC.md §11 — `:evidence_attached` is in the refresh-trigger set. The
-  # emitter is TBD (a later evidence-attachment workflow); for now the
-  # handler exists so the protocol is complete and the reservoir refreshes.
-  def handle_protocol_message({:evidence_attached, _evidence}, socket) do
-    refresh_reservoir_if_needed(socket)
+    stream_insert(
+      socket,
+      :toasts,
+      build_toast(:info, "Import completed", import_summary(document))
+    )
   end
 
   def handle_protocol_message({:import_failed, import_id, reason}, socket) do
@@ -847,9 +828,11 @@ defmodule ContractWeb.StudioLive do
   end
 
   def handle_protocol_message({:export_ready, export}, socket) do
-    socket
-    |> stream_insert(:toasts, build_toast(:info, "Export ready", export_summary(export)))
-    |> refresh_reservoir_if_needed()
+    stream_insert(
+      socket,
+      :toasts,
+      build_toast(:info, "Export ready", export_summary(export))
+    )
   end
 
   def handle_protocol_message({:export_failed, export_id, reason}, socket) do
@@ -898,6 +881,37 @@ defmodule ContractWeb.StudioLive do
     socket_after_event
   end
 
+  # ----------------------------------------------------------------------------
+  # Context Reservoir (SPEC.md §10a) — LiveComponent → parent LV bridge
+  # ----------------------------------------------------------------------------
+  #
+  # The reservoir LC keeps inline-edit UI state locally, but every actual
+  # mutation has to round-trip through the same Action funnel as any
+  # other event. So the LC `send/2`s these messages to the parent LV
+  # process; we translate them into the standard event funnel.
+  def handle_protocol_message(
+        {:context_reservoir_edit_field, field_id, value},
+        socket
+      )
+      when is_binary(field_id) do
+    params = %{"field_id" => field_id, "value" => to_string(value)}
+
+    case event_to_action("edit_document", params, socket.assigns) do
+      {:ok, %Action{} = action} -> dispatch(socket, action)
+      _ -> socket
+    end
+  end
+
+  def handle_protocol_message(
+        {:context_reservoir_focus_question, question_id},
+        socket
+      )
+      when is_binary(question_id) do
+    update(socket, :studio_state, fn state ->
+      %{state | selected_node_id: question_id}
+    end)
+  end
+
   def handle_protocol_message(_unknown, socket) do
     # Spec invariant 7: PubSub events are advisory. Ignore noise.
     socket
@@ -944,14 +958,20 @@ defmodule ContractWeb.StudioLive do
         </script>
 
         <%!-- Desktop: 3-pane grid --%>
+        <%!--
+          SPEC.md §10a — Left rail is the **Context Reservoir** (live
+          projection of contract context), NOT a raw document list. The
+          legacy DocumentList is preserved as a module for potential
+          mobile-drawer reuse but is no longer mounted here.
+        --%>
         <div
           :if={@viewport == :desktop}
-          class="grid grid-cols-[280px_1fr_360px] flex-1 min-h-0 gap-0"
+          class="grid grid-cols-[320px_1fr_360px] flex-1 min-h-0 gap-0"
         >
           <.live_component
-            module={Components.DocumentList}
-            id="document-list"
-            studio_state={@studio_state}
+            module={Components.ContextReservoir}
+            id="context-reservoir"
+            reservoir={@studio_state.context_reservoir || %Contract.Studio.ContextReservoir{}}
             current_scope={@current_scope}
           />
           <div class="relative min-h-0">
@@ -1145,46 +1165,6 @@ defmodule ContractWeb.StudioLive do
       action_kind: change.action_kind,
       node_id: node_id
     })
-  end
-
-  # Mount-side wrapper around Studio.refresh_context_reservoir/2. Swallows
-  # errors because the LV must always render.
-  defp safe_refresh_reservoir(scope, state) do
-    try do
-      Studio.refresh_context_reservoir(scope, state)
-    rescue
-      _ -> {:error, :rescued}
-    catch
-      _, _ -> {:error, :caught}
-    end
-  end
-
-  # SPEC.md §10a / §11 — refresh the Context Reservoir on protocol events
-  # listed in §11 ({:change_committed, :change_revoked, :marks_changed,
-  # :import_completed, :evidence_attached, :export_ready, :agent_completed}).
-  # Best-effort: a failure in load_context_reservoir must never break the
-  # caller's message handler.
-  defp refresh_reservoir_if_needed(socket) do
-    scope = socket.assigns[:current_scope]
-    state = socket.assigns[:studio_state]
-
-    if is_nil(scope) or is_nil(state) do
-      socket
-    else
-      try do
-        case Studio.refresh_context_reservoir(scope, state) do
-          {:ok, %Contract.Studio.State{} = new_state} ->
-            assign(socket, :studio_state, new_state)
-
-          _ ->
-            socket
-        end
-      rescue
-        _ -> socket
-      catch
-        _, _ -> socket
-      end
-    end
   end
 
   defp recompute_grill_assigns(socket) do
