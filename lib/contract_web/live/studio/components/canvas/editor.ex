@@ -84,6 +84,15 @@ defmodule ContractWeb.Live.Studio.Components.Canvas.Editor do
             this.debounceMs = 300
             this.timers = new Map()
             this.dirty = new Set()
+            // Last committed change-id for this document. Tracked client-side
+            // because the LV does not embed last-change metadata in the node
+            // attrs (the projection has no `last_change_id` field). The
+            // parent LV pushes a `phx:editor:last-change` event on every
+            // `:change_committed` protocol message — we cache the id here
+            // so Cmd+Z can fire `revoke_change` with the right payload
+            // regardless of which node (if any) currently has focus.
+            this.lastChangeId = null
+            this.lastChangeNodeId = null
 
             // Click/focus → set_node_focus on the parent LV.
             this.onFocus = (e) => {
@@ -114,23 +123,39 @@ defmodule ContractWeb.Live.Studio.Components.Canvas.Editor do
               if (this.dirty.has(nodeId)) this.commit(el)
             }
 
-            // Key handling: Enter on heading commits immediately, Cmd/Ctrl+Enter
-            // always commits, Cmd/Ctrl+Z routes through revoke_change.
+            // Cmd/Ctrl+Z handler. Bound on `window` (capture phase) so it
+            // fires even when focus is outside the contenteditable nodes —
+            // e.g. on `body` after a programmatic edit. preventDefault() runs
+            // unconditionally on keydown so the browser's native undo (which
+            // would otherwise reverse the contenteditable's last input) never
+            // races us. The actual revoke is gated on `data-can-revoke` and
+            // requires a cached `lastChangeId`.
+            this.onUndoKey = (e) => {
+              const isMod = e.metaKey || e.ctrlKey
+              if (!isMod) return
+              if (e.key !== "z" && e.key !== "Z") return
+              // Ignore Cmd+Shift+Z (redo) — we only handle plain undo.
+              if (e.shiftKey) return
+              e.preventDefault()
+              if (this.el.dataset.canRevoke !== "true") return
+              if (!this.lastChangeId) return
+              const payload = {change_id: this.lastChangeId}
+              const nodeId = this.lastChangeNodeId ||
+                (e.target && e.target.closest &&
+                  (e.target.closest("[data-node-id]") || {}).dataset &&
+                  e.target.closest("[data-node-id]").dataset.nodeId)
+              if (nodeId) payload.node_id = nodeId
+              this.pushEvent("revoke_change", payload)
+            }
+
+            // In-node key handling: Enter on heading commits immediately,
+            // Cmd/Ctrl+Enter always commits. Cmd/Ctrl+Z is handled by
+            // `onUndoKey` on `window` so it fires regardless of focus.
             this.onKeyDown = (e) => {
               const el = e.target.closest("[contenteditable='true'][data-node-id]")
               if (!el) return
               const isMod = e.metaKey || e.ctrlKey
               const kind = el.dataset.nodeKind
-
-              if (isMod && (e.key === "z" || e.key === "Z")) {
-                e.preventDefault()
-                if (this.el.dataset.canRevoke !== "true") return
-                const changeId = el.dataset.lastChangeId
-                if (changeId) {
-                  this.pushEvent("revoke_change", {change_id: changeId, node_id: el.dataset.nodeId})
-                }
-                return
-              }
 
               if (isMod && e.key === "Enter") {
                 e.preventDefault()
@@ -171,11 +196,43 @@ defmodule ContractWeb.Live.Studio.Components.Canvas.Editor do
               el.innerText = el.dataset.serverContent || ""
             }
 
+            // Cache the most recent committed change id for this document.
+            // StudioLive pushes `editor:last-change` on every
+            // `:change_committed` protocol message that is not itself a
+            // revoke (so Cmd+Z never tries to revoke a revoke).
+            this.onLastChange = (e) => {
+              const d = e.detail || {}
+              if (!d.change_id) return
+              this.lastChangeId = d.change_id
+              this.lastChangeNodeId = d.node_id || null
+            }
+
+            // Clear the cached change-id when its target has just been
+            // revoked — Cmd+Z is a single-shot undo, not a stack.
+            this.onChangeRevoked = (e) => {
+              const d = e.detail || {}
+              if (!d.change_id) {
+                this.lastChangeId = null
+                this.lastChangeNodeId = null
+                return
+              }
+              if (d.change_id === this.lastChangeId) {
+                this.lastChangeId = null
+                this.lastChangeNodeId = null
+              }
+            }
+
             this.el.addEventListener("focusin", this.onFocus)
             this.el.addEventListener("input", this.onInput)
             this.el.addEventListener("focusout", this.onBlur)
             this.el.addEventListener("keydown", this.onKeyDown)
+            // Capture-phase keydown on `window` so we beat the
+            // contenteditable's native undo and so Cmd+Z works even when
+            // focus has drifted to `body` (the Playwright scenario).
+            window.addEventListener("keydown", this.onUndoKey, true)
             window.addEventListener("phx:editor-revert", this.onRevert)
+            window.addEventListener("phx:editor:last-change", this.onLastChange)
+            window.addEventListener("phx:editor:change-revoked", this.onChangeRevoked)
 
             this.syncFromServer()
           },
@@ -210,7 +267,10 @@ defmodule ContractWeb.Live.Studio.Components.Canvas.Editor do
             this.el.removeEventListener("input", this.onInput)
             this.el.removeEventListener("focusout", this.onBlur)
             this.el.removeEventListener("keydown", this.onKeyDown)
+            window.removeEventListener("keydown", this.onUndoKey, true)
             window.removeEventListener("phx:editor-revert", this.onRevert)
+            window.removeEventListener("phx:editor:last-change", this.onLastChange)
+            window.removeEventListener("phx:editor:change-revoked", this.onChangeRevoked)
             this.timers.forEach((t) => clearTimeout(t))
             this.timers.clear()
           },

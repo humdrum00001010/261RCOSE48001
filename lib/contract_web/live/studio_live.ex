@@ -595,11 +595,14 @@ defmodule ContractWeb.StudioLive do
       end
     end)
     |> stream_insert(:changes, change, at: 0)
+    |> push_editor_last_change(change)
     |> recompute_grill_assigns()
   end
 
   def handle_protocol_message({:change_revoked, %Contract.Change{} = change}, socket) do
-    stream_insert(socket, :changes, change, at: 0)
+    socket
+    |> stream_insert(:changes, change, at: 0)
+    |> push_event("editor:change-revoked", %{change_id: change.id})
   end
 
   def handle_protocol_message({:revision_conflict, change_id, node_id}, socket) do
@@ -1006,6 +1009,38 @@ defmodule ContractWeb.StudioLive do
 
   defp put_state_flag(socket, key, value) do
     update(socket, :studio_state, fn state -> Map.put(state, key, value) end)
+  end
+
+  # Push the last-committed change-id to the editor hook so Cmd+Z can
+  # fire `revoke_change` with the right payload regardless of which DOM
+  # node currently has focus. Skip revokes themselves and reconciled
+  # changes so Cmd+Z never tries to revoke a revoke.
+  defp push_editor_last_change(socket, %Contract.Change{action_kind: kind, status: status} = change)
+       when kind in ["revoke_change", "resolve_revoke"]
+       when status == :revoked do
+    _ = change
+    socket
+  end
+
+  defp push_editor_last_change(socket, %Contract.Change{} = change) do
+    node_id =
+      case change.affected_refs do
+        refs when is_list(refs) ->
+          Enum.find_value(refs, fn
+            %{node_id: id} when is_binary(id) -> id
+            %{"node_id" => id} when is_binary(id) -> id
+            _ -> nil
+          end)
+
+        _ ->
+          nil
+      end
+
+    push_event(socket, "editor:last-change", %{
+      change_id: change.id,
+      action_kind: change.action_kind,
+      node_id: node_id
+    })
   end
 
   defp recompute_grill_assigns(socket) do
