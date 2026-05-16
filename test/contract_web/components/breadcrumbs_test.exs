@@ -121,24 +121,29 @@ defmodule ContractWeb.Components.BreadcrumbsTest do
       assert List.last(result) == %{label: "Account", navigate: nil, current?: true}
     end
 
-    test "studio with matter, no doc: Dashboard link + matter as current" do
+    test "studio with matter, no doc: matter level is dropped — 2-crumb fallback to Studio" do
+      # Document-pivot (SPEC.md 2026-05-15): Matter is internal context,
+      # NEVER its own breadcrumb step. Without a document, the trail
+      # collapses to `Dashboard > Studio` regardless of the matter arg.
       matter = %{id: "m_42", name: "Acme/NewCo merger"}
 
       assert Breadcrumbs.build(scope(), page: :studio, matter: matter) ==
                [
                  %{label: "Dashboard", navigate: "/dashboard", current?: false},
-                 %{label: "Acme/NewCo merger", navigate: nil, current?: true}
+                 %{label: "Studio", navigate: nil, current?: true}
                ]
     end
 
-    test "studio with matter + document: 3 crumbs, doc is current" do
+    test "studio with matter + document: 2 crumbs (Dashboard > Document); matter level is dropped" do
+      # Document-pivot: even when both matter and document are supplied,
+      # the trail is `Dashboard > Document.title` — the matter level is
+      # never rendered.
       matter = %{id: "m_42", name: "Acme/NewCo merger"}
       document = %{id: "d_1", title: "Term Sheet v3"}
 
       assert Breadcrumbs.build(scope(), page: :studio, matter: matter, document: document) ==
                [
                  %{label: "Dashboard", navigate: "/dashboard", current?: false},
-                 %{label: "Acme/NewCo merger", navigate: "/workspaces/m_42", current?: false},
                  %{label: "Term Sheet v3", navigate: nil, current?: true}
                ]
     end
@@ -148,6 +153,19 @@ defmodule ContractWeb.Components.BreadcrumbsTest do
                [
                  %{label: "Dashboard", navigate: "/dashboard", current?: false},
                  %{label: "Studio", navigate: nil, current?: true}
+               ]
+    end
+
+    test "studio with document only (no matter): 2 crumbs ending in document title" do
+      # Document-pivot: the common case after auto-Matter creation is
+      # that no real workspace name reaches the breadcrumb. The trail
+      # is the 2-level `Dashboard > Document.title`.
+      document = %{id: "d_1", title: "Untitled draft"}
+
+      assert Breadcrumbs.build(scope(), page: :studio, document: document) ==
+               [
+                 %{label: "Dashboard", navigate: "/dashboard", current?: false},
+                 %{label: "Untitled draft", navigate: nil, current?: true}
                ]
     end
 

@@ -180,11 +180,6 @@ msgstr "한 번만 더 누르시면 됩니다."
 msgid "Password"
 msgstr "비밀번호"
 
-#: lib/contract_web/live/user_live/login.ex:16
-#, elixir-autogen, elixir-format
-msgid "Pick up where you left off. The agent's pending questions, your matter timeline, and every uncommitted edit are right where you parked them."
-msgstr "이어서 작업하세요. 에이전트가 대기 중인 질문, 안건의 변경 이력, 저장하지 않은 편집까지 그대로 남아 있습니다."
-
 #: lib/contract_web/live/user_live/login.ex:37
 #, elixir-autogen, elixir-format
 msgid "Re-authenticate"
@@ -284,3 +279,8 @@ msgstr "모든 한국법 인용에 대해 법제처 교차 검증."
 #, elixir-autogen, elixir-format
 msgid "법제처 verification · provenance logged · no silent rewrites."
 msgstr "법제처 검증 · 출처 기록 · 무단 재작성 없음."
+
+#: lib/contract_web/live/user_live/login.ex:16
+#, elixir-autogen, elixir-format
+msgid "Pick up where you left off. The agent's pending questions, your workspace timeline, and every uncommitted edit are right where you parked them."
+msgstr "이어서 작업하세요. 에이전트가 대기 중인 질문, 워크스페이스의 변경 이력, 저장하지 않은 편집까지 그대로 남아 있습니다."

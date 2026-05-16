@@ -81,7 +81,10 @@ defmodule ContractWeb.Components.Breadcrumbs do
 
     * `:page` — `:dashboard | :settings | :studio`
     * `:settings_label` — label for the settings sub-page (defaults to "Account")
-    * `:matter` — `%{name: String.t()}` or `nil`, required for `:studio`
+    * `:matter` — `%{name: String.t()}` or `nil`, accepted for backwards
+      compatibility but no longer rendered as its own crumb (Document
+      pivot). Studio trails are now `Dashboard > Document.title` (or
+      `Dashboard > Studio` when no document is selected).
     * `:document` — `%{title: String.t()}` or `nil`, optional for `:studio`
   """
   @spec build(map() | nil, keyword()) :: [map()]
@@ -114,38 +117,20 @@ defmodule ContractWeb.Components.Breadcrumbs do
 
   def build(_scope, _opts), do: []
 
-  defp studio_trail(nil, _document) do
-    # Studio without a matter (e.g. matter picker) — just the Dashboard
-    # link and a "Studio" current crumb.
+  # Document-pivot studio trails: Matter is internal context, not a
+  # breadcrumb step. The trail is always two levels — Dashboard then
+  # the current Document (or "Studio" when no document is loaded).
+  # The `matter` arg is accepted but ignored.
+  defp studio_trail(_matter, nil) do
     [
       %{label: "Dashboard", navigate: "/dashboard", current?: false},
       %{label: "Studio", navigate: nil, current?: true}
     ]
   end
 
-  defp studio_trail(%{name: matter_name} = _matter, nil) do
+  defp studio_trail(_matter, %{title: doc_title}) do
     [
       %{label: "Dashboard", navigate: "/dashboard", current?: false},
-      %{label: matter_name, navigate: nil, current?: true}
-    ]
-  end
-
-  defp studio_trail(%{name: matter_name, id: matter_id} = _matter, %{title: doc_title}) do
-    # Document-pivot (SPEC.md §4): the matter crumb links to the
-    # workspace surface (`/workspaces/:matter_id`), not the legacy
-    # `/matters/:matter_id`. The current crumb is the Document title.
-    [
-      %{label: "Dashboard", navigate: "/dashboard", current?: false},
-      %{label: matter_name, navigate: "/workspaces/#{matter_id}", current?: false},
-      %{label: doc_title, navigate: nil, current?: true}
-    ]
-  end
-
-  defp studio_trail(%{name: matter_name} = _matter, %{title: doc_title}) do
-    # Matter without a stable id — fall back to a non-linked matter crumb.
-    [
-      %{label: "Dashboard", navigate: "/dashboard", current?: false},
-      %{label: matter_name, navigate: nil, current?: false},
       %{label: doc_title, navigate: nil, current?: true}
     ]
   end

@@ -11,7 +11,7 @@ msgstr ""
 "Language: en\n"
 "Plural-Forms: nplurals=2; plural=(n != 1);\n"
 
-#: lib/contract_web/live/studio/components/document_list.ex:136
+#: lib/contract_web/live/studio/components/document_list.ex:140
 #, elixir-autogen, elixir-format
 msgid "Document tree"
 msgstr ""
@@ -47,17 +47,17 @@ msgstr ""
 msgid "An empty folder line drawing — no document selected."
 msgstr ""
 
-#: lib/contract_web/live/studio/components/modal_host.ex:889
+#: lib/contract_web/live/studio/components/modal_host.ex:1024
 #, elixir-autogen, elixir-format
 msgid "Another change has touched the same content since you asked to revoke. Choose how to proceed."
 msgstr ""
 
-#: lib/contract_web/live/studio/components/modal_host.ex:489
+#: lib/contract_web/live/studio/components/modal_host.ex:557
 #, elixir-autogen, elixir-format
 msgid "Apply type"
 msgstr ""
 
-#: lib/contract_web/live/studio/components/modal_host.ex:262
+#: lib/contract_web/live/studio/components/modal_host.ex:328
 #, elixir-autogen, elixir-format
 msgid "Ask user"
 msgstr ""
@@ -67,8 +67,8 @@ msgstr ""
 msgid "Awaiting an answer from a writer."
 msgstr ""
 
-#: lib/contract_web/live/studio/components/modal_host.ex:777
-#: lib/contract_web/live/studio/components/modal_host.ex:833
+#: lib/contract_web/live/studio/components/modal_host.ex:908
+#: lib/contract_web/live/studio/components/modal_host.ex:968
 #, elixir-autogen, elixir-format
 msgid "Back"
 msgstr ""
@@ -88,13 +88,13 @@ msgstr ""
 msgid "Briefing mode"
 msgstr ""
 
-#: lib/contract_web/live/studio/components/modal_host.ex:701
-#: lib/contract_web/live/studio/components/modal_host.ex:991
+#: lib/contract_web/live/studio/components/modal_host.ex:808
+#: lib/contract_web/live/studio/components/modal_host.ex:1165
 #, elixir-autogen, elixir-format
 msgid "Cancel"
 msgstr ""
 
-#: lib/contract_web/live/studio/components/modal_host.ex:905
+#: lib/contract_web/live/studio/components/modal_host.ex:1040
 #, elixir-autogen, elixir-format
 msgid "Cancel revoke"
 msgstr ""
@@ -104,34 +104,34 @@ msgstr ""
 msgid "Changes"
 msgstr ""
 
-#: lib/contract_web/live/studio/components/modal_host.ex:572
+#: lib/contract_web/live/studio/components/modal_host.ex:640
 #, elixir-autogen, elixir-format
 msgid "Choose a file"
 msgstr ""
 
-#: lib/contract_web/live/studio/components/modal_host.ex:677
+#: lib/contract_web/live/studio/components/modal_host.ex:746
 #, elixir-autogen, elixir-format
 msgid "Choose a target type…"
 msgstr ""
 
-#: lib/contract_web/live/studio/components/modal_host.ex:486
-#: lib/contract_web/live/studio/components/modal_host.ex:973
+#: lib/contract_web/live/studio/components/modal_host.ex:554
 #, elixir-autogen, elixir-format
 msgid "Choose a type…"
 msgstr ""
 
-#: lib/contract_web/live/studio/components/modal_host.ex:723
+#: lib/contract_web/live/studio/components/modal_host.ex:844
 #, elixir-autogen, elixir-format
 msgid "Choose how each source field is carried over."
 msgstr ""
 
-#: lib/contract_web/live/studio/components/modal_host.ex:360
-#: lib/contract_web/live/studio/components/modal_host.ex:449
-#: lib/contract_web/live/studio/components/modal_host.ex:547
-#: lib/contract_web/live/studio/components/modal_host.ex:625
-#: lib/contract_web/live/studio/components/modal_host.ex:881
-#: lib/contract_web/live/studio/components/modal_host.ex:950
-#: lib/contract_web/live/studio/components/modal_host.ex:1031
+#: lib/contract_web/live/studio/components/modal_host.ex:428
+#: lib/contract_web/live/studio/components/modal_host.ex:517
+#: lib/contract_web/live/studio/components/modal_host.ex:615
+#: lib/contract_web/live/studio/components/modal_host.ex:693
+#: lib/contract_web/live/studio/components/modal_host.ex:1016
+#: lib/contract_web/live/studio/components/modal_host.ex:1097
+#: lib/contract_web/live/studio/components/modal_host.ex:1205
+#: lib/contract_web/live/studio/components/modal_host.ex:1272
 #, elixir-autogen, elixir-format
 msgid "Close"
 msgstr ""
@@ -141,38 +141,37 @@ msgstr ""
 msgid "Close preview"
 msgstr ""
 
-#: lib/contract_web/live/studio/components/modal_host.ex:640
+#: lib/contract_web/live/studio/components/modal_host.ex:708
 #, elixir-autogen, elixir-format
 msgid "Confirm"
 msgstr ""
 
-#: lib/contract_web/live/studio/components/modal_host.ex:484
-#: lib/contract_web/live/studio/components/modal_host.ex:971
+#: lib/contract_web/live/studio/components/modal_host.ex:552
 #, elixir-autogen, elixir-format
 msgid "Contract type"
 msgstr ""
 
-#: lib/contract_web/live/studio/components/modal_host.ex:618
+#: lib/contract_web/live/studio/components/modal_host.ex:686
 #, elixir-autogen, elixir-format
 msgid "Convert document type"
 msgstr ""
 
-#: lib/contract_web/live/studio/components/modal_host.ex:257
+#: lib/contract_web/live/studio/components/modal_host.ex:323
 #, elixir-autogen, elixir-format
 msgid "Copy once (snapshot)"
 msgstr ""
 
-#: lib/contract_web/live/studio/components/modal_host.ex:994
+#: lib/contract_web/live/studio/components/modal_host.ex:1168
 #, elixir-autogen, elixir-format
 msgid "Create"
 msgstr ""
 
-#: lib/contract_web/live/studio/components/modal_host.ex:841
+#: lib/contract_web/live/studio/components/modal_host.ex:976
 #, elixir-autogen, elixir-format
 msgid "Create variant"
 msgstr ""
 
-#: lib/contract_web/live/studio/components/modal_host.ex:259
+#: lib/contract_web/live/studio/components/modal_host.ex:325
 #, elixir-autogen, elixir-format
 msgid "Derive"
 msgstr ""
@@ -182,7 +181,7 @@ msgstr ""
 msgid "Document preview"
 msgstr ""
 
-#: lib/contract_web/live/studio/components/modal_host.ex:442
+#: lib/contract_web/live/studio/components/modal_host.ex:510
 #, elixir-autogen, elixir-format
 msgid "Edit document metadata"
 msgstr ""
@@ -192,34 +191,29 @@ msgstr ""
 msgid "Enter로 전송 · Shift+Enter로 줄바꿈"
 msgstr ""
 
-#: lib/contract_web/live/studio/components/modal_host.ex:1023
+#: lib/contract_web/live/studio/components/modal_host.ex:1197
 #, elixir-autogen, elixir-format
 msgid "Export document"
 msgstr ""
 
-#: lib/contract_web/live/studio/components/modal_host.ex:637
+#: lib/contract_web/live/studio/components/modal_host.ex:705
 #, elixir-autogen, elixir-format
 msgid "Field strategies"
 msgstr ""
 
-#: lib/contract_web/live/studio/components/modal_host.ex:807
+#: lib/contract_web/live/studio/components/modal_host.ex:938
 #, elixir-autogen, elixir-format
 msgid "Fields with explicit strategies:"
 msgstr ""
 
-#: lib/contract_web/live/studio/components/modal_host.ex:914
+#: lib/contract_web/live/studio/components/modal_host.ex:1049
 #, elixir-autogen, elixir-format
 msgid "Force revoke"
 msgstr ""
 
-#: lib/contract_web/live/studio/components/modal_host.ex:261
+#: lib/contract_web/live/studio/components/modal_host.ex:327
 #, elixir-autogen, elixir-format
 msgid "Ignore"
-msgstr ""
-
-#: lib/contract_web/live/studio/components/modal_host.ex:980
-#, elixir-autogen, elixir-format
-msgid "Initial title"
 msgstr ""
 
 #: lib/contract_web/live/studio/components/canvas/briefing.ex:129
@@ -227,28 +221,23 @@ msgstr ""
 msgid "Jump to clarifying question"
 msgstr ""
 
-#: lib/contract_web/live/studio/components/modal_host.ex:258
-#, elixir-autogen, elixir-format
-msgid "Link to matter field"
-msgstr ""
-
 #: lib/contract_web/live/studio/components/preview_overlay.ex:248
 #, elixir-autogen, elixir-format
 msgid "Marks"
 msgstr ""
 
-#: lib/contract_web/live/studio/components/document_list.ex:132
-#: lib/contract_web/live/studio/components/modal_host.ex:942
+#: lib/contract_web/live/studio/components/document_list.ex:136
+#: lib/contract_web/live/studio/components/modal_host.ex:1089
 #, elixir-autogen, elixir-format, fuzzy
 msgid "New document"
 msgstr ""
 
-#: lib/contract_web/live/studio/components/modal_host.ex:787
+#: lib/contract_web/live/studio/components/modal_host.ex:918
 #, elixir-autogen, elixir-format
 msgid "Next: confirm"
 msgstr ""
 
-#: lib/contract_web/live/studio/components/modal_host.ex:712
+#: lib/contract_web/live/studio/components/modal_host.ex:830
 #, elixir-autogen, elixir-format
 msgid "Next: field strategies"
 msgstr ""
@@ -263,7 +252,7 @@ msgstr ""
 msgid "No document selected."
 msgstr ""
 
-#: lib/contract_web/live/studio/components/modal_host.ex:398
+#: lib/contract_web/live/studio/components/modal_host.ex:466
 #, elixir-autogen, elixir-format, fuzzy
 msgid "No documents found."
 msgstr ""
@@ -273,7 +262,7 @@ msgstr ""
 msgid "No marks on this document."
 msgstr ""
 
-#: lib/contract_web/live/studio/components/modal_host.ex:504
+#: lib/contract_web/live/studio/components/modal_host.ex:572
 #, elixir-autogen, elixir-format
 msgid "Notes"
 msgstr ""
@@ -288,17 +277,17 @@ msgstr "Open mark for node %{node_id}"
 msgid "PDF 가져오기"
 msgstr ""
 
-#: lib/contract_web/live/studio/components/modal_host.ex:1039
+#: lib/contract_web/live/studio/components/modal_host.ex:1213
 #, elixir-autogen, elixir-format
 msgid "Pick an output format."
 msgstr ""
 
-#: lib/contract_web/live/studio/components/modal_host.ex:661
+#: lib/contract_web/live/studio/components/modal_host.ex:729
 #, elixir-autogen, elixir-format
 msgid "Pick the target contract type. The planner will report which fields can carry over."
 msgstr ""
 
-#: lib/contract_web/live/studio/components/modal_host.ex:634
+#: lib/contract_web/live/studio/components/modal_host.ex:702
 #, elixir-autogen, elixir-format
 msgid "Plan"
 msgstr ""
@@ -313,42 +302,42 @@ msgstr ""
 msgid "Recent changes will appear here."
 msgstr ""
 
-#: lib/contract_web/live/studio/components/modal_host.ex:260
+#: lib/contract_web/live/studio/components/modal_host.ex:326
 #, elixir-autogen, elixir-format
 msgid "Reference only"
 msgstr ""
 
-#: lib/contract_web/live/studio/components/modal_host.ex:874
+#: lib/contract_web/live/studio/components/modal_host.ex:1009
 #, elixir-autogen, elixir-format
 msgid "Resolve revoke conflict"
 msgstr ""
 
-#: lib/contract_web/live/studio/components/modal_host.ex:798
+#: lib/contract_web/live/studio/components/modal_host.ex:929
 #, elixir-autogen, elixir-format
 msgid "Review and create the converted variant. This does not modify the original document."
 msgstr ""
 
-#: lib/contract_web/live/studio/components/modal_host.ex:507
+#: lib/contract_web/live/studio/components/modal_host.ex:575
 #, elixir-autogen, elixir-format
 msgid "Save notes"
 msgstr ""
 
-#: lib/contract_web/live/studio/components/modal_host.ex:469
+#: lib/contract_web/live/studio/components/modal_host.ex:537
 #, elixir-autogen, elixir-format
 msgid "Save title"
 msgstr ""
 
-#: lib/contract_web/live/studio/components/modal_host.ex:378
+#: lib/contract_web/live/studio/components/modal_host.ex:446
 #, elixir-autogen, elixir-format
 msgid "Search by title"
 msgstr ""
 
-#: lib/contract_web/live/studio/components/modal_host.ex:741
+#: lib/contract_web/live/studio/components/modal_host.ex:865
 #, elixir-autogen, elixir-format
 msgid "Source field"
 msgstr ""
 
-#: lib/contract_web/live/studio/components/modal_host.ex:742
+#: lib/contract_web/live/studio/components/modal_host.ex:866
 #, elixir-autogen, elixir-format
 msgid "Strategy"
 msgstr ""
@@ -358,27 +347,29 @@ msgstr ""
 msgid "Submit"
 msgstr ""
 
-#: lib/contract_web/live/studio/components/modal_host.ex:353
+#: lib/contract_web/live/studio/components/modal_host.ex:421
 #, elixir-autogen, elixir-format
 msgid "Switch document"
 msgstr ""
 
-#: lib/contract_web/live/studio/components/modal_host.ex:675
+#: lib/contract_web/live/studio/components/modal_host.ex:744
 #, elixir-autogen, elixir-format
 msgid "Target type"
 msgstr ""
 
-#: lib/contract_web/live/studio/components/modal_host.ex:803
+#: lib/contract_web/live/studio/components/modal_host.ex:775
+#: lib/contract_web/live/studio/components/modal_host.ex:934
 #, elixir-autogen, elixir-format
 msgid "Target type:"
 msgstr ""
 
-#: lib/contract_web/live/studio/components/modal_host.ex:466
+#: lib/contract_web/live/studio/components/modal_host.ex:534
+#: lib/contract_web/live/studio/components/modal_host.ex:1133
 #, elixir-autogen, elixir-format
 msgid "Title"
 msgstr ""
 
-#: lib/contract_web/live/studio/components/modal_host.ex:581
+#: lib/contract_web/live/studio/components/modal_host.ex:649
 #, elixir-autogen, elixir-format
 msgid "Title (optional)"
 msgstr ""
@@ -404,24 +395,14 @@ msgstr ""
 msgid "Untitled document"
 msgstr ""
 
-#: lib/contract_web/live/studio/components/modal_host.ex:585
+#: lib/contract_web/live/studio/components/modal_host.ex:653
 #, elixir-autogen, elixir-format
 msgid "Upload"
 msgstr ""
 
-#: lib/contract_web/live/studio/components/modal_host.ex:540
+#: lib/contract_web/live/studio/components/modal_host.ex:608
 #, elixir-autogen, elixir-format
 msgid "Upload a document"
-msgstr ""
-
-#: lib/contract_web/live/studio/components/modal_host.ex:735
-#, elixir-autogen, elixir-format
-msgid "Wave 4 작업 진행 중 — per-field strategy picker."
-msgstr ""
-
-#: lib/contract_web/live/studio/components/modal_host.ex:691
-#, elixir-autogen, elixir-format
-msgid "Wave 4 작업 진행 중 — planner output will appear here."
 msgstr ""
 
 #: lib/contract_web/live/studio/components/grill_rail.ex:162
@@ -434,7 +415,8 @@ msgstr ""
 msgid "Your answer"
 msgstr ""
 
-#: lib/contract_web/live/studio/components/modal_host.ex:804
+#: lib/contract_web/live/studio/components/modal_host.ex:935
+#: lib/contract_web/live/studio/components/modal_host.ex:1125
 #, elixir-autogen, elixir-format
 msgid "—"
 msgstr ""
@@ -449,7 +431,7 @@ msgstr ""
 msgid "관찰 모드 — 메시지는 다른 사용자가 받습니다"
 msgstr ""
 
-#: lib/contract_web/live/studio/components/canvas/editor.ex:232
+#: lib/contract_web/live/studio/components/canvas/editor.ex:307
 #, elixir-autogen, elixir-format
 msgid "다른 사용자의 변경이 먼저 적용되었습니다. 입력 내용을 서버 값으로 되돌렸습니다."
 msgstr ""
@@ -585,17 +567,12 @@ msgstr ""
 msgid "에이전트에게 무엇이든 물어보세요 — 초안, 마크, 내보내기."
 msgstr ""
 
-#: lib/contract_web/live/studio/components/canvas/empty.ex:49
-#, elixir-autogen, elixir-format
-msgid "왼쪽에서 안건의 문서를 고르거나, 새 계약서를 시작합니다."
-msgstr ""
-
 #: lib/contract_web/live/studio/components/chat_rail.ex:301
 #, elixir-autogen, elixir-format
 msgid "응답 중…"
 msgstr ""
 
-#: lib/contract_web/live/studio/components/canvas/editor.ex:214
+#: lib/contract_web/live/studio/components/canvas/editor.ex:289
 #, elixir-autogen, elixir-format
 msgid "이 문서에는 아직 내용이 없습니다."
 msgstr ""
@@ -620,7 +597,7 @@ msgstr "Flag"
 msgid "질문"
 msgstr "Ask"
 
-#: lib/contract_web/live/studio/components/canvas/editor.ex:384
+#: lib/contract_web/live/studio/components/canvas/editor.ex:459
 #, elixir-autogen, elixir-format
 msgid "표 (읽기 전용)"
 msgstr ""
@@ -630,47 +607,118 @@ msgstr ""
 msgid "표시된 메모 없음"
 msgstr "No marks to display"
 
-#: lib/contract_web/live/studio/components/document_list.ex:101
+#: lib/contract_web/live/studio/components/document_list.ex:105
 #, elixir-autogen, elixir-format, fuzzy
 msgid "+ New document"
 msgstr ""
 
-#: lib/contract_web/live/studio/components/document_list.ex:140
+#: lib/contract_web/live/studio/components/document_list.ex:144
 #, elixir-autogen, elixir-format
 msgid "Active"
 msgstr ""
 
-#: lib/contract_web/live/studio/components/document_list.ex:147
+#: lib/contract_web/live/studio/components/document_list.ex:151
 #, elixir-autogen, elixir-format, fuzzy
 msgid "Archived"
 msgstr ""
 
-#: lib/contract_web/live/studio/components/document_list.ex:85
-#, elixir-autogen, elixir-format
-msgid "Matter"
-msgstr ""
-
-#: lib/contract_web/live/studio/components/document_list.ex:104
+#: lib/contract_web/live/studio/components/document_list.ex:108
 #, elixir-autogen, elixir-format
 msgid "New"
 msgstr ""
 
-#: lib/contract_web/live/studio/components/document_list.ex:118
+#: lib/contract_web/live/studio/components/document_list.ex:122
 #, elixir-autogen, elixir-format, fuzzy
 msgid "No documents yet"
 msgstr ""
 
-#: lib/contract_web/live/studio/components/document_list.ex:326
-#, elixir-autogen, elixir-format, fuzzy
-msgid "No matter selected"
-msgstr ""
-
-#: lib/contract_web/live/studio/components/document_list.ex:121
+#: lib/contract_web/live/studio/components/document_list.ex:125
 #, elixir-autogen, elixir-format
 msgid "Pick a contract type to start your first draft."
 msgstr ""
 
-#: lib/contract_web/live/studio/components/document_list.ex:345
+#: lib/contract_web/live/studio/components/document_list.ex:348
 #, elixir-autogen, elixir-format
 msgid "just now"
+msgstr ""
+
+#: lib/contract_web/live/studio/components/modal_host.ex:853
+#, elixir-autogen, elixir-format
+msgid "AI-refined"
+msgstr ""
+
+#: lib/contract_web/live/studio/components/modal_host.ex:797
+#, elixir-autogen, elixir-format, fuzzy
+msgid "Choose a target type then run the planner."
+msgstr ""
+
+#: lib/contract_web/live/studio/components/modal_host.ex:942
+#, elixir-autogen, elixir-format
+msgid "Field plans:"
+msgstr ""
+
+#: lib/contract_web/live/studio/components/modal_host.ex:782
+#, elixir-autogen, elixir-format
+msgid "Fields to consider:"
+msgstr ""
+
+#: lib/contract_web/live/studio/components/modal_host.ex:324
+#, elixir-autogen, elixir-format, fuzzy
+msgid "Link to workspace field"
+msgstr ""
+
+#: lib/contract_web/live/studio/components/modal_host.ex:858
+#, elixir-autogen, elixir-format
+msgid "No source fields to migrate — go back and run the planner first."
+msgstr ""
+
+#: lib/contract_web/live/studio/components/document_list.ex:329
+#, elixir-autogen, elixir-format
+msgid "No workspace selected"
+msgstr ""
+
+#: lib/contract_web/live/studio/components/modal_host.ex:1280
+#, elixir-autogen, elixir-format, fuzzy
+msgid "Pick a contract type for this document."
+msgstr ""
+
+#: lib/contract_web/live/studio/components/modal_host.ex:819
+#, elixir-autogen, elixir-format
+msgid "Run planner"
+msgstr ""
+
+#: lib/contract_web/live/studio/components/modal_host.ex:1264
+#, elixir-autogen, elixir-format
+msgid "Set contract type"
+msgstr ""
+
+#: lib/contract_web/live/studio/components/modal_host.ex:764
+#, elixir-autogen, elixir-format
+msgid "Source type:"
+msgstr ""
+
+#: lib/contract_web/live/studio/components/modal_host.ex:789
+#, elixir-autogen, elixir-format
+msgid "These types are not declared compatible — every field defaults to Ask user."
+msgstr ""
+
+#: lib/contract_web/live/studio/components/modal_host.ex:1138
+#, elixir-autogen, elixir-format
+msgid "Type is set later by you or the agent."
+msgstr ""
+
+#: lib/contract_web/live/studio/components/modal_host.ex:1153
+#, elixir-autogen, elixir-format
+msgid "Upload from PDF/HWPX/HWP…"
+msgstr ""
+
+#: lib/contract_web/live/studio/components/document_list.ex:89
+#: lib/contract_web/live/studio/components/modal_host.ex:1122
+#, elixir-autogen, elixir-format
+msgid "Workspace"
+msgstr ""
+
+#: lib/contract_web/live/studio/components/canvas/empty.ex:49
+#, elixir-autogen, elixir-format, fuzzy
+msgid "왼쪽에서 문서를 고르거나, 새 계약서를 시작합니다."
 msgstr ""

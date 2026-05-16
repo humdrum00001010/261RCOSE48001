@@ -206,8 +206,10 @@ defmodule ContractWeb.UserLive.ApiTokens do
               <.input
                 field={@form[:matter_id]}
                 type="select"
-                label={dgettext("settings", "Matter")}
-                prompt={dgettext("settings", "No matters yet — token will be account-scoped")}
+                label={dgettext("settings", "Workspace")}
+                prompt={
+                  dgettext("settings", "No workspaces yet — token will be account-scoped")
+                }
                 options={Enum.map(@matters, &{&1.name, &1.id})}
                 disabled={@matters == []}
               />

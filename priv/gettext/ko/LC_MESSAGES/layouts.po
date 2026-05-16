@@ -3,7 +3,8 @@
 ## so consistency with the auth + dashboard surfaces matters.
 ##
 ## #. TODO native-speaker review — anchors:
-##   - "안건" already chosen in dashboard.po; settings.po mirrors it.
+##   - "워크스페이스" (workspace) is the chosen user-facing label per
+##     SPEC.md Document-pivot; "안건" / "사건" are no longer surfaced.
 ##   - "스튜디오" (Studio) stays English-romanised — it's the product's
 ##     own internal name for the editor surface, not a generic word.
 ##   - "법무 문서" (legal document) over "법률 문서" — more colloquial
@@ -13,47 +14,47 @@ msgstr ""
 "Language: ko\n"
 "Plural-Forms: nplurals=1; plural=0;\n"
 
-#: lib/contract_web/components/layouts.ex:283
+#: lib/contract_web/components/layouts.ex:295
 #, elixir-autogen, elixir-format
 msgid "A legal-document studio for Korean lawyers. Built to be precise, auditable, and quiet."
 msgstr "한국 법조인을 위한 법무 문서 스튜디오. 정확하고, 추적 가능하며, 과묵하게 동작합니다."
 
-#: lib/contract_web/components/layouts.ex:317
+#: lib/contract_web/components/layouts.ex:329
 #, elixir-autogen, elixir-format
 msgid "About"
 msgstr "소개"
 
-#: lib/contract_web/components/layouts.ex:220
-#: lib/contract_web/components/layouts.ex:380
+#: lib/contract_web/components/layouts.ex:232
+#: lib/contract_web/components/layouts.ex:392
 #, elixir-autogen, elixir-format
 msgid "Account"
 msgstr "계정"
 
-#: lib/contract_web/components/layouts.ex:402
 #: lib/contract_web/components/layouts.ex:414
+#: lib/contract_web/components/layouts.ex:426
 #, elixir-autogen, elixir-format
 msgid "Attempting to reconnect"
 msgstr "재연결을 시도하는 중입니다"
 
-#: lib/contract_web/components/layouts.ex:128
-#: lib/contract_web/components/layouts.ex:254
-#: lib/contract_web/components/layouts.ex:301
+#: lib/contract_web/components/layouts.ex:130
+#: lib/contract_web/components/layouts.ex:266
+#: lib/contract_web/components/layouts.ex:313
 #, elixir-autogen, elixir-format
 msgid "Changelog"
 msgstr "변경 이력"
 
 #: lib/contract_web/components/layouts.ex:72
-#: lib/contract_web/components/layouts.ex:212
+#: lib/contract_web/components/layouts.ex:224
 #, elixir-autogen, elixir-format
 msgid "Close menu"
 msgstr "메뉴 닫기"
 
-#: lib/contract_web/components/layouts.ex:313
+#: lib/contract_web/components/layouts.ex:325
 #, elixir-autogen, elixir-format
 msgid "Company"
 msgstr "회사"
 
-#: lib/contract_web/components/layouts.ex:320
+#: lib/contract_web/components/layouts.ex:332
 #, elixir-autogen, elixir-format
 msgid "Contact"
 msgstr "문의"
@@ -63,52 +64,52 @@ msgstr "문의"
 msgid "Contract Studio home"
 msgstr "Contract Studio 홈"
 
-#: lib/contract_web/components/layouts.ex:453
+#: lib/contract_web/components/layouts.ex:465
 #, elixir-autogen, elixir-format
 msgid "Dark theme"
 msgstr "다크 테마"
 
-#: lib/contract_web/components/layouts.ex:137
-#: lib/contract_web/components/layouts.ex:167
-#: lib/contract_web/components/layouts.ex:226
+#: lib/contract_web/components/layouts.ex:139
+#: lib/contract_web/components/layouts.ex:173
+#: lib/contract_web/components/layouts.ex:238
 #, elixir-autogen, elixir-format
 msgid "Dashboard"
 msgstr "대시보드"
 
-#: lib/contract_web/components/layouts.ex:126
-#: lib/contract_web/components/layouts.ex:251
+#: lib/contract_web/components/layouts.ex:127
+#: lib/contract_web/components/layouts.ex:263
 #, elixir-autogen, elixir-format
 msgid "Docs"
 msgstr "문서"
 
-#: lib/contract_web/components/layouts.ex:296
+#: lib/contract_web/components/layouts.ex:308
 #, elixir-autogen, elixir-format
 msgid "Documentation"
 msgstr "문서"
 
-#: lib/contract_web/components/layouts.ex:334
+#: lib/contract_web/components/layouts.ex:346
 #, elixir-autogen, elixir-format
 msgid "Language"
 msgstr "언어"
 
-#: lib/contract_web/components/layouts.ex:339
+#: lib/contract_web/components/layouts.ex:351
 #, elixir-autogen, elixir-format
 msgid "Language switcher (placeholder)"
 msgstr "언어 전환 (임시)"
 
-#: lib/contract_web/components/layouts.ex:444
+#: lib/contract_web/components/layouts.ex:456
 #, elixir-autogen, elixir-format
 msgid "Light theme"
 msgstr "라이트 테마"
 
-#: lib/contract_web/components/layouts.ex:182
-#: lib/contract_web/components/layouts.ex:260
+#: lib/contract_web/components/layouts.ex:191
+#: lib/contract_web/components/layouts.ex:272
 #, elixir-autogen, elixir-format
 msgid "Log in"
 msgstr "로그인"
 
-#: lib/contract_web/components/layouts.ex:175
-#: lib/contract_web/components/layouts.ex:242
+#: lib/contract_web/components/layouts.ex:181
+#: lib/contract_web/components/layouts.ex:254
 #, elixir-autogen, elixir-format
 msgid "Log out"
 msgstr "로그아웃"
@@ -118,81 +119,81 @@ msgstr "로그아웃"
 msgid "Open menu"
 msgstr "메뉴 열기"
 
-#: lib/contract_web/components/layouts.ex:363
+#: lib/contract_web/components/layouts.ex:375
 #, elixir-autogen, elixir-format
 msgid "Privacy"
 msgstr "개인정보"
 
-#: lib/contract_web/components/layouts.ex:291
+#: lib/contract_web/components/layouts.ex:303
 #, elixir-autogen, elixir-format
 msgid "Product"
 msgstr "제품"
 
-#: lib/contract_web/components/layouts.ex:185
-#: lib/contract_web/components/layouts.ex:263
+#: lib/contract_web/components/layouts.ex:197
+#: lib/contract_web/components/layouts.ex:275
 #, elixir-autogen, elixir-format
 msgid "Register"
 msgstr "회원가입"
 
-#: lib/contract_web/components/layouts.ex:306
+#: lib/contract_web/components/layouts.ex:318
 #, elixir-autogen, elixir-format
 msgid "Security"
 msgstr "보안"
 
-#: lib/contract_web/components/layouts.ex:327
+#: lib/contract_web/components/layouts.ex:339
 #, elixir-autogen, elixir-format
 msgid "Security & Privacy"
 msgstr "보안 및 개인정보"
 
-#: lib/contract_web/components/layouts.ex:170
-#: lib/contract_web/components/layouts.ex:232
+#: lib/contract_web/components/layouts.ex:176
+#: lib/contract_web/components/layouts.ex:244
 #, elixir-autogen, elixir-format
 msgid "Settings"
 msgstr "설정"
 
-#: lib/contract_web/components/layouts.ex:163
+#: lib/contract_web/components/layouts.ex:169
 #, elixir-autogen, elixir-format
 msgid "Signed in as"
 msgstr "로그인 계정"
 
-#: lib/contract_web/components/layouts.ex:409
+#: lib/contract_web/components/layouts.ex:421
 #, elixir-autogen, elixir-format
 msgid "Something went wrong!"
 msgstr "문제가 발생했습니다."
 
-#: lib/contract_web/components/layouts.ex:323
-#: lib/contract_web/components/layouts.ex:365
+#: lib/contract_web/components/layouts.ex:335
+#: lib/contract_web/components/layouts.ex:377
 #, elixir-autogen, elixir-format
 msgid "Status"
 msgstr "상태"
 
-#: lib/contract_web/components/layouts.ex:140
-#: lib/contract_web/components/layouts.ex:229
+#: lib/contract_web/components/layouts.ex:142
+#: lib/contract_web/components/layouts.ex:241
 #, elixir-autogen, elixir-format
 msgid "Studio"
 msgstr "스튜디오"
 
-#: lib/contract_web/components/layouts.ex:435
+#: lib/contract_web/components/layouts.ex:447
 #, elixir-autogen, elixir-format
 msgid "System theme"
 msgstr "시스템 테마"
 
-#: lib/contract_web/components/layouts.ex:361
+#: lib/contract_web/components/layouts.ex:373
 #, elixir-autogen, elixir-format
 msgid "Terms"
 msgstr "이용약관"
 
-#: lib/contract_web/components/layouts.ex:397
+#: lib/contract_web/components/layouts.ex:409
 #, elixir-autogen, elixir-format
 msgid "We can't find the internet"
 msgstr "인터넷 연결을 찾을 수 없습니다"
 
-#: lib/contract_web/components/layouts.ex:356
+#: lib/contract_web/components/layouts.ex:368
 #, elixir-autogen, elixir-format
 msgid "© %{year} Contract Studio. All rights reserved."
 msgstr "© %{year} Contract Studio. 모든 권리 보유."
 
-#: lib/contract_web/components/layouts.ex:349
+#: lib/contract_web/components/layouts.ex:361
 #, elixir-autogen, elixir-format
 msgid "한국어 UI · English fallback"
 msgstr "한국어 UI · English fallback"

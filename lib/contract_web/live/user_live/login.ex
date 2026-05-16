@@ -15,7 +15,7 @@ defmodule ContractWeb.UserLive.Login do
           <p class="text-base-content/70 mt-3 leading-relaxed">
             {dgettext(
               "auth",
-              "Pick up where you left off. The agent's pending questions, your matter timeline, and every uncommitted edit are right where you parked them."
+              "Pick up where you left off. The agent's pending questions, your workspace timeline, and every uncommitted edit are right where you parked them."
             )}
           </p>
           <ul class="text-sm text-base-content/60 space-y-2 mt-6">

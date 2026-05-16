@@ -18,26 +18,26 @@ msgstr ""
 
 #: lib/contract_web/live/user_live/api_tokens.ex:46
 #: lib/contract_web/live/user_live/api_tokens.ex:98
-#: lib/contract_web/live/user_live/settings_hub.ex:64
-#: lib/contract_web/live/user_live/settings_hub.ex:137
+#: lib/contract_web/live/user_live/settings_hub.ex:66
+#: lib/contract_web/live/user_live/settings_hub.ex:145
 #, elixir-autogen, elixir-format
 msgid "API tokens"
 msgstr ""
 
 #: lib/contract_web/live/user_live/settings.ex:14
-#: lib/contract_web/live/user_live/settings_hub.ex:58
-#: lib/contract_web/live/user_live/settings_hub.ex:131
+#: lib/contract_web/live/user_live/settings_hub.ex:60
+#: lib/contract_web/live/user_live/settings_hub.ex:139
 #, elixir-autogen, elixir-format
 msgid "Account"
 msgstr ""
 
-#: lib/contract_web/live/user_live/settings_hub.ex:70
-#: lib/contract_web/live/user_live/settings_hub.ex:143
+#: lib/contract_web/live/user_live/settings_hub.ex:78
+#: lib/contract_web/live/user_live/settings_hub.ex:157
 #, elixir-autogen, elixir-format
 msgid "Appearance"
 msgstr ""
 
-#: lib/contract_web/live/user_live/api_tokens.ex:227
+#: lib/contract_web/live/user_live/api_tokens.ex:229
 #, elixir-autogen, elixir-format
 msgid "Cancel"
 msgstr ""
@@ -57,7 +57,7 @@ msgstr ""
 msgid "Close"
 msgstr ""
 
-#: lib/contract_web/live/user_live/api_tokens.ex:239
+#: lib/contract_web/live/user_live/api_tokens.ex:241
 #, elixir-autogen, elixir-format
 msgid "Close modal"
 msgstr ""
@@ -77,7 +77,7 @@ msgstr ""
 msgid "Email address"
 msgstr ""
 
-#: lib/contract_web/live/user_live/settings_hub.ex:59
+#: lib/contract_web/live/user_live/settings_hub.ex:61
 #, elixir-autogen, elixir-format
 msgid "Email address, password, and login methods."
 msgstr ""
@@ -102,7 +102,7 @@ msgstr ""
 msgid "Expires %{at}"
 msgstr ""
 
-#: lib/contract_web/live/user_live/api_tokens.ex:230
+#: lib/contract_web/live/user_live/api_tokens.ex:232
 #, elixir-autogen, elixir-format
 msgid "Generate"
 msgstr ""
@@ -127,7 +127,7 @@ msgstr ""
 msgid "Generated: <hidden> — persistence ships in a later wave."
 msgstr ""
 
-#: lib/contract_web/live/user_live/settings_hub.ex:65
+#: lib/contract_web/live/user_live/settings_hub.ex:67
 #, elixir-autogen, elixir-format
 msgid "Issue and revoke MCP route_ref tokens."
 msgstr ""
@@ -135,11 +135,6 @@ msgstr ""
 #: lib/contract_web/live/user_live/settings.ex:18
 #, elixir-autogen, elixir-format
 msgid "Manage your email address and password. Sensitive changes require a fresh login."
-msgstr ""
-
-#: lib/contract_web/live/user_live/api_tokens.ex:209
-#, elixir-autogen, elixir-format
-msgid "Matter"
 msgstr ""
 
 #: lib/contract_web/live/user_live/settings.ex:102
@@ -157,12 +152,7 @@ msgstr ""
 msgid "No API tokens yet"
 msgstr ""
 
-#: lib/contract_web/live/user_live/api_tokens.ex:210
-#, elixir-autogen, elixir-format
-msgid "No matters yet — token will be account-scoped"
-msgstr ""
-
-#: lib/contract_web/live/user_live/settings_hub.ex:151
+#: lib/contract_web/live/user_live/settings_hub.ex:165
 #, elixir-autogen, elixir-format
 msgid "Notifications"
 msgstr ""
@@ -177,7 +167,7 @@ msgstr ""
 msgid "Password"
 msgstr ""
 
-#: lib/contract_web/live/user_live/settings_hub.ex:52
+#: lib/contract_web/live/user_live/settings_hub.ex:51
 #, elixir-autogen, elixir-format
 msgid "Pick a category on the left, or jump in below."
 msgstr ""
@@ -215,12 +205,12 @@ msgstr ""
 #: lib/contract_web/live/user_live/settings.ex:16
 #: lib/contract_web/live/user_live/settings_hub.ex:30
 #: lib/contract_web/live/user_live/settings_hub.ex:44
-#: lib/contract_web/live/user_live/settings_hub.ex:127
+#: lib/contract_web/live/user_live/settings_hub.ex:135
 #, elixir-autogen, elixir-format
 msgid "Settings"
 msgstr ""
 
-#: lib/contract_web/live/user_live/settings_hub.ex:123
+#: lib/contract_web/live/user_live/settings_hub.ex:131
 #, elixir-autogen, elixir-format
 msgid "Settings navigation"
 msgstr ""
@@ -235,23 +225,23 @@ msgstr ""
 msgid "Signed in as"
 msgstr ""
 
-#: lib/contract_web/live/user_live/settings_hub.ex:198
-#: lib/contract_web/live/user_live/settings_hub.ex:247
+#: lib/contract_web/live/user_live/settings_hub.ex:213
+#: lib/contract_web/live/user_live/settings_hub.ex:262
 #, elixir-autogen, elixir-format
 msgid "Soon"
 msgstr ""
 
-#: lib/contract_web/live/user_live/api_tokens.ex:218
+#: lib/contract_web/live/user_live/api_tokens.ex:220
 #, elixir-autogen, elixir-format
 msgid "TTL (hours)"
 msgstr ""
 
-#: lib/contract_web/live/user_live/settings_hub.ex:76
+#: lib/contract_web/live/user_live/settings_hub.ex:84
 #, elixir-autogen, elixir-format
 msgid "Team-scoped defaults. Coming soon."
 msgstr ""
 
-#: lib/contract_web/live/user_live/settings_hub.ex:71
+#: lib/contract_web/live/user_live/settings_hub.ex:79
 #, elixir-autogen, elixir-format
 msgid "Theme & density. Coming soon."
 msgstr ""
@@ -266,8 +256,9 @@ msgstr ""
 msgid "Used for login, magic links, and audit-log attribution."
 msgstr ""
 
-#: lib/contract_web/live/user_live/settings_hub.ex:75
-#: lib/contract_web/live/user_live/settings_hub.ex:147
+#: lib/contract_web/live/user_live/api_tokens.ex:209
+#: lib/contract_web/live/user_live/settings_hub.ex:83
+#: lib/contract_web/live/user_live/settings_hub.ex:161
 #, elixir-autogen, elixir-format
 msgid "Workspace"
 msgstr ""
@@ -277,7 +268,7 @@ msgstr ""
 msgid "Your account"
 msgstr ""
 
-#: lib/contract_web/live/user_live/api_tokens.ex:241
+#: lib/contract_web/live/user_live/api_tokens.ex:243
 #, elixir-autogen, elixir-format
 msgid "close"
 msgstr ""
@@ -285,4 +276,76 @@ msgstr ""
 #: lib/contract_web/live/user_live/api_tokens.ex:201
 #, elixir-autogen, elixir-format
 msgid "e.g. mcp-cli, slack-bridge"
+msgstr ""
+
+#: lib/contract_web/live/user_live/integrations.ex:26
+#: lib/contract_web/live/user_live/settings_hub.ex:72
+#: lib/contract_web/live/user_live/settings_hub.ex:151
+#, elixir-autogen, elixir-format
+msgid "Integrations"
+msgstr ""
+
+#: lib/contract_web/live/user_live/api_tokens.ex:211
+#, elixir-autogen, elixir-format
+msgid "No workspaces yet — token will be account-scoped"
+msgstr ""
+
+#: lib/contract_web/live/user_live/integrations.ex:56
+#, elixir-autogen, elixir-format
+msgid "Settings · Integrations"
+msgstr ""
+
+#: lib/contract_web/live/user_live/settings_hub.ex:73
+#, elixir-autogen, elixir-format
+msgid "Slack and other external service connections."
+msgstr ""
+
+#: lib/contract_web/live/user_live/integrations.ex:62
+#, elixir-autogen, elixir-format
+msgid "Slack 등 외부 서비스 연결을 관리합니다. 연결된 도구는 에이전트가 검색 및 응답에 사용할 수 있습니다."
+msgstr ""
+
+#: lib/contract_web/live/user_live/integrations.ex:149
+#, elixir-autogen, elixir-format
+msgid "Slack 연결"
+msgstr ""
+
+#: lib/contract_web/live/user_live/integrations.ex:140
+#, elixir-autogen, elixir-format
+msgid "Slack 연결 해제"
+msgstr ""
+
+#: lib/contract_web/live/user_live/integrations.ex:81
+#, elixir-autogen, elixir-format
+msgid "Slack 워크스페이스를 연결하면 에이전트가 메시지 검색, 이모지 목록 등을 활용할 수 있습니다."
+msgstr ""
+
+#: lib/contract_web/live/user_live/integrations.ex:108
+#, elixir-autogen, elixir-format
+msgid "권한 (%{count})"
+msgstr ""
+
+#: lib/contract_web/live/user_live/integrations.ex:100
+#, elixir-autogen, elixir-format
+msgid "사용자"
+msgstr ""
+
+#: lib/contract_web/live/user_live/integrations.ex:121
+#, elixir-autogen, elixir-format
+msgid "연결 안 됨"
+msgstr ""
+
+#: lib/contract_web/live/user_live/integrations.ex:93
+#, elixir-autogen, elixir-format
+msgid "연결됨"
+msgstr ""
+
+#: lib/contract_web/live/user_live/integrations.ex:59
+#, elixir-autogen, elixir-format
+msgid "외부 통합"
+msgstr ""
+
+#: lib/contract_web/live/user_live/integrations.ex:96
+#, elixir-autogen, elixir-format
+msgid "팀"
 msgstr ""

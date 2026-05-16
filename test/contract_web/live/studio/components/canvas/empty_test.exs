@@ -49,7 +49,7 @@ defmodule ContractWeb.Live.Studio.Components.Canvas.EmptyTest do
       assert html =~ ~s(src="/images/landing/dashboard-empty.png")
       # Heading + subtitle (Korean primary).
       assert html =~ "문서를 선택하거나 새로 만드세요"
-      assert html =~ "왼쪽에서 안건의 문서를 고르거나, 새 계약서를 시작합니다."
+      assert html =~ "왼쪽에서 문서를 고르거나, 새 계약서를 시작합니다."
     end
 
     test "renders both action links for a lawyer (has :write)" do

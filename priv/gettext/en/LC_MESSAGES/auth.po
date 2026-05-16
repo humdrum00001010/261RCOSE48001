@@ -177,11 +177,6 @@ msgstr ""
 msgid "Password"
 msgstr ""
 
-#: lib/contract_web/live/user_live/login.ex:16
-#, elixir-autogen, elixir-format
-msgid "Pick up where you left off. The agent's pending questions, your matter timeline, and every uncommitted edit are right where you parked them."
-msgstr ""
-
 #: lib/contract_web/live/user_live/login.ex:37
 #, elixir-autogen, elixir-format
 msgid "Re-authenticate"
@@ -280,4 +275,9 @@ msgstr ""
 #: lib/contract_web/components/auth_components.ex:54
 #, elixir-autogen, elixir-format
 msgid "법제처 verification · provenance logged · no silent rewrites."
+msgstr ""
+
+#: lib/contract_web/live/user_live/login.ex:16
+#, elixir-autogen, elixir-format, fuzzy
+msgid "Pick up where you left off. The agent's pending questions, your workspace timeline, and every uncommitted edit are right where you parked them."
 msgstr ""

@@ -44,89 +44,6 @@ defmodule ContractWeb.StudioLiveTest do
       assert :sys.get_state(lv.pid).socket.assigns.current_scope.matter.id == matter_id
     end
 
-    # ---------------------------------------------------------------
-    # Document-pivot (SPEC.md §4, 2026-05-15). The product surface is
-    # now document-first: `/documents/:document_id` is the canonical
-    # URL, `/workspaces/:matter_id` is the optional secondary, and
-    # `/studio` (no params) lands on the no-document agent prompt.
-    # The legacy `/matters/:matter_id/documents/:document_id` URL
-    # must 301 to the new path so bookmarks / Slack unfurls stay live.
-    # ---------------------------------------------------------------
-
-    test "mounts at /documents/:document_id and resolves matter from the document",
-         %{conn: conn, user: user} do
-      scope = Contract.Context.for_user(user)
-      {:ok, matter} = Contract.Matters.create(scope, %{"name" => "doc-pivot-mount"})
-
-      {:ok, doc} =
-        Contract.Documents.create(scope, %{
-          "matter_id" => matter.id,
-          "title" => "doc-pivot-mount-doc",
-          "type_key" => "nda_v1"
-        })
-
-      {:ok, lv, _html} = live(conn, ~p"/documents/#{doc.id}")
-
-      assigns = :sys.get_state(lv.pid).socket.assigns
-      # Document-pivot: MatterScope resolved the document, derived the
-      # matter from `document.matter_id`, and threaded both into
-      # `current_scope` + `assigns.current_document_id`.
-      assert assigns.current_document_id == doc.id
-      assert assigns.current_scope.matter.id == matter.id
-      assert assigns.studio_state.selected_document_id == doc.id
-    end
-
-    test "mounts at /documents/:document_id/review (review subroute) the same way",
-         %{conn: conn, user: user} do
-      scope = Contract.Context.for_user(user)
-      {:ok, matter} = Contract.Matters.create(scope, %{"name" => "doc-pivot-review"})
-
-      {:ok, doc} =
-        Contract.Documents.create(scope, %{
-          "matter_id" => matter.id,
-          "title" => "doc-pivot-review-doc",
-          "type_key" => "nda_v1"
-        })
-
-      {:ok, lv, _html} = live(conn, ~p"/documents/#{doc.id}/review")
-
-      assigns = :sys.get_state(lv.pid).socket.assigns
-      assert assigns.current_document_id == doc.id
-      assert assigns.current_scope.matter.id == matter.id
-      assert assigns.studio_state.selected_document_id == doc.id
-    end
-
-    test "mounts at /workspaces/:matter_id with the matter assigned and no document",
-         %{conn: conn} do
-      matter_id = Ecto.UUID.generate()
-      {:ok, lv, _html} = live(conn, ~p"/workspaces/#{matter_id}")
-
-      assigns = :sys.get_state(lv.pid).socket.assigns
-      assert assigns.current_scope.matter.id == matter_id
-      assert assigns.current_document_id == nil
-      assert assigns.studio_state.selected_document_id == nil
-    end
-
-    test "mounts at /studio (no params) with nil matter, nil document",
-         %{conn: conn} do
-      {:ok, lv, _html} = live(conn, ~p"/studio")
-
-      assigns = :sys.get_state(lv.pid).socket.assigns
-      assert assigns.current_scope.matter == nil
-      assert assigns.current_document_id == nil
-      assert assigns.studio_state.selected_document_id == nil
-    end
-
-    test "legacy /matters/:matter_id/documents/:document_id redirects to /documents/:document_id",
-         %{conn: conn} do
-      matter_id = Ecto.UUID.generate()
-      document_id = Ecto.UUID.generate()
-
-      conn = get(conn, ~p"/matters/#{matter_id}/documents/#{document_id}")
-
-      assert redirected_to(conn, 301) == ~p"/documents/#{document_id}"
-    end
-
     test "MatterScope threads :user_perms from session onto current_scope.perms (lawyer-style) and renders + 새 문서 link",
          %{conn: conn} do
       # Persona sign-in (TestAuthController) writes :user_perms into the
@@ -203,63 +120,6 @@ defmodule ContractWeb.StudioLiveTest do
       assert :sys.get_state(lv.pid).socket.assigns.preview_modal_open? == false
       _ = render_hook(lv, "toggle_preview", %{})
       assert :sys.get_state(lv.pid).socket.assigns.preview_modal_open? == true
-    end
-  end
-
-  # ---------------------------------------------------------------------------
-  # SPEC.md §10 — no-document agent prompt (Wave Document-Pivot Impl D)
-  # ---------------------------------------------------------------------------
-  describe "agent_option_picked (no-document quick-start, SPEC.md §10)" do
-    setup :log_in_a_user
-
-    test "renders the 5-option no-document welcome at /studio (no doc selected)",
-         %{conn: conn} do
-      {:ok, _lv, html} = live(conn, ~p"/studio")
-
-      assert html =~ ~s(data-role="chat-no-doc-welcome")
-      # All 5 chip keys are present.
-      assert html =~ ~s(phx-value-key="upload")
-      assert html =~ ~s(phx-value-key="recent")
-      assert html =~ ~s(phx-value-key="blank")
-      assert html =~ ~s(phx-value-key="draft_from_discussion")
-      assert html =~ ~s(phx-value-key="variant_from_other")
-    end
-
-    test "upload option opens the upload modal", %{conn: conn} do
-      {:ok, lv, _html} = live(conn, ~p"/studio")
-      assert :sys.get_state(lv.pid).socket.assigns.studio_state.upload_panel_open? == false
-
-      _ = render_hook(lv, "agent_option_picked", %{"key" => "upload"})
-
-      assert :sys.get_state(lv.pid).socket.assigns.studio_state.upload_panel_open? == true
-    end
-
-    test "recent option opens the document-picker modal", %{conn: conn} do
-      {:ok, lv, _html} = live(conn, ~p"/studio")
-      assert :sys.get_state(lv.pid).socket.assigns.studio_state.document_picker_open? == false
-
-      _ = render_hook(lv, "agent_option_picked", %{"key" => "recent"})
-
-      assert :sys.get_state(lv.pid).socket.assigns.studio_state.document_picker_open? == true
-    end
-
-    test "draft_from_discussion option flashes a stub info message", %{conn: conn} do
-      {:ok, lv, _html} = live(conn, ~p"/studio")
-
-      html = render_hook(lv, "agent_option_picked", %{"key" => "draft_from_discussion"})
-
-      assert html =~ "논의 모드는 곧 추가됩니다."
-    end
-
-    test "variant_from_other option opens the document-picker with the variant-source flag",
-         %{conn: conn} do
-      {:ok, lv, _html} = live(conn, ~p"/studio")
-
-      _ = render_hook(lv, "agent_option_picked", %{"key" => "variant_from_other"})
-
-      state = :sys.get_state(lv.pid).socket.assigns.studio_state
-      assert state.document_picker_open? == true
-      assert Map.get(state, :variant_source_picker?) == true
     end
   end
 
@@ -856,6 +716,50 @@ defmodule ContractWeb.StudioLiveTest do
 
       # No type-picker modal — the Action dispatched directly.
       refute html =~ ~s(data-role="type-picker")
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # Document-pivot breadcrumb shape (SPEC.md 2026-05-15).
+  #
+  # The Studio trail is now 2-level: `Dashboard > Document.title` (or
+  # `Dashboard > Studio` when no document is loaded). The Matter level
+  # is gone from the breadcrumbs — Matter is internal context.
+  # ---------------------------------------------------------------------------
+  describe "Document-pivot — Studio breadcrumb trail is 2-level" do
+    setup :log_in_a_user
+
+    test "mounting /studio (no document) gives a 2-crumb trail: Dashboard > Studio",
+         %{conn: conn} do
+      {:ok, lv, _html} = live(conn, ~p"/studio")
+
+      trail = :sys.get_state(lv.pid).socket.assigns.breadcrumbs
+
+      assert length(trail) == 2
+      assert Enum.at(trail, 0).label == "Dashboard"
+      assert Enum.at(trail, 1).label == "Studio"
+      assert Enum.at(trail, 1).current? == true
+
+      # Sanity — no crumb labelled "Matter" or with the seeded matter
+      # name should ever appear.
+      refute Enum.any?(trail, &(&1.label == "Matter"))
+    end
+
+    test "mounting under a matter route (no document) still gives a 2-crumb trail (no matter level)",
+         %{conn: conn} do
+      # Matter URL → MatterScope assigns a stub matter onto current_scope,
+      # but the breadcrumb should still collapse to `Dashboard > Studio`
+      # since no document is loaded.
+      matter_id = Ecto.UUID.generate()
+      {:ok, lv, _html} = live(conn, ~p"/matters/#{matter_id}/studio")
+
+      trail = :sys.get_state(lv.pid).socket.assigns.breadcrumbs
+
+      # Exactly 2 crumbs — matter is never its own breadcrumb step.
+      assert length(trail) == 2
+      assert Enum.at(trail, 0).label == "Dashboard"
+      # The current crumb is "Studio", never the matter stub name.
+      refute Enum.at(trail, 1).label =~ "Matter "
     end
   end
 

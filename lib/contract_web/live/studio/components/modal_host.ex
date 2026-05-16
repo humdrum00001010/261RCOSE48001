@@ -321,7 +321,7 @@ defmodule ContractWeb.Live.Studio.Components.ModalHost do
   end
 
   defp strategy_label(:copy_once), do: dgettext("studio", "Copy once (snapshot)")
-  defp strategy_label(:link_to_matter_field), do: dgettext("studio", "Link to matter field")
+  defp strategy_label(:link_to_matter_field), do: dgettext("studio", "Link to workspace field")
   defp strategy_label(:derive), do: dgettext("studio", "Derive")
   defp strategy_label(:reference_only), do: dgettext("studio", "Reference only")
   defp strategy_label(:ignore), do: dgettext("studio", "Ignore")
@@ -1113,12 +1113,13 @@ defmodule ContractWeb.Live.Studio.Components.ModalHost do
           <input type="hidden" name="kind" value="create_document" />
           <input :if={@matter_id} type="hidden" name="matter_id" value={@matter_id} />
 
-          <%!-- Matter is implicit from the current scope; show as a
-                read-only label so the user knows which matter the new
-                document will live in. --%>
+          <%!-- Workspace (internal: Matter) is implicit from the current
+                scope; show as a read-only label so the user knows which
+                workspace the new document will live in. User-facing label
+                is "Workspace" per SPEC.md Document-pivot. --%>
           <div class="form-control mb-2" data-role="new-document-matter">
             <label class="label py-1">
-              <span class="label-text text-sm">{dgettext("studio", "Matter")}</span>
+              <span class="label-text text-sm">{dgettext("studio", "Workspace")}</span>
             </label>
             <p class="text-sm text-base-content/70" data-role="new-document-matter-name">
               {@matter_name || dgettext("studio", "—")}

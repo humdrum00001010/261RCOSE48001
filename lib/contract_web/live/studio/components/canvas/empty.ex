@@ -46,7 +46,7 @@ defmodule ContractWeb.Live.Studio.Components.Canvas.Empty do
           {dgettext("studio", "문서를 선택하거나 새로 만드세요")}
         </h2>
         <p class="mt-2 text-sm text-base-content/60">
-          {dgettext("studio", "왼쪽에서 안건의 문서를 고르거나, 새 계약서를 시작합니다.")}
+          {dgettext("studio", "왼쪽에서 문서를 고르거나, 새 계약서를 시작합니다.")}
         </p>
 
         <div

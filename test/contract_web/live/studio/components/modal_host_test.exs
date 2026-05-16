@@ -365,7 +365,10 @@ defmodule ContractWeb.Live.Studio.Components.ModalHostTest do
       assert html =~ "effective_date"
       # Each strategy option shows up.
       assert html =~ "Copy once"
-      assert html =~ "Link to matter field"
+      # Document-pivot label: "Workspace" (was "Matter") — backend
+      # strategy key (:link_to_matter_field) is unchanged.
+      assert html =~ "Link to workspace field"
+      refute html =~ "Link to matter field"
       assert html =~ "Derive"
       assert html =~ "Reference only"
       assert html =~ "Ignore"

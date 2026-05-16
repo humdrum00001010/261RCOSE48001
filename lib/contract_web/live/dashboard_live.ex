@@ -340,103 +340,9 @@ defmodule ContractWeb.DashboardLive do
         </section>
 
         <%!-- ---------------------------------------------------------- --%>
-        <%!-- Matters                                                     --%>
+        <%!-- Matters section dropped per SPEC.md Document-pivot           --%>
+        <%!-- (Workspace label or hidden — chose hidden).                  --%>
         <%!-- ---------------------------------------------------------- --%>
-        <section id="matters">
-          <header class="flex items-end justify-between mb-4">
-            <h2 class="text-lg font-semibold tracking-tight">
-              {dgettext("dashboard", "Matters")}
-            </h2>
-            <span :if={@matters != []} class="text-xs text-base-content/50">
-              {dgettext("dashboard", "%{count} total", count: length(@matters))}
-            </span>
-          </header>
-
-          <%= if @matters == [] do %>
-            <div
-              id="matters-empty"
-              class="rounded-box border border-dashed border-base-300 p-6 sm:p-10 text-center bg-base-200/30"
-            >
-              <img
-                src={~p"/images/landing/dashboard-empty.png"}
-                alt={
-                  dgettext("dashboard", "An empty folder with a quill, signalling no matters yet.")
-                }
-                class="mx-auto w-32 sm:w-40 h-auto object-contain"
-                width="1024"
-                height="1024"
-                loading="lazy"
-              />
-              <p class="font-medium mt-3">{dgettext("dashboard", "No matters yet")}</p>
-              <p class="text-sm text-base-content/60 mt-1 max-w-sm mx-auto">
-                {dgettext(
-                  "dashboard",
-                  "A matter holds the documents, evidence, and agent runs for a single client engagement."
-                )}
-              </p>
-              <button
-                type="button"
-                phx-click="open_new_document"
-                class="btn btn-primary mt-5"
-              >
-                <.icon name="hero-plus" class="size-4" /> {dgettext("dashboard", "New Matter")}
-              </button>
-            </div>
-          <% else %>
-            <%!--
-              Hairline table per mature-visual-language: no zebra-stripes,
-              no shadows, just border-base-200 separators. On <sm we hide
-              the Documents column to keep Name + Status + Last activity
-              readable on narrow screens — Tailwind's `hidden sm:table-cell`
-              pattern keeps the markup as a single semantic table.
-            --%>
-            <div class="overflow-x-auto rounded-box border border-base-200 bg-base-100">
-              <table id="matters-table" class="table table-sm">
-                <thead class="text-xs uppercase tracking-wide text-base-content/60">
-                  <tr class="border-b border-base-200">
-                    <th class="font-medium">{dgettext("dashboard", "Name")}</th>
-                    <th class="font-medium">{dgettext("dashboard", "Status")}</th>
-                    <th class="hidden sm:table-cell font-medium text-right">
-                      {dgettext("dashboard", "Documents")}
-                    </th>
-                    <th class="font-medium text-right">
-                      {dgettext("dashboard", "Last activity")}
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr
-                    :for={matter <- @matters}
-                    class="border-b border-base-200 last:border-b-0 hover:bg-base-200/30"
-                  >
-                    <td>
-                      <.link
-                        navigate={~p"/workspaces/#{matter.id}"}
-                        class="font-medium hover:underline"
-                      >
-                        {matter.name}
-                      </.link>
-                    </td>
-                    <td>
-                      <span class={[
-                        "badge badge-sm",
-                        matter_status_badge_class(matter.status)
-                      ]}>
-                        {matter_status_label(matter.status)}
-                      </span>
-                    </td>
-                    <td class="hidden sm:table-cell text-right tabular-nums text-base-content/70">
-                      {matter.doc_count}
-                    </td>
-                    <td class="text-right tabular-nums text-xs text-base-content/60">
-                      {format_timestamp(matter.last_activity_at)}
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          <% end %>
-        </section>
 
         <%!-- ---------------------------------------------------------- --%>
         <%!-- Recent documents                                            --%>
@@ -464,9 +370,6 @@ defmodule ContractWeb.DashboardLive do
                     <th class="font-medium">{dgettext("dashboard", "Type")}</th>
                     <th class="hidden sm:table-cell font-medium">
                       {dgettext("dashboard", "Status")}
-                    </th>
-                    <th class="hidden sm:table-cell font-medium">
-                      {dgettext("dashboard", "Matter")}
                     </th>
                     <th class="font-medium text-right">
                       {dgettext("dashboard", "Last revision")}
@@ -498,16 +401,6 @@ defmodule ContractWeb.DashboardLive do
                       ]}>
                         {document_status_label(doc.status)}
                       </span>
-                    </td>
-                    <td class="hidden sm:table-cell text-sm text-base-content/70">
-                      <.link
-                        :if={doc.matter_id}
-                        navigate={~p"/workspaces/#{doc.matter_id}"}
-                        class="hover:underline"
-                      >
-                        {doc.matter_name || "—"}
-                      </.link>
-                      <span :if={!doc.matter_id}>—</span>
                     </td>
                     <td class="text-right text-xs text-base-content/60 tabular-nums">
                       {dgettext("dashboard", "rev %{n}", n: doc.last_revision)} · {format_timestamp(
@@ -768,14 +661,6 @@ defmodule ContractWeb.DashboardLive do
   # ---------------------------------------------------------------------------
   # Status badges (Wave 4.6: dashboard tables)
   # ---------------------------------------------------------------------------
-
-  defp matter_status_label(:active), do: dgettext("dashboard", "In progress")
-  defp matter_status_label(:archived), do: dgettext("dashboard", "Archived")
-  defp matter_status_label(other), do: to_string(other)
-
-  defp matter_status_badge_class(:active), do: "badge-ghost"
-  defp matter_status_badge_class(:archived), do: "badge-ghost opacity-60"
-  defp matter_status_badge_class(_), do: "badge-ghost"
 
   defp document_status_label(:active), do: dgettext("dashboard", "Active")
   defp document_status_label(:archived), do: dgettext("dashboard", "Archived")

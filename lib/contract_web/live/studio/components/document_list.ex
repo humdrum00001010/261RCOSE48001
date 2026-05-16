@@ -77,12 +77,16 @@ defmodule ContractWeb.Live.Studio.Components.DocumentList do
       aria-label={dgettext("studio", "Documents")}
     >
       <%!-- ----------------------------------------------------------- --%>
-      <%!-- Matter header                                                --%>
+      <%!-- Workspace header (internal: Matter)                          --%>
+      <%!--                                                              --%>
+      <%!-- The user-facing label is "Workspace" / "워크스페이스" per   --%>
+      <%!-- SPEC.md (Document-pivot). Backend symbols (matter_name,      --%>
+      <%!-- scope.matter) keep their internal names.                    --%>
       <%!-- ----------------------------------------------------------- --%>
       <header class="px-4 pt-4 pb-2 flex items-start justify-between gap-2">
         <div class="min-w-0">
           <p class="text-[0.65rem] font-medium tracking-wide uppercase text-base-content/50">
-            {dgettext("studio", "Matter")}
+            {dgettext("studio", "Workspace")}
           </p>
           <h2
             class="text-sm font-semibold tracking-tight truncate"
@@ -322,7 +326,7 @@ defmodule ContractWeb.Live.Studio.Components.DocumentList do
 
   defp matter_name(%{matter: %{name: name}}) when is_binary(name), do: name
 
-  defp matter_name(_), do: dgettext("studio", "No matter selected")
+  defp matter_name(_), do: dgettext("studio", "No workspace selected")
 
   defp container_class(:drawer) do
     "h-full overflow-y-auto bg-base-100"

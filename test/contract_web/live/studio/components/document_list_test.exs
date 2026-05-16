@@ -278,10 +278,10 @@ defmodule ContractWeb.Live.Studio.Components.DocumentListTest do
     end
   end
 
-  # --- 6. matter header fallback ---------------------------------------
+  # --- 6. workspace (Matter) header fallback ---------------------------
 
-  describe "matter header" do
-    test "renders fallback Korean label when scope.matter is nil" do
+  describe "workspace header" do
+    test "renders fallback Korean label when scope.matter is nil (Document-pivot label: 워크스페이스)" do
       user = user_fixture()
 
       html =
@@ -291,7 +291,11 @@ defmodule ContractWeb.Live.Studio.Components.DocumentListTest do
           current_scope: lawyer_scope(user, nil)
         )
 
-      assert html =~ "사건 미선택"
+      # Post-Document-pivot: the user-facing label is "워크스페이스" and
+      # the empty fallback uses 워크스페이스, never the legacy "사건".
+      assert html =~ "워크스페이스 미선택"
+      refute html =~ "사건 미선택"
+      refute html =~ "사건"
     end
   end
 
@@ -312,20 +316,23 @@ defmodule ContractWeb.Live.Studio.Components.DocumentListTest do
           current_scope: lawyer_scope(user, matter)
         )
 
-      # Korean msgstrs are present.
-      assert html =~ "사건"
+      # Korean msgstrs are present — header label is now "워크스페이스"
+      # (Document-pivot) and never "사건" / "안건".
+      assert html =~ "워크스페이스"
+      refute html =~ "사건"
+      refute html =~ "안건"
       assert html =~ "아직 문서가 없습니다"
       assert html =~ "계약 유형을 골라 첫 초안을 시작하세요"
 
       # English msgids must NOT leak into the :ko render.
+      refute html =~ "WORKSPACE"
       refute html =~ "MATTER"
       refute html =~ "No documents yet"
       refute html =~ "Pick a contract type"
 
       # The slash-separated bilingual form must not appear anywhere.
-      refute html =~ "사건 / MATTER"
-      refute html =~ "사건 / Matter"
-      refute html =~ "/ MATTER"
+      refute html =~ "워크스페이스 / Workspace"
+      refute html =~ "/ Workspace"
       refute html =~ "/ Matter"
       refute html =~ "아직 문서가 없습니다 / No documents yet"
       refute html =~ "/ No documents yet"
@@ -344,19 +351,24 @@ defmodule ContractWeb.Live.Studio.Components.DocumentListTest do
           current_scope: lawyer_scope(user, matter)
         )
 
-      # English msgids appear (msgstr is empty in en/LC_MESSAGES → falls back to msgid).
-      assert html =~ "Matter"
+      # English msgids appear (msgstr is empty in en/LC_MESSAGES → falls
+      # back to msgid). Post-Document-pivot the header reads
+      # "Workspace", never "Matter".
+      assert html =~ "Workspace"
+      refute html =~ ~s(>Matter<)
       assert html =~ "No documents yet"
       assert html =~ "Pick a contract type to start your first draft."
 
       # Korean msgstrs do NOT leak into the :en render.
+      refute html =~ "워크스페이스"
       refute html =~ "사건"
+      refute html =~ "안건"
       refute html =~ "아직 문서가 없습니다"
       refute html =~ "계약 유형"
 
       # And the bilingual slash form is gone here too.
-      refute html =~ "/ MATTER"
-      refute html =~ "사건 / Matter"
+      refute html =~ "/ WORKSPACE"
+      refute html =~ "워크스페이스 / Workspace"
     end
   end
 end

@@ -1058,14 +1058,18 @@ defmodule ContractWeb.StudioLive do
 
   defp page_title(_), do: "Studio"
 
-  defp build_breadcrumbs(scope, _state, _projection) do
-    matter =
-      case scope do
-        %Context{matter: %{name: _} = m} -> m
+  defp build_breadcrumbs(scope, _state, projection) do
+    # Document-pivot: trail is Dashboard > Document.title — pass the
+    # current projection title (if any) as the document crumb. The
+    # matter opt is still accepted by Breadcrumbs.build/2 for backwards
+    # compatibility but is no longer rendered.
+    document =
+      case projection do
+        %{title: title} when is_binary(title) and title != "" -> %{title: title}
         _ -> nil
       end
 
-    Breadcrumbs.build(scope, page: :studio, matter: matter)
+    Breadcrumbs.build(scope, page: :studio, matter: nil, document: document)
   end
 
   defp empty_projection, do: Contract.Runtime.State.empty_projection()
