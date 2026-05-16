@@ -405,6 +405,35 @@ defmodule ContractWeb.StudioLive do
     {:noreply, socket}
   end
 
+  # ---------------------------------------------------------------------------
+  # Export-picker — `request_export` without a `format` opens the picker
+  # modal; with a `format` it emits the Action and closes the picker. Routed
+  # here (above the generic funnel) so the no-format case can flip the
+  # `studio_state.export_picker_open?` flag — the funnel is pure and only
+  # speaks `{:ok, Action} | :local | {:error, _}`.
+  # ---------------------------------------------------------------------------
+
+  def handle_event("request_export", params, socket) do
+    case Map.get(params, "format") do
+      format when is_binary(format) and format != "" ->
+        case event_to_action("request_export", params, socket.assigns) do
+          {:ok, %Action{} = action} ->
+            socket =
+              socket
+              |> dispatch(action)
+              |> put_state_flag(:export_picker_open?, false)
+
+            {:noreply, socket}
+
+          {:error, reason} ->
+            {:noreply, put_flash(socket, :error, "Export failed: #{inspect(reason)}")}
+        end
+
+      _ ->
+        {:noreply, put_state_flag(socket, :export_picker_open?, true)}
+    end
+  end
+
   def handle_event(event, params, socket) do
     case event_to_action(event, params, socket.assigns) do
       {:ok, %Action{} = action} ->
@@ -1125,6 +1154,9 @@ defmodule ContractWeb.StudioLive do
 
   defp update_modal(socket, "type_picker", value),
     do: put_state_flag(socket, :type_picker_open?, value)
+
+  defp update_modal(socket, "export", value),
+    do: put_state_flag(socket, :export_picker_open?, value)
 
   defp update_modal(socket, "reconcile", value),
     do: assign(socket, :reconcile_modal_open?, value)

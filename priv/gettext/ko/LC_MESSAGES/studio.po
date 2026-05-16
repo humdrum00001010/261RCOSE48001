@@ -966,3 +966,18 @@ msgstr "업로드"
 #, elixir-autogen, elixir-format
 msgid "variant"
 msgstr "변형"
+
+#: lib/contract_web/live/studio/components/modal_host.ex
+#, elixir-autogen, elixir-format
+msgid "Export format"
+msgstr "내보내기 형식"
+
+#: lib/contract_web/live/studio/components/modal_host.ex
+#, elixir-autogen, elixir-format
+msgid "취소"
+msgstr "취소"
+
+#: lib/contract_web/live/studio/components/modal_host.ex
+#, elixir-autogen, elixir-format
+msgid "내보내기"
+msgstr "내보내기"

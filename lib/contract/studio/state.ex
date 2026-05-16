@@ -25,6 +25,7 @@ defmodule Contract.Studio.State do
     field :migration_panel_open?, :boolean, default: false
     field :upload_panel_open?, :boolean, default: false
     field :type_picker_open?, :boolean, default: false
+    field :export_picker_open?, :boolean, default: false
 
     # When the user picks "다른 문서에서 변형 만들기" from the no-document
     # agent prompt (SPEC.md §10), we open the document_picker modal and
@@ -58,6 +59,7 @@ defmodule Contract.Studio.State do
       :migration_panel_open?,
       :upload_panel_open?,
       :type_picker_open?,
+      :export_picker_open?,
       :variant_source_picker?,
       :agent_run_id,
       :mode

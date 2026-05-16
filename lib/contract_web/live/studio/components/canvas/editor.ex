@@ -137,14 +137,22 @@ defmodule ContractWeb.Live.Studio.Components.Canvas.Editor do
               // Ignore Cmd+Shift+Z (redo) — we only handle plain undo.
               if (e.shiftKey) return
               e.preventDefault()
-              if (this.el.dataset.canRevoke !== "true") return
-              if (!this.lastChangeId) return
+              e.stopPropagation()
+              if (this.el.dataset.canRevoke !== "true") {
+                console.log("[Editable] Cmd+Z: data-can-revoke not 'true', bailing")
+                return
+              }
+              if (!this.lastChangeId) {
+                console.log("[Editable] Cmd+Z: no lastChangeId cached, bailing")
+                return
+              }
               const payload = {change_id: this.lastChangeId}
               const nodeId = this.lastChangeNodeId ||
                 (e.target && e.target.closest &&
                   (e.target.closest("[data-node-id]") || {}).dataset &&
                   e.target.closest("[data-node-id]").dataset.nodeId)
               if (nodeId) payload.node_id = nodeId
+              console.log("[Editable] Cmd+Z: dispatching revoke_change " + JSON.stringify(payload))
               this.pushEvent("revoke_change", payload)
             }
 
@@ -205,6 +213,7 @@ defmodule ContractWeb.Live.Studio.Components.Canvas.Editor do
               if (!d.change_id) return
               this.lastChangeId = d.change_id
               this.lastChangeNodeId = d.node_id || null
+              console.log("[Editable] cached lastChangeId=" + d.change_id + " node=" + (d.node_id || "-"))
             }
 
             // Clear the cached change-id when its target has just been
@@ -234,6 +243,7 @@ defmodule ContractWeb.Live.Studio.Components.Canvas.Editor do
             window.addEventListener("phx:editor:last-change", this.onLastChange)
             window.addEventListener("phx:editor:change-revoked", this.onChangeRevoked)
 
+            console.log("[Editable] mounted; window Cmd+Z listener installed (capture)")
             this.syncFromServer()
           },
 

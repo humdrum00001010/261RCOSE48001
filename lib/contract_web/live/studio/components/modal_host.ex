@@ -267,6 +267,7 @@ defmodule ContractWeb.Live.Studio.Components.ModalHost do
       truthy?(state && state.upload_panel_open?) or
       truthy?(state && state.migration_panel_open?) or
       truthy?(state && state.type_picker_open?) or
+      truthy?(state && state.export_picker_open?) or
       truthy?(assigns[:reconcile_modal_open?]) or
       assigns[:modal_param] in ["new_document", "export"]
   end
@@ -327,11 +328,15 @@ defmodule ContractWeb.Live.Studio.Components.ModalHost do
   defp strategy_label(:ignore), do: dgettext("studio", "Ignore")
   defp strategy_label(:ask_user), do: dgettext("studio", "Ask user")
 
+  defp format_label(:pdf), do: "PDF"
+  defp format_label(:docx), do: "Word (.docx)"
+  defp format_label(:hwpx), do: "Hangul (.hwpx)"
+  defp format_label(:html), do: "HTML"
   defp format_label("pdf"), do: "PDF"
-  defp format_label("docx"), do: "Word (DOCX)"
-  defp format_label("hwpx"), do: "한글 (HWPX)"
+  defp format_label("docx"), do: "Word (.docx)"
+  defp format_label("hwpx"), do: "Hangul (.hwpx)"
   defp format_label("html"), do: "HTML"
-  defp format_label(other), do: other
+  defp format_label(other), do: to_string(other)
 
   # --- render -----------------------------------------------------------
 
@@ -374,6 +379,8 @@ defmodule ContractWeb.Live.Studio.Components.ModalHost do
           {render_migration_wizard(assigns)}
         <% @studio_state && @studio_state.type_picker_open? -> %>
           {render_type_picker(assigns)}
+        <% @studio_state && @studio_state.export_picker_open? -> %>
+          {render_export_picker(assigns)}
         <% @reconcile_modal_open? -> %>
           {render_reconcile_modal(assigns)}
         <% @modal_param == "new_document" -> %>
@@ -1227,6 +1234,76 @@ defmodule ContractWeb.Live.Studio.Components.ModalHost do
         </ul>
       </div>
     </div>
+    """
+  end
+
+  # State-driven export picker (Wave 3C1 small-task #77). Opened by the
+  # Cmd+K command palette which routes `request_export` (no format) through
+  # the parent LV; the parent flips `studio_state.export_picker_open?` and
+  # this dialog renders. The form submits `request_export` with the chosen
+  # `format`, the parent then emits `Action(:request_export)` and flips the
+  # flag back to false. Hairline borders only per the studio visual lang.
+  defp render_export_picker(assigns) do
+    ~H"""
+    <dialog
+      :if={@studio_state.export_picker_open?}
+      id={"#{@id}-export-picker"}
+      class="modal modal-open"
+      data-role="export-picker"
+      data-modal="export"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby={"#{@id}-export-picker-title"}
+    >
+      <div
+        id={"#{@id}-export-picker-esc"}
+        phx-window-keydown="close_modal"
+        phx-key="Escape"
+        phx-value-modal="export"
+      />
+      <div
+        class="modal-backdrop"
+        phx-click="close_modal"
+        phx-value-modal="export"
+        data-role="modal-backdrop"
+      />
+      <div class="modal-box max-w-md border border-base-200">
+        <h2 id={"#{@id}-export-picker-title"} class="font-serif text-lg mb-4">
+          {dgettext("studio", "Export format")}
+        </h2>
+        <form phx-submit="request_export">
+          <fieldset class="space-y-2">
+            <label
+              :for={fmt <- ~w(hwpx pdf docx html)a}
+              class="flex items-center gap-2 px-3 py-2 border border-base-200 rounded-md cursor-pointer hover:bg-base-200"
+              data-role="export-picker-row"
+              data-format={fmt}
+            >
+              <input type="radio" name="format" value={fmt} class="radio radio-sm radio-primary" />
+              <span>{format_label(fmt)}</span>
+            </label>
+          </fieldset>
+          <div class="modal-action mt-4 flex justify-end gap-2">
+            <button
+              type="button"
+              phx-click="close_modal"
+              phx-value-modal="export"
+              class="link link-hover"
+              data-role="export-picker-cancel"
+            >
+              {dgettext("studio", "취소")}
+            </button>
+            <button
+              type="submit"
+              class="btn btn-sm btn-primary"
+              data-role="export-picker-submit"
+            >
+              {dgettext("studio", "내보내기")}
+            </button>
+          </div>
+        </form>
+      </div>
+    </dialog>
     """
   end
 

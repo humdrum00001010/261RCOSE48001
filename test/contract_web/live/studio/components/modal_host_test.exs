@@ -284,12 +284,82 @@ defmodule ContractWeb.Live.Studio.Components.ModalHostTest do
       assert html =~ ~s(data-modal="export")
       assert html =~ ~s(data-role="export-format-list")
       assert html =~ "PDF"
-      assert html =~ "Word (DOCX)"
-      assert html =~ "한글 (HWPX)"
+      assert html =~ "Word (.docx)"
+      assert html =~ "Hangul (.hwpx)"
       assert html =~ "HTML"
       assert html =~ ~s(phx-click="request_export")
       assert html =~ ~s(phx-value-format="pdf")
       assert html =~ ~s(phx-value-format="hwpx")
+    end
+  end
+
+  # ---------------------------------------------------------------------
+  # Export-picker — state-driven modal (small-task #77)
+  # ---------------------------------------------------------------------
+
+  describe "export-picker (studio_state.export_picker_open?)" do
+    setup :log_in_a_user
+
+    test "renders the export-picker dialog when export_picker_open? is true" do
+      html =
+        render_component(ModalHost,
+          id: "modal-host",
+          studio_state: %State{mode: :editing, export_picker_open?: true},
+          current_scope: scope_for_user()
+        )
+
+      assert html =~ ~s(data-role="export-picker")
+      assert html =~ ~s(data-modal="export")
+      # All four formats rendered as radio rows.
+      assert html =~ ~s(name="format" value="hwpx")
+      assert html =~ ~s(name="format" value="pdf")
+      assert html =~ ~s(name="format" value="docx")
+      assert html =~ ~s(name="format" value="html")
+      # Spec'd labels.
+      assert html =~ "Hangul (.hwpx)"
+      assert html =~ "PDF"
+      assert html =~ "Word (.docx)"
+      assert html =~ "HTML"
+      # Form submits request_export so the parent funnel can pick up the
+      # chosen format and emit Action(:request_export).
+      assert html =~ ~s(phx-submit="request_export")
+    end
+
+    test "form submission emits request_export with format and flips the picker flag",
+         %{conn: conn} do
+      {:ok, lv, _html} = live(conn, ~p"/studio")
+
+      # Open the picker by routing a `request_export` event with no format,
+      # mirroring the Cmd+K palette path.
+      _ = render_hook(lv, "request_export", %{})
+      assert assigns(lv).studio_state.export_picker_open? == true
+
+      # Submitting the form with a `format` should close the picker —
+      # `event_to_action/3` builds an Action and the dedicated handler
+      # flips export_picker_open? back to false on dispatch. Seed a
+      # selected_document_id so build_action does not bail on the
+      # `:missing_document_id` branch.
+      :sys.replace_state(lv.pid, fn liveview ->
+        socket = liveview.socket
+        state = %{socket.assigns.studio_state | selected_document_id: Ecto.UUID.generate()}
+        %{liveview | socket: %{socket | assigns: Map.put(socket.assigns, :studio_state, state)}}
+      end)
+
+      _ = render_hook(lv, "request_export", %{"format" => "pdf"})
+      assert assigns(lv).studio_state.export_picker_open? == false
+    end
+
+    test "close button on the export-picker flips export_picker_open? back to false",
+         %{conn: conn} do
+      {:ok, lv, _html} = live(conn, ~p"/studio")
+
+      _ = render_hook(lv, "request_export", %{})
+      assert assigns(lv).studio_state.export_picker_open? == true
+
+      # The Cancel button inside the picker dispatches `close_modal` with
+      # `modal=export`, which `update_modal/3` maps onto the flag.
+      _ = render_hook(lv, "close_modal", %{"modal" => "export"})
+      assert assigns(lv).studio_state.export_picker_open? == false
     end
   end
 

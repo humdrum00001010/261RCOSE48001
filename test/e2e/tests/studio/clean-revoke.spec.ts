@@ -13,10 +13,31 @@ import { seedMatterAndDocument } from '../../fixtures/seeds';
  * Lawyer edits a paragraph → presses Cmd+Z (Ctrl+Z) → projection rolls
  * back → DB has a revoke `Change` with `status: :revoked` on the original.
  *
+ * The Cmd+Z keyboard handler lives in `Canvas.Editor`'s `.Editable` hook
+ * (window-scoped, capture-phase). The hook only mounts when the Studio
+ * LV's `studio_state.mode == :editing` — `derive_mode_from_history`
+ * returns `:briefing` for a freshly-seeded document because
+ * `projection.type_key` is `nil` until a `:set_contract_type` change
+ * lands AND a `:create_node` op adds at least one node to `node_order`.
+ *
+ * So the scenario does a two-phase setup:
+ *
+ *   1. Phase one (briefing): push `set_contract_type` + an `edit_document`
+ *      carrying a `:create_node` op so the projection ends up with a
+ *      `type_key` AND a real editable node in `node_order`. Reload — on
+ *      the next mount `derive_mode` falls into the change-history branch,
+ *      sees `set_contract_type` / `edit_document` and returns `:editing`.
+ *
+ *   2. Phase two (editing): push the actual edit that the scenario means
+ *      to undo, wait for the `phx:editor:last-change` event so the hook
+ *      can cache the change_id, then press Cmd+Z.
+ *
  * Edits are pushed via the LV's `edit_document` event directly (no agent
- * round-trip), which keeps this scenario cheap and deterministic. The
+ * round-trip), which keeps the scenario cheap and deterministic. The
  * agent path is covered by Scenario 1.
  */
+
+const FIRST_NODE_ID = 'clean-revoke-node-1';
 
 test.describe('Scenario 2: clean revoke', () => {
   for (const viewport of ['desktop', 'mobile'] as const) {
@@ -48,14 +69,6 @@ test.describe('Scenario 2: clean revoke', () => {
         inserted_at: ''
       });
 
-      // Capture baseline change-count so we can wait for the edit + revoke
-      // pair specifically (not whatever else might already exist).
-      const baseline = await getChanges(request, document.id);
-      const baseCount = baseline.length;
-
-      // Fire `edit_document` via a JS pushEvent — the LV processes the
-      // event end-to-end (Studio.submit → Runtime.apply → Store.append).
-      // This avoids depending on a particular Canvas UI control.
       const edited = await page.evaluate(() => {
         const hook = (window as unknown as { liveSocket?: { execJS?: unknown } }).liveSocket;
         return Boolean(hook);
@@ -65,44 +78,83 @@ test.describe('Scenario 2: clean revoke', () => {
         return;
       }
 
-      await page.evaluate((docId) => {
-        // Use `pushHookEvent` (not `pushEvent`) — `view.pushEvent` is a
-        // private LV API whose first argument is a `type` discriminator
-        // and second is a DOM `el`; calling it with `(name, payload)`
-        // routes `payload` into `extractMeta(el, ...)` which then
-        // crashes on `el.attributes.length`. `pushHookEvent(el, ctx,
-        // event, payload)` is the proper outside-the-hook entrypoint.
-        // Engine-shaped payload per SPEC §13 — `:edit_document` reads
-        // `payload.ops` as a list of Operation maps.
-        const lv = (window as unknown as {
-          liveSocket?: {
-            owner?: (el: Element) => {
-              pushHookEvent: (
-                el: Element,
-                ctx: unknown,
-                event: string,
-                payload: Record<string, unknown>
-              ) => unknown;
-            };
-          };
-        }).liveSocket;
-        const root = document.querySelector('[data-phx-main]');
-        if (!root) throw new Error('Studio LV root not mounted');
-        const view = lv?.owner?.(root);
-        view?.pushHookEvent(root, null, 'edit_document', {
-          document_id: docId,
-          ops: [
-            {
-              op: 'replace_content',
-              target_type: 'node',
-              target_id: 'node-effective-date',
-              args: { content: '2026-01-01' }
+      // Phase 1: flip derive_mode to `:editing` by landing
+      // `set_contract_type` (populates projection.type_key) and a
+      // `create_node` op (populates node_order so the Editor has
+      // something to render). Both ride the same `pushHookEvent`
+      // funnel — see the wrapper below.
+      await pushHookEvent(page, 'set_contract_type', {
+        document_id: document.id,
+        type_key: 'nda_v1'
+      });
+      await pushHookEvent(page, 'edit_document', {
+        document_id: document.id,
+        ops: [
+          {
+            op: 'create_node',
+            target_type: 'node',
+            target_id: FIRST_NODE_ID,
+            args: {
+              kind: 'paragraph',
+              content: 'Initial paragraph for the clean-revoke scenario.'
             }
-          ]
-        });
-      }, document.id);
+          }
+        ]
+      });
 
-      // Wait for the edit to land as a change.
+      // Wait for both warm-up changes to land before we reload — the
+      // change-history branch of `derive_mode` only kicks in once the
+      // ChangeLog has at least one row for this document.
+      await pollUntil(
+        () => getChanges(request, document.id),
+        (rows) => rows.length >= 2,
+        { timeoutMs: 10_000, label: 'warm-up changes appear' }
+      );
+
+      // Re-mount the LV so `Studio.load` re-derives `mode` from the
+      // change history we just laid down. After the reload the canvas
+      // must render `[data-stub="canvas-editor"]` — that's the gate
+      // that proves the Editable hook is now installed and listening
+      // for Cmd+Z.
+      await page.reload({ waitUntil: 'networkidle' });
+      await page.waitForSelector('[data-stub="canvas-editor"]', { timeout: 10_000 });
+
+      // Capture baseline change-count AFTER the warm-up so we can wait
+      // for the real edit + revoke pair specifically.
+      const baseline = await getChanges(request, document.id);
+      const baseCount = baseline.length;
+
+      // Install a small probe so we can synchronise on the LV-side
+      // `phx:editor:last-change` event — the hook only knows the
+      // change-id to revoke once the LV has pushed that event. Pressing
+      // Cmd+Z before the event arrives produces a silent no-op.
+      await page.evaluate(() => {
+        interface LCWindow {
+          __lastChangeSeen?: { change_id?: string; node_id?: string };
+        }
+        const w = window as unknown as Window & LCWindow;
+        w.__lastChangeSeen = undefined;
+        window.addEventListener('phx:editor:last-change', (e) => {
+          const d = (e as CustomEvent).detail;
+          (w as LCWindow).__lastChangeSeen = d;
+        });
+      });
+
+      // Phase 2: push the edit we mean to undo. `replace_content` on
+      // the node we created in phase 1.
+      await pushHookEvent(page, 'edit_document', {
+        document_id: document.id,
+        ops: [
+          {
+            op: 'replace_content',
+            target_type: 'node',
+            target_id: FIRST_NODE_ID,
+            args: { content: '2026-01-01' }
+          }
+        ]
+      });
+
+      // Wait for the edit to land as a Change row.
       const afterEdit = await pollUntil(
         () => getChanges(request, document.id),
         (rows) => rows.length === baseCount + 1,
@@ -111,7 +163,26 @@ test.describe('Scenario 2: clean revoke', () => {
       const editChange = afterEdit[afterEdit.length - 1];
       expect(editChange.action_kind).toMatch(/edit|user_change/);
 
-      // Cmd+Z (Ctrl+Z on linux). The body should have focus first.
+      // Wait for `phx:editor:last-change` so the Editable hook has
+      // cached `lastChangeId`. Without this barrier, Cmd+Z fires
+      // before the WebSocket round-trip lands and the hook bails on
+      // `if (!this.lastChangeId) return`.
+      await page.waitForFunction(
+        (changeId) => {
+          interface LCWindow {
+            __lastChangeSeen?: { change_id?: string };
+          }
+          const seen = (window as unknown as LCWindow).__lastChangeSeen;
+          return Boolean(seen && seen.change_id === changeId);
+        },
+        editChange.id,
+        { timeout: 5_000 }
+      );
+
+      // Cmd+Z (Ctrl+Z on linux). Focus the body first so the keypress
+      // lands on `window` (the hook's listener is in capture-phase on
+      // `window`, so this doubles as a regression guard against any
+      // future "only when focused on a contenteditable" gating).
       await page.locator('body').click({ position: { x: 10, y: 10 } });
       const meta = process.platform === 'darwin' ? 'Meta' : 'Control';
       await page.keyboard.press(`${meta}+KeyZ`);
@@ -144,3 +215,37 @@ test.describe('Scenario 2: clean revoke', () => {
     });
   }
 });
+
+/**
+ * Pushes `event` with `payload` through the StudioLive's `pushHookEvent`
+ * gateway. Wrapped so the spec's two-phase setup doesn't repeat the
+ * `liveSocket.owner(root)` dance four times.
+ */
+async function pushHookEvent(
+  page: import('@playwright/test').Page,
+  event: string,
+  payload: Record<string, unknown>
+): Promise<void> {
+  await page.evaluate(
+    ({ event, payload }) => {
+      interface LVOwner {
+        pushHookEvent: (
+          el: Element,
+          ctx: unknown,
+          event: string,
+          payload: Record<string, unknown>
+        ) => unknown;
+      }
+      interface LVWindow {
+        liveSocket?: { owner?: (el: Element) => LVOwner };
+      }
+      const lv = (window as unknown as LVWindow).liveSocket;
+      const root = document.querySelector('[data-phx-main]');
+      if (!root) throw new Error('Studio LV root not mounted');
+      const view = lv?.owner?.(root);
+      if (!view) throw new Error('Studio LV owner not resolvable');
+      view.pushHookEvent(root, null, event, payload);
+    },
+    { event, payload }
+  );
+}
