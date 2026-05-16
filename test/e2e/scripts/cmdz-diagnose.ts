@@ -141,7 +141,26 @@ async function run(): Promise<void> {
   const hasMain = await page.locator('[data-phx-main]').count();
   console.log(`[3] data-phx-main count=${hasMain}`);
 
-  // Pre-edit: snapshot DOM state of the hook root.
+  // Pre-edit: snapshot DOM state of the hook root + which canvas
+  // component the LV chose. This is the key diagnostic — `derive_mode`
+  // returns `:briefing` for a doc with no changes, so the Editor never
+  // mounts and the Cmd+Z hook is never installed. Knowing the mode up
+  // front tells us whether the failure is a JS bug (hook present, Cmd+Z
+  // bails) or a mounting bug (hook never installed).
+  const canvasMeta = await page.evaluate(() => {
+    const editor = document.querySelector('[data-stub="canvas-editor"]') as HTMLElement | null;
+    const briefing = document.querySelector('[data-component="canvas-briefing"]') as HTMLElement | null;
+    const empty = document.querySelector('[data-stub="canvas-empty"]') as HTMLElement | null;
+    return {
+      editorPresent: !!editor,
+      editorMode: editor?.dataset.mode,
+      briefingPresent: !!briefing,
+      briefingMode: briefing?.dataset.mode,
+      emptyPresent: !!empty
+    };
+  });
+  console.log(`[3b] canvas meta = ${JSON.stringify(canvasMeta)}`);
+
   const hookRoot = await page.evaluate(() => {
     const el = document.querySelector('.contract-body') as HTMLElement | null;
     if (!el) return null;
@@ -154,6 +173,105 @@ async function run(): Promise<void> {
     };
   });
   console.log(`[4] hookRoot=${JSON.stringify(hookRoot)}`);
+
+  // If the editor isn't mounted (briefing/empty mode), warm-edit the
+  // doc to land a change row that flips derive_mode_from_history to
+  // `:editing`, then reload so the LV re-mounts with the new mode.
+  if (!canvasMeta.editorPresent) {
+    console.log('[3c] editor NOT mounted — running warm-edit + reload sequence');
+    await page.evaluate((docId) => {
+      interface LVOwner {
+        pushHookEvent: (
+          el: Element,
+          ctx: unknown,
+          event: string,
+          payload: Record<string, unknown>
+        ) => unknown;
+      }
+      interface LVWindow {
+        liveSocket?: { owner?: (el: Element) => LVOwner };
+      }
+      const lv = (window as unknown as LVWindow).liveSocket;
+      const root = document.querySelector('[data-phx-main]');
+      if (!root) throw new Error('no LV root for warm-edit');
+      const view = lv?.owner?.(root);
+      view?.pushHookEvent(root, null, 'edit_document', {
+        document_id: docId,
+        ops: [
+          {
+            op: 'replace_content',
+            target_type: 'node',
+            target_id: 'cmdz-warm-node',
+            args: { content: 'warm edit so derive_mode flips to :editing' }
+          }
+        ]
+      });
+    }, doc.id);
+
+    // Wait for the warm change to land before reloading.
+    const warm = await pollChanges(
+      page,
+      doc.id,
+      (rows) => rows.length >= 1,
+      { timeoutMs: 5_000 }
+    );
+    console.log(`[3d] warm-change landed: ${warm.found}, rows=${warm.rows.length}`);
+
+    await page.reload({ waitUntil: 'networkidle' });
+    const remountedMeta = await page.evaluate(() => {
+      const editor = document.querySelector('[data-stub="canvas-editor"]') as HTMLElement | null;
+      const briefing = document.querySelector('[data-component="canvas-briefing"]') as HTMLElement | null;
+      return {
+        editorPresent: !!editor,
+        editorMode: editor?.dataset.mode,
+        briefingPresent: !!briefing,
+        briefingMode: briefing?.dataset.mode
+      };
+    });
+    console.log(`[3e] post-reload canvas meta = ${JSON.stringify(remountedMeta)}`);
+
+    // Re-install probes after the reload (the previous window listeners
+    // belonged to the unloaded page).
+    await page.evaluate(() => {
+      interface DiagWindow {
+        __cmdzDiag: {
+          keys: { key: string; meta: boolean; ctrl: boolean; shift: boolean; target: string }[];
+          windowEvents: string[];
+        };
+      }
+      const w = window as unknown as Window & DiagWindow;
+      w.__cmdzDiag = { keys: [], windowEvents: [] };
+      window.addEventListener(
+        'keydown',
+        (e) => {
+          w.__cmdzDiag.keys.push({
+            key: e.key,
+            meta: e.metaKey,
+            ctrl: e.ctrlKey,
+            shift: e.shiftKey,
+            target: (e.target as Element)?.tagName ?? 'unknown'
+          });
+          // eslint-disable-next-line no-console
+          console.log(
+            `[cmdz-diag] keydown key=${e.key} meta=${e.metaKey} ctrl=${e.ctrlKey} shift=${e.shiftKey} target=${(e.target as Element)?.tagName}`
+          );
+        },
+        true
+      );
+      ['phx:editor:last-change', 'phx:editor:change-revoked', 'phx:editor-revert'].forEach(
+        (name) => {
+          window.addEventListener(name, (e) => {
+            const detail = (e as CustomEvent).detail;
+            w.__cmdzDiag.windowEvents.push(`${name}::${JSON.stringify(detail)}`);
+            // eslint-disable-next-line no-console
+            console.log(
+              `[cmdz-diag] window-event ${name} detail=${JSON.stringify(detail)}`
+            );
+          });
+        }
+      );
+    });
+  }
 
   // Install an instrumented capture-phase keydown probe BEFORE
   // exercising Cmd+Z so we can observe whether the event actually

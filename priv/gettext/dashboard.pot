@@ -82,12 +82,12 @@ msgstr ""
 msgid "%{count} templates"
 msgstr ""
 
-#: lib/contract_web/live/dashboard_live.ex:671
+#: lib/contract_web/live/dashboard_live.ex:690
 #, elixir-autogen, elixir-format
 msgid "Active"
 msgstr ""
 
-#: lib/contract_web/live/dashboard_live.ex:672
+#: lib/contract_web/live/dashboard_live.ex:691
 #, elixir-autogen, elixir-format
 msgid "Archived"
 msgstr ""
@@ -112,7 +112,7 @@ msgstr ""
 msgid "Status"
 msgstr ""
 
-#: lib/contract_web/live/dashboard_live.ex:673
+#: lib/contract_web/live/dashboard_live.ex:692
 #, elixir-autogen, elixir-format
 msgid "Template"
 msgstr ""
@@ -176,4 +176,89 @@ msgstr ""
 #: lib/contract_web/live/dashboard_live.ex:578
 #, elixir-autogen, elixir-format
 msgid "워크스페이스가 자동으로 생성됩니다"
+msgstr ""
+
+#: lib/contract_web/live/dashboard_live.ex:671
+#, elixir-autogen, elixir-format
+msgid "added mark"
+msgstr ""
+
+#: lib/contract_web/live/dashboard_live.ex:682
+#, elixir-autogen, elixir-format
+msgid "agent edit"
+msgstr ""
+
+#: lib/contract_web/live/dashboard_live.ex:676
+#, elixir-autogen, elixir-format
+msgid "archived"
+msgstr ""
+
+#: lib/contract_web/live/dashboard_live.ex:683
+#, elixir-autogen, elixir-format
+msgid "chat"
+msgstr ""
+
+#: lib/contract_web/live/dashboard_live.ex:675
+#, elixir-autogen, elixir-format
+msgid "created document"
+msgstr ""
+
+#: lib/contract_web/live/dashboard_live.ex:679
+#, elixir-autogen, elixir-format
+msgid "created variant"
+msgstr ""
+
+#: lib/contract_web/live/dashboard_live.ex:678
+#, elixir-autogen, elixir-format
+msgid "duplicated"
+msgstr ""
+
+#: lib/contract_web/live/dashboard_live.ex:667
+#, elixir-autogen, elixir-format
+msgid "edited document"
+msgstr ""
+
+#: lib/contract_web/live/dashboard_live.ex:669
+#, elixir-autogen, elixir-format
+msgid "renamed"
+msgstr ""
+
+#: lib/contract_web/live/dashboard_live.ex:680
+#, elixir-autogen, elixir-format
+msgid "requested export"
+msgstr ""
+
+#: lib/contract_web/live/dashboard_live.ex:674
+#, elixir-autogen, elixir-format
+msgid "resolved revoke"
+msgstr ""
+
+#: lib/contract_web/live/dashboard_live.ex:677
+#, elixir-autogen, elixir-format
+msgid "restored"
+msgstr ""
+
+#: lib/contract_web/live/dashboard_live.ex:673
+#, elixir-autogen, elixir-format
+msgid "revoked change"
+msgstr ""
+
+#: lib/contract_web/live/dashboard_live.ex:668
+#, elixir-autogen, elixir-format
+msgid "set type"
+msgstr ""
+
+#: lib/contract_web/live/dashboard_live.ex:672
+#, elixir-autogen, elixir-format
+msgid "updated mark"
+msgstr ""
+
+#: lib/contract_web/live/dashboard_live.ex:670
+#, elixir-autogen, elixir-format
+msgid "updated metadata"
+msgstr ""
+
+#: lib/contract_web/live/dashboard_live.ex:681
+#, elixir-autogen, elixir-format
+msgid "uploaded"
 msgstr ""

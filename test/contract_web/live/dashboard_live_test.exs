@@ -401,6 +401,118 @@ defmodule ContractWeb.DashboardLiveTest do
     end
   end
 
+  # ---------------------------------------------------------------------------
+  # Activity-feed action verb localization (#93).
+  #
+  # Before: the feed rendered the raw `action_kind` string ("edit_document",
+  # "set_contract_type") — English snake-case bled into a Korean dashboard.
+  # After: an `action_kind_label/1` private helper routes known kinds
+  # through dgettext("dashboard", ...) so :ko renders Korean ("문서 편집")
+  # and :en renders the human-readable English msgid ("edited document").
+  # Unknown kinds fall back to `to_string/1` so we never crash on a new
+  # action_kind landing before its label is wired up.
+  # ---------------------------------------------------------------------------
+  describe "activity-feed action verbs (#93 — Korean localization)" do
+    setup :log_in_a_user
+
+    test ":ko locale renders 문서 편집 instead of raw 'edit_document'",
+         %{conn: conn, user: user} do
+      previous = Application.get_env(:contract, :ui_locale, "en")
+      Application.put_env(:contract, :ui_locale, "ko")
+      on_exit(fn -> Application.put_env(:contract, :ui_locale, previous) end)
+
+      scope = Contract.Context.for_user(user)
+      {:ok, matter} = Contract.Matters.create(scope, %{"name" => "Acme v Smith"})
+
+      {:ok, doc} =
+        Contract.Documents.create(scope, %{
+          "matter_id" => matter.id,
+          "title" => "Engagement letter",
+          "type_key" => "nda_v1"
+        })
+
+      Contract.Repo.insert!(%Contract.Change{
+        document_id: doc.id,
+        action_kind: "edit_document",
+        actor_type: :user,
+        actor_id: user.id,
+        applied_revision: 2,
+        message: "tightened §3"
+      })
+
+      {:ok, _lv, html} = live(conn, ~p"/dashboard")
+
+      assert html =~ ~s(id="activity-feed")
+      assert html =~ "문서 편집"
+      # The raw English snake-case form must NOT leak into the Korean
+      # casual UI — pin both the underscored kind and the English label.
+      refute html =~ "edit_document"
+      refute html =~ "edited document"
+    end
+
+    test ":en locale renders the English msgid fallback ('edited document')",
+         %{conn: conn, user: user} do
+      previous = Application.get_env(:contract, :ui_locale, "en")
+      Application.put_env(:contract, :ui_locale, "en")
+      on_exit(fn -> Application.put_env(:contract, :ui_locale, previous) end)
+
+      scope = Contract.Context.for_user(user)
+      {:ok, matter} = Contract.Matters.create(scope, %{"name" => "Acme v Smith"})
+
+      {:ok, doc} =
+        Contract.Documents.create(scope, %{
+          "matter_id" => matter.id,
+          "title" => "Engagement letter",
+          "type_key" => "nda_v1"
+        })
+
+      Contract.Repo.insert!(%Contract.Change{
+        document_id: doc.id,
+        action_kind: "edit_document",
+        actor_type: :user,
+        actor_id: user.id,
+        applied_revision: 2,
+        message: "tightened §3"
+      })
+
+      {:ok, _lv, html} = live(conn, ~p"/dashboard")
+
+      assert html =~ ~s(id="activity-feed")
+      assert html =~ "edited document"
+      # No raw snake-case leakage even on :en.
+      refute html =~ "edit_document"
+    end
+
+    test "unknown action_kind falls back to to_string/1 (never crashes the feed)",
+         %{conn: conn, user: user} do
+      scope = Contract.Context.for_user(user)
+      {:ok, matter} = Contract.Matters.create(scope, %{"name" => "Acme v Smith"})
+
+      {:ok, doc} =
+        Contract.Documents.create(scope, %{
+          "matter_id" => matter.id,
+          "title" => "Engagement letter",
+          "type_key" => "nda_v1"
+        })
+
+      # A brand-new action_kind that the label table doesn't know about.
+      Contract.Repo.insert!(%Contract.Change{
+        document_id: doc.id,
+        action_kind: "fancy_new_kind",
+        actor_type: :user,
+        actor_id: user.id,
+        applied_revision: 1,
+        message: "future action"
+      })
+
+      {:ok, _lv, html} = live(conn, ~p"/dashboard")
+
+      assert html =~ ~s(id="activity-feed")
+      # Falls back to the raw kind string — better than a 500.
+      assert html =~ "fancy_new_kind"
+    end
+  end
+
   defp log_in_a_user(%{conn: conn}) do
     user = user_fixture()
     %{conn: log_in_user(conn, user), user: user}

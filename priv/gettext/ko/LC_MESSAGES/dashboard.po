@@ -94,12 +94,12 @@ msgstr "rev %{n}"
 msgid "%{count} templates"
 msgstr "템플릿 %{count}건"
 
-#: lib/contract_web/live/dashboard_live.ex:671
+#: lib/contract_web/live/dashboard_live.ex:690
 #, elixir-autogen, elixir-format
 msgid "Active"
 msgstr "사용 중"
 
-#: lib/contract_web/live/dashboard_live.ex:672
+#: lib/contract_web/live/dashboard_live.ex:691
 #, elixir-autogen, elixir-format
 msgid "Archived"
 msgstr "보관"
@@ -124,7 +124,7 @@ msgstr "최근 수정"
 msgid "Status"
 msgstr "상태"
 
-#: lib/contract_web/live/dashboard_live.ex:673
+#: lib/contract_web/live/dashboard_live.ex:692
 #, elixir-autogen, elixir-format
 msgid "Template"
 msgstr "템플릿"
@@ -189,3 +189,91 @@ msgstr ""
 #, elixir-autogen, elixir-format
 msgid "워크스페이스가 자동으로 생성됩니다"
 msgstr ""
+
+#: lib/contract_web/live/dashboard_live.ex:671
+#, elixir-autogen, elixir-format
+msgid "added mark"
+msgstr "메모 추가"
+
+#: lib/contract_web/live/dashboard_live.ex:682
+#, elixir-autogen, elixir-format
+msgid "agent edit"
+msgstr "에이전트 편집"
+
+#: lib/contract_web/live/dashboard_live.ex:676
+#, elixir-autogen, elixir-format
+msgid "archived"
+msgstr "보관"
+
+#: lib/contract_web/live/dashboard_live.ex:683
+#, elixir-autogen, elixir-format
+msgid "chat"
+msgstr "대화"
+
+#: lib/contract_web/live/dashboard_live.ex:675
+#, elixir-autogen, elixir-format
+msgid "created document"
+msgstr "문서 생성"
+
+#: lib/contract_web/live/dashboard_live.ex:679
+#, elixir-autogen, elixir-format
+msgid "created variant"
+msgstr "변형 생성"
+
+#: lib/contract_web/live/dashboard_live.ex:678
+#, elixir-autogen, elixir-format
+msgid "duplicated"
+msgstr "복제"
+
+## Activity-feed action verbs (#93). Anchored on legal-tech draft
+## register; short noun-phrase forms because they sit after the actor
+## label ("나 · 문서 편집") in the feed.
+#: lib/contract_web/live/dashboard_live.ex:667
+#, elixir-autogen, elixir-format
+msgid "edited document"
+msgstr "문서 편집"
+
+#: lib/contract_web/live/dashboard_live.ex:669
+#, elixir-autogen, elixir-format
+msgid "renamed"
+msgstr "이름 변경"
+
+#: lib/contract_web/live/dashboard_live.ex:680
+#, elixir-autogen, elixir-format
+msgid "requested export"
+msgstr "내보내기 요청"
+
+#: lib/contract_web/live/dashboard_live.ex:674
+#, elixir-autogen, elixir-format
+msgid "resolved revoke"
+msgstr "되돌리기 해결"
+
+#: lib/contract_web/live/dashboard_live.ex:677
+#, elixir-autogen, elixir-format
+msgid "restored"
+msgstr "복원"
+
+#: lib/contract_web/live/dashboard_live.ex:673
+#, elixir-autogen, elixir-format
+msgid "revoked change"
+msgstr "변경 되돌리기"
+
+#: lib/contract_web/live/dashboard_live.ex:668
+#, elixir-autogen, elixir-format
+msgid "set type"
+msgstr "유형 설정"
+
+#: lib/contract_web/live/dashboard_live.ex:672
+#, elixir-autogen, elixir-format
+msgid "updated mark"
+msgstr "메모 수정"
+
+#: lib/contract_web/live/dashboard_live.ex:670
+#, elixir-autogen, elixir-format
+msgid "updated metadata"
+msgstr "정보 수정"
+
+#: lib/contract_web/live/dashboard_live.ex:681
+#, elixir-autogen, elixir-format
+msgid "uploaded"
+msgstr "업로드"

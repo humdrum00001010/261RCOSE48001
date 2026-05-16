@@ -484,7 +484,7 @@ defmodule ContractWeb.DashboardLive do
                 <div class="flex-1 min-w-0">
                   <p class="text-sm">
                     <span class="font-medium">{actor_label(event.actor_type)}</span>
-                    <span class="text-base-content/70">{action_label(event.action_kind)}</span>
+                    <span class="text-base-content/70">{action_kind_label(event.action_kind)}</span>
                     <span class="text-base-content/50 font-mono text-xs">
                       doc/{String.slice(event.document_id || "", 0, 6)} · {dgettext(
                         "dashboard",
@@ -649,14 +649,33 @@ defmodule ContractWeb.DashboardLive do
   defp actor_label(:system), do: "System"
   defp actor_label(other), do: to_string(other)
 
-  defp action_label(nil), do: "made a change"
-  defp action_label(kind) when is_binary(kind), do: humanize_kind(kind)
-  defp action_label(kind) when is_atom(kind), do: kind |> Atom.to_string() |> humanize_kind()
+  # Activity-feed action labels (#93). Pulls Korean strings from the
+  # dashboard gettext domain so the feed reads as Korean copy ("문서 편집")
+  # under :ko locale and as the English msgid ("edited document") under
+  # :en. The schema stores `action_kind` as a string (see
+  # `Contract.Change` — `field :action_kind, :string`), but we accept
+  # atoms too so this stays useful for hand-built test payloads.
+  defp action_kind_label(kind) when is_atom(kind) and not is_nil(kind),
+    do: kind |> Atom.to_string() |> action_kind_label()
 
-  defp humanize_kind(kind) do
-    kind
-    |> String.replace("_", " ")
-  end
+  defp action_kind_label("edit_document"), do: dgettext("dashboard", "edited document")
+  defp action_kind_label("set_contract_type"), do: dgettext("dashboard", "set type")
+  defp action_kind_label("rename_document"), do: dgettext("dashboard", "renamed")
+  defp action_kind_label("update_metadata"), do: dgettext("dashboard", "updated metadata")
+  defp action_kind_label("add_mark"), do: dgettext("dashboard", "added mark")
+  defp action_kind_label("update_mark"), do: dgettext("dashboard", "updated mark")
+  defp action_kind_label("revoke_change"), do: dgettext("dashboard", "revoked change")
+  defp action_kind_label("resolve_revoke"), do: dgettext("dashboard", "resolved revoke")
+  defp action_kind_label("create_document"), do: dgettext("dashboard", "created document")
+  defp action_kind_label("archive_document"), do: dgettext("dashboard", "archived")
+  defp action_kind_label("restore_document"), do: dgettext("dashboard", "restored")
+  defp action_kind_label("duplicate_document"), do: dgettext("dashboard", "duplicated")
+  defp action_kind_label("create_converted_variant"), do: dgettext("dashboard", "created variant")
+  defp action_kind_label("request_export"), do: dgettext("dashboard", "requested export")
+  defp action_kind_label("upload_document"), do: dgettext("dashboard", "uploaded")
+  defp action_kind_label("agent_change"), do: dgettext("dashboard", "agent edit")
+  defp action_kind_label("chat_message"), do: dgettext("dashboard", "chat")
+  defp action_kind_label(other), do: to_string(other)
 
   # ---------------------------------------------------------------------------
   # Status badges (Wave 4.6: dashboard tables)
