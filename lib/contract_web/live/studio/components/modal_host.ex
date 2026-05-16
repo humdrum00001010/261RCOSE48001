@@ -100,6 +100,12 @@ defmodule ContractWeb.Live.Studio.Components.ModalHost do
   # off via `start_type_conversion`.
   attr :migration_plan, :any, default: nil
 
+  # Wave 4.5 — parent flips this to `true` after the async
+  # ConversionPlanJob broadcasts `{:plan_refined, plan_id}`. The wizard
+  # paints a small AI-refined indicator on step 2 next to each strategy
+  # row so the user knows the suggestions came from the model.
+  attr :migration_plan_refined?, :boolean, default: false
+
   # Parent LV uses `send_update/2` to seed these when the wizard opens
   # (Wave 4 bug #2 + #3). Defaulting them to `nil` keeps the existing
   # render_component contract — the wizard's local state stays the
@@ -139,6 +145,7 @@ defmodule ContractWeb.Live.Studio.Components.ModalHost do
       |> assign(:reconcile_request, Map.get(assigns, :reconcile_request))
       |> assign(:documents, Map.get(assigns, :documents, []))
       |> assign(:migration_plan, Map.get(assigns, :migration_plan))
+      |> assign(:migration_plan_refined?, Map.get(assigns, :migration_plan_refined?, false))
 
     socket =
       case Map.get(assigns, :initial_migration_step) do
@@ -799,6 +806,15 @@ defmodule ContractWeb.Live.Studio.Components.ModalHost do
       <p class="text-sm text-base-content/70 mb-3">
         {dgettext("studio", "Choose how each source field is carried over.")}
       </p>
+
+      <div
+        :if={@migration_plan_refined?}
+        class="inline-flex items-center gap-1 text-xs text-secondary mb-2"
+        data-role="migration-ai-refined-indicator"
+      >
+        <.icon name="hero-sparkles" class="size-3" />
+        <span>{dgettext("studio", "AI-refined")}</span>
+      </div>
 
       <%= if @plans == [] do %>
         <div class="alert alert-info" data-role="migration-fields-empty">

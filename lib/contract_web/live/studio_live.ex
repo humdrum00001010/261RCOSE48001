@@ -119,6 +119,8 @@ defmodule ContractWeb.StudioLive do
           |> assign(:reconcile_modal_open?, false)
           |> assign(:reconcile_request, nil)
           |> assign(:migration_plan, nil)
+          |> assign(:migration_plan_id, nil)
+          |> assign(:migration_plan_refined?, false)
           |> assign(:migration_target, nil)
           |> assign(:field_strategies, nil)
           |> assign(:last_pubsub_message_at, nil)
@@ -150,6 +152,8 @@ defmodule ContractWeb.StudioLive do
           |> assign(:reconcile_modal_open?, false)
           |> assign(:reconcile_request, nil)
           |> assign(:migration_plan, nil)
+          |> assign(:migration_plan_id, nil)
+          |> assign(:migration_plan_refined?, false)
           |> assign(:migration_target, nil)
           |> assign(:field_strategies, nil)
           |> assign(:last_pubsub_message_at, nil)
@@ -248,9 +252,20 @@ defmodule ContractWeb.StudioLive do
                 {fp.source_field_id, Atom.to_string(fp.strategy)}
               end)
 
+            # Best-effort propose: when ≥ 3 fields are :ask_user this
+            # parks the plan in PlanCache and enqueues a
+            # ConversionPlanJob; the wizard subscribes below and shows
+            # an AI-refined indicator on {:plan_refined, plan_id}.
+            _ = Contract.Conversion.propose_fields(scope, plan)
+
+            plan_topic_id = Contract.Conversion.plan_id(plan)
+            _ = Phoenix.PubSub.subscribe(Contract.PubSub, "plan:" <> plan_topic_id)
+
             socket =
               socket
               |> assign(:migration_plan, plan)
+              |> assign(:migration_plan_id, plan_topic_id)
+              |> assign(:migration_plan_refined?, false)
               |> assign(:migration_target, target_type_key)
               |> assign(:field_strategies, strategies)
               |> update(:studio_state, fn st -> %{st | migration_panel_open?: true} end)
@@ -698,6 +713,33 @@ defmodule ContractWeb.StudioLive do
     )
   end
 
+  def handle_protocol_message({:plan_refined, plan_id}, socket) when is_binary(plan_id) do
+    # Wave 4.5: ConversionPlanJob has refined the cached plan. Reload it
+    # from PlanCache and re-seed the field-strategy assigns so step 2's
+    # dropdowns reflect the AI suggestions. The wizard renders a small
+    # AI-refined indicator while `migration_plan_refined?` is true.
+    if socket.assigns[:migration_plan_id] == plan_id do
+      case Contract.Conversion.PlanCache.get(plan_id) do
+        {:ok, %Contract.Conversion.Plan{} = refined} ->
+          strategies =
+            (refined.field_plans || [])
+            |> Map.new(fn fp ->
+              {fp.source_field_id, Atom.to_string(fp.strategy)}
+            end)
+
+          socket
+          |> assign(:migration_plan, refined)
+          |> assign(:migration_plan_refined?, true)
+          |> assign(:field_strategies, strategies)
+
+        {:error, :not_found} ->
+          socket
+      end
+    else
+      socket
+    end
+  end
+
   def handle_protocol_message(_unknown, socket) do
     # Spec invariant 7: PubSub events are advisory. Ignore noise.
     socket
@@ -843,6 +885,7 @@ defmodule ContractWeb.StudioLive do
           reconcile_modal_open?={@reconcile_modal_open?}
           reconcile_request={@reconcile_request}
           migration_plan={@migration_plan}
+          migration_plan_refined?={assigns[:migration_plan_refined?] || false}
           migration_target={assigns[:migration_target]}
           field_strategies={assigns[:field_strategies]}
         />

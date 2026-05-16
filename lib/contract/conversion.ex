@@ -185,18 +185,57 @@ defmodule Contract.Conversion do
 
   @doc """
   Returns the list of `FieldPlan`s that the deterministic planner
-  recommends. This is deterministic and rule-based for now (per the
-  Wave-4 deliverable); the Oban worker `Contract.Workers.ConversionPlanJob`
-  is the future async-OpenAI path.
+  recommends. The deterministic logic still runs inline; on top of that,
+  when the plan has ≥ 3 ambiguous (`:ask_user`) fields, we park the plan
+  in `Contract.Conversion.PlanCache` and dispatch
+  `Contract.Workers.ConversionPlanJob` to ask OpenAI to refine the
+  strategies. The wizard subscribes to `"plan:<plan_id>"` and reloads on
+  `{:plan_refined, plan_id}`.
+
+  The async-refinement side-effect is best-effort: failures (no Oban,
+  driver down, malformed JSON) are swallowed; the deterministic plan is
+  always returned.
   """
   @spec propose_fields(Context.t(), Plan.t()) :: T.result([FieldPlan.t()])
   def propose_fields(%Context{}, %Plan{field_plans: nil}) do
     {:ok, []}
   end
 
-  def propose_fields(%Context{}, %Plan{field_plans: plans}) do
+  def propose_fields(%Context{} = _scope, %Plan{field_plans: plans} = plan) do
+    _ = maybe_dispatch_refinement(plan)
     {:ok, plans}
   end
+
+  @doc """
+  Build the canonical PlanCache key for a given plan. Exposed so the
+  wizard LV can subscribe to the right PubSub topic before the worker
+  fires.
+  """
+  @spec plan_id(Plan.t()) :: String.t()
+  def plan_id(%Plan{source_document_id: doc_id, target_type_key: target}) do
+    "plan-#{doc_id}-#{target}"
+  end
+
+  # When the deterministic planner produced ≥ 3 :ask_user fields, cache
+  # the plan and enqueue the OpenAI-refinement job. The threshold keeps
+  # us from spamming the model for fully-compatible conversions.
+  defp maybe_dispatch_refinement(%Plan{field_plans: plans} = plan) when is_list(plans) do
+    ambiguous_count = Enum.count(plans, &(&1.strategy == :ask_user))
+
+    if ambiguous_count >= 3 do
+      pid = plan_id(plan)
+      :ok = Contract.Conversion.PlanCache.put(pid, plan)
+
+      case Contract.Workers.ConversionPlanJob.new(%{"plan_id" => pid}) |> Oban.insert() do
+        {:ok, _job} -> :ok
+        {:error, _reason} -> :ok
+      end
+    else
+      :ok
+    end
+  end
+
+  defp maybe_dispatch_refinement(_), do: :ok
 
   # ---------------------------------------------------------------------------
   # set_field_strategy/4
