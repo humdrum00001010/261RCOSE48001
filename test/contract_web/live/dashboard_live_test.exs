@@ -96,6 +96,26 @@ defmodule ContractWeb.DashboardLiveTest do
       refute html =~ ~s(id="new-document-modal")
       assert html =~ "Document creation for nda_v1 is queued"
     end
+
+    # Wave 5: locale-aware headlines in the new-document modal.
+    test "renders Korean contract-type headlines under :ko locale", %{conn: conn} do
+      previous = Application.get_env(:contract, :ui_locale, "en")
+      Application.put_env(:contract, :ui_locale, "ko")
+      on_exit(fn -> Application.put_env(:contract, :ui_locale, previous) end)
+
+      {:ok, lv, _html} = live(conn, ~p"/dashboard")
+      # Under :ko the button label is "새 문서". Trigger the event
+      # directly so the test is locale-agnostic.
+      html = render_click(lv, "open_new_document", %{})
+
+      {:ok, nda} = Contract.ContractTypes.get(nil, "nda_v1")
+      {:ok, franchise} = Contract.ContractTypes.get(nil, "franchise_v1")
+      assert html =~ nda.name_ko
+      assert html =~ franchise.name_ko
+      # Raw English-only label should not appear as the headline
+      # `<p class="font-medium">` slot anymore.
+      refute html =~ ~s(<p class="font-medium">#{nda.name_en}</p>)
+    end
   end
 
   describe "documents + activity populated state" do
@@ -280,6 +300,39 @@ defmodule ContractWeb.DashboardLiveTest do
       # Document title + matter name both render in the row.
       assert html =~ "Engagement letter"
       assert html =~ "Acme v Smith"
+    end
+
+    # Wave 5: the subagent fix — the Type column used to render the raw
+    # `type_key` ("nda_v1") regardless of locale. With locale-aware
+    # `Contract.ContractTypes.display_name/1`, Korean lawyers should see
+    # the Korean name from the TOML spec.
+    test "renders the localized contract-type name in the Type column under :ko locale",
+         %{conn: conn, user: user} do
+      previous = Application.get_env(:contract, :ui_locale, "en")
+      Application.put_env(:contract, :ui_locale, "ko")
+      on_exit(fn -> Application.put_env(:contract, :ui_locale, previous) end)
+
+      scope = Contract.Context.for_user(user)
+      {:ok, matter} = Contract.Matters.create(scope, %{"name" => "Acme v Smith"})
+
+      {:ok, _doc} =
+        Contract.Documents.create(scope, %{
+          "matter_id" => matter.id,
+          "title" => "Engagement letter",
+          "type_key" => "nda_v1"
+        })
+
+      {:ok, _lv, html} = live(conn, ~p"/dashboard")
+
+      # Korean name from priv/contract_types/nda_v1.toml.
+      {:ok, spec} = Contract.ContractTypes.get(nil, "nda_v1")
+      assert html =~ spec.name_ko
+
+      # The Type cell badge text is now the Korean label, not raw
+      # "nda_v1". The key is still present as a `title=` tooltip for
+      # power users, so the bare-key assertion would still spuriously
+      # match — pin the badge slot specifically.
+      assert html =~ ~s(badge badge-ghost badge-sm" title="nda_v1")
     end
   end
 

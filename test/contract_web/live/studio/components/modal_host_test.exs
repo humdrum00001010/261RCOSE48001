@@ -186,6 +186,50 @@ defmodule ContractWeb.Live.Studio.Components.ModalHostTest do
       assert html =~ ~s(name="kind" value="create_document")
     end
 
+    # Wave 5: subagent fix — the new-document select used to label
+    # options with raw `name_en`. Pin the locale-aware label format
+    # ("name_ko · key vversion" in :ko) so future copy changes don't
+    # silently regress.
+    test "new-document modal labels select options with the localized name in :ko locale" do
+      previous = Gettext.get_locale(ContractWeb.Gettext)
+      Gettext.put_locale(ContractWeb.Gettext, "ko")
+      on_exit(fn -> Gettext.put_locale(ContractWeb.Gettext, previous) end)
+
+      html =
+        render_component(ModalHost,
+          id: "modal-host",
+          studio_state: %State{mode: :no_document},
+          current_scope: scope_for_user(),
+          initial_modal_param: "new_document"
+        )
+
+      {:ok, nda} = Contract.ContractTypes.get(nil, "nda_v1")
+      assert html =~ "#{nda.name_ko} · nda_v1 v#{nda.version}"
+    end
+
+    # Wave 5: type-picker modal also localizes the headline label.
+    test "type-picker modal renders rows headlined by the localized name in :ko locale" do
+      previous = Gettext.get_locale(ContractWeb.Gettext)
+      Gettext.put_locale(ContractWeb.Gettext, "ko")
+      on_exit(fn -> Gettext.put_locale(ContractWeb.Gettext, previous) end)
+
+      html =
+        render_component(ModalHost,
+          id: "modal-host",
+          studio_state: %State{mode: :editing, type_picker_open?: true},
+          current_scope: scope_for_user()
+        )
+
+      {:ok, nda} = Contract.ContractTypes.get(nil, "nda_v1")
+      {:ok, franchise} = Contract.ContractTypes.get(nil, "franchise_v1")
+      assert html =~ ~s(data-role="type-picker")
+      # Korean name renders as the headline.
+      assert html =~ nda.name_ko
+      assert html =~ franchise.name_ko
+      # Technical key + version still surface as a secondary line.
+      assert html =~ "nda_v1 · v#{nda.version}"
+    end
+
     test "initial_modal_param=\"export\" renders the export format picker" do
       html =
         render_component(ModalHost,

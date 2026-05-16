@@ -172,6 +172,77 @@ defmodule Contract.ContractTypesTest do
     end
   end
 
+  describe "display_name/1 — locale-aware label" do
+    # Wave 5: subagent regression — the new-document picker, type-picker
+    # modal, and recent-documents table were all rendering `name_en` /
+    # raw `type_key` regardless of locale, so Korean lawyers saw
+    # "Mutual Non-Disclosure Agreement" / "nda_v1" instead of
+    # "상호 비밀유지계약서". `display_name/1` reads the process-level
+    # Gettext locale and picks the localized name.
+
+    setup do
+      # The locale lives in the process dictionary; capture and restore
+      # so we don't bleed state between tests.
+      previous = Gettext.get_locale(ContractWeb.Gettext)
+      on_exit(fn -> Gettext.put_locale(ContractWeb.Gettext, previous) end)
+      :ok
+    end
+
+    test "in :ko locale returns name_ko for a TypeSpec" do
+      Gettext.put_locale(ContractWeb.Gettext, "ko")
+      {:ok, spec} = ContractTypes.get(nil, "nda_v1")
+      assert spec.name_ko != nil and spec.name_ko != ""
+      assert ContractTypes.display_name(spec) == spec.name_ko
+    end
+
+    test "in :en locale returns name_en for a TypeSpec" do
+      Gettext.put_locale(ContractWeb.Gettext, "en")
+      {:ok, spec} = ContractTypes.get(nil, "nda_v1")
+      assert ContractTypes.display_name(spec) == spec.name_en
+    end
+
+    test "accepts a string key and returns the localized name" do
+      Gettext.put_locale(ContractWeb.Gettext, "ko")
+      {:ok, spec} = ContractTypes.get(nil, "franchise_v1")
+      assert ContractTypes.display_name("franchise_v1") == spec.name_ko
+    end
+
+    test "string-key form falls back to the key itself when unknown" do
+      Gettext.put_locale(ContractWeb.Gettext, "ko")
+      assert ContractTypes.display_name("nonexistent_v999") == "nonexistent_v999"
+    end
+
+    test "falls back to name_en when name_ko is empty in :ko locale" do
+      spec = %TypeSpec{
+        key: "x",
+        family: :nda,
+        name_en: "Fallback EN",
+        name_ko: "",
+        version: "1",
+        source: :custom
+      }
+
+      Gettext.put_locale(ContractWeb.Gettext, "ko")
+      assert ContractTypes.display_name(spec) == "Fallback EN"
+    end
+
+    test "falls back to name_ko when name_en is empty in :en locale" do
+      # Defensive — `name_en` is @enforce_keys so this is a synthetic
+      # struct, but the helper should still survive an empty string.
+      spec = %TypeSpec{
+        key: "x",
+        family: :nda,
+        name_en: "",
+        name_ko: "한글 폴백",
+        version: "1",
+        source: :custom
+      }
+
+      Gettext.put_locale(ContractWeb.Gettext, "en")
+      assert ContractTypes.display_name(spec) == "한글 폴백"
+    end
+  end
+
   describe "TypeSpec.from_toml/2" do
     test "raises on missing required field" do
       assert_raise ArgumentError, ~r/missing required field "key"/, fn ->

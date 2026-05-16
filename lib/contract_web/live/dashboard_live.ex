@@ -423,7 +423,9 @@ defmodule ContractWeb.DashboardLive do
                       </.link>
                     </td>
                     <td>
-                      <span class="badge badge-ghost badge-sm font-mono">{doc.type_key}</span>
+                      <span class="badge badge-ghost badge-sm" title={doc.type_key}>
+                        {Contract.ContractTypes.display_name(doc.type_key)}
+                      </span>
                     </td>
                     <td class="hidden sm:table-cell">
                       <span class={[
@@ -483,7 +485,9 @@ defmodule ContractWeb.DashboardLive do
                 </.link>
               </div>
               <div class="flex items-center justify-between md:justify-end gap-2 md:gap-4 pl-7 md:pl-0">
-                <span class="badge badge-primary badge-sm font-mono">{tpl.type_key}</span>
+                <span class="badge badge-primary badge-sm" title={tpl.type_key}>
+                  {Contract.ContractTypes.display_name(tpl.type_key)}
+                </span>
                 <span class="text-xs text-base-content/50 md:w-32 md:text-right">
                   {dgettext("dashboard", "FTC template")}
                 </span>
@@ -581,11 +585,11 @@ defmodule ContractWeb.DashboardLive do
             <%!--
               Wave 3C0-B: @contract_types is now a list of
               %Contract.ContractTypes.TypeSpec{} structs loaded from
-              priv/contract_types/*.toml at compile time. The old stub
-              keys (.type_key/.name/.description) are now
-              .key/.name_en/.notes_en; the phx-value-type_key *attribute*
-              is unchanged because the event handler still expects that
-              param name.
+              priv/contract_types/*.toml at compile time. Wave 5 fix:
+              the headline now uses `display_name/1` so Korean users
+              see `name_ko` rather than the raw English label. The
+              `{key} · v{version}` line stays for power users; notes
+              fall through `notes_en` for now (Wave 6 will localize).
             --%>
             <li :for={type <- @contract_types}>
               <button
@@ -595,11 +599,11 @@ defmodule ContractWeb.DashboardLive do
                 class="w-full text-left rounded-box border border-base-200 p-4 hover:border-primary hover:bg-base-200/40 transition-colors"
               >
                 <div class="flex items-baseline justify-between gap-3">
-                  <p class="font-medium">{type.name_en}</p>
+                  <p class="font-medium">{Contract.ContractTypes.display_name(type)}</p>
                   <span class="badge badge-ghost badge-sm font-mono">{type.key}</span>
                 </div>
                 <p class="text-sm text-base-content/60 mt-1">{type.notes_en}</p>
-                <p class="text-xs text-base-content/40 mt-1">{type.name_ko}</p>
+                <p class="text-xs text-base-content/40 mt-1 font-mono">{type.key} · v{type.version}</p>
               </button>
             </li>
           </ul>

@@ -125,6 +125,47 @@ defmodule Contract.ContractTypes do
   def all, do: Map.values(@types)
 
   @doc """
+  Locale-aware display name for a contract type.
+
+  Reads the current locale from the `ContractWeb.Gettext` process
+  dictionary (set by the `ContractWeb.Locale` plug / `on_mount` hook).
+
+    * In the `"ko"` locale, returns `name_ko` (falling back to `name_en`
+      if the Korean name is missing or empty).
+    * In any other locale, returns `name_en` (falling back to `name_ko`
+      if the English name is missing or empty — this should never happen
+      for shipped specs, since `name_en` is `@enforce_keys`, but we
+      still guard against an empty string).
+
+  Accepts either a `%TypeSpec{}` struct or a string key. For an unknown
+  string key, the key itself is returned so callers can render
+  "something" rather than an error. This keeps stale `type_key`
+  references (e.g. from a deleted TOML spec) from crashing the UI.
+  """
+  @spec display_name(TypeSpec.t() | String.t()) :: String.t()
+  def display_name(%TypeSpec{name_ko: ko, name_en: en}) do
+    case Gettext.get_locale(ContractWeb.Gettext) do
+      "ko" -> pick(ko, en)
+      _ -> pick(en, ko)
+    end
+  end
+
+  def display_name(key) when is_binary(key) do
+    case Map.fetch(@types, key) do
+      {:ok, spec} -> display_name(spec)
+      :error -> key
+    end
+  end
+
+  defp pick(primary, fallback) do
+    cond do
+      is_binary(primary) and primary != "" -> primary
+      is_binary(fallback) and fallback != "" -> fallback
+      true -> ""
+    end
+  end
+
+  @doc """
   Return the set of TOML paths that were loaded at compile time.
 
   Primarily for tests that want to assert the registry actually picked

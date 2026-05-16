@@ -216,10 +216,11 @@ defmodule ContractWeb.Live.Studio.Components.DocumentList do
           {@document.title}
         </span>
         <span
-          class="badge badge-ghost badge-xs font-mono shrink-0"
+          class="badge badge-ghost badge-xs shrink-0"
+          title={@document.type_key}
           data-role="type-badge"
         >
-          {@document.type_key}
+          {Contract.ContractTypes.display_name(@document.type_key)}
         </span>
       </span>
       <span class="text-[0.65rem] text-base-content/50 tabular-nums">

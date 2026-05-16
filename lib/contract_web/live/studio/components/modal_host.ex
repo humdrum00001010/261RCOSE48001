@@ -293,8 +293,24 @@ defmodule ContractWeb.Live.Studio.Components.ModalHost do
     {:ok, specs} = ContractTypes.list()
 
     Enum.map(specs, fn spec ->
-      label = spec.name_ko || spec.name_en
+      # Use locale-aware display_name so the dropdown shows the user's
+      # locale (Korean for ko, English for en). The version + key
+      # suffix keeps the technical identifier visible to power users
+      # since <option> can only render a single line of text.
+      label = "#{ContractTypes.display_name(spec)} · #{spec.key} v#{spec.version}"
       {label, spec.key}
+    end)
+  end
+
+  # Type-picker variant — returns `{display_name, key, version}` triples
+  # so the row template can render the localized name prominently with a
+  # `{key} v{version}` secondary line, instead of cramming everything
+  # into a single <option>-style string.
+  defp type_picker_rows do
+    {:ok, specs} = ContractTypes.list()
+
+    Enum.map(specs, fn spec ->
+      {ContractTypes.display_name(spec), spec.key, spec.version}
     end)
   end
 
@@ -442,7 +458,7 @@ defmodule ContractWeb.Live.Studio.Components.ModalHost do
             >
               <span class="font-medium">{doc_field(doc, :title)}</span>
               <span :if={doc_field(doc, :type_key)} class="text-xs text-base-content/60">
-                {doc_field(doc, :type_key)}
+                {ContractTypes.display_name(doc_field(doc, :type_key))}
               </span>
             </button>
           </li>
@@ -746,11 +762,21 @@ defmodule ContractWeb.Live.Studio.Components.ModalHost do
         >
           <p>
             <span class="font-medium">{dgettext("studio", "Source type:")}</span>
-            <span class="font-mono">{@migration_plan.source_type_key || "—"}</span>
+            <span>
+              <%= if @migration_plan.source_type_key do %>
+                {ContractTypes.display_name(@migration_plan.source_type_key)}
+                <span class="font-mono text-xs text-base-content/60">{@migration_plan.source_type_key}</span>
+              <% else %>
+                <span class="font-mono">—</span>
+              <% end %>
+            </span>
           </p>
           <p>
             <span class="font-medium">{dgettext("studio", "Target type:")}</span>
-            <span class="font-mono">{@migration_plan.target_type_key}</span>
+            <span>
+              {ContractTypes.display_name(@migration_plan.target_type_key)}
+              <span class="font-mono text-xs text-base-content/60">{@migration_plan.target_type_key}</span>
+            </span>
           </p>
           <p>
             <span class="font-medium">{dgettext("studio", "Fields to consider:")}</span>
@@ -1174,7 +1200,7 @@ defmodule ContractWeb.Live.Studio.Components.ModalHost do
   # the parent LV) with the picked `type_key`. The list is sourced from
   # `Contract.ContractTypes.list/0` so it stays in sync with the registry.
   defp render_type_picker(assigns) do
-    assigns = assign(assigns, :contract_types, type_options())
+    assigns = assign(assigns, :contract_types, type_picker_rows())
 
     ~H"""
     <div
@@ -1216,7 +1242,7 @@ defmodule ContractWeb.Live.Studio.Components.ModalHost do
         </p>
 
         <ul class="menu menu-sm w-full" data-role="type-picker-list">
-          <li :for={{label, key} <- @contract_types} id={"type-picker-#{key}"}>
+          <li :for={{label, key, version} <- @contract_types} id={"type-picker-#{key}"}>
             <button
               type="button"
               phx-click="command_palette_picked"
@@ -1226,7 +1252,7 @@ defmodule ContractWeb.Live.Studio.Components.ModalHost do
               data-role="type-picker-row"
             >
               <span class="font-medium">{label}</span>
-              <span class="text-xs text-base-content/60">{key}</span>
+              <span class="text-xs text-base-content/60 font-mono">{key} · v{version}</span>
             </button>
           </li>
         </ul>
