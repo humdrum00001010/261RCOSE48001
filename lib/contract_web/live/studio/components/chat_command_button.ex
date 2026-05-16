@@ -26,7 +26,7 @@ defmodule ContractWeb.Live.Studio.Components.ChatCommandButton do
 
     * Emits events back to the parent LV with `phx-click="command_palette_picked"`
       and `phx-value-action_kind="<kind>"` so the Studio LV's
-      `event_to_action/3` funnel can route to the right Action.
+      `event_to_command/3` funnel can route to the right Action.
 
     * Component-local state (sheet open / closed) is owned by the live
       component; the parent LV does not need to track it.
@@ -204,7 +204,7 @@ defmodule ContractWeb.Live.Studio.Components.ChatCommandButton do
     [
       {:"phx-click", "command_palette_picked"},
       {:"phx-value-action_kind", action_kind},
-      # Also expose `kind` so the existing Studio LV `event_to_action/3`
+      # Also expose `kind` so the existing Studio LV `event_to_command/3`
       # funnel (which matches on `%{"kind" => kind}`) routes the event
       # without per-event-name special casing. This keeps the on-the-wire
       # payload compatible with the desktop palette's push_event form

@@ -1,6 +1,6 @@
 defmodule Contract.Runtime do
   @moduledoc """
-  Routes `Contract.Action`s into the correct execution path
+  Routes `Contract.Command`s into the correct execution path
   (Engine/Store directly, Session, Agent, IO import/export, Conversion).
   See SPEC.md §12.
 
@@ -29,7 +29,7 @@ defmodule Contract.Runtime do
       :request_export              → Contract.IO.export
   """
 
-  alias Contract.Action
+  alias Contract.Command
   alias Contract.Change
   alias Contract.Runtime, as: Self
   alias Contract.Session
@@ -92,27 +92,27 @@ defmodule Contract.Runtime do
   # apply/2
   # ----------------------------------------------------------------------------
 
-  @spec apply(T.ctx(), Action.t()) :: T.result(term())
-  def apply(ctx, %Action{kind: :open_document} = action) do
+  @spec apply(T.ctx(), Command.t()) :: T.result(term())
+  def apply(ctx, %Command{kind: :open_document} = action) do
     case action.document_id do
       nil -> {:error, :missing_document_id}
       doc_id -> Self.load(ctx, doc_id)
     end
   end
 
-  def apply(ctx, %Action{kind: :create_document} = action) do
+  def apply(ctx, %Command{kind: :create_document} = action) do
     create_document_directly(ctx, action)
   end
 
-  def apply(ctx, %Action{kind: :upload_document} = action) do
+  def apply(ctx, %Command{kind: :upload_document} = action) do
     import_via_io(ctx, action)
   end
 
-  def apply(ctx, %Action{kind: :chat_message} = action) do
+  def apply(ctx, %Command{kind: :chat_message} = action) do
     Contract.Agent.start(ctx, action)
   end
 
-  def apply(_ctx, %Action{kind: :request_export} = action) do
+  def apply(_ctx, %Command{kind: :request_export} = action) do
     cond do
       is_nil(action.document_id) ->
         {:error, :missing_document_id}
@@ -132,7 +132,7 @@ defmodule Contract.Runtime do
     end
   end
 
-  def apply(ctx, %Action{kind: :start_type_conversion} = action) do
+  def apply(ctx, %Command{kind: :start_type_conversion} = action) do
     payload = normalize_payload(action.payload)
     target_type_key = Map.get(payload, "target_type_key") || Map.get(payload, :target_type_key)
 
@@ -143,7 +143,7 @@ defmodule Contract.Runtime do
     end
   end
 
-  def apply(ctx, %Action{kind: :set_field_migration_strategy} = action) do
+  def apply(ctx, %Command{kind: :set_field_migration_strategy} = action) do
     payload = normalize_payload(action.payload)
     plan = Map.get(payload, "plan") || Map.get(payload, :plan)
     field_id = Map.get(payload, "source_field_id") || Map.get(payload, :source_field_id)
@@ -164,7 +164,7 @@ defmodule Contract.Runtime do
     end
   end
 
-  def apply(ctx, %Action{kind: :create_converted_variant} = action) do
+  def apply(ctx, %Command{kind: :create_converted_variant} = action) do
     payload = normalize_payload(action.payload)
     plan = Map.get(payload, "plan") || Map.get(payload, :plan)
 
@@ -177,17 +177,17 @@ defmodule Contract.Runtime do
     end
   end
 
-  def apply(ctx, %Action{kind: kind} = action) when kind in @session_kinds do
+  def apply(ctx, %Command{kind: kind} = action) when kind in @session_kinds do
     with {:ok, _pid} <- ensure_session(ctx, action.document_id) do
       Session.commit(action.document_id, action)
     end
   end
 
-  def apply(ctx, %Action{kind: kind} = action) when kind in @revoke_kinds do
+  def apply(ctx, %Command{kind: kind} = action) when kind in @revoke_kinds do
     Self.revoke(ctx, action)
   end
 
-  def apply(_ctx, %Action{kind: kind}) do
+  def apply(_ctx, %Command{kind: kind}) do
     {:error, {:unsupported_action_kind, kind}}
   end
 
@@ -195,8 +195,8 @@ defmodule Contract.Runtime do
   # revoke/2
   # ----------------------------------------------------------------------------
 
-  @spec revoke(T.ctx(), Action.t()) :: T.result(term())
-  def revoke(ctx, %Action{kind: kind} = action) when kind in @revoke_kinds do
+  @spec revoke(T.ctx(), Command.t()) :: T.result(term())
+  def revoke(ctx, %Command{kind: kind} = action) when kind in @revoke_kinds do
     case action.document_id do
       nil ->
         {:error, :missing_document_id}
@@ -208,7 +208,7 @@ defmodule Contract.Runtime do
     end
   end
 
-  def revoke(_ctx, %Action{kind: kind}),
+  def revoke(_ctx, %Command{kind: kind}),
     do: {:error, {:not_a_revoke, kind}}
 
   # ----------------------------------------------------------------------------
@@ -240,24 +240,24 @@ defmodule Contract.Runtime do
   # internals
   # ----------------------------------------------------------------------------
 
-  defp create_document_directly(_ctx, %Action{} = action) do
+  defp create_document_directly(_ctx, %Command{} = action) do
     document_id = action.document_id || Ecto.UUID.generate()
     action = %{action | document_id: document_id, base_revision: action.base_revision || 0}
 
     empty_state = %Contract.Runtime.State{document_id: document_id, revision: 0}
 
-    with {:ok, %Contract.ChangeInput{} = input} <- Contract.Engine.compile(action, empty_state),
-         {:ok, _} <- Contract.Engine.validate(input, empty_state),
-         {:ok, preimage} <- Contract.Engine.preimage(input, empty_state),
-         {:ok, inverse_ops} <- Contract.Engine.inverse(input, preimage),
-         {:ok, affected_refs} <- Contract.Engine.affected_refs(input, empty_state),
+    with {:ok, %Contract.ChangeInput{} = input} <- Contract.Session.Reducer.compile(action, empty_state),
+         {:ok, _} <- Contract.Session.Reducer.validate(input, empty_state),
+         {:ok, preimage} <- Contract.Session.Reducer.preimage(input, empty_state),
+         {:ok, inverse_ops} <- Contract.Session.Reducer.inverse(input, preimage),
+         {:ok, affected_refs} <- Contract.Session.Reducer.affected_refs(input, empty_state),
          input = %Contract.ChangeInput{
            input
            | preimage: preimage,
              inverse_ops: inverse_ops,
              affected_refs: affected_refs
          },
-         {:ok, change} <- Contract.Engine.build_change(action, input, empty_state) do
+         {:ok, change} <- Contract.Session.Reducer.build_change(action, input, empty_state) do
       # Create-document needs no lease since the document doesn't exist yet.
       # We use a synthetic fencing token of 0 + skip the lease assertion
       # path by acquiring a fresh lease first.
@@ -269,17 +269,17 @@ defmodule Contract.Runtime do
     end
   end
 
-  defp import_via_io(ctx, %Action{} = action) do
+  defp import_via_io(ctx, %Command{} = action) do
     upload = Map.get(action.payload, "upload") || Map.get(action.payload, :upload)
     matter_id = action.matter_id
 
     case Contract.IO.import_upload(ctx, matter_id, upload) do
-      {:ok, %Action{} = next_action} -> Self.apply(ctx, next_action)
+      {:ok, %Command{} = next_action} -> Self.apply(ctx, next_action)
       {:error, _} = err -> err
     end
   end
 
-  defp export_format(%Action{payload: payload}) do
+  defp export_format(%Command{payload: payload}) do
     case payload do
       %{"format" => fmt} when is_binary(fmt) -> String.to_atom(fmt)
       %{format: fmt} when is_atom(fmt) -> fmt

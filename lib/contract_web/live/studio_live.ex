@@ -59,7 +59,7 @@ defmodule ContractWeb.StudioLive do
 
   ## Dispatch funnel
 
-  `event_to_action/2` is the ONE place UI events become Actions. Components
+  `event_to_command/2` is the ONE place UI events become Commands. Components
   fire `phx-click="<event_name>"` and let the shell build the typed action.
   Clauses:
 
@@ -73,9 +73,9 @@ defmodule ContractWeb.StudioLive do
       "open_document"         → :open_document
       "duplicate_document"    → :duplicate_document
       "request_export"        → :request_export
-      "command_palette_picked" → resolved to the right Action.kind
+      "command_palette_picked" → resolved to the right Command.kind
 
-  Local-only UI events (no Action emitted):
+  Local-only UI events (no Command emitted):
 
       "toggle_preview", "open_modal", "close_modal", "set_node_focus",
       "viewport_change", "noop"
@@ -88,7 +88,7 @@ defmodule ContractWeb.StudioLive do
 
   use ContractWeb, :live_view
 
-  alias Contract.Action
+  alias Contract.Command
   alias Contract.Context
   alias Contract.Studio
   alias ContractWeb.Components.Breadcrumbs
@@ -216,7 +216,7 @@ defmodule ContractWeb.StudioLive do
   # Cmd+K palette → "Set contract type…" — intercept when no `type_key` is
   # supplied and open the type-picker modal so the user can pick. The picker
   # buttons then re-fire `set_contract_type` with a `type_key`, which goes
-  # through the normal `event_to_action/3` funnel.
+  # through the normal `event_to_command/3` funnel.
   # ---------------------------------------------------------------------------
 
   def handle_event(
@@ -226,15 +226,15 @@ defmodule ContractWeb.StudioLive do
       ) do
     case Map.get(params, "type_key") do
       type_key when is_binary(type_key) and type_key != "" ->
-        # User has a type_key — dispatch as a normal set_contract_type Action,
+        # User has a type_key — dispatch as a normal set_contract_type Command,
         # then close the type-picker if it was open (so picking a row in the
         # modal completes the round-trip).
-        case event_to_action(
+        case event_to_command(
                "set_contract_type",
                Map.put(params, "type_key", type_key),
                socket.assigns
              ) do
-          {:ok, %Action{} = action} ->
+          {:ok, %Command{} = action} ->
             socket =
               socket
               |> dispatch(action)
@@ -407,17 +407,17 @@ defmodule ContractWeb.StudioLive do
 
   # ---------------------------------------------------------------------------
   # Export-picker — `request_export` without a `format` opens the picker
-  # modal; with a `format` it emits the Action and closes the picker. Routed
+  # modal; with a `format` it emits the Command and closes the picker. Routed
   # here (above the generic funnel) so the no-format case can flip the
   # `studio_state.export_picker_open?` flag — the funnel is pure and only
-  # speaks `{:ok, Action} | :local | {:error, _}`.
+  # speaks `{:ok, Command} | :local | {:error, _}`.
   # ---------------------------------------------------------------------------
 
   def handle_event("request_export", params, socket) do
     case Map.get(params, "format") do
       format when is_binary(format) and format != "" ->
-        case event_to_action("request_export", params, socket.assigns) do
-          {:ok, %Action{} = action} ->
+        case event_to_command("request_export", params, socket.assigns) do
+          {:ok, %Command{} = action} ->
             socket =
               socket
               |> dispatch(action)
@@ -435,8 +435,8 @@ defmodule ContractWeb.StudioLive do
   end
 
   def handle_event(event, params, socket) do
-    case event_to_action(event, params, socket.assigns) do
-      {:ok, %Action{} = action} ->
+    case event_to_command(event, params, socket.assigns) do
+      {:ok, %Command{} = action} ->
         {:noreply, dispatch(socket, action)}
 
       :local ->
@@ -509,7 +509,7 @@ defmodule ContractWeb.StudioLive do
   # ----------------------------------------------------------------------------
 
   @doc """
-  The ONE place that takes a typed Action and submits it through the
+  The ONE place that takes a typed Command and submits it through the
   product façade.
 
     1. Calls `Studio.submit/3`.
@@ -518,8 +518,8 @@ defmodule ContractWeb.StudioLive do
 
   Returns the updated socket. The caller wraps in `{:noreply, ...}`.
   """
-  @spec dispatch(Phoenix.LiveView.Socket.t(), Action.t()) :: Phoenix.LiveView.Socket.t()
-  def dispatch(socket, %Action{} = action) do
+  @spec dispatch(Phoenix.LiveView.Socket.t(), Command.t()) :: Phoenix.LiveView.Socket.t()
+  def dispatch(socket, %Command{} = action) do
     scope = socket.assigns.current_scope
     state = socket.assigns.studio_state
 
@@ -538,63 +538,63 @@ defmodule ContractWeb.StudioLive do
   end
 
   # ----------------------------------------------------------------------------
-  # event_to_action/3 — the dispatch funnel
+  # event_to_command/3 — the dispatch funnel
   # ----------------------------------------------------------------------------
 
   @doc """
-  Translates a UI event name + params into a typed `Contract.Action`. Returns
-  `:local` for events that don't translate to an Action (UI-only). Returns
+  Translates a UI event name + params into a typed `Contract.Command`. Returns
+  `:local` for events that don't translate to a Command (UI-only). Returns
   `{:error, reason}` for unknown events.
   """
-  @spec event_to_action(String.t(), map(), map()) ::
-          {:ok, Action.t()} | :local | {:error, term()}
-  def event_to_action(event, params, assigns)
+  @spec event_to_command(String.t(), map(), map()) ::
+          {:ok, Command.t()} | :local | {:error, term()}
+  def event_to_command(event, params, assigns)
 
-  def event_to_action("rename_document", params, assigns) do
+  def event_to_command("rename_document", params, assigns) do
     build_action(assigns, :rename_document, params)
   end
 
-  def event_to_action("set_contract_type", params, assigns) do
+  def event_to_command("set_contract_type", params, assigns) do
     build_action(assigns, :set_contract_type, params)
   end
 
-  def event_to_action("edit_document", params, assigns) do
+  def event_to_command("edit_document", params, assigns) do
     build_action(assigns, :edit_document, params)
   end
 
-  def event_to_action("send_chat_message", params, assigns) do
+  def event_to_command("send_chat_message", params, assigns) do
     build_action(assigns, :chat_message, params, document_required: false)
   end
 
-  def event_to_action("revoke_change", params, assigns) do
+  def event_to_command("revoke_change", params, assigns) do
     build_action(assigns, :revoke_change, params)
   end
 
-  def event_to_action("upload_document", params, assigns) do
+  def event_to_command("upload_document", params, assigns) do
     build_action(assigns, :upload_document, params, document_required: false)
   end
 
   # "create_variant" is intercepted by handle_event/3 directly (Wave 4 —
   # the wizard fires it with the in-flight Plan held in assigns, not as
-  # an Action payload). The mapping below remains for backward compat
+  # an Command payload). The mapping below remains for backward compat
   # in case a caller still routes it through the funnel.
-  def event_to_action("create_variant", params, assigns) do
+  def event_to_command("create_variant", params, assigns) do
     build_action(assigns, :create_converted_variant, params, document_required: false)
   end
 
-  def event_to_action("open_document", params, assigns) do
+  def event_to_command("open_document", params, assigns) do
     build_action(assigns, :open_document, params)
   end
 
-  def event_to_action("duplicate_document", params, assigns) do
+  def event_to_command("duplicate_document", params, assigns) do
     build_action(assigns, :duplicate_document, params)
   end
 
-  def event_to_action("request_export", params, assigns) do
+  def event_to_command("request_export", params, assigns) do
     build_action(assigns, :request_export, params)
   end
 
-  def event_to_action("command_palette_picked", %{"kind" => kind} = params, assigns)
+  def event_to_command("command_palette_picked", %{"kind" => kind} = params, assigns)
       when is_binary(kind) do
     build_action(assigns, String.to_existing_atom(kind), Map.drop(params, ["kind"]),
       document_required: false
@@ -603,8 +603,8 @@ defmodule ContractWeb.StudioLive do
     ArgumentError -> {:error, {:unknown_palette_kind, kind}}
   end
 
-  # Local-only UI events (no Action emitted).
-  def event_to_action(local, _params, _assigns)
+  # Local-only UI events (no Command emitted).
+  def event_to_command(local, _params, _assigns)
       when local in [
              "toggle_preview",
              "open_modal",
@@ -615,7 +615,7 @@ defmodule ContractWeb.StudioLive do
     :local
   end
 
-  def event_to_action(event, _params, _assigns) do
+  def event_to_command(event, _params, _assigns) do
     {:error, {:unknown_event, event}}
   end
 
@@ -639,7 +639,7 @@ defmodule ContractWeb.StudioLive do
       {:error, {:missing_document_id, kind}}
     else
       {:ok,
-       %Action{
+       %Command{
          kind: kind,
          actor_type: :user,
          actor_id: actor_id,
@@ -915,7 +915,7 @@ defmodule ContractWeb.StudioLive do
   # ----------------------------------------------------------------------------
   #
   # The reservoir LC keeps inline-edit UI state locally, but every actual
-  # mutation has to round-trip through the same Action funnel as any
+  # mutation has to round-trip through the same Command funnel as any
   # other event. So the LC `send/2`s these messages to the parent LV
   # process; we translate them into the standard event funnel.
   def handle_protocol_message(
@@ -925,8 +925,8 @@ defmodule ContractWeb.StudioLive do
       when is_binary(field_id) do
     params = %{"field_id" => field_id, "value" => to_string(value)}
 
-    case event_to_action("edit_document", params, socket.assigns) do
-      {:ok, %Action{} = action} -> dispatch(socket, action)
+    case event_to_command("edit_document", params, socket.assigns) do
+      {:ok, %Command{} = action} -> dispatch(socket, action)
       _ -> socket
     end
   end

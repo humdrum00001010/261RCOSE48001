@@ -14,7 +14,7 @@ defmodule Contract.Studio do
       `handle_info/2` in the LV receives the §11 protocol messages.
   """
 
-  alias Contract.Action
+  alias Contract.Command
   alias Contract.Change
   alias Contract.Context
   alias Contract.Documents
@@ -171,8 +171,8 @@ defmodule Contract.Studio do
   The LV doesn't mutate the projection from here — `Store.append/3`
   broadcasts `{:change_committed, change}` which `handle_info/2` consumes.
   """
-  @spec submit(T.ctx(), State.t(), Action.t()) :: T.result(State.t())
-  def submit(%Context{} = ctx, %State{} = state, %Action{} = action) do
+  @spec submit(T.ctx(), State.t(), Command.t()) :: T.result(State.t())
+  def submit(%Context{} = ctx, %State{} = state, %Command{} = action) do
     case Runtime.apply(ctx, action) do
       {:ok, %Change{}} ->
         {:ok, state}
@@ -320,8 +320,8 @@ defmodule Contract.Studio do
   This is `submit + refresh_context_reservoir` composed; it is provided
   so the StudioLive doesn't have to know the second step exists.
   """
-  @spec submit_context_action(T.ctx(), State.t(), Action.t()) :: T.result(State.t())
-  def submit_context_action(%Context{} = ctx, %State{} = state, %Action{} = action) do
+  @spec submit_context_action(T.ctx(), State.t(), Command.t()) :: T.result(State.t())
+  def submit_context_action(%Context{} = ctx, %State{} = state, %Command{} = action) do
     with {:ok, %State{} = next_state} <- submit(ctx, state, action),
          {:ok, %State{} = refreshed} <- refresh_context_reservoir(ctx, next_state) do
       {:ok, refreshed}

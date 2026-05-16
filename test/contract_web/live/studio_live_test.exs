@@ -4,7 +4,7 @@ defmodule ContractWeb.StudioLiveTest do
   import Phoenix.LiveViewTest
   import Contract.AccountsFixtures
 
-  alias Contract.Action
+  alias Contract.Command
   alias Contract.Studio.State
   alias ContractWeb.StudioLive
 
@@ -127,7 +127,7 @@ defmodule ContractWeb.StudioLiveTest do
     end
   end
 
-  describe "event_to_action/3 (dispatch funnel)" do
+  describe "event_to_command/3 (dispatch funnel)" do
     setup :base_assigns
 
     test "rename_document → :rename_document Action with document_id from state",
@@ -135,77 +135,77 @@ defmodule ContractWeb.StudioLiveTest do
       doc = Ecto.UUID.generate()
       assigns = put_doc(assigns, doc)
 
-      assert {:ok, %Action{kind: :rename_document, document_id: ^doc, actor_type: :user}} =
-               StudioLive.event_to_action("rename_document", %{"title" => "New"}, assigns)
+      assert {:ok, %Command{kind: :rename_document, document_id: ^doc, actor_type: :user}} =
+               StudioLive.event_to_command("rename_document", %{"title" => "New"}, assigns)
     end
 
     test "set_contract_type → :set_contract_type", %{assigns: assigns} do
       doc = Ecto.UUID.generate()
       assigns = put_doc(assigns, doc)
 
-      assert {:ok, %Action{kind: :set_contract_type}} =
-               StudioLive.event_to_action("set_contract_type", %{"type_key" => "nda"}, assigns)
+      assert {:ok, %Command{kind: :set_contract_type}} =
+               StudioLive.event_to_command("set_contract_type", %{"type_key" => "nda"}, assigns)
     end
 
     test "edit_document → :edit_document", %{assigns: assigns} do
       doc = Ecto.UUID.generate()
       assigns = put_doc(assigns, doc)
 
-      assert {:ok, %Action{kind: :edit_document}} =
-               StudioLive.event_to_action("edit_document", %{"ops" => []}, assigns)
+      assert {:ok, %Command{kind: :edit_document}} =
+               StudioLive.event_to_command("edit_document", %{"ops" => []}, assigns)
     end
 
     test "send_chat_message → :chat_message (document not required)",
          %{assigns: assigns} do
-      assert {:ok, %Action{kind: :chat_message}} =
-               StudioLive.event_to_action("send_chat_message", %{"message" => "hi"}, assigns)
+      assert {:ok, %Command{kind: :chat_message}} =
+               StudioLive.event_to_command("send_chat_message", %{"message" => "hi"}, assigns)
     end
 
     test "revoke_change → :revoke_change", %{assigns: assigns} do
       doc = Ecto.UUID.generate()
       assigns = put_doc(assigns, doc)
 
-      assert {:ok, %Action{kind: :revoke_change}} =
-               StudioLive.event_to_action("revoke_change", %{"change_id" => "x"}, assigns)
+      assert {:ok, %Command{kind: :revoke_change}} =
+               StudioLive.event_to_command("revoke_change", %{"change_id" => "x"}, assigns)
     end
 
     test "upload_document → :upload_document (document not required)",
          %{assigns: assigns} do
-      assert {:ok, %Action{kind: :upload_document}} =
-               StudioLive.event_to_action("upload_document", %{"upload" => %{}}, assigns)
+      assert {:ok, %Command{kind: :upload_document}} =
+               StudioLive.event_to_command("upload_document", %{"upload" => %{}}, assigns)
     end
 
     test "create_variant → :create_converted_variant", %{assigns: assigns} do
-      assert {:ok, %Action{kind: :create_converted_variant}} =
-               StudioLive.event_to_action("create_variant", %{}, assigns)
+      assert {:ok, %Command{kind: :create_converted_variant}} =
+               StudioLive.event_to_command("create_variant", %{}, assigns)
     end
 
     test "open_document → :open_document", %{assigns: assigns} do
       doc = Ecto.UUID.generate()
 
-      assert {:ok, %Action{kind: :open_document, document_id: ^doc}} =
-               StudioLive.event_to_action("open_document", %{"document_id" => doc}, assigns)
+      assert {:ok, %Command{kind: :open_document, document_id: ^doc}} =
+               StudioLive.event_to_command("open_document", %{"document_id" => doc}, assigns)
     end
 
     test "duplicate_document → :duplicate_document", %{assigns: assigns} do
       doc = Ecto.UUID.generate()
       assigns = put_doc(assigns, doc)
 
-      assert {:ok, %Action{kind: :duplicate_document}} =
-               StudioLive.event_to_action("duplicate_document", %{}, assigns)
+      assert {:ok, %Command{kind: :duplicate_document}} =
+               StudioLive.event_to_command("duplicate_document", %{}, assigns)
     end
 
     test "request_export → :request_export", %{assigns: assigns} do
       doc = Ecto.UUID.generate()
       assigns = put_doc(assigns, doc)
 
-      assert {:ok, %Action{kind: :request_export}} =
-               StudioLive.event_to_action("request_export", %{"format" => "pdf"}, assigns)
+      assert {:ok, %Command{kind: :request_export}} =
+               StudioLive.event_to_command("request_export", %{"format" => "pdf"}, assigns)
     end
 
     test "command_palette_picked resolves to the inner kind", %{assigns: assigns} do
-      assert {:ok, %Action{kind: :chat_message}} =
-               StudioLive.event_to_action(
+      assert {:ok, %Command{kind: :chat_message}} =
+               StudioLive.event_to_command(
                  "command_palette_picked",
                  %{"kind" => "chat_message", "message" => "hi"},
                  assigns
@@ -214,7 +214,7 @@ defmodule ContractWeb.StudioLiveTest do
 
     test "command_palette_picked errors on unknown kind", %{assigns: assigns} do
       assert {:error, {:unknown_palette_kind, "bogus_kind_xyz"}} =
-               StudioLive.event_to_action(
+               StudioLive.event_to_command(
                  "command_palette_picked",
                  %{"kind" => "bogus_kind_xyz"},
                  assigns
@@ -224,28 +224,28 @@ defmodule ContractWeb.StudioLiveTest do
     test "missing document_id when required is a typed error", %{assigns: assigns} do
       # rename_document requires a doc id; nothing in state and nothing in params
       assert {:error, {:missing_document_id, :rename_document}} =
-               StudioLive.event_to_action("rename_document", %{}, assigns)
+               StudioLive.event_to_command("rename_document", %{}, assigns)
     end
 
     test "local UI events return :local", %{assigns: assigns} do
-      assert :local = StudioLive.event_to_action("toggle_preview", %{}, assigns)
-      assert :local = StudioLive.event_to_action("open_modal", %{}, assigns)
-      assert :local = StudioLive.event_to_action("close_modal", %{}, assigns)
-      assert :local = StudioLive.event_to_action("set_node_focus", %{}, assigns)
-      assert :local = StudioLive.event_to_action("viewport_change", %{}, assigns)
+      assert :local = StudioLive.event_to_command("toggle_preview", %{}, assigns)
+      assert :local = StudioLive.event_to_command("open_modal", %{}, assigns)
+      assert :local = StudioLive.event_to_command("close_modal", %{}, assigns)
+      assert :local = StudioLive.event_to_command("set_node_focus", %{}, assigns)
+      assert :local = StudioLive.event_to_command("viewport_change", %{}, assigns)
     end
 
     test "unknown event returns {:error, _}", %{assigns: assigns} do
       assert {:error, {:unknown_event, "wat"}} =
-               StudioLive.event_to_action("wat", %{}, assigns)
+               StudioLive.event_to_command("wat", %{}, assigns)
     end
 
     test "every built Action carries a unique idempotency_key", %{assigns: assigns} do
       doc = Ecto.UUID.generate()
       assigns = put_doc(assigns, doc)
 
-      {:ok, a} = StudioLive.event_to_action("rename_document", %{"title" => "A"}, assigns)
-      {:ok, b} = StudioLive.event_to_action("rename_document", %{"title" => "B"}, assigns)
+      {:ok, a} = StudioLive.event_to_command("rename_document", %{"title" => "A"}, assigns)
+      {:ok, b} = StudioLive.event_to_command("rename_document", %{"title" => "B"}, assigns)
 
       assert is_binary(a.idempotency_key)
       assert is_binary(b.idempotency_key)

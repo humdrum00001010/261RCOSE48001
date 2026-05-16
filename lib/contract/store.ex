@@ -39,7 +39,7 @@ defmodule Contract.Store do
 
   alias Contract.Change
   alias Contract.ChangeInput
-  alias Contract.Engine
+  alias Contract.Session.Reducer
   alias Contract.Lease
   alias Contract.Operation
   alias Contract.Repo
@@ -78,7 +78,7 @@ defmodule Contract.Store do
     state =
       Enum.reduce(changes, base, fn change, acc ->
         input = change_to_input(change)
-        {:ok, new_state} = Engine.apply(input, acc)
+        {:ok, new_state} = Reducer.apply(input, acc)
         new_state
       end)
 

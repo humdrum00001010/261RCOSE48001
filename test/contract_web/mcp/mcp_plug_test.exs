@@ -3,7 +3,7 @@ defmodule ContractWeb.MCP.MCPPlugTest do
 
   import Mox
 
-  alias Contract.Action
+  alias Contract.Command
   alias Contract.Change
   alias Contract.Context
   alias Contract.Gateway
@@ -428,7 +428,7 @@ defmodule ContractWeb.MCP.MCPPlugTest do
   defp create_doc do
     doc_id = Ecto.UUID.generate()
 
-    action = %Action{
+    action = %Command{
       kind: :create_document,
       document_id: doc_id,
       actor_type: :user,

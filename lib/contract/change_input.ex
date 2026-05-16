@@ -1,7 +1,7 @@
 defmodule Contract.ChangeInput do
   @moduledoc """
   Intermediate result of `Contract.Engine.compile/2`: a validated, ready-to-apply
-  representation of an `Contract.Action`. Not durable — only `Contract.Change`
+  representation of an `Contract.Command`. Not durable — only `Contract.Change`
   is. See SPEC.md §13.
 
   Lifecycle:

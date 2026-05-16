@@ -3,7 +3,7 @@ defmodule Contract.RuntimeTest do
 
   import Mox
 
-  alias Contract.Action
+  alias Contract.Command
   alias Contract.Change
   alias Contract.IO.R2Stub
   alias Contract.Lease
@@ -87,7 +87,7 @@ defmodule Contract.RuntimeTest do
     test "persists a new Change without needing an external Session" do
       doc = Ecto.UUID.generate()
 
-      action = %Action{
+      action = %Command{
         kind: :create_document,
         document_id: doc,
         actor_type: :user,
@@ -110,7 +110,7 @@ defmodule Contract.RuntimeTest do
       doc = Ecto.UUID.generate()
       _ = create_doc(doc)
 
-      action = %Action{
+      action = %Command{
         kind: :open_document,
         document_id: doc,
         actor_type: :user,
@@ -121,7 +121,7 @@ defmodule Contract.RuntimeTest do
     end
 
     test "errors when document_id is missing" do
-      action = %Action{kind: :open_document, actor_type: :user}
+      action = %Command{kind: :open_document, actor_type: :user}
       assert {:error, :missing_document_id} = Runtime.apply(@ctx, action)
     end
   end
@@ -163,7 +163,7 @@ defmodule Contract.RuntimeTest do
       _ = create_doc(doc)
       assert {:ok, %Change{} = base} = Runtime.apply(@ctx, create_action)
 
-      revoke = %Action{
+      revoke = %Command{
         kind: :revoke_change,
         document_id: doc,
         change_id: base.id,
@@ -180,7 +180,7 @@ defmodule Contract.RuntimeTest do
     end
 
     test "errors when document_id missing" do
-      action = %Action{
+      action = %Command{
         kind: :revoke_change,
         actor_type: :user,
         actor_id: Ecto.UUID.generate(),
@@ -193,7 +193,7 @@ defmodule Contract.RuntimeTest do
 
   describe "apply/2 → conversion kinds (Wave 4 — Contract.Conversion)" do
     test ":start_type_conversion without document_id is a typed error" do
-      action = %Action{
+      action = %Command{
         kind: :start_type_conversion,
         document_id: nil,
         actor_type: :user,
@@ -204,7 +204,7 @@ defmodule Contract.RuntimeTest do
     end
 
     test ":start_type_conversion without target_type_key is a typed error" do
-      action = %Action{
+      action = %Command{
         kind: :start_type_conversion,
         document_id: Ecto.UUID.generate(),
         actor_type: :user,
@@ -215,7 +215,7 @@ defmodule Contract.RuntimeTest do
     end
 
     test ":set_field_migration_strategy without a plan is a typed error" do
-      action = %Action{
+      action = %Command{
         kind: :set_field_migration_strategy,
         document_id: Ecto.UUID.generate(),
         actor_type: :user,
@@ -226,7 +226,7 @@ defmodule Contract.RuntimeTest do
     end
 
     test ":create_converted_variant without a plan is a typed error" do
-      action = %Action{
+      action = %Command{
         kind: :create_converted_variant,
         document_id: Ecto.UUID.generate(),
         actor_type: :user,
@@ -248,7 +248,7 @@ defmodule Contract.RuntimeTest do
         {:ok, %{stream: Stream.into([], []), task_pid: self()}}
       end)
 
-      action = %Action{
+      action = %Command{
         kind: :chat_message,
         document_id: Ecto.UUID.generate(),
         actor_type: :user,
@@ -266,7 +266,7 @@ defmodule Contract.RuntimeTest do
     test "rejects unknown action kinds with {:error, {:unsupported_action_kind, _}}" do
       # An Action struct with kind set to nil makes it unmatched by all
       # routing clauses.
-      action = %Action{kind: nil}
+      action = %Command{kind: nil}
       assert {:error, {:unsupported_action_kind, nil}} = Runtime.apply(@ctx, action)
     end
   end
@@ -306,7 +306,7 @@ defmodule Contract.RuntimeTest do
   # ---------------------------------------------------------------------------
 
   defp create_doc(doc) do
-    action = %Action{
+    action = %Command{
       kind: :create_document,
       document_id: doc,
       actor_type: :user,
@@ -383,7 +383,7 @@ defmodule Contract.RuntimeTest do
           {%{}, 1}
       end
 
-    %Action{
+    %Command{
       kind: kind,
       document_id: doc,
       actor_type: :user,

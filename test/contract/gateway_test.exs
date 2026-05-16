@@ -3,7 +3,7 @@ defmodule Contract.GatewayTest do
 
   import Mox
 
-  alias Contract.Action
+  alias Contract.Command
   alias Contract.Change
   alias Contract.Context
   alias Contract.Gateway
@@ -370,7 +370,7 @@ defmodule Contract.GatewayTest do
     doc_id = Ecto.UUID.generate()
     title = Keyword.get(opts, :title, "Doc")
 
-    action = %Action{
+    action = %Command{
       kind: :create_document,
       document_id: doc_id,
       actor_type: :user,

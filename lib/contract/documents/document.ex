@@ -51,6 +51,12 @@ defmodule Contract.Documents.Document do
     field :variant_of_change_id, :binary_id
     field :latest_revision, :integer, default: 0
     field :metadata, :map, default: %{}
+
+    # SPEC.md v0.5 §7.1 — state_snapshot is the materialized document
+    # state at :current_revision. Session.Reducer (W4) populates both;
+    # in this foundation wave they default to empty / 0.
+    field :state_snapshot, :map, default: %{}
+    field :current_revision, :integer, default: 0
     timestamps()
   end
 
@@ -73,7 +79,9 @@ defmodule Contract.Documents.Document do
       :parent_document_id,
       :variant_of_change_id,
       :latest_revision,
-      :metadata
+      :metadata,
+      :state_snapshot,
+      :current_revision
     ])
     |> validate_required([:matter_id, :title])
     |> validate_length(:title, min: 1, max: 300)

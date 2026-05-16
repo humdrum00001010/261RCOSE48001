@@ -49,14 +49,14 @@ defmodule Contract.Conversion do
   to explicitly handle every field.
   """
 
-  alias Contract.Action
+  alias Contract.Command
   alias Contract.Change
   alias Contract.Context
   alias Contract.ContractTypes
   alias Contract.ContractTypes.TypeSpec
   alias Contract.Documents
   alias Contract.Documents.Document
-  alias Contract.Engine
+  alias Contract.Session.Reducer
   alias Contract.Lease
   alias Contract.Repo
   alias Contract.Runtime
@@ -325,7 +325,7 @@ defmodule Contract.Conversion do
   end
 
   defp append_variant_change(%Document{} = new_doc, %Document{} = source, %Plan{} = plan, user) do
-    action = %Action{
+    action = %Command{
       kind: :create_converted_variant,
       matter_id: new_doc.matter_id,
       document_id: new_doc.id,
@@ -344,18 +344,18 @@ defmodule Contract.Conversion do
 
     empty_state = %Runtime.State{document_id: new_doc.id, revision: 0}
 
-    with {:ok, %Contract.ChangeInput{} = input} <- Engine.compile(action, empty_state),
-         {:ok, _} <- Engine.validate(input, empty_state),
-         {:ok, preimage} <- Engine.preimage(input, empty_state),
-         {:ok, inverse_ops} <- Engine.inverse(input, preimage),
-         {:ok, affected_refs} <- Engine.affected_refs(input, empty_state),
+    with {:ok, %Contract.ChangeInput{} = input} <- Reducer.compile(action, empty_state),
+         {:ok, _} <- Reducer.validate(input, empty_state),
+         {:ok, preimage} <- Reducer.preimage(input, empty_state),
+         {:ok, inverse_ops} <- Reducer.inverse(input, preimage),
+         {:ok, affected_refs} <- Reducer.affected_refs(input, empty_state),
          enriched = %Contract.ChangeInput{
            input
            | preimage: preimage,
              inverse_ops: inverse_ops,
              affected_refs: affected_refs
          },
-         {:ok, change} <- Engine.build_change(action, enriched, empty_state),
+         {:ok, change} <- Reducer.build_change(action, enriched, empty_state),
          {:ok, lease} <- Lease.acquire(new_doc.id, "conversion:#{new_doc.id}"),
          {:ok, persisted} <- Store.append(new_doc.id, change, lease.fencing_token) do
       _ = Lease.release(new_doc.id, "conversion:#{new_doc.id}", lease.fencing_token)
@@ -404,8 +404,8 @@ defmodule Contract.Conversion do
   This is NOT the default — `create_variant/2` is. Callers must
   explicitly opt in.
   """
-  @spec adapt_in_place(Context.t(), Plan.t(), Action.t()) :: T.result(Change.t())
-  def adapt_in_place(%Context{} = scope, %Plan{} = _plan, %Action{} = agent_action) do
+  @spec adapt_in_place(Context.t(), Plan.t(), Command.t()) :: T.result(Change.t())
+  def adapt_in_place(%Context{} = scope, %Plan{} = _plan, %Command{} = agent_action) do
     case Runtime.apply(scope, agent_action) do
       {:ok, %Change{} = change} -> {:ok, change}
       {:ok, other} -> {:error, {:unexpected_runtime_return, other}}

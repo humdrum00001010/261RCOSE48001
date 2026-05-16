@@ -26,10 +26,10 @@ defmodule Contract.Session do
 
   require Logger
 
-  alias Contract.Action
+  alias Contract.Command
   alias Contract.Change
   alias Contract.ChangeInput
-  alias Contract.Engine
+  alias Contract.Session.Reducer
   alias Contract.Lease
   alias Contract.Operation
   alias Contract.RevokeRequest
@@ -86,14 +86,14 @@ defmodule Contract.Session do
   # public API
   # ----------------------------------------------------------------------------
 
-  @spec commit(pid() | T.document_id(), Action.t()) :: T.result(Change.t())
-  def commit(target, %Action{} = action) do
+  @spec commit(pid() | T.document_id(), Command.t()) :: T.result(Change.t())
+  def commit(target, %Command{} = action) do
     call(target, {:commit, action})
   end
 
-  @spec revoke(pid() | T.document_id(), Action.t()) ::
+  @spec revoke(pid() | T.document_id(), Command.t()) ::
           T.result(Change.t() | RevokeRequest.t())
-  def revoke(target, %Action{} = action) do
+  def revoke(target, %Command{} = action) do
     call(target, {:revoke, action})
   end
 
@@ -159,7 +159,7 @@ defmodule Contract.Session do
   end
 
   @impl true
-  def handle_call({:commit, %Action{} = action}, _from, data) do
+  def handle_call({:commit, %Command{} = action}, _from, data) do
     case do_commit(action, data) do
       {:ok, change, new_state} ->
         {:reply, {:ok, change}, %{data | state: new_state, last_heartbeat: DateTime.utc_now()}}
@@ -172,7 +172,7 @@ defmodule Contract.Session do
     end
   end
 
-  def handle_call({:revoke, %Action{} = action}, _from, data) do
+  def handle_call({:revoke, %Command{} = action}, _from, data) do
     case do_revoke(action, data) do
       {:ok, result, new_state} ->
         {:reply, {:ok, result}, %{data | state: new_state, last_heartbeat: DateTime.utc_now()}}
@@ -251,7 +251,7 @@ defmodule Contract.Session do
     else
       input = Store.change_to_input(change)
 
-      case Engine.apply(input, data.state) do
+      case Reducer.apply(input, data.state) do
         {:ok, new_state} -> {:noreply, %{data | state: new_state}}
         _ -> {:noreply, data}
       end
@@ -267,7 +267,7 @@ defmodule Contract.Session do
   # commit / revoke internals
   # ----------------------------------------------------------------------------
 
-  defp do_commit(%Action{} = action, %{state: state, document_id: document_id} = data) do
+  defp do_commit(%Command{} = action, %{state: state, document_id: document_id} = data) do
     action = %{action | document_id: action.document_id || document_id}
 
     # Idempotency short-circuit: a replay of an already-committed action
@@ -279,22 +279,22 @@ defmodule Contract.Session do
     end
   end
 
-  defp do_commit_via_engine(%Action{} = action, %{state: state, document_id: document_id} = data) do
-    with {:ok, %ChangeInput{} = input} <- Engine.compile(action, state),
-         {:ok, _} <- Engine.validate(input, state),
-         {:ok, preimage} <- Engine.preimage(input, state),
-         {:ok, inverse_ops} <- Engine.inverse(input, preimage),
-         {:ok, affected_refs} <- Engine.affected_refs(input, state),
+  defp do_commit_via_engine(%Command{} = action, %{state: state, document_id: document_id} = data) do
+    with {:ok, %ChangeInput{} = input} <- Reducer.compile(action, state),
+         {:ok, _} <- Reducer.validate(input, state),
+         {:ok, preimage} <- Reducer.preimage(input, state),
+         {:ok, inverse_ops} <- Reducer.inverse(input, preimage),
+         {:ok, affected_refs} <- Reducer.affected_refs(input, state),
          input = %ChangeInput{
            input
            | preimage: preimage,
              inverse_ops: inverse_ops,
              affected_refs: affected_refs
          },
-         {:ok, change} <- Engine.build_change(action, input, state) do
+         {:ok, change} <- Reducer.build_change(action, input, state) do
       case Store.append(document_id, change, data.lease.fencing_token) do
         {:ok, persisted} ->
-          {:ok, new_state} = Engine.apply(input, state)
+          {:ok, new_state} = Reducer.apply(input, state)
           {:ok, persisted, %{new_state | revision: persisted.applied_revision}}
 
         {:error, {:fenced_out, _, _, _} = reason} ->
@@ -306,7 +306,7 @@ defmodule Contract.Session do
     end
   end
 
-  defp do_revoke(%Action{kind: :revoke_change} = action, %{document_id: document_id} = data) do
+  defp do_revoke(%Command{kind: :revoke_change} = action, %{document_id: document_id} = data) do
     change_id = revoke_target_id(action)
 
     case fetch_target_change(document_id, change_id) do
@@ -326,11 +326,11 @@ defmodule Contract.Session do
     end
   end
 
-  defp do_revoke(%Action{kind: :resolve_revoke} = action, data) do
+  defp do_revoke(%Command{kind: :resolve_revoke} = action, data) do
     do_commit(action, data)
   end
 
-  defp do_revoke(%Action{kind: kind}, _data),
+  defp do_revoke(%Command{kind: kind}, _data),
     do: {:error, {:invalid_revoke_kind, kind}}
 
   defp do_clean_revoke(action, data) do
@@ -340,7 +340,7 @@ defmodule Contract.Session do
     end
   end
 
-  defp create_revoke_request(document_id, target_change, overlaps, %Action{} = action) do
+  defp create_revoke_request(document_id, target_change, overlaps, %Command{} = action) do
     overlap_ids = Enum.map(overlaps, & &1.id)
 
     attrs = %{
@@ -368,9 +368,9 @@ defmodule Contract.Session do
     end
   end
 
-  defp revoke_target_id(%Action{change_id: id}) when not is_nil(id), do: id
+  defp revoke_target_id(%Command{change_id: id}) when not is_nil(id), do: id
 
-  defp revoke_target_id(%Action{payload: payload}) do
+  defp revoke_target_id(%Command{payload: payload}) do
     case payload do
       %{"change_id" => id} when is_binary(id) -> id
       %{change_id: id} when is_binary(id) -> id
@@ -393,7 +393,7 @@ defmodule Contract.Session do
     end
   end
 
-  defp enrich_revoke_action(%Action{payload: payload} = action, %Change{} = target_change) do
+  defp enrich_revoke_action(%Command{payload: payload} = action, %Change{} = target_change) do
     inverse_ops = decode_stored_ops(target_change.inverse_ops || [])
 
     payload =

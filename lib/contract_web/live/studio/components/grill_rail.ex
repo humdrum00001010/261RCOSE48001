@@ -40,7 +40,7 @@ defmodule ContractWeb.Live.Studio.Components.GrillRail do
       }
 
   `StudioLive.event_to_action/3` routes `"send_chat_message"` into an
-  `%Action{kind: :chat_message}` with the `grill_response` lifted into
+  `%Command{kind: :chat_message}` with the `grill_response` lifted into
   `payload`.
 
   Because the answer textarea lives inside this LiveComponent, we keep

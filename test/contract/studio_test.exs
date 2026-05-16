@@ -3,7 +3,7 @@ defmodule Contract.StudioTest do
 
   import Mox
 
-  alias Contract.Action
+  alias Contract.Command
   alias Contract.IO.R2Stub
   alias Contract.Runtime
   alias Contract.Studio
@@ -119,7 +119,7 @@ defmodule Contract.StudioTest do
     test "routes :create_document through Runtime and returns state unchanged" do
       doc = Ecto.UUID.generate()
 
-      action = %Action{
+      action = %Command{
         kind: :create_document,
         document_id: doc,
         actor_type: :user,
@@ -137,7 +137,7 @@ defmodule Contract.StudioTest do
     end
 
     test "returns {:error, _} when Runtime rejects the action" do
-      action = %Action{kind: :open_document, actor_type: :user}
+      action = %Command{kind: :open_document, actor_type: :user}
       state = %State{mode: :no_document}
 
       assert {:error, :missing_document_id} = Studio.submit(@ctx, state, action)
@@ -316,7 +316,7 @@ defmodule Contract.StudioTest do
 
       state = %State{selected_document_id: doc, last_seen_revision: 1, mode: :editing}
 
-      action = %Action{
+      action = %Command{
         kind: :update_metadata,
         document_id: doc,
         actor_type: :user,
@@ -339,7 +339,7 @@ defmodule Contract.StudioTest do
   # ---------------------------------------------------------------------------
 
   defp create_doc(doc) do
-    action = %Action{
+    action = %Command{
       kind: :create_document,
       document_id: doc,
       actor_type: :user,
@@ -354,7 +354,7 @@ defmodule Contract.StudioTest do
   end
 
   defp add_ask_mark(doc, text, base_revision) do
-    action = %Action{
+    action = %Command{
       kind: :add_mark,
       document_id: doc,
       actor_type: :user,
@@ -379,7 +379,7 @@ defmodule Contract.StudioTest do
   end
 
   defp rename_doc(doc, new_title, base_revision, idem) do
-    action = %Action{
+    action = %Command{
       kind: :rename_document,
       document_id: doc,
       actor_type: :user,

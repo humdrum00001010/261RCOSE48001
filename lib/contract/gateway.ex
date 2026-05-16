@@ -31,7 +31,7 @@ defmodule Contract.Gateway do
   produce JSON-RPC envelopes itself.
   """
 
-  alias Contract.Action
+  alias Contract.Command
   alias Contract.Context
   alias Contract.IO.LawMCP
   alias Contract.RouteRef
@@ -92,7 +92,7 @@ defmodule Contract.Gateway do
       %{
         "name" => "studio.submit_action",
         "description" =>
-          "Submit a Contract.Action to Runtime.apply. Use this to drive Contract Studio from external clients (rename, edit, add_mark, etc.).",
+          "Submit a Contract.Command to Runtime.apply. Use this to drive Contract Studio from external clients (rename, edit, add_mark, etc.).",
         "inputSchema" => %{
           "type" => "object",
           "properties" => %{
@@ -593,7 +593,7 @@ defmodule Contract.Gateway do
       message: Map.get(raw, "message") || Map.get(raw, :message)
     }
 
-    changeset = Action.changeset(%Action{}, attrs)
+    changeset = Command.changeset(%Command{}, attrs)
 
     if changeset.valid? do
       {:ok, Ecto.Changeset.apply_changes(changeset)}

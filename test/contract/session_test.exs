@@ -3,7 +3,7 @@ defmodule Contract.SessionTest do
   # registered in a global registry, so they must run synchronously.
   use Contract.DataCase, async: false
 
-  alias Contract.Action
+  alias Contract.Command
   alias Contract.Change
   alias Contract.IO.R2Stub
   alias Contract.Lease
@@ -130,7 +130,7 @@ defmodule Contract.SessionTest do
       :ok = seed_document!(doc)
       {pid, ^doc} = start_session!(document_id: doc)
 
-      action = %Action{
+      action = %Command{
         kind: :rename_document,
         document_id: doc,
         actor_type: :user,
@@ -151,7 +151,7 @@ defmodule Contract.SessionTest do
       :ok = seed_document!(doc)
       {pid, ^doc} = start_session!(document_id: doc)
 
-      action = %Action{
+      action = %Command{
         kind: :rename_document,
         document_id: doc,
         actor_type: :user,
@@ -169,7 +169,7 @@ defmodule Contract.SessionTest do
       :ok = seed_document!(doc)
       {pid, ^doc} = start_session!(document_id: doc)
 
-      action = %Action{
+      action = %Command{
         kind: :rename_document,
         document_id: doc,
         actor_type: :user,
@@ -188,7 +188,7 @@ defmodule Contract.SessionTest do
       :ok = seed_document!(doc)
       {pid, ^doc} = start_session!(document_id: doc)
 
-      action = %Action{
+      action = %Command{
         kind: :rename_document,
         document_id: nil,
         actor_type: :user,
@@ -208,7 +208,7 @@ defmodule Contract.SessionTest do
       :ok = seed_document!(doc)
       {pid, ^doc} = start_session!(document_id: doc)
 
-      action = %Action{
+      action = %Command{
         kind: :rename_document,
         document_id: doc,
         actor_type: :user,
@@ -228,7 +228,7 @@ defmodule Contract.SessionTest do
       pid: pid,
       change: change
     } do
-      action = %Action{
+      action = %Command{
         kind: :revoke_change,
         document_id: doc,
         change_id: change.id,
@@ -252,7 +252,7 @@ defmodule Contract.SessionTest do
       change: change
     } do
       # Second rename — overlaps the first since both target the document.
-      next = %Action{
+      next = %Command{
         kind: :rename_document,
         document_id: doc,
         actor_type: :user,
@@ -264,7 +264,7 @@ defmodule Contract.SessionTest do
 
       {:ok, _later} = Session.commit(pid, next)
 
-      revoke = %Action{
+      revoke = %Command{
         kind: :revoke_change,
         document_id: doc,
         change_id: change.id,
@@ -282,7 +282,7 @@ defmodule Contract.SessionTest do
       :ok = seed_document!(doc)
       {pid, ^doc} = start_session!(document_id: doc)
 
-      action = %Action{
+      action = %Command{
         kind: :revoke_change,
         document_id: doc,
         actor_type: :user,
@@ -301,7 +301,7 @@ defmodule Contract.SessionTest do
       :ok = seed_document!(doc)
       {pid, ^doc} = start_session!(document_id: doc)
 
-      action = %Action{
+      action = %Command{
         kind: :rename_document,
         document_id: doc,
         actor_type: :user,
@@ -383,7 +383,7 @@ defmodule Contract.SessionTest do
       :ok = Lease.force_expire!(doc)
       {:ok, _newer} = Lease.acquire(doc, "thief")
 
-      action = %Action{
+      action = %Command{
         kind: :rename_document,
         document_id: doc,
         actor_type: :user,

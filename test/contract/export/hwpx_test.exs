@@ -352,7 +352,7 @@ defmodule Contract.Export.HWPXTest do
   # --------------------------------------------------------------------------
 
   test "renders a state built up via Engine.apply pipeline" do
-    alias Contract.{Action, Engine, Runtime}
+    alias Contract.{Command, Engine, Runtime}
 
     # Build a small document with three create_node ops.
     state = %Runtime.State{
@@ -361,7 +361,7 @@ defmodule Contract.Export.HWPXTest do
       projection: Runtime.State.empty_projection()
     }
 
-    action = %Action{
+    action = %Command{
       kind: :edit_document,
       document_id: "doc-0000-0000-0000-000000000004",
       actor_type: :user,

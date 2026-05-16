@@ -125,7 +125,7 @@ defmodule Contract.Workers.ExportJobTest do
       {doc_id, requester_id} = seed_document()
       ctx = nil
 
-      action = %Contract.Action{
+      action = %Contract.Command{
         kind: :request_export,
         document_id: doc_id,
         actor_id: requester_id,
@@ -142,7 +142,7 @@ defmodule Contract.Workers.ExportJobTest do
     end
 
     test "missing document_id → {:error, :missing_document_id}" do
-      action = %Contract.Action{kind: :request_export, payload: %{"format" => "html"}}
+      action = %Contract.Command{kind: :request_export, payload: %{"format" => "html"}}
       assert {:error, :missing_document_id} = Contract.Runtime.apply(nil, action)
     end
   end

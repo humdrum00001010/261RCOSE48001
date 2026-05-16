@@ -64,7 +64,7 @@ defmodule Contract.Workers.FtcSeedJob do
 
   require Logger
 
-  alias Contract.Action
+  alias Contract.Command
   alias Contract.Context
   alias Contract.Documents
   alias Contract.Documents.Document
@@ -285,7 +285,7 @@ defmodule Contract.Workers.FtcSeedJob do
       |> Enum.map(fn n -> Map.get(n, "id") || Map.get(n, :id) end)
       |> Enum.reject(&is_nil/1)
 
-    action = %Action{
+    action = %Command{
       kind: :create_document,
       matter_id: doc.matter_id,
       document_id: doc.id,

@@ -22,7 +22,7 @@ defmodule Contract.IO.Upstage do
   client_type: mime}`.
   """
   @spec import_upload(T.ctx(), T.matter_id(), map() | T.upload()) ::
-          {:ok, Contract.Action.t()} | {:error, term()}
+          {:ok, Contract.Command.t()} | {:error, term()}
   def import_upload(_ctx, matter_id, upload) do
     with {:ok, info} <- read_upload(upload),
          artifact_id <- Ecto.UUID.generate(),
@@ -31,7 +31,7 @@ defmodule Contract.IO.Upstage do
       nodes = normalize_elements(parsed.elements)
       node_order = Enum.map(nodes, & &1["id"])
 
-      action = %Contract.Action{
+      action = %Contract.Command{
         kind: :create_document,
         matter_id: matter_id,
         actor_type: :system,

@@ -183,7 +183,7 @@ defmodule Contract.IO.UpstageTest do
 
       on_exit(fn -> Application.put_env(:contract, :r2, original) end)
 
-      assert {:ok, %Contract.Action{} = action} =
+      assert {:ok, %Contract.Command{} = action} =
                Upstage.import_upload(nil, matter_id, upload)
 
       assert action.kind == :create_document

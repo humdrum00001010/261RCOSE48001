@@ -13,7 +13,7 @@ defmodule Contract.Agent do
   OpenAI Responses + Korean Law MCP shapes.
   """
 
-  alias Contract.Action
+  alias Contract.Command
   alias Contract.Agent.Run
   alias Contract.Agent.RunServer
   alias Contract.Agent.RunSupervisor
@@ -63,8 +63,8 @@ defmodule Contract.Agent do
 
   # --- public API -------------------------------------------------------
 
-  @spec start(T.ctx(), Action.t()) :: {:ok, Run.t()} | {:error, term()}
-  def start(ctx, %Action{kind: kind} = action)
+  @spec start(T.ctx(), Command.t()) :: {:ok, Run.t()} | {:error, term()}
+  def start(ctx, %Command{kind: kind} = action)
       when kind in [:chat_message, :start_type_conversion] do
     run = %Run{
       id: Ecto.UUID.generate(),
@@ -92,7 +92,7 @@ defmodule Contract.Agent do
     end
   end
 
-  def start(_ctx, %Action{kind: kind}), do: {:error, {:unsupported_action, kind}}
+  def start(_ctx, %Command{kind: kind}), do: {:error, {:unsupported_action, kind}}
 
   @spec cancel(T.ctx(), T.agent_run_id()) :: {:ok, Run.t()} | {:error, term()}
   def cancel(_ctx, run_id), do: RunServer.cancel(run_id)
@@ -113,8 +113,8 @@ defmodule Contract.Agent do
   Assembles the system prompt, conversation history, MCP tool list, and
   optional `previous_response_id` for one agent run.
   """
-  @spec build_context(T.ctx(), Action.t()) :: {:ok, map()}
-  def build_context(_ctx, %Action{} = action) do
+  @spec build_context(T.ctx(), Command.t()) :: {:ok, map()}
+  def build_context(_ctx, %Command{} = action) do
     snapshot = fetch_snapshot(action.document_id)
     history = fetch_history(action.document_id)
 
@@ -124,14 +124,121 @@ defmodule Contract.Agent do
 
     tools = [Contract.IO.OpenAI.law_mcp_tool()]
 
-    context = %{
+    frame = %{
       system: @grill_system_prompt <> "\n\nCURRENT_DOCUMENT_SNAPSHOT:\n" <> Jason.encode!(snapshot),
       input: input,
       tools: tools,
       previous_response_id: action.payload["previous_response_id"]
     }
 
-    {:ok, context}
+    case extract_reservoir(action) do
+      nil ->
+        {:ok, frame}
+
+      %ContextReservoir{} = reservoir ->
+        include_context_reservoir(frame, reservoir)
+    end
+  end
+
+  @doc """
+  Folds the Context Reservoir into the agent's `input` as a bounded
+  read-only summary appended to the last user message.
+
+  Per SPEC.md §20: "Agent context SHOULD include … Context Reservoir
+  projection". Per SPEC.md §10a: "The agent observes the reservoir as a
+  read-only projection. Agent mutations to context still flow through
+  Actions; the reservoir is never written to directly."
+
+  The summary is bounded by `@reservoir_max_items` per section and
+  `@reservoir_max_chars` overall. An empty reservoir leaves the frame
+  untouched (no header noise).
+  """
+  @spec include_context_reservoir(map(), ContextReservoir.t()) :: {:ok, map()}
+  def include_context_reservoir(frame, %ContextReservoir{} = reservoir) do
+    case summarize_reservoir(reservoir) do
+      "" ->
+        {:ok, frame}
+
+      summary ->
+        appended = "\n\n## Context Reservoir\n" <> summary
+        {:ok, Map.update(frame, :input, [], &append_to_input(&1, appended))}
+    end
+  end
+
+  # --- reservoir helpers ----------------------------------------------------
+
+  defp extract_reservoir(%Command{payload: payload}) when is_map(payload) do
+    case Map.get(payload, "context_reservoir") || Map.get(payload, :context_reservoir) do
+      %ContextReservoir{} = r -> r
+      _ -> nil
+    end
+  end
+
+  defp extract_reservoir(_), do: nil
+
+  @doc false
+  @spec summarize_reservoir(ContextReservoir.t()) :: String.t()
+  def summarize_reservoir(%ContextReservoir{} = r) do
+    parts =
+      [
+        format_brief_section(r.brief),
+        format_shared_fields_section(r.shared_fields),
+        format_open_questions_section(r.open_questions),
+        format_related_documents_section(r.related_documents),
+        format_sources_section(r.sources),
+        format_evidence_section(r.evidence),
+        format_readiness_section(r.readiness)
+      ]
+      |> Enum.reject(&(&1 == "" or is_nil(&1)))
+
+    parts
+    |> Enum.join("\n")
+    |> truncate_chars(@reservoir_max_chars)
+  end
+
+  defp format_brief_section(brief) when is_map(brief) and map_size(brief) > 0 do
+    pieces =
+      brief
+      |> Enum.map(fn {k, v} -> {to_string(k), v} end)
+      |> Enum.reject(fn {_k, v} -> blank?(v) end)
+      |> Enum.take(@reservoir_max_items)
+      |> Enum.map(fn {k, v} -> "#{k}: #{stringify(v)}" end)
+
+    case pieces do
+      [] -> ""
+      list -> "**Brief:** " <> Enum.join(list, " · ")
+    end
+  end
+
+  defp format_brief_section(_), do: ""
+
+  defp format_shared_fields_section(fields) when is_list(fields) and fields != [] do
+    pieces =
+      fields
+      |> Enum.take(@reservoir_max_items)
+      |> Enum.map(fn f ->
+        label = read_string(f, [:label, "label", :field_id, "field_id"]) || "field"
+        value = read_string(f, [:value, "value"]) || "—"
+        "#{label}: #{value}"
+      end)
+
+    suffix = trailing_more(length(fields))
+    "**Shared fields:** " <> Enum.join(pieces, " · ") <> suffix
+  end
+
+  defp format_shared_fields_section(_), do: ""
+
+  defp format_open_questions_section(qs) when is_list(qs) and qs != [] do
+    pieces =
+      qs
+      |> Enum.take(@reservoir_max_items)
+      |> Enum.map(fn q ->
+        text = read_string(q, [:text, "text"]) || "(no text)"
+        "- " <> text
+      end)
+
+    header = "**Open questions:** (#{length(qs)})"
+    header <> "\n" <> Enum.join(pieces, "\n") <> trailing_more(length(qs))
   end
 
   @doc """
@@ -141,7 +248,7 @@ defmodule Contract.Agent do
   with an `output_text` field.
   """
   @spec decode_action(String.t() | map(), keyword()) ::
-          {:ok, Action.t()} | {:error, term()}
+          {:ok, Command.t()} | {:error, term()}
   def decode_action(provider_output, opts \\ [])
 
   def decode_action(text, opts) when is_binary(text) do
@@ -190,7 +297,7 @@ defmodule Contract.Agent do
       end)
 
     {:ok,
-     %Action{
+     %Command{
        kind: :agent_change,
        actor_type: :agent,
        idempotency_key: idempotency_key(opts),
@@ -209,7 +316,7 @@ defmodule Contract.Agent do
     marks = payload["marks"] || []
 
     {:ok,
-     %Action{
+     %Command{
        kind: :agent_change,
        actor_type: :agent,
        idempotency_key: idempotency_key(opts),
