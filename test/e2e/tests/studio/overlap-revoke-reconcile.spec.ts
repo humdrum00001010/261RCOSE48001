@@ -40,16 +40,33 @@ test.describe('Scenario 3: overlap revoke + reconcile', () => {
       const baseCount = baseline.length;
 
       // Push two edits to the same node.
+      //
+      // Use `pushHookEvent(el, ctx, event, payload)` — NOT `view.pushEvent`.
+      // `View.pushEvent(type, el, targetCtx, phxEvent, meta, opts, onReply)`
+      // is a private LV API whose first arg is a `type` discriminator and
+      // second is a DOM `el`; calling it with `(name, payload)` routes
+      // `payload` into `extractMeta(el, ...)` which crashes on
+      // `el.attributes.length`. `pushHookEvent(el, ctx, event, payload)` is
+      // the proper outside-the-hook entrypoint and skips `extractMeta`.
       const pushEdit = async (value: string) => {
         await page.evaluate(
           ({ docId, v }) => {
-            const lv = (window as unknown as { liveSocket?: { owner?: (el: Element) => unknown } }).liveSocket;
+            const lv = (window as unknown as {
+              liveSocket?: {
+                owner?: (el: Element) => {
+                  pushHookEvent: (
+                    el: Element,
+                    ctx: unknown,
+                    event: string,
+                    payload: Record<string, unknown>
+                  ) => unknown;
+                };
+              };
+            }).liveSocket;
             const root = document.querySelector('[data-phx-main]');
             if (!root) throw new Error('Studio LV root not mounted');
-            const view = lv?.owner?.(root) as {
-              pushEvent: (n: string, p: Record<string, unknown>) => void;
-            };
-            view?.pushEvent('edit_document', {
+            const view = lv?.owner?.(root);
+            view?.pushHookEvent(root, null, 'edit_document', {
               document_id: docId,
               ops: [
                 {
@@ -82,16 +99,27 @@ test.describe('Scenario 3: overlap revoke + reconcile', () => {
       const firstEdit = after[baseCount];
       expect(firstEdit).toBeTruthy();
 
-      // Revoke the first edit via pushEvent.
+      // Revoke the first edit via pushHookEvent (see comment above on
+      // pushEdit — `view.pushEvent` is the private API and crashes in
+      // `extractMeta`).
       await page.evaluate(
         ({ changeId }) => {
-          const lv = (window as unknown as { liveSocket?: { owner?: (el: Element) => unknown } }).liveSocket;
+          const lv = (window as unknown as {
+            liveSocket?: {
+              owner?: (el: Element) => {
+                pushHookEvent: (
+                  el: Element,
+                  ctx: unknown,
+                  event: string,
+                  payload: Record<string, unknown>
+                ) => unknown;
+              };
+            };
+          }).liveSocket;
           const root = document.querySelector('[data-phx-main]');
           if (!root) throw new Error('Studio LV root not mounted');
-          const view = lv?.owner?.(root) as {
-            pushEvent: (n: string, p: Record<string, unknown>) => void;
-          };
-          view?.pushEvent('revoke_change', { change_id: changeId });
+          const view = lv?.owner?.(root);
+          view?.pushHookEvent(root, null, 'revoke_change', { change_id: changeId });
         },
         { changeId: firstEdit.id }
       );
