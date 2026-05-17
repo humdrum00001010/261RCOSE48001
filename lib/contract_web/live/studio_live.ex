@@ -88,6 +88,7 @@ defmodule ContractWeb.StudioLive do
 
   alias Contract.ChatThreads
   alias Contract.Command
+  alias Contract.Documents
   alias Contract.Studio
   alias ContractWeb.Components.Breadcrumbs
   alias ContractWeb.Components.CommandPalette
@@ -103,11 +104,6 @@ defmodule ContractWeb.StudioLive do
         _ = Studio.subscribe_agent(scope, studio_state.agent_run_id)
         _ = maybe_subscribe_test_operation_blocks(scope)
 
-        # v0.5 W-CR: Context Reservoir is removed; keep the helper call so
-        # callers can re-introduce a refresh primitive later without changing
-        # this mount path.
-        _ = safe_refresh_reservoir(scope, studio_state)
-
         breadcrumbs = build_breadcrumbs(scope, studio_state, projection)
 
         socket =
@@ -115,6 +111,7 @@ defmodule ContractWeb.StudioLive do
           |> assign(:current_scope, scope)
           |> assign(:studio_state, studio_state)
           |> assign(:projection, projection)
+          |> assign(:current_document, current_document(scope, studio_state))
           |> assign(:breadcrumbs, breadcrumbs)
           |> assign(:page_title, page_title(scope))
           |> assign(:viewport, :desktop)
@@ -148,6 +145,7 @@ defmodule ContractWeb.StudioLive do
           |> put_flash(:error, "Could not load Studio: #{inspect(reason)}")
           |> assign(:studio_state, %Contract.Studio.State{mode: :no_document})
           |> assign(:projection, empty_projection())
+          |> assign(:current_document, nil)
           |> assign(:breadcrumbs, build_breadcrumbs(scope, nil, nil))
           |> assign(:page_title, "Studio")
           |> assign(:viewport, :desktop)
@@ -376,7 +374,7 @@ defmodule ContractWeb.StudioLive do
               |> update(:studio_state, fn st -> %{st | migration_panel_open?: false} end)
               |> put_flash(:info, "Created variant document #{new_doc.title}.")
 
-            {:noreply, push_navigate(socket, to: ~p"/documents/#{new_doc.id}")}
+            {:noreply, push_navigate(socket, to: ~p"/studio/#{new_doc.id}")}
 
           {:error, reason} ->
             {:noreply, put_flash(socket, :error, "Variant creation failed: #{inspect(reason)}")}
@@ -531,7 +529,7 @@ defmodule ContractWeb.StudioLive do
 
     case Contract.Runtime.apply(scope, action) do
       {:ok, %Contract.Change{document_id: document_id}} ->
-        {:noreply, push_navigate(socket, to: ~p"/documents/#{document_id}")}
+        {:noreply, push_navigate(socket, to: ~p"/studio/#{document_id}")}
 
       {:error, _} ->
         {:noreply, put_flash(socket, :error, "문서 생성에 실패했습니다.")}
@@ -810,6 +808,7 @@ defmodule ContractWeb.StudioLive do
              "toggle_preview",
              "open_modal",
              "close_modal",
+             "set_active_slot",
              "set_node_focus",
              "viewport_change"
            ] do
@@ -905,6 +904,7 @@ defmodule ContractWeb.StudioLive do
           | last_seen_revision: revision || new_state.last_seen_revision
         })
         |> assign(:projection, projection)
+        |> assign(:current_document, current_document(socket.assigns.current_scope, new_state))
 
       {:error, _} ->
         socket
@@ -924,14 +924,12 @@ defmodule ContractWeb.StudioLive do
     |> stream_insert(:changes, change, at: 0)
     |> push_editor_last_change(change)
     |> recompute_grill_assigns()
-    |> refresh_reservoir_if_needed()
   end
 
   def handle_protocol_message({:change_revoked, %Contract.Change{} = change}, socket) do
     socket
     |> stream_insert(:changes, change, at: 0)
     |> push_event("editor:change-revoked", %{change_id: change.id})
-    |> refresh_reservoir_if_needed()
   end
 
   def handle_protocol_message({:revision_conflict, change_id, node_id}, socket) do
@@ -960,7 +958,6 @@ defmodule ContractWeb.StudioLive do
     socket
     |> update(:projection, fn proj -> Map.put(proj, :marks, marks) end)
     |> recompute_grill_assigns()
-    |> refresh_reservoir_if_needed()
   end
 
   def handle_protocol_message({:agent_stream, agent_run_id, stream_event}, socket) do
@@ -994,7 +991,6 @@ defmodule ContractWeb.StudioLive do
     end)
     |> stream_insert(:chat_messages, bubble)
     |> recompute_grill_assigns()
-    |> refresh_reservoir_if_needed()
   end
 
   def handle_protocol_message({:agent_failed, agent_run_id, reason}, socket) do
@@ -1036,7 +1032,7 @@ defmodule ContractWeb.StudioLive do
       %{
         id: "tool-#{agent_run_id}-#{tool_call_id}",
         type: "tool_call",
-        title: "Tool call",
+        title: tool_trace_title(delta, "도구 실행"),
         status: "running",
         summary: protocol_summary(delta),
         details: normalize_operation_details(delta)
@@ -1049,7 +1045,7 @@ defmodule ContractWeb.StudioLive do
     insert_operation_chat(socket, "tool-#{agent_run_id}-#{tool_call_id}", %{
       id: "tool-#{agent_run_id}-#{tool_call_id}",
       type: "tool_call",
-      title: "Tool call",
+      title: tool_trace_title(result, "도구 실행"),
       status: "completed",
       summary: protocol_summary(result),
       details: normalize_operation_details(result)
@@ -1060,7 +1056,7 @@ defmodule ContractWeb.StudioLive do
     insert_operation_chat(socket, "tool-#{agent_run_id}-#{tool_call_id}", %{
       id: "tool-#{agent_run_id}-#{tool_call_id}",
       type: "tool_call",
-      title: "Tool call",
+      title: tool_trace_title(reason, "도구 실행"),
       status: "failed",
       summary: protocol_summary(reason),
       details: normalize_operation_details(reason)
@@ -1232,16 +1228,15 @@ defmodule ContractWeb.StudioLive do
   end
 
   def handle_protocol_message({:import_completed, document}, socket) do
-    socket
-    |> stream_insert(:toasts, build_toast(:info, "Import completed", import_summary(document)))
-    |> refresh_reservoir_if_needed()
+    stream_insert(
+      socket,
+      :toasts,
+      build_toast(:info, "Import completed", import_summary(document))
+    )
   end
 
-  # SPEC.md §11 — `:evidence_attached` is in the refresh-trigger set. The
-  # emitter is TBD (a later evidence-attachment workflow); for now the
-  # handler exists so the protocol is complete and the reservoir refreshes.
   def handle_protocol_message({:evidence_attached, _evidence}, socket) do
-    refresh_reservoir_if_needed(socket)
+    socket
   end
 
   def handle_protocol_message({:import_failed, import_id, reason}, socket) do
@@ -1264,9 +1259,7 @@ defmodule ContractWeb.StudioLive do
   end
 
   def handle_protocol_message({:export_ready, export}, socket) do
-    socket
-    |> stream_insert(:toasts, build_toast(:info, "Export ready", export_summary(export)))
-    |> refresh_reservoir_if_needed()
+    stream_insert(socket, :toasts, build_toast(:info, "Export ready", export_summary(export)))
   end
 
   def handle_protocol_message({:export_failed, export_id, reason}, socket) do
@@ -1433,114 +1426,128 @@ defmodule ContractWeb.StudioLive do
         page_title={@page_title}
         current_document_id={@studio_state.selected_document_id || assigns[:current_document_id]}
       >
-        <div
-          id="studio-root"
-          phx-hook=".Viewport"
-          data-viewport="desktop"
-          class="flex flex-col h-[calc(100vh-4rem)] min-h-[480px]"
-        >
-          <script :type={Phoenix.LiveView.ColocatedHook} name=".Viewport">
-            export default {
-              mounted() {
-                this.push_viewport = () => {
-                  const w = window.innerWidth || document.documentElement.clientWidth
-                  this.pushEventTo(this.el, "viewport_change", {w: w})
-                }
-                this.push_viewport()
-                this.handler = () => {
-                  if (this.t) clearTimeout(this.t)
-                  this.t = setTimeout(this.push_viewport, 120)
-                }
-                window.addEventListener("resize", this.handler)
-              },
-              destroyed() {
-                window.removeEventListener("resize", this.handler)
-                if (this.t) clearTimeout(this.t)
-              }
-            }
-          </script>
-
-          <header
-            id="studio-document-header"
-            class="border-b border-base-200 bg-base-100 px-5 py-3 flex items-center justify-between gap-4"
+        <.app_shell active="스튜디오">
+          <main
+            id="studio-root"
+            phx-hook=".Viewport"
+            data-viewport="desktop"
+            class="studio-live flex h-[calc(100vh-4rem)] min-h-[480px]"
           >
-            <div class="min-w-0">
-              <p class="text-xs font-medium uppercase tracking-wide text-base-content/50">
-                {dgettext("studio", "Document")}
-              </p>
-              <h1 class="truncate text-base font-semibold tracking-tight">
-                {document_header_title(@projection, @studio_state)}
-              </h1>
-            </div>
-            <.link navigate={~p"/dashboard"} class="btn btn-sm btn-ghost shrink-0">
-              <.icon name="hero-arrow-left" class="size-4" />
-              {dgettext("studio", "Dashboard")}
-            </.link>
-          </header>
+            <%!-- Desktop: document canvas + right chat rail. No permanent Context Reservoir. --%>
+            <section class="studio-document flex min-w-0 flex-1 flex-col bg-base-100">
+              <header
+                id="studio-document-header"
+                class="studio-document__bar border-b border-base-200 bg-base-100 px-5 py-3 flex items-center justify-between gap-4"
+              >
+                <div class="flex min-w-0 items-center gap-3">
+                  <h1 class="truncate text-base font-semibold tracking-tight">
+                    {document_header_title(@current_document, @projection, @studio_state)}
+                  </h1>
+                  <span class="size-2 rounded-full bg-emerald-600" aria-hidden="true"></span>
+                  <span class="text-sm text-base-content/70">
+                    {document_status_label(@current_document)}
+                  </span>
+                  <span class="saved-state text-sm text-base-content/50">
+                    {dgettext("studio", "저장됨")}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  phx-click="noop"
+                  class="text-button shrink-0 text-sm font-medium text-base-content/70 transition hover:text-base-content"
+                >
+                  {dgettext("studio", "변경 이력")}
+                </button>
+              </header>
 
-          <%!-- Desktop: document canvas + right chat rail. No permanent Context Reservoir. --%>
-          <div class="grid grid-cols-[minmax(0,1fr)_360px] flex-1 min-h-0 gap-0">
-            <div class="relative min-h-0">
+              <nav
+                class="open-slots flex items-center gap-2 border-b border-base-200 bg-base-100 px-5 py-2"
+                aria-label={dgettext("studio", "수정 가능한 자리")}
+              >
+                <span class="open-slots__label mr-2 text-sm text-base-content/60">
+                  {dgettext("studio", "수정 가능한 자리")}
+                </span>
+                <button
+                  :for={slot <- open_slots(@projection)}
+                  type="button"
+                  phx-click="set_active_slot"
+                  phx-value-slot-id={slot.id}
+                  class={[
+                    "editable-slot rounded-full border border-base-300 px-3 py-1 text-sm text-base-content/75 transition hover:border-base-content/30 hover:text-base-content",
+                    slot.active? && "border-base-content/40 bg-base-200 text-base-content"
+                  ]}
+                >
+                  {slot.label}
+                </button>
+              </nav>
+
+              <article class="contract-projection cs-document-text relative min-h-0 flex-1">
+                <div class="relative h-full min-h-0">
+                  <.live_component
+                    :if={@studio_state.mode == :reviewing}
+                    module={Components.Canvas.Review}
+                    id="canvas"
+                    studio_state={@studio_state}
+                    projection={@projection}
+                    current_scope={@current_scope}
+                    changes_stream={@streams.changes}
+                  />
+                  <.live_component
+                    :if={@studio_state.mode != :reviewing}
+                    module={canvas_module(@studio_state.mode)}
+                    id="canvas"
+                    studio_state={@studio_state}
+                    projection={@projection}
+                    current_scope={@current_scope}
+                    document_upload={@uploads.document_upload}
+                  />
+                  <.live_component
+                    module={Components.MarksLayer}
+                    id="marks-layer"
+                    projection={@projection}
+                    studio_state={@studio_state}
+                    viewport={@viewport}
+                  />
+                </div>
+              </article>
+            </section>
+
+            <aside class="studio-rail agent-rail flex min-h-0 w-[360px] shrink-0">
               <.live_component
-                :if={@studio_state.mode == :reviewing}
-                module={Components.Canvas.Review}
-                id="canvas"
+                module={Components.ChatRail}
+                id="chat-rail"
                 studio_state={@studio_state}
-                projection={@projection}
+                streams={%{chat_messages: @streams.chat_messages}}
                 current_scope={@current_scope}
-                changes_stream={@streams.changes}
+                grill_marks={@grill_marks}
+                grill_active?={@grill_active?}
               />
-              <.live_component
-                :if={@studio_state.mode != :reviewing}
-                module={canvas_module(@studio_state.mode)}
-                id="canvas"
-                studio_state={@studio_state}
-                projection={@projection}
-                current_scope={@current_scope}
-                document_upload={@uploads.document_upload}
-              />
-              <.live_component
-                module={Components.MarksLayer}
-                id="marks-layer"
-                projection={@projection}
-                studio_state={@studio_state}
-                viewport={@viewport}
-              />
-            </div>
+            </aside>
+
             <.live_component
-              module={Components.ChatRail}
-              id="chat-rail"
+              module={Components.ModalHost}
+              id="modal-host"
               studio_state={@studio_state}
-              streams={%{chat_messages: @streams.chat_messages}}
               current_scope={@current_scope}
-              grill_marks={@grill_marks}
-              grill_active?={@grill_active?}
+              projection={@projection}
+              reconcile_modal_open?={@reconcile_modal_open?}
+              reconcile_request={@reconcile_request}
+              migration_plan={@migration_plan}
+              migration_plan_refined?={assigns[:migration_plan_refined?] || false}
+              migration_target={assigns[:migration_target]}
+              field_strategies={assigns[:field_strategies]}
+              document_upload={@uploads.document_upload}
+              documents={Contract.Studio.list_documents(@current_scope)}
             />
-          </div>
 
-          <.live_component
-            module={Components.ModalHost}
-            id="modal-host"
-            studio_state={@studio_state}
-            current_scope={@current_scope}
-            projection={@projection}
-            reconcile_modal_open?={@reconcile_modal_open?}
-            reconcile_request={@reconcile_request}
-            migration_plan={@migration_plan}
-            migration_plan_refined?={assigns[:migration_plan_refined?] || false}
-            migration_target={assigns[:migration_target]}
-            field_strategies={assigns[:field_strategies]}
-            document_upload={@uploads.document_upload}
-            documents={Contract.Studio.list_documents(@current_scope)}
-          />
-
-          <.live_component
-            module={Components.ToastQueue}
-            id="toast-queue"
-            streams={%{toasts: @streams.toasts}}
-            viewport={@viewport}
-          />
-        </div>
+            <.live_component
+              module={Components.ToastQueue}
+              id="toast-queue"
+              streams={%{toasts: @streams.toasts}}
+              viewport={@viewport}
+            />
+          </main>
+        </.app_shell>
       </Layouts.app>
     <% end %>
     """
@@ -1550,13 +1557,71 @@ defmodule ContractWeb.StudioLive do
   # Helpers
   # ----------------------------------------------------------------------------
 
-  defp document_header_title(%{title: title}, _state) when is_binary(title) and title != "",
-    do: title
+  defp current_document(scope, %Contract.Studio.State{selected_document_id: document_id})
+       when is_binary(document_id) do
+    case Documents.get(scope, document_id) do
+      {:ok, document} -> document
+      _ -> nil
+    end
+  end
 
-  defp document_header_title(_projection, %{selected_document_id: id}) when is_binary(id),
-    do: "Document " <> String.slice(id, 0, 8)
+  defp current_document(_scope, _state), do: nil
 
-  defp document_header_title(_projection, _state), do: dgettext("studio", "No document selected")
+  defp document_header_title(%{title: title}, _projection, _state)
+       when is_binary(title) and title != "",
+       do: title
+
+  defp document_header_title(_document, %{title: title}, _state)
+       when is_binary(title) and title != "",
+       do: title
+
+  defp document_header_title(_document, _projection, %{selected_document_id: id})
+       when is_binary(id),
+       do: "Document " <> String.slice(id, 0, 8)
+
+  defp document_header_title(_document, _projection, _state),
+    do: dgettext("studio", "No document selected")
+
+  defp document_status_label(%{status: status}) when is_binary(status) do
+    case status do
+      "draft" -> dgettext("studio", "초안")
+      "review" -> dgettext("studio", "검토 중")
+      "archived" -> dgettext("studio", "보관됨")
+      _ -> status
+    end
+  end
+
+  defp document_status_label(_), do: dgettext("studio", "초안")
+
+  defp open_slots(%{open_slots: slots}) when is_list(slots) and slots != [] do
+    Enum.map(slots, &open_slot/1)
+  end
+
+  defp open_slots(_projection) do
+    [
+      %{id: "article-3-amount", label: dgettext("studio", "제3조 금액"), active?: false},
+      %{id: "article-4-return-deadline", label: dgettext("studio", "제4조 반환 기한"), active?: false},
+      %{id: "article-8-special-term-1", label: dgettext("studio", "현재: 제8조 특약 1항"), active?: true}
+    ]
+  end
+
+  defp open_slot(%{id: id, label: label} = slot) when is_binary(id) and is_binary(label) do
+    %{id: id, label: label, active?: Map.get(slot, :active?, false)}
+  end
+
+  defp open_slot(%{"id" => id, "label" => label} = slot)
+       when is_binary(id) and is_binary(label) do
+    %{id: id, label: label, active?: Map.get(slot, "active?", false)}
+  end
+
+  defp open_slot(slot) when is_map(slot) do
+    %{
+      id:
+        to_string(Map.get(slot, :id) || Map.get(slot, "id") || System.unique_integer([:positive])),
+      label: to_string(Map.get(slot, :label) || Map.get(slot, "label") || ""),
+      active?: false
+    }
+  end
 
   defp canvas_module(:briefing), do: Components.Canvas.Briefing
   defp canvas_module(:editing), do: Components.Canvas.Editor
@@ -1663,13 +1728,6 @@ defmodule ContractWeb.StudioLive do
     })
   end
 
-  # v0.5 W-CR: Context Reservoir is removed. These wrappers are kept as
-  # no-ops so the mount/handle paths still compile and the LV layout is
-  # unchanged. They can be deleted once nothing references them.
-  defp safe_refresh_reservoir(_scope, _state), do: {:error, :reservoir_removed}
-
-  defp refresh_reservoir_if_needed(socket), do: socket
-
   defp recompute_grill_assigns(socket) do
     marks = (socket.assigns[:projection] || %{})[:marks] || %{}
     current_agent_run = socket.assigns[:studio_state] && socket.assigns.studio_state.agent_run_id
@@ -1754,6 +1812,22 @@ defmodule ContractWeb.StudioLive do
   defp protocol_summary(value) when is_binary(value), do: value
   defp protocol_summary(value) when is_atom(value), do: Atom.to_string(value)
   defp protocol_summary(value), do: inspect(value)
+
+  defp tool_trace_title(result, fallback) do
+    case protocol_raw_name(result) do
+      "contract_ir.patch.apply" -> "답변을 수정 범위에 연결함"
+      name when is_binary(name) and name != "" -> name
+      _ -> fallback
+    end
+  end
+
+  defp protocol_raw_name(%{raw_name: name}) when is_binary(name), do: name
+  defp protocol_raw_name(%{"raw_name" => name}) when is_binary(name), do: name
+  defp protocol_raw_name(%{tool_name: name}) when is_binary(name), do: name
+  defp protocol_raw_name(%{"tool_name" => name}) when is_binary(name), do: name
+  defp protocol_raw_name(%{name: name}) when is_binary(name), do: name
+  defp protocol_raw_name(%{"name" => name}) when is_binary(name), do: name
+  defp protocol_raw_name(_), do: nil
 
   defp protocol_status(%{status: status}), do: protocol_summary(status)
   defp protocol_status(%{"status" => status}), do: protocol_summary(status)
