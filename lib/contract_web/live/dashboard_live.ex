@@ -10,8 +10,11 @@ defmodule ContractWeb.DashboardLive do
     * `새 문서` navigates to `/studio`. Document creation, upload, and
       recent-document selection live inside Studio's empty-state surface
       (`Canvas.Empty`) per the 2026-05-17 owner directive.
-    * Card information is: thumbnail / title / status dot + label / 수정일 /
-      overflow menu. No `다음 질문`, no agent activity feed.
+    * Documents render as a hairline TABLE (2026-05-17 owner clarification:
+      "table hover means, the per row needs to have effect on user's
+      interaction") — columns are 문서명 / 상태 / 수정일 / overflow menu.
+      Rows are keyboard-focusable links to `/documents/:id` with a 1-step
+      hover bg shift. No `다음 질문`, no agent activity feed.
     * Tabs: `모든 문서` (active) / `즐겨찾기`.
     * The contract-upload affordance must NOT live on this surface OR in
       the global navbar — it lives inside `/studio` (Canvas.Empty +
@@ -142,7 +145,8 @@ defmodule ContractWeb.DashboardLive do
         </nav>
 
         <%!-- ------------------------------------------------------------ --%>
-        <%!-- Document grid — 3 / 2 / 1 columns by viewport.                --%>
+        <%!-- Document table — hairline rows with per-row hover/focus.      --%>
+        <%!-- 2026-05-17 owner directive: rows, not cards.                   --%>
         <%!-- ------------------------------------------------------------ --%>
         <%= cond do %>
           <% @active_tab == :favorites -> %>
@@ -153,21 +157,8 @@ defmodule ContractWeb.DashboardLive do
             >
               {dgettext("dashboard", "즐겨찾기한 문서가 아직 없습니다.")}
             </section>
-          <% @documents == [] -> %>
-            <section
-              id="documents-empty"
-              class="dashboard-v31__empty"
-              data-role="dashboard-documents-empty"
-            >
-              {dgettext(
-                "dashboard",
-                "아직 문서가 없습니다. ‘새 문서’로 시작하세요."
-              )}
-            </section>
           <% true -> %>
-            <section id="document-grid" class="dashboard-v31__grid">
-              <.document_card :for={doc <- @documents} document={doc} />
-            </section>
+            <.document_table documents={@documents} />
         <% end %>
       </main>
     </Layouts.app>
@@ -179,44 +170,80 @@ defmodule ContractWeb.DashboardLive do
   # ---------------------------------------------------------------------------
 
   @doc """
-  Renders a single document card.
-
-  Card contains: thumbnail block (gray rectangle if no preview), title,
-  status dot + label, modification date, overflow menu. No `다음 질문`,
-  no agent-decided body content — DESIGN.md §4 + §7 prohibition.
+  Renders the document library as a hairline table. Each row is a
+  keyboard-focusable link to `/documents/:id` with per-row hover and
+  focus states. Empty state renders a single muted row spanning all
+  columns rather than a separate empty card.
   """
-  attr :document, :map, required: true
+  attr :documents, :list, required: true
 
-  def document_card(assigns) do
+  def document_table(assigns) do
     ~H"""
-    <article class="document-card-v31" data-role="document-card">
-      <.link
-        navigate={~p"/documents/#{@document.document_id}"}
-        class="document-card-v31__link"
-      >
-        <div class="document-card-v31__preview">
-          <button
-            type="button"
-            class="document-card-v31__menu"
-            aria-label={dgettext("dashboard", "문서 메뉴")}
-            phx-click={JS.dispatch("phx:noop")}
-            onclick="event.preventDefault(); event.stopPropagation();"
+    <table id="document-table" class="document-table" data-role="document-table">
+      <thead>
+        <tr>
+          <th scope="col">{dgettext("dashboard", "문서명")}</th>
+          <th scope="col">{dgettext("dashboard", "상태")}</th>
+          <th scope="col">{dgettext("dashboard", "수정일")}</th>
+          <th scope="col" aria-label={dgettext("dashboard", "메뉴")}></th>
+        </tr>
+      </thead>
+      <tbody>
+        <%= if @documents == [] do %>
+          <tr id="documents-empty" data-role="dashboard-documents-empty">
+            <td class="document-table__empty" colspan="4">
+              {dgettext("dashboard", "아직 문서가 없습니다.")}
+            </td>
+          </tr>
+        <% else %>
+          <tr
+            :for={doc <- @documents}
+            class="document-table__row"
+            data-role="document-row"
+            phx-click={JS.navigate(~p"/documents/#{doc.document_id}")}
+            tabindex="0"
+            role="link"
+            phx-hook=".DocRow"
+            id={"document-row-#{doc.document_id}"}
           >
-            ⋮
-          </button>
-        </div>
-        <div class="document-card-v31__body">
-          <h2 class="document-card-v31__title">{@document.title}</h2>
-          <p class="document-card-v31__status">
-            <span class={["status-dot-v31", "status-dot-v31--#{@document.status}"]}></span>
-            <span>{document_status_label(@document.status)}</span>
-          </p>
-          <p class="document-card-v31__date">
-            {dgettext("dashboard", "수정일")} {format_date(@document.updated_at)}
-          </p>
-        </div>
-      </.link>
-    </article>
+            <td class="document-table__title">{doc.title}</td>
+            <td>
+              <span class={["status-dot", "status-dot--#{doc.status}"]}></span>
+              {document_status_label(doc.status)}
+            </td>
+            <td class="document-table__date">{format_date(doc.updated_at)}</td>
+            <td class="document-table__menu-cell">
+              <button
+                type="button"
+                class="document-table__menu"
+                data-role="document-row-menu"
+                aria-label={dgettext("dashboard", "문서 메뉴")}
+                phx-click={JS.dispatch("phx:noop")}
+                onclick="event.stopPropagation()"
+              >⋮</button>
+            </td>
+          </tr>
+        <% end %>
+      </tbody>
+      <script :type={Phoenix.LiveView.ColocatedHook} name=".DocRow">
+        export default {
+          mounted() {
+            this.handler = (e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault()
+                this.el.click()
+              }
+            }
+            this.el.addEventListener("keydown", this.handler)
+          },
+          destroyed() {
+            if (this.handler) {
+              this.el.removeEventListener("keydown", this.handler)
+            }
+          }
+        }
+      </script>
+    </table>
     """
   end
 

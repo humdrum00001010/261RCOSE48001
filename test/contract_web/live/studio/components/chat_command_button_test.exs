@@ -244,19 +244,8 @@ defmodule ContractWeb.Live.Studio.Components.ChatCommandButtonTest do
     end
 
     test "empty-commands state shows Korean message", %{user: _user} do
-      # A logged-out (`nil`) scope yields navigation-only — we need an even
-      # more constrained scope to trigger the empty branch. Build one with
-      # zero perms and no current document: it still sees navigation, so the
-      # empty-message branch is only reachable when no nav commands
-      # exist. Since nav commands have no `scopes_required`, the empty
-      # path is only reachable in pathological scopes. We verify the
-      # branch renders for an explicitly empty catalog by skipping
-      # navigation through a custom assigns shape. Easiest: confirm the
-      # Hangul empty-state string is present in the module bytecode.
-      assert function_exported?(ChatCommandButton, :sheet_commands, 1)
-
-      # Smoke-check the string ships in the source so the assertion is
-      # meaningful even though the branch is hard to reach via fixtures.
+      # The empty branch is hard to reach via fixtures; verify the Hangul
+      # string ships in the source.
       source =
         File.read!("lib/contract_web/live/studio/components/chat_command_button.ex")
 

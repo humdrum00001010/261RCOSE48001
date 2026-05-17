@@ -4,18 +4,23 @@ defmodule ContractWeb.DashboardLiveTest do
   2026-05-17 owner directive.
 
   The dashboard is a Google-Docs-style document library
-  (DESIGN.md §4): document grid only, no metric cards, no recent
+  (DESIGN.md §4): hairline table only, no metric cards, no recent
   activity feed, no left sidebar. The `새 문서` button does NOT create
   a document or open a modal — it navigates the user to `/studio`,
   where Canvas.Empty hosts upload + blank + recent + agent-discussion
   affordances per SPEC.md §4.2 + §4.4.
 
+  Per owner clarification (2026-05-17): documents render as a TABLE
+  with per-row hover, focus, and click states — not as cards.
+
   Anti-regression tests below pin:
 
-    * no `다음 질문` text on document cards (banned per DESIGN.md §7)
+    * no `다음 질문` text on document rows (banned per DESIGN.md §7)
     * no metric-count substring like `최근 7일`
     * no `계약서 업로드` anywhere on the dashboard surface (the upload
       affordance now lives entirely inside /studio)
+    * no card-namespace markup (`document-card-v31` is replaced by
+      `document-table`)
   """
   use ContractWeb.ConnCase, async: false
 
@@ -60,27 +65,126 @@ defmodule ContractWeb.DashboardLiveTest do
       assert html =~ ~s(aria-selected="true")
     end
 
-    test "renders the empty state when the owner has no documents", %{conn: conn} do
+    test "renders the empty state row when the owner has no documents", %{conn: conn} do
       {:ok, _lv, html} = live(conn, ~p"/dashboard")
 
+      # Empty state is a single muted row inside the table — not a
+      # detached empty card.
       assert html =~ ~s(id="documents-empty")
+      assert html =~ ~s(data-role="dashboard-documents-empty")
+      assert html =~ ~s(class="document-table")
+      assert html =~ "아직 문서가 없습니다."
       # Primary action + tabs are still visible in the empty state.
       assert html =~ "새 문서"
       assert html =~ "모든 문서"
-      # And NO document-grid cards.
-      refute html =~ ~s(data-role="document-card")
+      # And NO document rows.
+      refute html =~ ~s(data-role="document-row")
+      # And no dead card-namespace markup.
+      refute html =~ "document-card-v31"
     end
 
-    test "renders one card per owned document", %{conn: conn, scope: scope} do
+    test "renders one table row per owned document", %{conn: conn, scope: scope} do
       {:ok, _doc} = Documents.create(scope, %{title: "용역계약서 초안"})
 
       {:ok, _lv, html} = live(conn, ~p"/dashboard")
 
-      assert html =~ ~s(id="document-grid")
-      assert html =~ ~s(data-role="document-card")
+      assert html =~ ~s(id="document-table")
+      assert html =~ ~s(class="document-table")
+      assert html =~ ~s(data-role="document-row")
       assert html =~ "용역계약서 초안"
-      # 수정일 label appears on each card.
+      # Column headers
+      assert html =~ "문서명"
+      assert html =~ "상태"
       assert html =~ "수정일"
+      # No card-namespace classes leaked through.
+      refute html =~ "document-card-v31"
+      refute html =~ "status-dot-v31"
+    end
+
+    test "each row is keyboard-focusable and announced as a link", %{
+      conn: conn,
+      scope: scope
+    } do
+      {:ok, _doc} = Documents.create(scope, %{title: "Keyboard nav doc"})
+
+      {:ok, _lv, html} = live(conn, ~p"/dashboard")
+
+      # Scope the assertion to the <tr> we care about. Other elsewhere
+      # in the rendered tree (e.g. layout chrome) may legitimately
+      # carry tabindex/role attributes, so we slice to the row first.
+      row_html = extract_document_row(html)
+
+      # tabindex=0 + role=link make the row keyboard-focusable; the
+      # colocated .DocRow hook handles Enter/Space → click.
+      assert row_html =~ ~s(tabindex="0")
+      assert row_html =~ ~s(role="link")
+      # ColocatedHook compiles ".DocRow" → "ContractWeb.DashboardLive.DocRow"
+      # (or similar fully-qualified name). Either form is acceptable
+      # as long as the row carries a phx-hook attribute that resolves
+      # to the DocRow hook.
+      assert row_html =~ "phx-hook="
+      assert row_html =~ "DocRow"
+    end
+
+    test "clicking a row navigates to /documents/:id", %{conn: conn, scope: scope} do
+      {:ok, doc} = Documents.create(scope, %{title: "Row click target"})
+
+      {:ok, lv, _html} = live(conn, ~p"/dashboard")
+
+      assert lv
+             |> element(~s([data-role="document-row"]))
+             |> render_click()
+
+      assert_redirect(lv, ~p"/documents/#{doc.id}")
+    end
+
+    test "overflow ⋮ button stops propagation so the row click does NOT fire", %{
+      conn: conn,
+      scope: scope
+    } do
+      {:ok, _doc} = Documents.create(scope, %{title: "Menu propagation"})
+
+      {:ok, _lv, html} = live(conn, ~p"/dashboard")
+
+      # The button must emit a phx:noop dispatch AND stop bubbling so
+      # the parent <tr>'s navigate handler does not fire.
+      assert html =~ ~s(data-role="document-row-menu")
+      assert html =~ ~s|onclick="event.stopPropagation()"|
+    end
+  end
+
+  describe "table styling (DESIGN section 4 + feedback-review-adds-tests)" do
+    setup :register_and_log_in_user
+
+    @app_css "assets/css/app.css"
+
+    test "row has a hover background rule" do
+      css = File.read!(@app_css)
+      assert css =~ ".document-table__row:hover"
+      # hover rule must set a background-color shift to the soft surface.
+      assert css =~ "background: var(--cs-surface-soft)"
+    end
+
+    test "row has a focus-visible outline rule" do
+      css = File.read!(@app_css)
+      assert css =~ ".document-table__row:focus-visible"
+      assert css =~ "outline: 2px solid var(--cs-blue)"
+    end
+
+    test "modification-date column hides on small viewports" do
+      css = File.read!(@app_css)
+
+      assert css =~ "@media (max-width: 640px)"
+      assert css =~ ".document-table th:nth-child(3)"
+      assert css =~ ".document-table td:nth-child(3)"
+    end
+
+    test "no .document-card-v31__* CSS survived the table rewrite" do
+      css = File.read!(@app_css)
+
+      refute css =~ "document-card-v31"
+      refute css =~ "status-dot-v31"
+      refute css =~ ".dashboard-v31__grid"
     end
 
     test "renders ALL owner-scoped documents (not just a recent slice)", %{
@@ -129,7 +233,7 @@ defmodule ContractWeb.DashboardLiveTest do
   describe "anti-regression (binding feedback + DESIGN.md §7)" do
     setup :register_and_log_in_user
 
-    test "document cards never contain `다음 질문`", %{conn: conn, scope: scope} do
+    test "document rows never contain `다음 질문`", %{conn: conn, scope: scope} do
       {:ok, _doc} = Documents.create(scope, %{title: "Engagement letter"})
 
       {:ok, _lv, html} = live(conn, ~p"/dashboard")
@@ -187,6 +291,16 @@ defmodule ContractWeb.DashboardLiveTest do
       {:ok, _lv, html} = live(conn, ~p"/dashboard")
 
       refute html =~ "계약서 업로드"
+    end
+  end
+
+  # Slice the first <tr data-role="document-row" ...> ... </tr> out of
+  # the rendered HTML so we can assert against row-local attributes
+  # without false matches from layout chrome.
+  defp extract_document_row(html) do
+    case Regex.run(~r/<tr[^>]*data-role="document-row"[^>]*>.*?<\/tr>/s, html) do
+      [match] -> match
+      _ -> ""
     end
   end
 end
