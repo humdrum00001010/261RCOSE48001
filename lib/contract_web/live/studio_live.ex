@@ -1426,37 +1426,37 @@ defmodule ContractWeb.StudioLive do
           class="studio-live flex h-[calc(100vh-60px)] min-h-[480px]"
         >
             <%!-- Desktop: document canvas + right chat rail. No permanent Context Reservoir. --%>
-            <section class="studio-document flex min-w-0 flex-1 flex-col bg-base-100">
+            <section class="studio-document flex min-w-0 flex-1 flex-col">
               <header
                 id="studio-document-header"
-                class="studio-document__bar border-b border-base-200 bg-base-100 px-5 py-3 flex items-center justify-between gap-4"
+                class="studio-document__bar justify-between"
               >
                 <div class="flex min-w-0 items-center gap-3">
-                  <h1 class="truncate text-base font-semibold tracking-tight">
+                  <h1>
                     {document_header_title(@current_document, @projection, @studio_state)}
                   </h1>
-                  <span class="size-2 rounded-full bg-emerald-600" aria-hidden="true"></span>
-                  <span class="text-sm text-base-content/70">
+                  <span class="status-dot status-dot--review" aria-hidden="true"></span>
+                  <span>
                     {document_status_label(@current_document)}
                   </span>
-                  <span class="saved-state text-sm text-base-content/50">
+                  <span class="saved-state">
                     {dgettext("studio", "저장됨")}
                   </span>
                 </div>
                 <button
                   type="button"
                   phx-click="noop"
-                  class="text-button shrink-0 text-sm font-medium text-base-content/70 transition hover:text-base-content"
+                  class="text-button"
                 >
                   {dgettext("studio", "변경 이력")}
                 </button>
               </header>
 
               <nav
-                class="open-slots flex items-center gap-2 border-b border-base-200 bg-base-100 px-5 py-2"
+                class="open-slots"
                 aria-label={dgettext("studio", "수정 가능한 자리")}
               >
-                <span class="open-slots__label mr-2 text-sm text-base-content/60">
+                <span class="open-slots__label">
                   {dgettext("studio", "수정 가능한 자리")}
                 </span>
                 <button
@@ -1465,8 +1465,8 @@ defmodule ContractWeb.StudioLive do
                   phx-click="set_active_slot"
                   phx-value-slot-id={slot.id}
                   class={[
-                    "editable-slot rounded-full border border-base-300 px-3 py-1 text-sm text-base-content/75 transition hover:border-base-content/30 hover:text-base-content",
-                    slot.active? && "border-base-content/40 bg-base-200 text-base-content"
+                    "slot-chip",
+                    slot.active? && "is-active"
                   ]}
                 >
                   {slot.label}
@@ -1504,7 +1504,7 @@ defmodule ContractWeb.StudioLive do
               </article>
             </section>
 
-            <aside class="studio-rail agent-rail flex min-h-0 w-[360px] shrink-0">
+            <aside class="studio-rail agent-rail w-[360px] shrink-0">
               <.live_component
                 module={Components.ChatRail}
                 id="chat-rail"
