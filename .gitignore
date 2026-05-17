@@ -8,7 +8,7 @@
 /deps/
 
 # Where 3rd-party dependencies like ExDoc output generated docs.
-/doc/
+docs/
 
 # Ignore .fetch files in case you like to edit your project deps locally.
 /.fetch
@@ -39,3 +39,11 @@ npm-debug.log
 /.env
 /.env.*
 
+# macOS Finder metadata — local-only, never commit.
+.DS_Store
+
+# Playwright MCP scratch dirs and ad-hoc screenshot dumps at repo root.
+/.playwright-mcp/
+/landing-*.png
+/dashboard-*.png
+/studio-*.png
