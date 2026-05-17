@@ -167,6 +167,16 @@ defmodule ContractWeb.DashboardLiveTest do
       refute html =~ "this message must NOT appear on the dashboard"
     end
 
+    test "command palette trigger is hidden on sub-sm viewports", %{conn: conn} do
+      # Per feedback-responsive-scope.md: "the Cmd+K command palette —
+      # Cmd+K isn't a mobile interaction". The trigger button uses the
+      # `hidden sm:inline-flex` Tailwind pair so it disappears on `< sm`.
+      {:ok, _lv, html} = live(conn, ~p"/dashboard")
+
+      assert html =~ ~s(data-role="palette-trigger")
+      assert html =~ ~s(class="hidden sm:inline-flex)
+    end
+
     test "global navbar does NOT carry a `계약서 업로드` action", %{conn: conn} do
       {:ok, _lv, html} = live(conn, ~p"/dashboard")
 

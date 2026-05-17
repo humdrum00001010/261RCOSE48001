@@ -155,7 +155,7 @@ defmodule ContractWeb.Components.CommandPalette do
     ~H"""
     <button
       type="button"
-      class="inline-flex items-center h-9 px-3 text-sm text-base-content/60 hover:text-base-content gap-1 font-mono rounded-box hover:bg-base-200/60"
+      class="hidden sm:inline-flex items-center h-9 px-3 text-sm text-base-content/60 hover:text-base-content gap-1 font-mono rounded-box hover:bg-base-200/60"
       phx-click="toggle"
       phx-target="#cmd-k-palette"
       aria-label="Open command palette"

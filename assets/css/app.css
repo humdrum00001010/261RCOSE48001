@@ -171,8 +171,14 @@
 .dashboard-v31 {
   display: flex;
   flex-direction: column;
-  gap: 28px;
+  gap: 20px;
   color: var(--cs-ink);
+}
+
+@media (min-width: 640px) {
+  .dashboard-v31 {
+    gap: 28px;
+  }
 }
 
 .dashboard-v31__top {
@@ -190,7 +196,7 @@
 }
 
 .dashboard-v31__title {
-  font-size: 28px;
+  font-size: clamp(22px, 4vw, 28px);
   font-weight: 600;
   letter-spacing: -0.01em;
   color: var(--cs-ink);
@@ -201,6 +207,9 @@
   display: flex;
   gap: 8px;
   align-items: center;
+  /* Allow the row to wrap on extremely narrow viewports rather than
+     forcing horizontal overflow. */
+  flex-wrap: wrap;
 }
 
 .dashboard-v31__btn {
@@ -498,8 +507,23 @@
 .landing-v31 {
   max-width: 1280px;
   margin: 0 auto;
-  padding: 64px 24px 96px;
+  /* Mobile-first: 32px top / 16px sides / 56px bottom. The hero copy
+     and three-block stack don't need 64-96px of breathing room when
+     the viewport is 390px wide. */
+  padding: 32px 16px 56px;
   color: var(--cs-ink);
+}
+
+@media (min-width: 640px) {
+  .landing-v31 {
+    padding: 48px 24px 72px;
+  }
+}
+
+@media (min-width: 1024px) {
+  .landing-v31 {
+    padding: 64px 24px 96px;
+  }
 }
 
 .landing-v31__hero {
@@ -522,27 +546,48 @@
   letter-spacing: 0.18em;
   text-transform: uppercase;
   color: var(--cs-muted);
-  margin: 0 0 24px;
+  margin: 0 0 16px;
+}
+
+@media (min-width: 640px) {
+  .landing-v31__eyebrow {
+    margin: 0 0 24px;
+  }
 }
 
 .landing-v31__headline {
   font-family: var(--font-serif);
-  font-size: clamp(32px, 4.6vw, 48px);
+  /* clamp scales from 28px on a 360-wide mobile up to 48px desktop. */
+  font-size: clamp(28px, 5.2vw, 48px);
   font-weight: 500;
-  line-height: 1.18;
+  line-height: 1.2;
   letter-spacing: -0.01em;
   color: var(--cs-ink);
-  margin: 0 0 28px;
+  margin: 0 0 20px;
   word-break: keep-all;
 }
 
+@media (min-width: 640px) {
+  .landing-v31__headline {
+    margin: 0 0 28px;
+    line-height: 1.18;
+  }
+}
+
 .landing-v31__lead {
-  font-size: 16px;
+  font-size: 15px;
   line-height: 1.7;
   color: var(--cs-muted);
-  margin: 0 0 36px;
+  margin: 0 0 24px;
   max-width: 36em;
   word-break: keep-all;
+}
+
+@media (min-width: 640px) {
+  .landing-v31__lead {
+    font-size: 16px;
+    margin: 0 0 36px;
+  }
 }
 
 .landing-v31__cta-row {

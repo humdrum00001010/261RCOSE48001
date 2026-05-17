@@ -80,6 +80,54 @@ defmodule ContractWeb.PageControllerTest do
     end
   end
 
+  # Pins the binding intent of the responsive pass on 2026-05-17:
+  # landing, auth, and dashboard surfaces all have an explicit mobile
+  # breakpoint in app.css. See feedback-responsive-scope.md — public
+  # surfaces are mobile-first.
+  describe "responsive guarantees (v0.5/responsive-fix)" do
+    setup do
+      # Read the compiled stylesheet from the static asset directory.
+      # The path is checked in to priv/static/assets when tailwind has
+      # been run; in dev/test the watcher writes it on first request.
+      # Fall back to reading the source file under assets/css/app.css
+      # (which is what `mix test` always has access to) for the breakpoint
+      # assertions — Tailwind-managed utility classes don't appear here,
+      # but our hand-written .landing-v31__* / .dashboard-v31__* /
+      # .upload-menu-v31 rules do.
+      app_css = File.read!("assets/css/app.css")
+      %{app_css: app_css}
+    end
+
+    test "landing has a mobile breakpoint", %{app_css: css} do
+      assert css =~ "@media (min-width: 640px)"
+      assert css =~ "@media (min-width: 1024px)"
+      # Landing root padding scales down on mobile.
+      assert css =~ ~r/\.landing-v31\s*\{[^}]*padding:\s*32px/u
+    end
+
+    test "dashboard has a mobile breakpoint", %{app_css: css} do
+      # `.dashboard-v31__top` rearranges row->column at < 768.
+      assert css =~ "@media (min-width: 768px)"
+      # Document grid breakpoints at 640 (2-col) and 1024 (3-col).
+      assert css =~ ~r/\.dashboard-v31__grid[^}]*\}\s*@media \(min-width: 640px\)/su
+    end
+
+    test "upload menu is viewport-anchored on mobile (no overflow)", %{app_css: css} do
+      # Mobile default: position: fixed with left/right gutters (NOT a
+      # 380px-wide popover anchored under the button — which overflows
+      # the left edge of a 390-wide viewport).
+      assert css =~ ~r/\.upload-menu-v31\s*\{[^}]*position:\s*fixed/u
+      # Tablet+ switches to button-anchored absolute positioning.
+      assert css =~
+               ~r/@media \(min-width: 640px\)\s*\{\s*\.upload-menu-v31\s*\{[^}]*position:\s*absolute[^}]*width:\s*380px/u
+    end
+
+    test "hero typography uses clamp() so it scales across viewports", %{app_css: css} do
+      assert css =~ ~r/\.landing-v31__headline[^}]*font-size:\s*clamp\(/u
+      assert css =~ ~r/\.dashboard-v31__title[^}]*font-size:\s*clamp\(/u
+    end
+  end
+
   describe "Westlaw silhouette test — v31 design hard constraints" do
     # These assertions guard against the public surface drifting back
     # toward a generic SaaS-pop visual language. They cover both the

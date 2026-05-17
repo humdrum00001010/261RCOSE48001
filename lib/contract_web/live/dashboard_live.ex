@@ -87,7 +87,7 @@ defmodule ContractWeb.DashboardLive do
   def render(assigns) do
     ~H"""
     <Layouts.app flash={@flash} current_scope={@current_scope} variant="default">
-      <main class="dashboard-v31 py-10">
+      <main class="dashboard-v31 py-6 sm:py-10">
         <%!-- ------------------------------------------------------------ --%>
         <%!-- Title row — H1 + right-aligned primary action.                --%>
         <%!-- `새 문서` navigates to /studio (the empty-state surface where  --%>
