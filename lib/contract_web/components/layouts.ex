@@ -106,46 +106,13 @@ defmodule ContractWeb.Layouts do
     ~H"""
     <header class="border-b border-base-200 bg-base-100/85 backdrop-blur sticky top-0 z-30">
       <div class="mx-auto max-w-7xl flex flex-nowrap items-center gap-3 sm:gap-6 px-4 sm:px-6 lg:px-8 h-14">
-        <label
-          for="mobile-nav-drawer"
-          class="btn btn-ghost btn-sm btn-square lg:hidden inline-flex items-center justify-center h-9 min-h-9 w-9"
-          aria-label={dgettext("layouts", "Open menu")}
-          aria-controls="mobile-nav-drawer"
-        >
-          <.icon name="hero-bars-3" class="size-5" />
-        </label>
-
         <.link
-          navigate={~p"/"}
+          navigate={if signed_in?(@current_scope), do: ~p"/dashboard", else: ~p"/"}
           class="inline-flex items-center gap-2 shrink-0 h-9"
           aria-label={dgettext("layouts", "Contract Studio home")}
         >
           <Brand.wordmark size="base" />
         </.link>
-
-        <nav
-          :if={!signed_in?(@current_scope)}
-          class="hidden lg:inline-flex items-center gap-6 text-sm text-base-content/70 h-9"
-        >
-          <a href="#docs" class="inline-flex items-center hover:text-base-content">
-            {dgettext("layouts", "Docs")}
-          </a>
-          <a href="#changelog" class="inline-flex items-center hover:text-base-content">
-            {dgettext("layouts", "Changelog")}
-          </a>
-        </nav>
-
-        <nav
-          :if={signed_in?(@current_scope)}
-          class="hidden lg:inline-flex items-center gap-6 text-sm text-base-content/70 h-9"
-        >
-          <.link navigate={~p"/dashboard"} class="inline-flex items-center hover:text-base-content">
-            {dgettext("layouts", "Dashboard")}
-          </.link>
-          <.link navigate={~p"/studio"} class="inline-flex items-center hover:text-base-content">
-            {dgettext("layouts", "Studio")}
-          </.link>
-        </nav>
 
         <div class="flex-1" />
 
@@ -153,41 +120,13 @@ defmodule ContractWeb.Layouts do
           <.theme_toggle />
 
           <%= if signed_in?(@current_scope) do %>
-            <CommandPalette.command_palette_trigger />
-            <div class="dropdown dropdown-end">
-              <div
-                tabindex="0"
-                role="button"
-                class="btn btn-ghost btn-sm gap-2 inline-flex items-center h-9 min-h-9"
-              >
-                <Brand.mark size="sm" />
-                <span class="hidden sm:inline text-sm text-base-content/80">
-                  {persona_label(@current_scope)}
-                </span>
-                <.icon name="hero-chevron-down-micro" class="size-3 opacity-60" />
-              </div>
-              <ul
-                tabindex="0"
-                class="dropdown-content menu menu-sm bg-base-100 rounded-box border border-base-200 shadow-sm mt-2 w-56 p-2"
-              >
-                <li class="px-2 py-1.5 text-xs text-base-content/60">
-                  {dgettext("layouts", "Signed in as")}
-                  <div class="text-base-content/90 truncate">{@current_scope.user.email}</div>
-                </li>
-                <li>
-                  <.link navigate={~p"/dashboard"}>{dgettext("layouts", "Dashboard")}</.link>
-                </li>
-                <li>
-                  <.link navigate={~p"/users/settings"}>{dgettext("layouts", "Settings")}</.link>
-                </li>
-                <div class="divider my-1" />
-                <li>
-                  <.link href={~p"/users/log-out"} method="delete">
-                    {dgettext("layouts", "Log out")}
-                  </.link>
-                </li>
-              </ul>
-            </div>
+            <.link
+              href={~p"/users/log-out"}
+              method="delete"
+              class="btn btn-ghost btn-sm inline-flex items-center h-9 min-h-9 text-sm text-base-content/70 hover:text-base-content"
+            >
+              {dgettext("layouts", "Log out")}
+            </.link>
           <% else %>
             <.link
               navigate={~p"/users/log-in"}
@@ -286,102 +225,16 @@ defmodule ContractWeb.Layouts do
   end
 
   @doc """
-  Site-wide footer. Anchors the page on long landing scrolls and gives
-  legal/security/status links a permanent home. Language switcher is a
-  placeholder — wiring is Wave 3C2's job.
+  Site-wide footer. Just the maintainer's contact email — this is a
+  student project, not a company.
   """
   def site_footer(assigns) do
     ~H"""
-    <footer class="border-t border-base-200 mt-24 bg-base-100">
-      <div class="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 py-10 grid gap-8 md:grid-cols-4 text-sm">
-        <div class="space-y-3">
-          <Brand.wordmark size="base" />
-          <p class="text-base-content/60 leading-relaxed">
-            {dgettext(
-              "layouts",
-              "A contract studio for small-business operators. Built to be precise, auditable, and quiet."
-            )}
-          </p>
-        </div>
-        <div>
-          <p class="font-semibold text-base-content/90 mb-3">
-            {dgettext("layouts", "Product")}
-          </p>
-          <ul class="space-y-2 text-base-content/60">
-            <li>
-              <a href="#docs" class="hover:text-base-content">
-                {dgettext("layouts", "Documentation")}
-              </a>
-            </li>
-            <li>
-              <a href="#changelog" class="hover:text-base-content">
-                {dgettext("layouts", "Changelog")}
-              </a>
-            </li>
-            <li>
-              <a href="#security" class="hover:text-base-content">
-                {dgettext("layouts", "Security")}
-              </a>
-            </li>
-          </ul>
-        </div>
-        <div>
-          <p class="font-semibold text-base-content/90 mb-3">
-            {dgettext("layouts", "Company")}
-          </p>
-          <ul class="space-y-2 text-base-content/60">
-            <li>
-              <a href="#about" class="hover:text-base-content">{dgettext("layouts", "About")}</a>
-            </li>
-            <li>
-              <a href="#contact" class="hover:text-base-content">{dgettext("layouts", "Contact")}</a>
-            </li>
-            <li>
-              <a href="#status" class="hover:text-base-content">{dgettext("layouts", "Status")}</a>
-            </li>
-            <li>
-              <a href="#security" class="hover:text-base-content">
-                {dgettext("layouts", "Security & Privacy")}
-              </a>
-            </li>
-          </ul>
-        </div>
-        <div>
-          <p class="font-semibold text-base-content/90 mb-3">
-            {dgettext("layouts", "Language")}
-          </p>
-          <div
-            class="join"
-            role="group"
-            aria-label={dgettext("layouts", "Language switcher (placeholder)")}
-          >
-            <button type="button" class="btn btn-sm join-item" aria-current="false">
-              EN
-            </button>
-            <button type="button" class="btn btn-sm join-item btn-active gap-1" aria-current="true">
-              <Brand.flag class="h-3 w-auto" /> KO
-            </button>
-          </div>
-          <p class="text-xs text-base-content/50 mt-2">
-            {dgettext("layouts", "한국어 UI · English fallback")}
-          </p>
-        </div>
-      </div>
-      <div class="border-t border-base-200">
-        <div class="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 py-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 text-xs text-base-content/50">
-          <p>
-            {dgettext("layouts", "© %{year} Contract Studio. All rights reserved.",
-              year: DateTime.utc_now().year
-            )}
-          </p>
-          <p>
-            <a href="#terms" class="hover:text-base-content">{dgettext("layouts", "Terms")}</a>
-            <span class="mx-2">·</span>
-            <a href="#privacy" class="hover:text-base-content">{dgettext("layouts", "Privacy")}</a>
-            <span class="mx-2">·</span>
-            <a href="#status" class="hover:text-base-content">{dgettext("layouts", "Status")}</a>
-          </p>
-        </div>
+    <footer class="border-t border-base-200 mt-24">
+      <div class="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 py-6 text-xs text-base-content/50">
+        <a href="mailto:ereignis@korea.ac.kr" class="hover:text-base-content">
+          ereignis@korea.ac.kr
+        </a>
       </div>
     </footer>
     """
@@ -389,12 +242,6 @@ defmodule ContractWeb.Layouts do
 
   defp signed_in?(%{user: %{}}), do: true
   defp signed_in?(_), do: false
-
-  defp persona_label(%{user: %{email: email}}) when is_binary(email) do
-    email |> String.split("@") |> List.first()
-  end
-
-  defp persona_label(_), do: dgettext("layouts", "Account")
 
   @doc """
   Shows the flash group with standard titles and content.
