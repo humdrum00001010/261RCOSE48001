@@ -51,3 +51,7 @@ npm-debug.log
 # Per-user agent harness state — local-only, contains scheduling/session data.
 /.claude/
 /.codex/
+
+# Phoenix / app runtime logs — local-only, never commit.
+/log/
+*.log

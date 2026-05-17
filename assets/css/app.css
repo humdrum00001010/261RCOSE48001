@@ -86,18 +86,18 @@ body {
 .brand {
   display: inline-flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   min-width: 0;
   color: var(--cs-ink);
-  font-size: 15px;
-  font-weight: 650;
+  font-size: 14px;
+  font-weight: 600;
   letter-spacing: 0;
   text-decoration: none;
 }
 
 .brand__icon {
-  width: 26px;
-  height: 26px;
+  width: 22px;
+  height: 22px;
   flex: 0 0 auto;
 }
 
