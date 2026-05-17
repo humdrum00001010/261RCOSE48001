@@ -132,7 +132,7 @@ defmodule ContractWeb.UserSessionControllerTest do
 
   describe "POST /users/log-in — :user_perms seeding (Wave 4 bugfix #1)" do
     # Real (non-Persona) users must get a perm set into the session at
-    # login time so MatterScope can thread it onto current_scope.perms,
+    # login time so DocumentScope can thread it onto current_scope.perms,
     # otherwise Studio writes/revokes/exports/conversions stay disabled.
     # See `Contract.PersonaFactory.spec(:lawyer)` for the canonical set.
 
@@ -182,7 +182,7 @@ defmodule ContractWeb.UserSessionControllerTest do
 
       # Drive the same conn through the Studio LV and inspect the
       # mounted scope. This is the load-bearing assertion: the bugfix
-      # is moot unless MatterScope sees `:user_perms` in the session.
+      # is moot unless DocumentScope sees `:user_perms` in the session.
       assert get_session(conn, :user_token)
       {:ok, lv, _html} = live(conn, ~p"/studio")
       perms = :sys.get_state(lv.pid).socket.assigns.current_scope.perms

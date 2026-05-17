@@ -56,12 +56,12 @@ defmodule Contract.SessionTest do
 
     change = %Change{
       document_id: document_id,
-      action_kind: "create_document",
+      command_kind: "create_document",
       actor_type: :user,
       actor_id: Ecto.UUID.generate(),
       base_revision: 0,
       idempotency_key: "seed-#{document_id}",
-      ops: [
+      payload: [
         %{
           "op" => "create_node",
           "target_type" => "document",
@@ -140,7 +140,7 @@ defmodule Contract.SessionTest do
         payload: %{"title" => "New Title"}
       }
 
-      assert {:ok, %Change{applied_revision: 2}} = Session.commit(pid, action)
+      assert {:ok, %Change{result_revision: 2}} = Session.commit(pid, action)
       assert {:ok, state} = Session.current(pid)
       assert state.revision == 2
       assert state.projection.title == "New Title"
@@ -238,7 +238,7 @@ defmodule Contract.SessionTest do
         idempotency_key: "rev-1"
       }
 
-      assert {:ok, %Change{action_kind: "revoke_change", applied_revision: 3}} =
+      assert {:ok, %Change{command_kind: "revoke_change", result_revision: 3}} =
                Session.revoke(pid, action)
 
       assert {:ok, state} = Session.current(pid)
@@ -313,9 +313,9 @@ defmodule Contract.SessionTest do
 
       {:ok, _} = Session.commit(pid, action)
 
-      assert {:ok, [%Change{applied_revision: 2}]} = Session.sync_since(pid, 1)
+      assert {:ok, [%Change{result_revision: 2}]} = Session.sync_since(pid, 1)
 
-      assert {:ok, [%Change{applied_revision: 1}, %Change{applied_revision: 2}]} =
+      assert {:ok, [%Change{result_revision: 1}, %Change{result_revision: 2}]} =
                Session.sync_since(pid, 0)
     end
   end

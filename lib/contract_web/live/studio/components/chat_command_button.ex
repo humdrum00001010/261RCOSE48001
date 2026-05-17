@@ -45,6 +45,7 @@ defmodule ContractWeb.Live.Studio.Components.ChatCommandButton do
   attr :id, :string, required: true
   attr :studio_state, :map, required: true
   attr :current_scope, :map, required: true
+  attr :current_document_id, :any, default: nil
   attr :viewport, :atom, default: :mobile
 
   @impl true
@@ -55,14 +56,19 @@ defmodule ContractWeb.Live.Studio.Components.ChatCommandButton do
   @impl true
   def update(assigns, socket) do
     current_scope = Map.get(assigns, :current_scope)
+    studio_state = Map.get(assigns, :studio_state)
+
+    current_document_id =
+      Map.get(assigns, :current_document_id) || selected_document_id(studio_state)
 
     socket =
       socket
       |> assign(:id, Map.fetch!(assigns, :id))
       |> assign(:current_scope, current_scope)
-      |> assign(:studio_state, Map.get(assigns, :studio_state))
+      |> assign(:current_document_id, current_document_id)
+      |> assign(:studio_state, studio_state)
       |> assign(:viewport, Map.get(assigns, :viewport, :mobile))
-      |> assign(:commands, sheet_commands(current_scope))
+      |> assign(:commands, sheet_commands(current_scope, current_document_id))
 
     # `:initial_open?` is a test-only assign — set it from `render_component`
     # to force the sheet open without simulating the tap.
@@ -120,8 +126,7 @@ defmodule ContractWeb.Live.Studio.Components.ChatCommandButton do
         <div class="modal-box bg-base-100 p-0 max-h-[80vh] flex flex-col">
           <div class="flex items-center justify-between px-4 py-3 border-b border-base-200">
             <h2 class="text-sm font-semibold tracking-tight">
-              명령어
-              <span class="ml-2 text-xs text-base-content/50">Commands</span>
+              명령어 <span class="ml-2 text-xs text-base-content/50">Commands</span>
             </h2>
             <button
               type="button"
@@ -241,11 +246,18 @@ defmodule ContractWeb.Live.Studio.Components.ChatCommandButton do
   search on mobile reach for the dedicated panels.
   """
   @spec sheet_commands(map() | nil) :: [Command.t()]
-  def sheet_commands(scope) do
+  def sheet_commands(scope), do: sheet_commands(scope, nil)
+
+  @doc false
+  @spec sheet_commands(map() | nil, term()) :: [Command.t()]
+  def sheet_commands(scope, current_document_id) do
     scope
-    |> CommandPalette.available_commands()
+    |> CommandPalette.available_commands(current_document_id: current_document_id)
     |> Enum.filter(&renderable?/1)
   end
+
+  defp selected_document_id(%{selected_document_id: id}) when is_binary(id) and id != "", do: id
+  defp selected_document_id(_), do: nil
 
   defp renderable?(%Command{action: {:emit, _, _}}), do: true
   defp renderable?(%Command{action: {:navigate, _}}), do: true

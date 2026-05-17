@@ -41,12 +41,12 @@ defmodule Contract.StoreConcurrencyTest do
   defp build_change(doc, idem, base_revision) do
     %Change{
       document_id: doc,
-      action_kind: "rename_document",
+      command_kind: "rename_document",
       actor_type: :user,
       actor_id: Ecto.UUID.generate(),
       base_revision: base_revision,
       idempotency_key: idem,
-      ops: [
+      payload: [
         %{
           "op" => "set_attr",
           "target_type" => "document",
@@ -58,7 +58,7 @@ defmodule Contract.StoreConcurrencyTest do
       message: nil,
       affected_refs: [],
       preimage: %{},
-      inverse_ops: [],
+      inverse: [],
       status: :active
     }
   end
@@ -68,12 +68,12 @@ defmodule Contract.StoreConcurrencyTest do
 
     create = %Change{
       document_id: doc,
-      action_kind: "create_document",
+      command_kind: "create_document",
       actor_type: :user,
       actor_id: Ecto.UUID.generate(),
       base_revision: 0,
       idempotency_key: "seed-#{doc}",
-      ops: [
+      payload: [
         %{
           "op" => "create_node",
           "target_type" => "document",
@@ -85,7 +85,7 @@ defmodule Contract.StoreConcurrencyTest do
       message: nil,
       affected_refs: [],
       preimage: %{},
-      inverse_ops: [],
+      inverse: [],
       status: :active
     }
 
@@ -131,7 +131,7 @@ defmodule Contract.StoreConcurrencyTest do
                Store.append(doc, build_change(doc, "from-a", 1), lease_a.fencing_token)
 
       # New writer B can commit.
-      assert {:ok, %Change{applied_revision: 2}} =
+      assert {:ok, %Change{result_revision: 2}} =
                Store.append(doc, build_change(doc, "from-b", 1), lease_b.fencing_token)
     end
 
@@ -234,12 +234,12 @@ defmodule Contract.StoreConcurrencyTest do
 
       results = Task.await_many(tasks, 15_000)
 
-      assert Enum.all?(results, &match?({:ok, %Change{applied_revision: 2}}, &1))
+      assert Enum.all?(results, &match?({:ok, %Change{result_revision: 2}}, &1))
     end
   end
 
   describe "revision monotonicity" do
-    test "applied_revision is strictly monotonic across a serial chain" do
+    test "result_revision is strictly monotonic across a serial chain" do
       doc = Ecto.UUID.generate()
       lease = seed!(doc)
 
@@ -247,8 +247,8 @@ defmodule Contract.StoreConcurrencyTest do
         Enum.reduce(1..15, 1, fn i, base ->
           change = build_change(doc, "mono-#{i}", base)
           {:ok, c} = Store.append(doc, change, lease.fencing_token)
-          assert c.applied_revision == base + 1
-          c.applied_revision
+          assert c.result_revision == base + 1
+          c.result_revision
         end)
 
       assert revisions == 16

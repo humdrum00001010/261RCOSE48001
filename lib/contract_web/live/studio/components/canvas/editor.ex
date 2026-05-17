@@ -13,7 +13,7 @@ defmodule ContractWeb.Live.Studio.Components.Canvas.Editor do
     * The colocated JS hook `.Editable` debounces user edits by 300 ms and
       pushes `edit_document` (untargeted, hits StudioLive). It also handles
       keyboard shortcuts: Cmd+Enter commits immediately, Cmd+Z fires
-      `revoke_change` for the focused node's last change (gated on the
+      `change.revoke` for the focused node's last change (gated on the
       `:revoke` perm via `data-can-revoke`).
     * On click/focus, the hook emits `set_node_focus` so the LV can route
       Cmd+Z to the right `last_change_for_node`.
@@ -28,7 +28,7 @@ defmodule ContractWeb.Live.Studio.Components.Canvas.Editor do
 
       :write   contenteditable on, `edit_document` emitted
       :read    plain markup, no events, no Cmd+Z
-      :revoke  additionally enables Cmd+Z for `revoke_change`
+      :revoke  additionally enables Cmd+Z for `change.revoke`
 
   ## Conflict handling
 
@@ -89,7 +89,7 @@ defmodule ContractWeb.Live.Studio.Components.Canvas.Editor do
             // attrs (the projection has no `last_change_id` field). The
             // parent LV pushes a `phx:editor:last-change` event on every
             // `:change_committed` protocol message — we cache the id here
-            // so Cmd+Z can fire `revoke_change` with the right payload
+            // so Cmd+Z can fire `change.revoke` with the right payload
             // regardless of which node (if any) currently has focus.
             this.lastChangeId = null
             this.lastChangeNodeId = null
@@ -152,8 +152,8 @@ defmodule ContractWeb.Live.Studio.Components.Canvas.Editor do
                   (e.target.closest("[data-node-id]") || {}).dataset &&
                   e.target.closest("[data-node-id]").dataset.nodeId)
               if (nodeId) payload.node_id = nodeId
-              console.log("[Editable] Cmd+Z: dispatching revoke_change " + JSON.stringify(payload))
-              this.pushEvent("revoke_change", payload)
+              console.log("[Editable] Cmd+Z: dispatching change.revoke " + JSON.stringify(payload))
+              this.pushEvent("change.revoke", payload)
             }
 
             // In-node key handling: Enter on heading commits immediately,
@@ -383,7 +383,10 @@ defmodule ContractWeb.Live.Studio.Components.Canvas.Editor do
   end
 
   defp render_node(assigns, %{kind: :list} = node) do
-    ordered? = (node[:attrs] || %{}) |> Map.get(:ordered, false) || Map.get(node[:attrs] || %{}, "ordered", false)
+    ordered? =
+      (node[:attrs] || %{}) |> Map.get(:ordered, false) ||
+        Map.get(node[:attrs] || %{}, "ordered", false)
+
     children = node[:children] || []
 
     assigns =
@@ -515,7 +518,9 @@ defmodule ContractWeb.Live.Studio.Components.Canvas.Editor do
       data-node-id={@node.id}
       data-node-kind={@kind_str}
       data-readonly="true"
-    >{node_content(@node)}</div>
+    >
+      {node_content(@node)}
+    </div>
     """
   end
 
@@ -527,7 +532,11 @@ defmodule ContractWeb.Live.Studio.Components.Canvas.Editor do
   attr :id, :string, required: true
   attr :class, :any, default: nil
   attr :contenteditable, :string, default: nil
-  attr :rest, :global, include: ~w(data-node-id data-node-kind data-server-content data-last-change-id phx-click phx-value-node_id spellcheck)
+
+  attr :rest, :global,
+    include:
+      ~w(data-node-id data-node-kind data-server-content data-last-change-id phx-click phx-value-node_id spellcheck)
+
   slot :inner_block, required: true
 
   defp heading_tag(%{level: 1} = assigns) do

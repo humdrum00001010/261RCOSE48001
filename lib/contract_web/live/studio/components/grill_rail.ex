@@ -32,21 +32,21 @@ defmodule ContractWeb.Live.Studio.Components.GrillRail do
 
   The submit button is `type="button"` (per Wave 3C1's binding rule —
   components never construct `Action`s directly) and fires
-  `phx-click="send_chat_message"` to the parent `StudioLive`. The values:
+  `phx-click="chat.submit"` to the parent `StudioLive`. The values:
 
       %{
         "grill_response" => %{"mark_id" => mark_id, "answer" => answer},
         "message" => answer
       }
 
-  `StudioLive.event_to_action/3` routes `"send_chat_message"` into an
+  `StudioLive.event_to_action/3` routes `"chat.submit"` into an
   `%Command{kind: :chat_message}` with the `grill_response` lifted into
   `payload`.
 
   Because the answer textarea lives inside this LiveComponent, we keep
   per-mark draft state in the component's `assigns[:drafts]` map keyed by
   mark id, and `handle_event("draft_changed", ...)` updates that map on
-  `phx-change`. The actual `send_chat_message` event escapes the
+  `phx-change`. The actual `chat.submit` event escapes the
   component (no `phx-target={@myself}`) so the parent LV can build the
   Action.
   """
@@ -160,7 +160,9 @@ defmodule ContractWeb.Live.Studio.Components.GrillRail do
             >
               <span class="font-semibold mr-1">
                 {dgettext("studio", "Why ask:")}
-              </span>{rationale(mark)}
+              </span>{rationale(
+                mark
+              )}
             </p>
 
             <%= if @perm_mode == :answer do %>
@@ -191,7 +193,7 @@ defmodule ContractWeb.Live.Studio.Components.GrillRail do
                   type="button"
                   data-role="grill-submit"
                   data-mark-id={mark_id(mark)}
-                  phx-click="send_chat_message"
+                  phx-click="chat.submit"
                   phx-value-mark_id={mark_id(mark)}
                   phx-value-message={draft_for(@drafts, mark_id(mark))}
                   phx-value-grill_response={

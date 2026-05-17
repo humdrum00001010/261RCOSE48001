@@ -14,7 +14,7 @@ defmodule Contract.Providers do
       get_law_text/2         → Korea Law MCP
       search_precedents/2    → Korea Law MCP
       verify_citation/2      → Korea Law MCP
-      render_export/3        → PDF / HWPX / DOCX / Markdown / HTML / lawyer_packet
+      render_export/3        → PDF / HWPX / DOCX / Markdown / lawyer_packet
 
   ## Pipeline (SPEC §21)
 
@@ -29,9 +29,9 @@ defmodule Contract.Providers do
 
   alias Contract.BlobRef
   alias Contract.Blobs
+  alias Contract.EvidenceSnapshots
   alias Contract.IO.LawMCP
   alias Contract.IO.OpenAI
-  alias Contract.IO.Upstage
   alias Contract.Types, as: T
 
   # ---------------------------------------------------------------------------
@@ -68,9 +68,16 @@ defmodule Contract.Providers do
             parser_snapshot_ref: String.t() | nil,
             raw: map()
           })
-  def parse_document(ctx \\ nil, blob_or_path, opts \\ []) do
+  def parse_document(blob_or_path), do: parse_document(nil, blob_or_path, [])
+
+  def parse_document(blob_or_path, opts) when is_list(opts),
+    do: parse_document(nil, blob_or_path, opts)
+
+  def parse_document(ctx, blob_or_path), do: parse_document(ctx, blob_or_path, [])
+
+  def parse_document(ctx, blob_or_path, opts) do
     with {:ok, path_or_bytes} <- resolve_source(blob_or_path),
-         {:ok, parsed} <- Upstage.parse(path_or_bytes, opts) do
+         {:ok, parsed} <- upstage_driver().parse(path_or_bytes, opts) do
       regions = elements_to_regions(parsed.elements)
 
       snapshot_ref =
@@ -103,7 +110,8 @@ defmodule Contract.Providers do
   """
   @spec stream_agent(T.ctx() | nil, map(), (map() -> any()) | nil, keyword()) ::
           {:ok, %{stream: Enumerable.t(), task_pid: pid()}} | {:error, term()}
-  def stream_agent(ctx \\ nil, params, handler \\ nil, opts \\ [])
+  def stream_agent(params, handler \\ nil, opts \\ []),
+    do: stream_agent(nil, params, handler, opts)
 
   def stream_agent(ctx, params, handler, opts) when is_map(params) do
     opts = if ctx, do: Keyword.put_new(opts, :ctx, ctx), else: opts
@@ -131,18 +139,44 @@ defmodule Contract.Providers do
   carries `law_id` / `mst` / `title` etc.).
   """
   @spec search_law(T.ctx() | nil, String.t(), keyword()) :: T.result(list())
-  def search_law(_ctx \\ nil, query, opts \\ []) when is_binary(query),
-    do: LawMCP.search_law(query, opts)
+  def search_law(query) when is_binary(query), do: search_law(nil, query, [])
+
+  def search_law(query, opts) when is_binary(query) and is_list(opts),
+    do: search_law(nil, query, opts)
+
+  def search_law(ctx, query) when is_binary(query), do: search_law(ctx, query, [])
+
+  def search_law(ctx, query, opts) when is_binary(query) do
+    args = %{"query" => query} |> maybe_put("limit", Keyword.get(opts, :limit))
+
+    with {:ok, items} <- LawMCP.search_law(query, opts) do
+      _ = capture_evidence(ctx, "law_mcp.search_law", args, items, opts)
+      {:ok, items}
+    end
+  end
 
   @doc """
   Fetches the full law text by `law_ref` (a `law_id` / `mst` /
   short-name accepted by the MCP `get_law_text` tool).
   """
   @spec get_law_text(T.ctx() | nil, String.t(), keyword()) :: T.result(term())
-  def get_law_text(_ctx \\ nil, law_ref, opts \\ []) when is_binary(law_ref) do
-    case LawMCP.call("get_law_text", %{"law_ref" => law_ref}, opts) do
-      {:ok, result} -> {:ok, result}
-      {:error, _} = err -> err
+  def get_law_text(law_ref) when is_binary(law_ref), do: get_law_text(nil, law_ref, [])
+
+  def get_law_text(law_ref, opts) when is_binary(law_ref) and is_list(opts),
+    do: get_law_text(nil, law_ref, opts)
+
+  def get_law_text(ctx, law_ref) when is_binary(law_ref), do: get_law_text(ctx, law_ref, [])
+
+  def get_law_text(ctx, law_ref, opts) when is_binary(law_ref) do
+    args = %{"law_ref" => law_ref}
+
+    case LawMCP.call("get_law_text", args, opts) do
+      {:ok, result} ->
+        _ = capture_evidence(ctx, "law_mcp.get_law_text", args, result, opts)
+        {:ok, result}
+
+      {:error, _} = err ->
+        err
     end
   end
 
@@ -150,16 +184,34 @@ defmodule Contract.Providers do
   Searches Korean case-law / precedents by free-text query.
   """
   @spec search_precedents(T.ctx() | nil, String.t(), keyword()) :: T.result(list())
-  def search_precedents(_ctx \\ nil, query, opts \\ []) when is_binary(query) do
+  def search_precedents(query) when is_binary(query), do: search_precedents(nil, query, [])
+
+  def search_precedents(query, opts) when is_binary(query) and is_list(opts),
+    do: search_precedents(nil, query, opts)
+
+  def search_precedents(ctx, query) when is_binary(query), do: search_precedents(ctx, query, [])
+
+  def search_precedents(ctx, query, opts) when is_binary(query) do
     args =
       %{"query" => query}
       |> maybe_put("limit", Keyword.get(opts, :limit))
 
     case LawMCP.call("search_precedents", args, opts) do
-      {:ok, list} when is_list(list) -> {:ok, list}
-      {:ok, %{"items" => items}} when is_list(items) -> {:ok, items}
-      {:ok, other} -> {:ok, List.wrap(other)}
-      {:error, _} = err -> err
+      {:ok, list} when is_list(list) ->
+        _ = capture_evidence(ctx, "law_mcp.search_precedents", args, list, opts)
+        {:ok, list}
+
+      {:ok, %{"items" => items} = result} when is_list(items) ->
+        _ = capture_evidence(ctx, "law_mcp.search_precedents", args, result, opts)
+        {:ok, items}
+
+      {:ok, other} ->
+        items = List.wrap(other)
+        _ = capture_evidence(ctx, "law_mcp.search_precedents", args, items, opts)
+        {:ok, items}
+
+      {:error, _} = err ->
+        err
     end
   end
 
@@ -169,19 +221,36 @@ defmodule Contract.Providers do
   """
   @spec verify_citation(T.ctx() | nil, String.t() | [String.t()], keyword()) ::
           T.result(list())
-  def verify_citation(_ctx \\ nil, citation, opts \\ [])
+  def verify_citation(citation), do: verify_citation(nil, citation, [])
 
-  def verify_citation(_ctx, citation, opts) when is_binary(citation),
-    do: LawMCP.verify_citations(citation, opts)
+  def verify_citation(citation, opts) when is_list(opts),
+    do: verify_citation(nil, citation, opts)
 
-  def verify_citation(_ctx, citations, opts) when is_list(citations),
-    do: LawMCP.verify_citations(citations, opts)
+  def verify_citation(ctx, citation), do: verify_citation(ctx, citation, [])
+
+  def verify_citation(ctx, citation, opts) when is_binary(citation) do
+    args = %{"text" => citation}
+
+    with {:ok, items} <- LawMCP.verify_citations(citation, opts) do
+      _ = capture_evidence(ctx, "law_mcp.verify_citations", args, items, opts)
+      {:ok, items}
+    end
+  end
+
+  def verify_citation(ctx, citations, opts) when is_list(citations) do
+    args = %{"text" => Enum.join(citations, "\n")}
+
+    with {:ok, items} <- LawMCP.verify_citations(citations, opts) do
+      _ = capture_evidence(ctx, "law_mcp.verify_citations", args, items, opts)
+      {:ok, items}
+    end
+  end
 
   # ---------------------------------------------------------------------------
   # render_export/3 — format dispatcher
   # ---------------------------------------------------------------------------
 
-  @supported_formats [:hwpx, :docx, :pdf, :html, :markdown, :md, :lawyer_packet]
+  @supported_formats [:hwpx, :docx, :pdf, :markdown, :md, :lawyer_packet]
 
   @doc """
   Renders `document_state` to the requested `format`. Returns
@@ -189,37 +258,49 @@ defmodule Contract.Providers do
 
   Formats:
 
-    * `:hwpx`, `:docx`, `:pdf`, `:html` — dispatch to
+    * `:hwpx`, `:docx`, `:pdf` — dispatch to
       `Contract.Export.<Format>` via `Contract.Export.Renderer.render/3`.
-    * `:markdown` / `:md` — handled via the legacy 1-arg stub renderer.
-    * `:lawyer_packet` — **not implemented** (W12 owns this); returns
-      `{:error, :not_implemented}`.
+    * `:markdown` / `:md` — render deterministic Markdown.
+    * `:lawyer_packet` — render a deterministic Markdown lawyer packet.
 
   Unknown formats return `{:error, {:unsupported_format, format}}`.
   """
   @spec render_export(T.ctx() | nil, term(), atom(), keyword()) ::
           {:ok, binary(), String.t()} | {:error, term()}
-  def render_export(_ctx \\ nil, document_state, format, opts \\ [])
+  def render_export(document_state, format),
+    do: render_export(nil, document_state, format, [])
 
-  def render_export(_ctx, _state, :lawyer_packet, _opts), do: {:error, :not_implemented}
+  def render_export(document_state, format, opts) when is_list(opts),
+    do: render_export(nil, document_state, format, opts)
+
+  def render_export(ctx, document_state, format),
+    do: render_export(ctx, document_state, format, [])
 
   def render_export(_ctx, %Contract.Runtime.State{} = state, format, opts)
       when format in @supported_formats do
-    Contract.Export.Renderer.render(state, format, opts)
+    Contract.Export.Renderer.render(state, normalize_export_format(format), opts)
   end
 
   def render_export(_ctx, %{document_id: _} = payload, format, _opts)
-      when format in [:markdown, :md, :html, :pdf, :docx] do
+      when format in [:markdown, :md, :pdf, :docx] do
     # Legacy 1-arg renderer path — used when the caller only has a
     # document_id+format pair (no Runtime.State in scope).
-    Contract.Export.Renderer.render(Map.put(payload, :format, format))
+    Contract.Export.Renderer.render(Map.put(payload, :format, normalize_export_format(format)))
   end
 
   def render_export(_ctx, _state, format, _opts), do: {:error, {:unsupported_format, format}}
 
+  defp normalize_export_format(:md), do: :markdown
+  defp normalize_export_format(format), do: format
+
   # ---------------------------------------------------------------------------
   # Internals
   # ---------------------------------------------------------------------------
+
+  defp upstage_driver do
+    Application.get_env(:contract, :io_drivers, [])
+    |> Keyword.get(:upstage, Contract.IO.Upstage)
+  end
 
   defp resolve_source(%BlobRef{object_key: key}) when is_binary(key), do: fetch_r2(key)
   defp resolve_source(%{object_key: key}) when is_binary(key), do: fetch_r2(key)
@@ -294,7 +375,10 @@ defmodule Contract.Providers do
     snapshot_id = Ecto.UUID.generate()
     key = "parser-snapshots/#{snapshot_id}.json"
 
-    case Blobs.put(nil, key, Jason.encode!(raw),
+    case Blobs.put(
+           nil,
+           key,
+           Jason.encode!(raw),
            Keyword.put_new(opts, :content_type, "application/json")
          ) do
       {:ok, _} -> snapshot_id
@@ -303,6 +387,14 @@ defmodule Contract.Providers do
   end
 
   defp maybe_persist_snapshot(_ctx, _raw, _opts), do: nil
+
+  defp capture_evidence(ctx, provider, query, result, opts) do
+    EvidenceSnapshots.capture(ctx, provider, query, result,
+      chat_thread_id: Keyword.get(opts, :chat_thread_id),
+      document_id: Keyword.get(opts, :document_id),
+      source_document_id: Keyword.get(opts, :source_document_id)
+    )
+  end
 
   defp maybe_put(map, _key, nil), do: map
   defp maybe_put(map, key, value), do: Map.put(map, key, value)

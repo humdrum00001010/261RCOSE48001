@@ -28,15 +28,14 @@ defmodule Contract.StoreTest do
 
   defp build_create_change(document_id, opts \\ []) do
     %Change{
-      matter_id: Keyword.get(opts, :matter_id, Ecto.UUID.generate()),
       document_id: document_id,
-      action_kind: "create_document",
+      command_kind: "create_document",
       actor_type: :user,
       actor_id: Keyword.get(opts, :actor_id, Ecto.UUID.generate()),
       base_revision: 0,
-      applied_revision: nil,
+      result_revision: nil,
       idempotency_key: Keyword.get(opts, :idempotency_key, "create-#{document_id}"),
-      ops: [
+      payload: [
         %{
           "op" => "create_node",
           "target_type" => "document",
@@ -48,22 +47,21 @@ defmodule Contract.StoreTest do
       message: nil,
       affected_refs: [],
       preimage: %{},
-      inverse_ops: [],
+      inverse: [],
       status: :active
     }
   end
 
   defp build_followup_change(document_id, base_revision, opts \\ []) do
     %Change{
-      matter_id: Ecto.UUID.generate(),
       document_id: document_id,
-      action_kind: "rename_document",
+      command_kind: "rename_document",
       actor_type: :user,
       actor_id: Ecto.UUID.generate(),
       base_revision: base_revision,
-      applied_revision: nil,
+      result_revision: nil,
       idempotency_key: Keyword.get(opts, :idempotency_key, "rev-#{base_revision}"),
-      ops: [
+      payload: [
         %{
           "op" => "set_attr",
           "target_type" => "document",
@@ -75,7 +73,7 @@ defmodule Contract.StoreTest do
       message: nil,
       affected_refs: [],
       preimage: %{},
-      inverse_ops: [],
+      inverse: [],
       status: :active
     }
   end
@@ -85,7 +83,7 @@ defmodule Contract.StoreTest do
       assert {:ok, 0} = Store.latest_revision(new_document_id())
     end
 
-    test "returns the max applied_revision" do
+    test "returns the max result_revision" do
       doc = new_document_id()
       lease = acquire_lease(doc)
       assert {:ok, _} = Store.append(doc, build_create_change(doc), lease.fencing_token)
@@ -99,15 +97,15 @@ defmodule Contract.StoreTest do
   end
 
   describe "append/3" do
-    test "persists a Change row and bumps applied_revision to latest + 1" do
+    test "persists a Change row and bumps result_revision to latest + 1" do
       doc = new_document_id()
       lease = acquire_lease(doc)
 
-      assert {:ok, %Change{applied_revision: 1} = persisted} =
+      assert {:ok, %Change{result_revision: 1} = persisted} =
                Store.append(doc, build_create_change(doc), lease.fencing_token)
 
       assert persisted.document_id == doc
-      assert persisted.action_kind == "create_document"
+      assert persisted.command_kind == "create_document"
     end
 
     test "broadcasts {:change_committed, _} on the document topic" do
@@ -192,7 +190,7 @@ defmodule Contract.StoreTest do
       lease = acquire_lease(doc)
       assert {:ok, _} = Store.append(doc, build_create_change(doc), lease.fencing_token)
 
-      assert {:ok, %Change{applied_revision: 2}} =
+      assert {:ok, %Change{result_revision: 2}} =
                Store.append(doc, build_followup_change(doc, 1), lease.fencing_token)
     end
 
@@ -225,11 +223,11 @@ defmodule Contract.StoreTest do
                Store.append(doc, build_followup_change(doc, 1), lease.fencing_token)
 
       assert {:ok, [c1, c2]} = Store.changes_since(doc, 0)
-      assert c1.applied_revision == 1
-      assert c2.applied_revision == 2
+      assert c1.result_revision == 1
+      assert c2.result_revision == 2
     end
 
-    test "results are sorted by applied_revision ascending" do
+    test "results are sorted by result_revision ascending" do
       doc = new_document_id()
       lease = acquire_lease(doc)
       assert {:ok, _} = Store.append(doc, build_create_change(doc), lease.fencing_token)
@@ -249,7 +247,7 @@ defmodule Contract.StoreTest do
                )
 
       assert {:ok, [_, _, _] = changes} = Store.changes_since(doc, 0)
-      assert Enum.map(changes, & &1.applied_revision) == [1, 2, 3]
+      assert Enum.map(changes, & &1.result_revision) == [1, 2, 3]
     end
   end
 
@@ -424,25 +422,17 @@ defmodule Contract.StoreTest do
 
     alias Contract.Documents
 
-    defp setup_document_row(matter_id, owner_id \\ nil) do
+    defp setup_document_row(owner_id \\ nil) do
       owner_id = owner_id || Ecto.UUID.generate()
       doc_id = Ecto.UUID.generate()
-
-      {:ok, _matter} =
-        %Contract.Matters.Matter{id: matter_id}
-        |> Contract.Matters.Matter.changeset(%{
-          "name" => "M-#{System.unique_integer([:positive])}",
-          "owner_id" => owner_id
-        })
-        |> Contract.Repo.insert()
 
       {:ok, _doc} =
         %Contract.Documents.Document{id: doc_id}
         |> Contract.Documents.Document.changeset(%{
-          "matter_id" => matter_id,
+          "owner_id" => owner_id,
           "title" => "Initial",
           "type_key" => "nda_v1",
-          "status" => "active"
+          "status" => "draft"
         })
         |> Contract.Repo.insert()
 
@@ -451,15 +441,14 @@ defmodule Contract.StoreTest do
 
     defp set_attr_change(doc_id, base_revision, key, value, opts \\ []) do
       %Change{
-        matter_id: Ecto.UUID.generate(),
         document_id: doc_id,
-        action_kind: "set_attr_doc",
+        command_kind: "set_attr_doc",
         actor_type: :user,
         actor_id: Ecto.UUID.generate(),
         base_revision: base_revision,
-        applied_revision: nil,
+        result_revision: nil,
         idempotency_key: Keyword.get(opts, :idempotency_key, "set-#{key}-#{base_revision}"),
-        ops: [
+        payload: [
           %{
             "op" => "set_attr",
             "target_type" => "document",
@@ -471,14 +460,13 @@ defmodule Contract.StoreTest do
         message: nil,
         affected_refs: [],
         preimage: %{},
-        inverse_ops: [],
+        inverse: [],
         status: :active
       }
     end
 
     test "set_attr :title updates the documents row" do
-      matter_id = Ecto.UUID.generate()
-      {doc_id, _owner_id} = setup_document_row(matter_id)
+      {doc_id, _owner_id} = setup_document_row()
       lease = acquire_lease(doc_id)
 
       change = set_attr_change(doc_id, 0, :title, "Renamed Title")
@@ -489,8 +477,7 @@ defmodule Contract.StoreTest do
     end
 
     test "set_attr :type_key updates the documents row" do
-      matter_id = Ecto.UUID.generate()
-      {doc_id, _owner_id} = setup_document_row(matter_id)
+      {doc_id, _owner_id} = setup_document_row()
       lease = acquire_lease(doc_id)
 
       change = set_attr_change(doc_id, 0, :type_key, "service_agreement_v1")
@@ -501,8 +488,7 @@ defmodule Contract.StoreTest do
     end
 
     test "set_attr :status updates the documents row" do
-      matter_id = Ecto.UUID.generate()
-      {doc_id, _owner_id} = setup_document_row(matter_id)
+      {doc_id, _owner_id} = setup_document_row()
       lease = acquire_lease(doc_id)
 
       change = set_attr_change(doc_id, 0, :status, "archived")
@@ -513,20 +499,18 @@ defmodule Contract.StoreTest do
     end
 
     test "multiple set_attr ops in one Change all propagate" do
-      matter_id = Ecto.UUID.generate()
-      {doc_id, _owner_id} = setup_document_row(matter_id)
+      {doc_id, _owner_id} = setup_document_row()
       lease = acquire_lease(doc_id)
 
       change = %Change{
-        matter_id: matter_id,
         document_id: doc_id,
-        action_kind: "bulk_set_attr",
+        command_kind: "bulk_set_attr",
         actor_type: :user,
         actor_id: Ecto.UUID.generate(),
         base_revision: 0,
-        applied_revision: nil,
+        result_revision: nil,
         idempotency_key: "bulk-#{doc_id}",
-        ops: [
+        payload: [
           %{
             "op" => "set_attr",
             "target_type" => "document",
@@ -550,7 +534,7 @@ defmodule Contract.StoreTest do
         message: nil,
         affected_refs: [],
         preimage: %{},
-        inverse_ops: [],
+        inverse: [],
         status: :active
       }
 
@@ -563,24 +547,22 @@ defmodule Contract.StoreTest do
     end
 
     test "non-attr ops (e.g. create_node) leave the documents row untouched" do
-      matter_id = Ecto.UUID.generate()
-      {doc_id, _owner_id} = setup_document_row(matter_id)
+      {doc_id, _owner_id} = setup_document_row()
       lease = acquire_lease(doc_id)
 
       # build_create_change builds a :create_node op, NOT a :set_attr op.
-      change = build_create_change(doc_id, matter_id: matter_id, idempotency_key: "create-only")
+      change = build_create_change(doc_id, idempotency_key: "create-only")
       assert {:ok, _} = Store.append(doc_id, change, lease.fencing_token)
 
       row = Contract.Repo.get(Contract.Documents.Document, doc_id)
       # untouched — title/type_key/status are still the seed values
       assert row.title == "Initial"
       assert row.type_key == "nda_v1"
-      assert row.status == :active
+      assert row.status == :draft
     end
 
     test "Documents.get/2 reflects the propagated title" do
-      matter_id = Ecto.UUID.generate()
-      {doc_id, owner_id} = setup_document_row(matter_id)
+      {doc_id, owner_id} = setup_document_row()
       lease = acquire_lease(doc_id)
 
       # The seeded matter has tenant_id: nil so any non-nil scope can

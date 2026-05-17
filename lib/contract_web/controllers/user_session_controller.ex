@@ -7,7 +7,7 @@ defmodule ContractWeb.UserSessionController do
   # Default perm set for confirmed production users. Mirrors what
   # `Contract.PersonaFactory.spec(:lawyer)` ships for the Playwright
   # `:lawyer` persona, minus `:agent_run` (gated server-side until billing
-  # lands). `MatterScope` threads this into `current_scope.perms` so
+  # lands). `DocumentScope` threads this into `current_scope.perms` so
   # Studio writes / revokes / exports / conversions are unlocked for
   # real (non-Persona) users.
   #

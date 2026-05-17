@@ -112,7 +112,8 @@ defmodule Contract.CommandTest do
           :source_claim_confirm,
           :source_claim_correct,
           :source_claim_reject,
-          :source_claim_link_to_document
+          :source_claim_link_to_document,
+          :source_claim_unlink_from_document
         ] do
       test "#{kind} accepts a Command with example args" do
         attrs = source_claim_attrs(unquote(kind))
@@ -140,6 +141,7 @@ defmodule Contract.CommandTest do
       assert :source_claim_correct in kinds
       assert :source_claim_reject in kinds
       assert :source_claim_link_to_document in kinds
+      assert :source_claim_unlink_from_document in kinds
     end
 
     defp source_claim_attrs(:source_claim_confirm) do
@@ -172,6 +174,16 @@ defmodule Contract.CommandTest do
     defp source_claim_attrs(:source_claim_link_to_document) do
       %{
         kind: :source_claim_link_to_document,
+        source_claim_id: @source_claim_id,
+        document_id: @document_id,
+        actor_type: :user,
+        payload: %{}
+      }
+    end
+
+    defp source_claim_attrs(:source_claim_unlink_from_document) do
+      %{
+        kind: :source_claim_unlink_from_document,
         source_claim_id: @source_claim_id,
         document_id: @document_id,
         actor_type: :user,

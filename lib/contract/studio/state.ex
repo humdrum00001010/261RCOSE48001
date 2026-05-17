@@ -1,6 +1,11 @@
 defmodule Contract.Studio.State do
   @moduledoc """
   Per-LiveView session state. NOT durable. See SPEC.md §9.
+
+  v0.5: `:matter_id` and `:context_reservoir` are gone. The Matter
+  container was removed from the product model; Document is the only
+  scope. The Context Reservoir is no longer in v0.5 — the left rail is
+  optional outline / related-docs in a later wave.
   """
 
   use Ecto.Schema
@@ -13,7 +18,6 @@ defmodule Contract.Studio.State do
   @primary_key false
 
   embedded_schema do
-    field :matter_id, :binary_id
     field :selected_document_id, :binary_id
     field :selected_node_id, :binary_id
 
@@ -36,20 +40,12 @@ defmodule Contract.Studio.State do
     field :agent_run_id, :binary_id
 
     field :mode, Ecto.Enum, values: [:no_document, :briefing, :editing, :reviewing]
-
-    # SPEC.md §10a — persistent left-side projection of contract context.
-    # UI/projection state only; never the source of truth. Defaults to an
-    # empty `%ContextReservoir{}` so the LV can always render the rail
-    # before `Studio.refresh_context_reservoir/2` has fired.
-    embeds_one :context_reservoir, Contract.Studio.ContextReservoir,
-      on_replace: :update
   end
 
   @spec changeset(t(), T.attrs()) :: Ecto.Changeset.t()
   def changeset(state, attrs) do
     state
     |> cast(attrs, [
-      :matter_id,
       :selected_document_id,
       :selected_node_id,
       :last_seen_revision,
@@ -64,6 +60,5 @@ defmodule Contract.Studio.State do
       :agent_run_id,
       :mode
     ])
-    |> cast_embed(:context_reservoir, with: &Contract.Studio.ContextReservoir.changeset/2)
   end
 end

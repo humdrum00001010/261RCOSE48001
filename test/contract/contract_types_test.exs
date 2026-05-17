@@ -162,7 +162,7 @@ defmodule Contract.ContractTypesTest do
     test "every shipped TOML decodes successfully (property)" do
       paths = ContractTypes.__toml_paths__()
 
-      check all path <- StreamData.member_of(paths) do
+      check all(path <- StreamData.member_of(paths)) do
         assert {:ok, data} = Toml.decode_file(path)
         assert is_map(data)
         assert is_binary(data["key"])
@@ -261,7 +261,12 @@ defmodule Contract.ContractTypesTest do
   describe "TypeSpec.from_toml/2" do
     test "raises on missing required field" do
       assert_raise ArgumentError, ~r/missing required field "key"/, fn ->
-        TypeSpec.from_toml(%{"family" => "nda", "name_en" => "x", "version" => "1", "source" => "custom"})
+        TypeSpec.from_toml(%{
+          "family" => "nda",
+          "name_en" => "x",
+          "version" => "1",
+          "source" => "custom"
+        })
       end
     end
 

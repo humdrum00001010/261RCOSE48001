@@ -5,8 +5,12 @@ defmodule Contract.RuntimeTest do
 
   alias Contract.Command
   alias Contract.Change
+  alias Contract.Context
+  alias Contract.Documents
+  alias Contract.Documents.Document
   alias Contract.IO.R2Stub
   alias Contract.Lease
+  alias Contract.RouteRef
   alias Contract.Runtime
   alias Contract.Session
   alias Contract.Store
@@ -14,7 +18,12 @@ defmodule Contract.RuntimeTest do
   setup :set_mox_from_context
   setup :verify_on_exit!
 
-  @ctx %Contract.Context{}
+  @ctx %Context{
+    user: %Contract.Accounts.User{
+      id: "00000000-0000-0000-0000-000000000001",
+      email: "runtime-default@example.test"
+    }
+  }
 
   setup do
     R2Stub.setup()
@@ -33,19 +42,53 @@ defmodule Contract.RuntimeTest do
   end
 
   describe "load/2 and sync_since/3" do
-    test "load returns empty state for a new document" do
-      doc = Ecto.UUID.generate()
-      assert {:ok, %Contract.Runtime.State{revision: 0}} = Runtime.load(@ctx, doc)
+    test "load enforces document owner ACL before Store.load" do
+      owner = scope()
+      other = scope()
+      doc_id = create_owned_doc(owner, title: "Private runtime doc")
+
+      assert {:error, :forbidden} = Runtime.load(other, doc_id)
     end
 
-    test "sync_since returns [] for a fresh document" do
-      assert {:ok, []} = Runtime.sync_since(@ctx, Ecto.UUID.generate(), 0)
+    test "sync_since enforces document owner ACL before Store.changes_since" do
+      owner = scope()
+      other = scope()
+      doc_id = create_owned_doc(owner, title: "Private runtime changes")
+
+      assert {:error, :forbidden} = Runtime.sync_since(other, doc_id, 0)
+    end
+
+    test "load rejects a document id without a persisted owner row" do
+      assert {:error, :not_found} = Runtime.load(@ctx, Ecto.UUID.generate())
+    end
+
+    test "sync_since rejects a document id without a persisted owner row" do
+      assert {:error, :not_found} = Runtime.sync_since(@ctx, Ecto.UUID.generate(), 0)
+    end
+
+    test "load denies pinned route_ref without user context" do
+      owner = scope()
+      doc_id = create_owned_doc(owner, title: "Runtime pinned bypass")
+
+      ref = %RouteRef{
+        document_id: doc_id,
+        scopes: [],
+        purpose: "runtime",
+        issued_at: DateTime.utc_now(),
+        expires_at: DateTime.utc_now() |> DateTime.add(3_600, :second)
+      }
+
+      ctx = %Context{perms: %{route_ref: ref}}
+
+      assert {:error, :forbidden} = Runtime.authorize_document(ctx, doc_id)
+      assert {:error, :forbidden} = Runtime.load(ctx, doc_id)
     end
   end
 
   describe "subscribe/2" do
     test "subscribes the caller to the document topic" do
       doc = Ecto.UUID.generate()
+      _ = create_doc(doc)
       assert :ok = Runtime.subscribe(@ctx, doc)
 
       # Verify that we're actually subscribed by publishing.
@@ -84,6 +127,29 @@ defmodule Contract.RuntimeTest do
   end
 
   describe "apply/2 → :create_document" do
+    test "creates an owner-scoped Document row before appending the initial Change" do
+      ctx = scope()
+      doc_id = Ecto.UUID.generate()
+
+      action = %Command{
+        kind: :create_document,
+        document_id: doc_id,
+        actor_type: :user,
+        actor_id: ctx.user.id,
+        base_revision: 0,
+        idempotency_key: "create-persists-row",
+        payload: %{"title" => "Persisted row", "type_key" => "nda_v1"}
+      }
+
+      assert {:ok, %Change{document_id: ^doc_id, result_revision: 1}} =
+               Runtime.apply(ctx, action)
+
+      assert {:ok, %Document{id: ^doc_id, owner_id: owner_id, title: "Persisted row"}} =
+               Documents.get(ctx, doc_id)
+
+      assert owner_id == ctx.user.id
+    end
+
     test "persists a new Change without needing an external Session" do
       doc = Ecto.UUID.generate()
 
@@ -91,13 +157,13 @@ defmodule Contract.RuntimeTest do
         kind: :create_document,
         document_id: doc,
         actor_type: :user,
-        actor_id: Ecto.UUID.generate(),
+        actor_id: @ctx.user.id,
         base_revision: 0,
         idempotency_key: "create-runtime-1",
         payload: %{"title" => "RT", "type_key" => "nda"}
       }
 
-      assert {:ok, %Change{applied_revision: 1}} = Runtime.apply(@ctx, action)
+      assert {:ok, %Change{result_revision: 1}} = Runtime.apply(@ctx, action)
 
       # No Session was registered for this doc — create_document goes
       # straight to the Store.
@@ -127,6 +193,15 @@ defmodule Contract.RuntimeTest do
   end
 
   describe "apply/2 → session-routed kinds" do
+    test "session-routed writes reject documents owned by another user" do
+      owner = scope()
+      other = scope()
+      doc_id = create_owned_doc(owner, title: "Not yours")
+
+      assert {:error, :forbidden} =
+               Runtime.apply(other, build_session_action(:rename_document, doc_id))
+    end
+
     for kind <- [
           :rename_document,
           :update_metadata,
@@ -156,6 +231,24 @@ defmodule Contract.RuntimeTest do
   end
 
   describe "apply/2 → :revoke_change" do
+    test "revoke rejects documents owned by another user" do
+      owner = scope()
+      other = scope()
+      doc_id = create_owned_doc(owner, title: "No revoke")
+
+      action = %Command{
+        kind: :revoke_change,
+        document_id: doc_id,
+        change_id: Ecto.UUID.generate(),
+        actor_type: :user,
+        actor_id: other.user.id,
+        base_revision: 1,
+        idempotency_key: "revoke-forbidden"
+      }
+
+      assert {:error, :forbidden} = Runtime.revoke(other, action)
+    end
+
     test "routes through Session.revoke and returns the new revoke Change" do
       doc = Ecto.UUID.generate()
       create_action = build_session_action(:rename_document, doc, idem: "rn-revtest")
@@ -169,11 +262,11 @@ defmodule Contract.RuntimeTest do
         change_id: base.id,
         actor_type: :user,
         actor_id: Ecto.UUID.generate(),
-        base_revision: base.applied_revision,
+        base_revision: base.result_revision,
         idempotency_key: "rev-#{base.id}"
       }
 
-      assert {:ok, %Change{action_kind: "revoke_change"}} = Runtime.apply(@ctx, revoke)
+      assert {:ok, %Change{command_kind: "revoke_change"}} = Runtime.apply(@ctx, revoke)
 
       pid = Session.whereis(doc)
       cleanup_session(pid)
@@ -234,6 +327,71 @@ defmodule Contract.RuntimeTest do
       }
 
       assert {:error, :missing_plan} = Runtime.apply(@ctx, action)
+    end
+  end
+
+  describe "apply/2 → :request_export format parsing" do
+    test "requesting markdown and lawyer_packet creates persisted export rows" do
+      ctx = scope()
+      markdown_doc_id = create_owned_doc(ctx, title: "Markdown export doc")
+      packet_doc_id = create_owned_doc(ctx, title: "Packet export doc")
+
+      for {doc_id, format} <- [{markdown_doc_id, "markdown"}, {packet_doc_id, "lawyer_packet"}] do
+        action = %Command{
+          kind: :request_export,
+          document_id: doc_id,
+          actor_type: :user,
+          actor_id: ctx.user.id,
+          payload: %{"format" => format}
+        }
+
+        assert {:ok, %Oban.Job{} = job} = Runtime.apply(ctx, action)
+        assert job.args["format"] == format
+        assert is_binary(job.args["export_id"])
+
+        assert %{
+                 document_id: ^doc_id,
+                 requester_id: requester_id,
+                 format: ^format,
+                 status: "queued",
+                 progress: 0
+               } = export_record(job.args["export_id"])
+
+        assert requester_id == ctx.user.id
+      end
+    end
+
+    test "rejects html as a product-facing export format" do
+      ctx = scope()
+      doc_id = create_owned_doc(ctx, title: "No HTML export doc")
+
+      action = %Command{
+        kind: :request_export,
+        document_id: doc_id,
+        actor_type: :user,
+        actor_id: ctx.user.id,
+        payload: %{"format" => "html"}
+      }
+
+      assert {:error, {:unsupported_export_format, "html"}} = Runtime.apply(ctx, action)
+    end
+
+    test "rejects unknown string formats without creating atoms" do
+      ctx = scope()
+      doc_id = create_owned_doc(ctx, title: "Export format doc")
+      format = "unknown_export_#{System.unique_integer([:positive])}"
+      refute existing_atom?(format)
+
+      action = %Command{
+        kind: :request_export,
+        document_id: doc_id,
+        actor_type: :user,
+        actor_id: ctx.user.id,
+        payload: %{"format" => format}
+      }
+
+      assert {:error, {:unsupported_export_format, ^format}} = Runtime.apply(ctx, action)
+      refute existing_atom?(format)
     end
   end
 
@@ -305,12 +463,41 @@ defmodule Contract.RuntimeTest do
   # helpers
   # ---------------------------------------------------------------------------
 
+  defp scope do
+    user_id = Ecto.UUID.generate()
+
+    %Context{
+      user: %Contract.Accounts.User{
+        id: user_id,
+        email: "runtime-#{user_id}@example.test"
+      }
+    }
+  end
+
+  defp create_owned_doc(%Context{} = ctx, opts) do
+    title = Keyword.fetch!(opts, :title)
+    doc_id = Ecto.UUID.generate()
+
+    action = %Command{
+      kind: :create_document,
+      document_id: doc_id,
+      actor_type: :user,
+      actor_id: ctx.user.id,
+      base_revision: 0,
+      idempotency_key: "create-owned-#{doc_id}",
+      payload: %{"title" => title, "type_key" => "nda_v1"}
+    }
+
+    {:ok, %Change{}} = Runtime.apply(ctx, action)
+    doc_id
+  end
+
   defp create_doc(doc) do
     action = %Command{
       kind: :create_document,
       document_id: doc,
       actor_type: :user,
-      actor_id: Ecto.UUID.generate(),
+      actor_id: @ctx.user.id,
       base_revision: 0,
       idempotency_key: "create-#{doc}",
       payload: %{"title" => "Doc", "type_key" => "nda"}
@@ -392,6 +579,25 @@ defmodule Contract.RuntimeTest do
       idempotency_key: Keyword.get(opts, :idem, "#{kind}-#{System.unique_integer([:positive])}"),
       payload: payload
     }
+  end
+
+  defp export_record(export_id) do
+    export = Repo.get!(Contract.Export, export_id)
+
+    %{
+      document_id: export.document_id,
+      requester_id: export.requester_id,
+      format: Atom.to_string(export.format),
+      status: Atom.to_string(export.status),
+      progress: export.progress
+    }
+  end
+
+  defp existing_atom?(value) when is_binary(value) do
+    _ = String.to_existing_atom(value)
+    true
+  rescue
+    ArgumentError -> false
   end
 
   defp cleanup_session(nil), do: :ok

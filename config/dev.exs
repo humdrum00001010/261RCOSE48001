@@ -65,17 +65,26 @@ config :contract, ContractWeb.Endpoint,
     web_console_logger: true,
     patterns: [
       # Static assets, except user uploads
-      ~r"priv/static/(?!uploads/).*\.(js|css|png|jpeg|jpg|gif|svg)$"E,
+      ~r"priv/static/(?!uploads/).*\.(js|css|png|jpeg|jpg|gif|svg)$",
       # Gettext translations
-      ~r"priv/gettext/.*\.po$"E,
+      ~r"priv/gettext/.*\.po$",
       # Router, Controllers, LiveViews and LiveComponents
-      ~r"lib/contract_web/router\.ex$"E,
-      ~r"lib/contract_web/(controllers|live|components)/.*\.(ex|heex)$"E
+      ~r"lib/contract_web/router\.ex$",
+      ~r"lib/contract_web/(controllers|live|components)/.*\.(ex|heex)$"
     ]
   ]
 
 # Enable dev routes for dashboard and mailbox
 config :contract, dev_routes: true
+
+# Browser QA runs dev with test_auth enabled; keep source uploads deterministic
+# and offline unless a test explicitly overrides the driver.
+config :contract, :io_drivers,
+  http: Contract.IO.HTTP.Req,
+  openai: Contract.IO.OpenAI,
+  upstage: Contract.IO.DeterministicParser,
+  law_mcp: Contract.IO.LawMCP,
+  r2: Contract.IO.R2
 
 # Do not include metadata nor timestamps in development logs
 config :logger, :default_formatter, format: "[$level] $message\n"

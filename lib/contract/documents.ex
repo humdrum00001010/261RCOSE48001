@@ -2,14 +2,14 @@ defmodule Contract.Documents do
   @moduledoc """
   Context module for documents and field lineage.
 
-  Every public function (except `touch_revision/2`) takes a
-  `%Contract.Context{}` as the first argument. The ACL gate is delegated
-  to `Contract.Matters.authorize_read/2`: if a document belongs to a
-  matter the scope cannot see, the read returns `{:error, :forbidden}`.
+  Every public function (except `touch_revision/2` and friends) takes a
+  `%Contract.Context{}` as the first argument. The ACL gate is owner-based:
+  the caller may only read/write documents whose `owner_id` matches
+  `ctx.user.id` (SPEC.md v0.5 — Matter container removed).
 
-  `touch_revision/2` is the one exception. It is called by
-  `Contract.Store.append/3` on the hot commit path, where the scope is
-  not in scope; the caller has already passed the lease + idempotency
+  `touch_revision/2`, `set_title/2`, `set_type/2`, `set_status/2` are
+  scope-less helpers called by `Contract.Store.append/3` on the hot
+  commit path. The caller has already passed the lease + idempotency
   gate by then, so we trust the operation.
   """
 
@@ -17,68 +17,48 @@ defmodule Contract.Documents do
 
   alias Contract.Context
   alias Contract.Documents.Document
-  alias Contract.Documents.FieldLineage
-  alias Contract.Matters
-  alias Contract.Matters.Matter
   alias Contract.Repo
   alias Contract.Types, as: T
-
-  # ----------------------------------------------------------------------------
-  # list_for_matter/2
-  # ----------------------------------------------------------------------------
-
-  @doc """
-  List documents for a matter, gated by the matter's ACL.
-
-  Returns the documents ordered by most recently updated. Archived
-  documents are included; callers that want active-only can filter
-  after.
-  """
-  @spec list_for_matter(Context.t(), T.id() | nil) :: [Document.t()]
-  def list_for_matter(%Context{} = scope, matter_id) when is_binary(matter_id) do
-    case Matters.get(scope, matter_id) do
-      {:ok, %Matter{id: id}} ->
-        from(d in Document, where: d.matter_id == ^id, order_by: [desc: d.updated_at])
-        |> Repo.all()
-
-      {:error, _} ->
-        []
-    end
-  rescue
-    Ecto.Query.CastError -> []
-  end
-
-  def list_for_matter(_scope, _matter_id), do: []
 
   # ----------------------------------------------------------------------------
   # list_recent_for_scope/2
   # ----------------------------------------------------------------------------
 
   @doc """
-  List the most recent documents visible to the scope, across all
-  matters the scope can see. Limit defaults to 8.
+  List the most recent documents visible to the scope (i.e. owned by
+  `ctx.user`).
 
-  Includes documents whose matter is hidden (system-created Workspaces
-  auto-synthesized by `create_with_auto_matter/2`) — the matter is
-  hidden from UI lists, but the Documents inside it are the user's
-  real product and MUST surface in recents. ACL is still enforced via
-  the tenant filter on `Matters.list_for_scope/2`.
+  Accepts either a positive integer (legacy positional API) or a keyword
+  list with `:limit`. The default limit is `20`.
   """
-  @spec list_recent_for_scope(Context.t(), pos_integer()) :: [Document.t()]
-  def list_recent_for_scope(%Context{} = scope, limit \\ 8) when is_integer(limit) do
-    matter_ids =
-      Matters.list_for_scope(scope, include_hidden: true) |> Enum.map(& &1.id)
+  @default_recent_limit 20
 
-    if matter_ids == [] do
-      []
-    else
-      from(d in Document,
-        where: d.matter_id in ^matter_ids,
-        order_by: [desc: d.updated_at],
-        limit: ^limit
-      )
-      |> Repo.all()
-    end
+  @spec list_recent_for_scope(Context.t(), pos_integer() | keyword()) :: [Document.t()]
+  def list_recent_for_scope(scope, opts_or_limit \\ [])
+
+  def list_recent_for_scope(%Context{} = scope, limit)
+      when is_integer(limit) and limit > 0 do
+    do_list_recent_for_scope(scope, limit)
+  end
+
+  def list_recent_for_scope(%Context{} = scope, opts) when is_list(opts) do
+    limit = Keyword.get(opts, :limit, @default_recent_limit)
+    do_list_recent_for_scope(scope, limit)
+  end
+
+  defp do_list_recent_for_scope(%Context{user: nil}, _limit), do: []
+
+  defp do_list_recent_for_scope(%Context{user: %{id: user_id}}, limit)
+       when is_integer(limit) and limit > 0 do
+    from(d in Document,
+      where: d.owner_id == ^user_id,
+      order_by: [desc: d.updated_at],
+      limit: ^limit
+    )
+    |> Repo.all()
+  rescue
+    DBConnection.ConnectionError -> []
+    Postgrex.Error -> []
   end
 
   # ----------------------------------------------------------------------------
@@ -86,7 +66,7 @@ defmodule Contract.Documents do
   # ----------------------------------------------------------------------------
 
   @doc """
-  Fetch a single document by id, gated by the matter ACL.
+  Fetch a single document by id, gated by owner ACL.
   """
   @spec get(Context.t(), T.id()) ::
           {:ok, Document.t()} | {:error, :not_found | :forbidden}
@@ -95,8 +75,8 @@ defmodule Contract.Documents do
       nil ->
         {:error, :not_found}
 
-      %Document{matter_id: matter_id} = doc ->
-        case authorize_via_matter(scope, matter_id) do
+      %Document{} = doc ->
+        case authorize_owner(scope, doc) do
           :ok -> {:ok, doc}
           err -> err
         end
@@ -112,113 +92,36 @@ defmodule Contract.Documents do
   # ----------------------------------------------------------------------------
 
   @doc """
-  Create a document in a matter the scope owns or shares.
+  Create a document owned by `ctx.user`.
 
-  `attrs` must include `:matter_id` and `:title`. `:type_key` is
-  optional per SPEC.md §18: a freshly-created document may be untyped,
-  with `Action(:set_contract_type)` filling it in later (by the user
-  via Cmd+K or by the agent once it understands the document). The ACL
-  gate on the matter is enforced before the insert.
+  `attrs` should include `:title`. `:owner_id` is derived from
+  `ctx.user.id` and CANNOT be overridden by `attrs`. `:type_key` is
+  optional per SPEC.md §18.
+
+  v0.5: `:matter_id` in `attrs` is silently dropped — Matter is gone
+  in v1.
   """
   @spec create(Context.t(), %{
-          required(:matter_id) => binary,
           optional(:title) => binary,
           optional(:type_key) => binary | nil
         }) ::
-          {:ok, Document.t()} | {:error, Ecto.Changeset.t() | :forbidden | :not_found}
-  def create(%Context{} = scope, attrs) when is_map(attrs) do
-    attrs = stringify_keys(attrs)
-    matter_id = Map.get(attrs, "matter_id")
+          {:ok, Document.t()} | {:error, Ecto.Changeset.t() | :forbidden}
+  def create(%Context{user: nil}, _attrs), do: {:error, :forbidden}
 
-    with :ok <- authorize_via_matter(scope, matter_id),
-         :ok <- check_no_parent_cycle(attrs) do
-      %Document{}
-      |> Document.changeset(attrs)
+  def create(%Context{user: %{id: user_id}} = _scope, attrs) when is_map(attrs) do
+    attrs =
+      attrs
+      |> stringify_keys()
+      |> Map.drop(["matter_id", "document_id"])
+      |> Map.put("owner_id", user_id)
+
+    document = document_with_optional_id(attrs)
+
+    with :ok <- check_no_parent_cycle(attrs) do
+      document
+      |> Document.changeset(Map.drop(attrs, ["id"]))
       |> Repo.insert()
     end
-  end
-
-  # ----------------------------------------------------------------------------
-  # create_with_auto_matter/2 (SPEC.md Document-primary pivot, 2026-05-15)
-  # ----------------------------------------------------------------------------
-
-  @doc """
-  Create a Document without requiring the user to pick a Matter.
-
-  Per SPEC.md §1/§4/§22/§28 (Document-primary pivot, 2026-05-15): the
-  user must NOT be required to pick a Matter to create a Document. If
-  `attrs["matter_id"]` is set, this delegates to `create/2` (the existing
-  matter is reused, no new matter synthesized). Otherwise the backend
-  auto-creates a hidden Matter to host the resulting Document — the
-  auto-matter is filtered out of `Contract.Matters.list_for_scope/1`
-  unless `include_hidden: true` is passed.
-
-  The auto-matter's `name` is derived from the document title (e.g.
-  `"Workspace · My NDA"`) or falls back to `"Workspace · <YYYY-MM-DD>"`
-  when no title is supplied. `metadata` is stamped with:
-
-      %{
-        "system_created" => true,
-        "hidden_from_user" => true,
-        "source" => "auto_on_document_create"
-      }
-
-  so downstream queries can identify and filter these rows.
-
-  Returns `{:ok, document, matter}` on success. The matter is included
-  in the return tuple so callers can route to `/workspaces/:matter_id/...`
-  if needed; most callers should route to `/documents/:document_id`.
-  """
-  @spec create_with_auto_matter(Context.t(), map()) ::
-          {:ok, Document.t(), Matter.t()}
-          | {:error, Ecto.Changeset.t() | :forbidden | :not_found}
-  def create_with_auto_matter(%Context{} = scope, attrs) when is_map(attrs) do
-    attrs = stringify_keys(attrs)
-    matter_id = Map.get(attrs, "matter_id")
-
-    cond do
-      is_binary(matter_id) and matter_id != "" ->
-        # Caller passed an explicit matter — reuse it, do NOT synthesize.
-        with {:ok, doc} <- create(scope, attrs),
-             {:ok, matter} <- Matters.get(scope, matter_id) do
-          {:ok, doc, matter}
-        end
-
-      true ->
-        # No matter_id — auto-create a hidden Matter, then the Document.
-        title = Map.get(attrs, "title")
-
-        matter_attrs = %{
-          "name" => auto_matter_name(title),
-          "metadata" => %{
-            "system_created" => true,
-            "hidden_from_user" => true,
-            "source" => "auto_on_document_create"
-          }
-        }
-
-        with {:ok, matter} <- Matters.create(scope, matter_attrs),
-             doc_attrs = Map.put(attrs, "matter_id", matter.id),
-             {:ok, doc} <- create(scope, doc_attrs) do
-          {:ok, doc, matter}
-        end
-    end
-  end
-
-  # Build a stable, human-readable name for an auto-created Matter from
-  # the Document title. Empty/nil titles fall back to today's date so the
-  # row still has a non-empty :name (required by Matter changeset).
-  defp auto_matter_name(title) when is_binary(title) do
-    case String.trim(title) do
-      "" -> "Workspace · " <> today_iso()
-      trimmed -> "Workspace · " <> trimmed
-    end
-  end
-
-  defp auto_matter_name(_), do: "Workspace · " <> today_iso()
-
-  defp today_iso do
-    Date.utc_today() |> Date.to_iso8601()
   end
 
   # ----------------------------------------------------------------------------
@@ -226,8 +129,7 @@ defmodule Contract.Documents do
   # ----------------------------------------------------------------------------
 
   @doc """
-  Archive a document. Visible-only gate; any caller that can see the
-  document can archive (the heavy gate is on the matter).
+  Archive a document. Owner-only.
   """
   @spec archive(Context.t(), T.id()) ::
           {:ok, Document.t()} | {:error, term()}
@@ -260,16 +162,14 @@ defmodule Contract.Documents do
   @doc """
   Set a document's `:title`. Called from `Contract.Store.append/3` on the
   hot commit path to mirror the engine's document-level `:set_attr` op
-  onto the `documents` table. Not gated by scope: the caller has already
-  validated the lease + revision.
-
-  Returns `:ok` regardless of whether the row exists — the documents
-  table is a downstream projection and is allowed to lag in test/dev
-  fixtures that bypass `Documents.create/2`.
+  onto the `documents` table. Not gated by scope.
   """
   @spec set_title(T.id(), String.t()) :: :ok
   def set_title(document_id, title) when is_binary(document_id) and is_binary(title) do
-    from(d in Document, where: d.id == ^document_id, update: [set: [title: ^title, updated_at: ^now()]])
+    from(d in Document,
+      where: d.id == ^document_id,
+      update: [set: [title: ^title, updated_at: ^now()]]
+    )
     |> Repo.update_all([])
 
     :ok
@@ -282,9 +182,8 @@ defmodule Contract.Documents do
   def set_title(_, _), do: :ok
 
   @doc """
-  Set a document's `:type_key`. Scope-less variant of `set_type/3` used
-  by `Contract.Store.append/3` to propagate engine `:set_attr` ops onto
-  the `documents` table. See `set_title/2` for rationale.
+  Set a document's `:type_key`. Scope-less variant used by
+  `Contract.Store.append/3`.
   """
   @spec set_type(T.id(), String.t() | nil) :: :ok
   def set_type(document_id, type_key) when is_binary(document_id) do
@@ -295,7 +194,10 @@ defmodule Contract.Documents do
         true -> nil
       end
 
-    from(d in Document, where: d.id == ^document_id, update: [set: [type_key: ^cast, updated_at: ^now()]])
+    from(d in Document,
+      where: d.id == ^document_id,
+      update: [set: [type_key: ^cast, updated_at: ^now()]]
+    )
     |> Repo.update_all([])
 
     :ok
@@ -309,25 +211,31 @@ defmodule Contract.Documents do
 
   @doc """
   Set a document's `:status`. Scope-less variant used by
-  `Contract.Store.append/3` to propagate engine `:set_attr` ops onto
-  the `documents` table.
+  `Contract.Store.append/3`.
   """
   @spec set_status(T.id(), atom() | String.t()) :: :ok
   def set_status(document_id, status) when is_binary(document_id) do
     cast =
       case status do
-        s when is_atom(s) -> s
+        s when is_atom(s) ->
+          s
+
         s when is_binary(s) ->
           try do
             String.to_existing_atom(s)
           rescue
             ArgumentError -> nil
           end
-        _ -> nil
+
+        _ ->
+          nil
       end
 
-    if cast in [:active, :archived, :template] do
-      from(d in Document, where: d.id == ^document_id, update: [set: [status: ^cast, updated_at: ^now()]])
+    if cast in [:draft, :importing, :editing, :reviewing, :export_ready, :archived] do
+      from(d in Document,
+        where: d.id == ^document_id,
+        update: [set: [status: ^cast, updated_at: ^now()]]
+      )
       |> Repo.update_all([])
     end
 
@@ -346,11 +254,7 @@ defmodule Contract.Documents do
 
   @doc """
   Bump a document's `latest_revision` to `revision` IFF the supplied
-  value is strictly greater than the stored one. Idempotent — replaying
-  the same `(document_id, revision)` pair is safe.
-
-  Called by `Contract.Store.append/3` on the hot commit path. Not gated
-  by scope: the caller has already validated the lease + revision.
+  value is strictly greater than the stored one. Idempotent.
   """
   @spec touch_revision(T.id(), T.revision()) :: :ok
   def touch_revision(document_id, revision)
@@ -363,9 +267,6 @@ defmodule Contract.Documents do
 
     :ok
   rescue
-    # Document row may not exist yet (Store.append currently writes
-    # Changes without requiring a matching Document row). Silently
-    # ignore — `touch_revision` is best-effort.
     Postgrex.Error -> :ok
     DBConnection.ConnectionError -> :ok
   end
@@ -378,36 +279,39 @@ defmodule Contract.Documents do
 
   @doc """
   Search documents by case-insensitive title substring within the scope.
-  Returns at most `limit` rows (default 20). Includes documents in
-  hidden (auto-created) Workspaces — see `list_recent_for_scope/2`.
+  Returns at most `limit` rows (default 20).
   """
   @spec search(Context.t(), String.t(), pos_integer()) :: [Document.t()]
-  def search(%Context{} = scope, query, limit \\ 20) when is_binary(query) do
-    matter_ids =
-      Matters.list_for_scope(scope, include_hidden: true) |> Enum.map(& &1.id)
+  def search(scope, query, limit \\ 20)
 
-    if matter_ids == [] do
-      []
-    else
-      pattern = "%" <> String.downcase(query) <> "%"
+  def search(%Context{user: nil}, _query, _limit), do: []
 
-      from(d in Document,
-        where: d.matter_id in ^matter_ids,
-        where: fragment("lower(?) LIKE ?", d.title, ^pattern),
-        order_by: [desc: d.updated_at],
-        limit: ^limit
-      )
-      |> Repo.all()
-    end
+  def search(%Context{user: %{id: user_id}}, query, limit)
+      when is_binary(query) and is_integer(limit) and limit > 0 do
+    pattern = "%" <> String.downcase(query) <> "%"
+
+    from(d in Document,
+      where: d.owner_id == ^user_id,
+      where: fragment("lower(?) LIKE ?", d.title, ^pattern),
+      order_by: [desc: d.updated_at],
+      limit: ^limit
+    )
+    |> Repo.all()
+  rescue
+    DBConnection.ConnectionError -> []
+    Postgrex.Error -> []
   end
+
+  def search(_scope, _query, _limit), do: []
 
   # ----------------------------------------------------------------------------
   # Lineage
   # ----------------------------------------------------------------------------
 
+  alias Contract.Documents.FieldLineage
+
   @doc """
-  Insert a single lineage row. Append-only — no update path. Used by
-  `Contract.Conversion.create_variant/2`.
+  Insert a single lineage row. Append-only — no update path.
   """
   @spec insert_lineage(map()) ::
           {:ok, FieldLineage.t()} | {:error, Ecto.Changeset.t()}
@@ -457,8 +361,7 @@ defmodule Contract.Documents do
 
   @doc """
   Walks `:parent_document_id` upward from `document_id` and returns
-  `true` if `candidate_parent_id` would close a cycle (i.e. it is
-  already an ancestor or the document itself).
+  `true` if `candidate_parent_id` would close a cycle.
   """
   @spec would_create_cycle?(Context.t(), T.id(), T.id()) :: boolean()
   def would_create_cycle?(%Context{} = _scope, document_id, candidate_parent_id) do
@@ -474,10 +377,17 @@ defmodule Contract.Documents do
       true
     else
       case Repo.get(Document, candidate) do
-        nil -> false
-        %Document{parent_document_id: nil} -> false
-        %Document{parent_document_id: ^doc_id} -> true
-        %Document{parent_document_id: next} -> do_cycle_check(doc_id, next, MapSet.put(seen, candidate))
+        nil ->
+          false
+
+        %Document{parent_document_id: nil} ->
+          false
+
+        %Document{parent_document_id: ^doc_id} ->
+          true
+
+        %Document{parent_document_id: next} ->
+          do_cycle_check(doc_id, next, MapSet.put(seen, candidate))
       end
     end
   rescue
@@ -488,14 +398,14 @@ defmodule Contract.Documents do
   # internals
   # ----------------------------------------------------------------------------
 
-  defp authorize_via_matter(_scope, nil), do: {:error, :not_found}
+  # Owner-based ACL. Legacy ownerless rows are not globally visible.
+  defp authorize_owner(_scope, %Document{owner_id: nil}), do: {:error, :forbidden}
 
-  defp authorize_via_matter(%Context{} = scope, matter_id) do
-    case Matters.get(scope, matter_id) do
-      {:ok, _matter} -> :ok
-      {:error, _} = err -> err
-    end
-  end
+  defp authorize_owner(%Context{user: %{id: user_id}}, %Document{owner_id: owner_id})
+       when owner_id == user_id,
+       do: :ok
+
+  defp authorize_owner(_scope, _doc), do: {:error, :forbidden}
 
   defp check_no_parent_cycle(%{"parent_document_id" => nil}), do: :ok
 
@@ -509,6 +419,15 @@ defmodule Contract.Documents do
   end
 
   defp check_no_parent_cycle(_), do: :ok
+
+  defp document_with_optional_id(%{"id" => id}) when is_binary(id) do
+    case Ecto.UUID.cast(id) do
+      {:ok, uuid} -> %Document{id: uuid}
+      :error -> %Document{}
+    end
+  end
+
+  defp document_with_optional_id(_attrs), do: %Document{}
 
   defp stringify_keys(map) when is_map(map) do
     Map.new(map, fn

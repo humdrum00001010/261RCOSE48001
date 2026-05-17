@@ -5,7 +5,7 @@ defmodule ContractWeb.Live.Studio.Components.Canvas.EditorTest do
     1. All node kinds render (paragraph, heading, list, list_item, table fallback).
     2. `:write` perm gates `contenteditable`.
     3. The colocated `.Editable` hook is wired for debounced `edit_document`.
-    4. Cmd+Z exposes `revoke_change` via the hook (assertion is on hook
+    4. Cmd+Z exposes `change.revoke` via the hook (assertion is on hook
        wiring + `data-can-revoke="true"`).
     5. `:revoke` perm gates Cmd+Z (viewer = no revoke).
     6. Revision-conflict assigns surface a `revision-conflict-toast`.
@@ -229,15 +229,15 @@ defmodule ContractWeb.Live.Studio.Components.Canvas.EditorTest do
       assert hook_src =~ "node_id"
     end
 
-    test "Cmd+Z revoke path: hook reads data-can-revoke and pushes revoke_change",
+    test "Cmd+Z revoke path: hook reads data-can-revoke and pushes change.revoke",
          %{user: user} do
-      # :revoke + :write persona (admin) → hook ALLOWED to fire revoke_change.
+      # :revoke + :write persona (admin) → hook ALLOWED to fire change.revoke.
       html = render(admin_scope(user), sample_projection())
 
       assert html =~ ~s(data-can-revoke="true")
 
       hook_src = editor_hook_source()
-      assert hook_src =~ ~s(pushEvent("revoke_change")
+      assert hook_src =~ ~s(pushEvent("change.revoke")
       assert hook_src =~ "metaKey || e.ctrlKey"
       # Hook respects the data-can-revoke gate before pushing.
       assert hook_src =~ ~s(this.el.dataset.canRevoke !== "true")

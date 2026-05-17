@@ -96,7 +96,10 @@ defmodule Contract.IO.UpstageTest do
 
     test "maps heading1 through heading6 to :heading" do
       for level <- 1..6 do
-        elements = [%{"id" => level, "category" => "heading#{level}", "content" => %{"text" => "x"}}]
+        elements = [
+          %{"id" => level, "category" => "heading#{level}", "content" => %{"text" => "x"}}
+        ]
+
         [node] = Upstage.normalize_elements(elements)
         assert node["kind"] == :heading
       end
@@ -156,7 +159,7 @@ defmodule Contract.IO.UpstageTest do
       end)
 
       tmpfile = write_tempfile("PDFBYTES")
-      matter_id = Ecto.UUID.generate()
+      owner_id = Ecto.UUID.generate()
 
       upload = %{
         path: tmpfile,
@@ -184,17 +187,16 @@ defmodule Contract.IO.UpstageTest do
       on_exit(fn -> Application.put_env(:contract, :r2, original) end)
 
       assert {:ok, %Contract.Command{} = action} =
-               Upstage.import_upload(nil, matter_id, upload)
+               Upstage.import_upload(nil, owner_id, upload)
 
       assert action.kind == :create_document
-      assert action.matter_id == matter_id
       assert is_list(action.payload["nodes"])
       assert length(action.payload["nodes"]) == 2
       assert hd(action.payload["nodes"])["kind"] == :heading
       assert action.payload["title"] == "contract.pdf"
       assert action.payload["mime_type"] == "application/pdf"
       assert is_binary(action.payload["artifact_id"])
-      assert String.starts_with?(action.payload["source"]["key"], "matters/")
+      assert String.starts_with?(action.payload["source"]["key"], "uploads/#{owner_id}/")
     end
   end
 
@@ -277,7 +279,7 @@ defmodule Contract.IO.UpstageTest do
       # All positive HWP units.
       assert w1 > 0 and w2 > 0 and w3 > 0
       # Total is roughly the assumed page width (~16000), within rounding.
-      assert w1 + w2 + w3 in 15_995..16_005
+      assert (w1 + w2 + w3) in 15_995..16_005
       # Middle and last columns are wider than the first (0.4 vs 0.2 ratios).
       assert w2 > w1
       assert w3 > w1

@@ -1,6 +1,6 @@
 defmodule ContractWeb.Live.Studio.Components.DocumentList do
   @moduledoc """
-  Studio left rail: matter header + document tree grouped by status
+  Studio left rail: document tree grouped by status
   (active/archived).
 
   Owned by Wave 3C1 / document-list.
@@ -31,15 +31,10 @@ defmodule ContractWeb.Live.Studio.Components.DocumentList do
 
     * `phx-click="open_modal"` with `phx-value-modal="new_document"`
       → opens the new-document modal (handled by `StudioLive`).
-    * `phx-click="open_document"` with `phx-value-document_id={id}`
-      → routed through the dispatch funnel as an `:open_document` Action.
+    * `phx-click="document.open"` with `phx-value-document_id={id}`
+      -> routed through the dispatch funnel as the open-document Command.
   """
   use ContractWeb, :live_component
-
-  import Ecto.Query, only: [from: 2]
-
-  alias Contract.Change
-  alias Contract.Repo
 
   @impl true
   def update(assigns, socket) do
@@ -86,13 +81,13 @@ defmodule ContractWeb.Live.Studio.Components.DocumentList do
       <header class="px-4 pt-4 pb-2 flex items-start justify-between gap-2">
         <div class="min-w-0">
           <p class="text-[0.65rem] font-medium tracking-wide uppercase text-base-content/50">
-            {dgettext("studio", "Workspace")}
+            {dgettext("studio", "Documents")}
           </p>
           <h2
             class="text-sm font-semibold tracking-tight truncate"
-            title={matter_name(@current_scope)}
+            title={dgettext("studio", "Recent documents")}
           >
-            {matter_name(@current_scope)}
+            {dgettext("studio", "Recent documents")}
           </h2>
         </div>
         <button
@@ -199,7 +194,7 @@ defmodule ContractWeb.Live.Studio.Components.DocumentList do
     ~H"""
     <button
       type="button"
-      phx-click="open_document"
+      phx-click="document.open"
       phx-value-document_id={@document.document_id}
       class={[
         "w-full text-left flex flex-col gap-1 rounded-none px-3 py-2",
@@ -238,83 +233,12 @@ defmodule ContractWeb.Live.Studio.Components.DocumentList do
   # Private — data fetching
   # ---------------------------------------------------------------------------
 
-  defp list_documents_for_matter(scope, %{matter_id: matter_id}) when is_binary(matter_id) do
-    case Contract.Studio.list_documents(scope, matter_id) do
-      [] -> fetch_documents(normalize_uuid(matter_id))
-      rows -> rows
-    end
+  defp list_documents_for_matter(scope, _state) do
+    Contract.Studio.list_documents(scope)
   end
-
-  defp list_documents_for_matter(_scope, _state) do
-    fetch_documents(nil)
-  end
-
-  # The current MatterScope stub builds a synthetic `%{id: matter_id}` from
-  # the route param verbatim, so `matter_id` may not be a valid UUID in tests
-  # that pass strings like `"m"`. We dump-test the value up-front to avoid
-  # bubbling an `Ecto.Query.CastError` out of `Repo.all/1`.
-  defp normalize_uuid(<<_::binary-size(36)>> = id) do
-    case Ecto.UUID.cast(id) do
-      {:ok, valid} -> valid
-      :error -> :invalid
-    end
-  end
-
-  defp normalize_uuid(_), do: :invalid
-
-  defp fetch_documents(:invalid), do: []
-
-  defp fetch_documents(matter_id) do
-    base =
-      from(c in Change,
-        where: not is_nil(c.document_id),
-        group_by: c.document_id,
-        select: %{
-          document_id: c.document_id,
-          last_revision: max(c.applied_revision),
-          last_activity_at: max(c.inserted_at),
-          status: max(fragment("?::text", c.status))
-        },
-        order_by: [desc: max(c.inserted_at)],
-        limit: 50
-      )
-
-    query =
-      case matter_id do
-        nil -> base
-        id -> from c in base, where: c.matter_id == ^id or is_nil(c.matter_id)
-      end
-
-    query
-    |> Repo.all()
-    |> Enum.map(&decorate_document/1)
-  rescue
-    DBConnection.ConnectionError -> []
-    Postgrex.Error -> []
-  end
-
-  defp decorate_document(%{document_id: id, status: status_str} = row) do
-    %{
-      document_id: id,
-      title: derive_title(id),
-      type_key: "nda_v1",
-      status: parse_status(status_str),
-      last_revision: row.last_revision,
-      last_activity_at: row.last_activity_at
-    }
-  end
-
-  defp derive_title(id) when is_binary(id), do: "Document " <> String.slice(id, 0, 8)
-  defp derive_title(_), do: "Untitled"
-
-  defp parse_status("revoked"), do: :archived
-  defp parse_status("superseded"), do: :archived
-  defp parse_status("partially_revoked"), do: :active
-  defp parse_status("active"), do: :active
-  defp parse_status(_), do: :active
 
   defp partition_by_status(documents) do
-    Enum.split_with(documents, fn doc -> doc.status == :active end)
+    Enum.split_with(documents, fn doc -> doc.status != :archived end)
   end
 
   # ---------------------------------------------------------------------------
@@ -323,10 +247,6 @@ defmodule ContractWeb.Live.Studio.Components.DocumentList do
 
   defp can_create?(%{perms: perms}) when is_list(perms), do: :write in perms
   defp can_create?(_), do: false
-
-  defp matter_name(%{matter: %{name: name}}) when is_binary(name), do: name
-
-  defp matter_name(_), do: dgettext("studio", "No workspace selected")
 
   defp container_class(:drawer) do
     "h-full overflow-y-auto bg-base-100"

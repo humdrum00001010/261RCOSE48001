@@ -47,7 +47,6 @@ defmodule ContractWeb.UserLive.ApiTokens do
       |> assign(:active_item, :api_tokens)
       |> assign(:show_modal, false)
       |> assign(:tokens, list_user_tokens(socket.assigns.current_scope))
-      |> assign(:matters, list_user_matters(socket.assigns.current_scope))
       |> assign(:default_ttl_hours, @default_ttl_hours)
       |> assign(:form, to_form(%{}, as: :token))
 
@@ -130,7 +129,10 @@ defmodule ContractWeb.UserLive.ApiTokens do
           <% else %>
             <%!-- TODO Wave-X: real token storage table — when this lands the
                  list will be non-empty and the rows below will render. --%>
-            <ul id="api-tokens-list" class="rounded-box border border-base-200 divide-y divide-base-200 bg-base-100">
+            <ul
+              id="api-tokens-list"
+              class="rounded-box border border-base-200 divide-y divide-base-200 bg-base-100"
+            >
               <li
                 :for={token <- @tokens}
                 class="px-4 py-3 flex items-center gap-4"
@@ -200,19 +202,12 @@ defmodule ContractWeb.UserLive.ApiTokens do
                 label={dgettext("settings", "Purpose")}
                 placeholder={dgettext("settings", "e.g. mcp-cli, slack-bridge")}
               />
-              <%!-- TODO Wave-X: list real matters from Contract.Matters once
-                   that context exists. Today @matters is [] so only the
-                   prompt is shown and the select is disabled. --%>
-              <.input
-                field={@form[:matter_id]}
-                type="select"
-                label={dgettext("settings", "Workspace")}
-                prompt={
-                  dgettext("settings", "No workspaces yet — token will be account-scoped")
-                }
-                options={Enum.map(@matters, &{&1.name, &1.id})}
-                disabled={@matters == []}
-              />
+              <div class="rounded-md border border-base-300 bg-base-200/40 px-3 py-2 text-sm">
+                <span class="font-medium">{dgettext("settings", "Scope")}</span>
+                <span class="ml-2 text-base-content/70">
+                  {dgettext("settings", "Account")}
+                </span>
+              </div>
               <.input
                 name="token[ttl_hours]"
                 value={@default_ttl_hours}
@@ -254,8 +249,4 @@ defmodule ContractWeb.UserLive.ApiTokens do
 
   # TODO Wave-X: real token storage table. Until then, no tokens.
   defp list_user_tokens(_scope), do: []
-
-  # TODO Wave-X: list real matters via Contract.Matters.list_for_scope/1.
-  # Empty list disables the matter select in the modal — by design.
-  defp list_user_matters(_scope), do: []
 end

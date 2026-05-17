@@ -19,7 +19,6 @@ defmodule Contract.ChangeInput do
 
   @type t :: %__MODULE__{
           action_kind: atom(),
-          matter_id: Types.matter_id() | nil,
           document_id: Types.document_id() | nil,
           base_revision: Types.revision() | nil,
           idempotency_key: Types.idempotency_key() | nil,
@@ -36,7 +35,6 @@ defmodule Contract.ChangeInput do
         }
 
   defstruct action_kind: nil,
-            matter_id: nil,
             document_id: nil,
             base_revision: nil,
             idempotency_key: nil,

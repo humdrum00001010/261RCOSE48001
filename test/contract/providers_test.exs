@@ -11,13 +11,12 @@ defmodule Contract.ProvidersTest do
     * `search_law/2` returns an evidence-snapshot-ready list payload.
     * `verify_citation/2` round-trips through Korea Law MCP.
     * `render_export/3` handles `:markdown`, dispatches to renderers,
-      and **explicitly** returns `{:error, :not_implemented}` for
-      `:lawyer_packet` (owned by W12).
+      and renders a deterministic lawyer packet artifact.
     * `search_precedents/2`, `get_law_text/2` go through MCP `tools/call`.
   """
-  use ExUnit.Case, async: false
+  use Contract.DataCase, async: false
 
-  alias Contract.Providers
+  alias Contract.{Context, EvidenceSnapshot, Providers, Repo}
 
   describe "parse_document/2 (Upstage)" do
     test "POSTs to Upstage and returns regions with v0.5 shape" do
@@ -194,6 +193,64 @@ defmodule Contract.ProvidersTest do
       assert law["title"] == "민법"
       assert is_number(law["score"])
     end
+
+    test "persists an EvidenceSnapshot for an owner-scoped law search" do
+      bypass = Bypass.open()
+      original = Application.get_env(:contract, :law_mcp)
+
+      Application.put_env(:contract, :law_mcp,
+        endpoint: "http://localhost:#{bypass.port}/mcp",
+        oc: "openapi"
+      )
+
+      on_exit(fn -> Application.put_env(:contract, :law_mcp, original) end)
+
+      Bypass.expect_once(bypass, "POST", "/mcp", fn conn ->
+        {:ok, body, conn} = Plug.Conn.read_body(conn, length: 50_000_000)
+        decoded = Jason.decode!(body)
+        assert decoded["params"]["name"] == "search_law"
+        assert decoded["params"]["arguments"]["query"] == "민법 제390조"
+
+        Plug.Conn.resp(
+          conn,
+          200,
+          Jason.encode!(%{
+            "jsonrpc" => "2.0",
+            "id" => decoded["id"],
+            "result" => %{
+              "content" => [
+                %{
+                  "type" => "text",
+                  "text" =>
+                    Jason.encode!(%{
+                      "items" => [
+                        %{"law_id" => "001", "title" => "민법", "article" => "390"}
+                      ]
+                    })
+                }
+              ]
+            }
+          })
+        )
+      end)
+
+      owner_id = Ecto.UUID.generate()
+      ctx = %Context{user: %Contract.Accounts.User{id: owner_id, email: "law@example.test"}}
+
+      assert {:ok, [%{"law_id" => "001"}]} = Providers.search_law(ctx, "민법 제390조")
+
+      snapshot = Repo.one!(EvidenceSnapshot)
+      assert snapshot.owner_id == owner_id
+      assert snapshot.provider == "law_mcp.search_law"
+      assert snapshot.query == %{"query" => "민법 제390조"}
+
+      assert snapshot.result == %{
+               "items" => [%{"law_id" => "001", "title" => "민법", "article" => "390"}]
+             }
+
+      assert %DateTime{} = snapshot.captured_at
+      assert is_binary(snapshot.result_hash)
+    end
   end
 
   describe "verify_citation/2 (Korea Law MCP)" do
@@ -299,9 +356,39 @@ defmodule Contract.ProvidersTest do
   end
 
   describe "render_export/3" do
-    test ":lawyer_packet returns {:error, :not_implemented} (W12 owns)" do
-      assert {:error, :not_implemented} =
-               Providers.render_export(nil, %{document_id: "x"}, :lawyer_packet)
+    test ":lawyer_packet renders a deterministic packet artifact" do
+      state = %Contract.Runtime.State{
+        document_id: "doc-packet",
+        revision: 3,
+        projection: %{
+          Contract.Runtime.State.empty_projection()
+          | title: "Packet Contract",
+            nodes: %{
+              "n1" => %{id: "n1", kind: :paragraph, content: "Payment due in 10 days."}
+            },
+            node_order: ["n1"],
+            marks: %{
+              "m1" => %{
+                id: "m1",
+                intent: :source_claim,
+                source: :parser,
+                target_type: :node,
+                target_id: "n1",
+                text: "Source page 1"
+              }
+            }
+        }
+      }
+
+      assert {:ok, body, "text/markdown"} =
+               Providers.render_export(nil, state, :lawyer_packet)
+
+      assert body =~ "# Lawyer Packet: Packet Contract"
+      assert body =~ "## Rendered Contract"
+      assert body =~ "Payment due in 10 days."
+      assert body =~ "## Evidence and Source Summary"
+      assert body =~ "Source page 1"
+      refute body =~ "not_implemented"
     end
 
     test ":markdown via the legacy 1-arg renderer returns bytes + content_type" do

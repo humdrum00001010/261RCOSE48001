@@ -2,18 +2,25 @@ defmodule ContractWeb.MCP.MCPPlugTest do
   use ContractWeb.ConnCase, async: false
 
   import Mox
+  import Contract.AccountsFixtures
 
   alias Contract.Command
   alias Contract.Change
   alias Contract.Context
   alias Contract.Gateway
+  alias Contract.Documents
   alias Contract.IO.R2Stub
   alias Contract.Runtime
 
   setup :set_mox_from_context
   setup :verify_on_exit!
 
-  @ctx %Context{}
+  @ctx %Context{
+    user: %Contract.Accounts.User{
+      id: "00000000-0000-0000-0000-0000000000ab",
+      email: "mcp-plug@example.test"
+    }
+  }
 
   setup do
     R2Stub.setup()
@@ -103,6 +110,7 @@ defmodule ContractWeb.MCP.MCPPlugTest do
       assert env["result"]["protocolVersion"] == "2024-11-05"
       assert env["result"]["serverInfo"]["name"] == "contract-studio"
       assert is_map(env["result"]["capabilities"]["tools"])
+      assert is_map(env["result"]["capabilities"]["resources"])
     end
   end
 
@@ -141,6 +149,119 @@ defmodule ContractWeb.MCP.MCPPlugTest do
     end
   end
 
+  describe "method: resources/list and resources/read" do
+    test "returns MCP resource list/read shapes scoped to the bearer owner", %{conn: conn} do
+      user = user_fixture()
+      ctx = Context.for_user(user)
+      doc_id = create_doc(ctx, title: "Plug Resource Doc")
+      token = Phoenix.Token.sign(ContractWeb.Endpoint, "api_token", %{user_id: user.id})
+
+      list_resp = jsonrpc_call(conn, token, 21, "resources/list", %{})
+      assert list_resp.status == 200
+      {:ok, list_env} = Jason.decode(list_resp.resp_body)
+      assert is_list(list_env["result"]["resources"])
+      uris = Enum.map(list_env["result"]["resources"], & &1["uri"])
+      assert "document://#{doc_id}/state" in uris
+
+      read_resp =
+        jsonrpc_call(conn, token, 22, "resources/read", %{
+          "uri" => "document://#{doc_id}/state"
+        })
+
+      assert read_resp.status == 200
+      {:ok, read_env} = Jason.decode(read_resp.resp_body)
+      assert %{"contents" => [%{"uri" => uri, "text" => text}]} = read_env["result"]
+      assert uri == "document://#{doc_id}/state"
+      assert {:ok, %{"document_id" => ^doc_id}} = Jason.decode(text)
+    end
+  end
+
+  describe "auth — api_token owner scoping" do
+    test "document tools only see the persisted token user's documents", %{conn: conn} do
+      user = user_fixture()
+      other_user = user_fixture()
+      user_ctx = Context.for_user(user)
+      other_ctx = Context.for_user(other_user)
+
+      own_doc_id = create_doc(user_ctx, title: "Token Owned Searchable")
+      other_doc_id = create_doc(other_ctx, title: "Token Foreign Searchable")
+
+      token = Phoenix.Token.sign(ContractWeb.Endpoint, "api_token", %{user_id: user.id})
+
+      search_resp =
+        jsonrpc_call(conn, token, 10, "tools/call", %{
+          "name" => "studio.search_documents",
+          "arguments" => %{"query" => "Searchable"}
+        })
+
+      assert search_resp.status == 200
+      {:ok, search_env} = Jason.decode(search_resp.resp_body)
+      [%{"text" => search_text}] = search_env["result"]["content"]
+      {:ok, search_payload} = Jason.decode(search_text)
+      result_ids = Enum.map(search_payload["results"], & &1["document_id"])
+      assert own_doc_id in result_ids
+      refute other_doc_id in result_ids
+
+      own_get_resp =
+        jsonrpc_call(conn, token, 11, "tools/call", %{
+          "name" => "studio.get_document",
+          "arguments" => %{"document_id" => own_doc_id}
+        })
+
+      {:ok, own_get_env} = Jason.decode(own_get_resp.resp_body)
+      assert own_get_env["result"]["isError"] == false
+
+      foreign_get_resp =
+        jsonrpc_call(conn, token, 12, "tools/call", %{
+          "name" => "studio.get_document",
+          "arguments" => %{"document_id" => other_doc_id}
+        })
+
+      {:ok, foreign_get_env} = Jason.decode(foreign_get_resp.resp_body)
+      assert foreign_get_env["error"]["code"] == -32_001
+
+      own_submit_resp =
+        jsonrpc_call(conn, token, 13, "tools/call", %{
+          "name" => "studio.submit_action",
+          "arguments" => %{
+            "action" => %{
+              "kind" => "rename_document",
+              "document_id" => own_doc_id,
+              "actor_type" => "user",
+              "actor_id" => user.id,
+              "base_revision" => 1,
+              "idempotency_key" => "api-token-own-rename",
+              "payload" => %{"title" => "Token Renamed"}
+            }
+          }
+        })
+
+      {:ok, own_submit_env} = Jason.decode(own_submit_resp.resp_body)
+      assert own_submit_env["result"]["isError"] == false
+
+      foreign_submit_resp =
+        jsonrpc_call(conn, token, 14, "tools/call", %{
+          "name" => "studio.submit_action",
+          "arguments" => %{
+            "action" => %{
+              "kind" => "rename_document",
+              "document_id" => other_doc_id,
+              "actor_type" => "user",
+              "actor_id" => user.id,
+              "base_revision" => 1,
+              "idempotency_key" => "api-token-foreign-rename",
+              "payload" => %{"title" => "Leaked Rename"}
+            }
+          }
+        })
+
+      {:ok, foreign_submit_env} = Jason.decode(foreign_submit_resp.resp_body)
+      assert foreign_submit_env["error"]["code"] == -32_001
+      assert {:ok, other_doc} = Documents.get(other_ctx, other_doc_id)
+      assert other_doc.title == "Token Foreign Searchable"
+    end
+  end
+
   describe "method: tools/call — studio.get_document" do
     test "returns 401 without bearer", %{conn: conn} do
       doc_id = create_doc()
@@ -159,7 +280,7 @@ defmodule ContractWeb.MCP.MCPPlugTest do
       assert resp.status == 401
     end
 
-    test "returns the projection for a valid route_ref + valid doc_id", %{conn: conn} do
+    test "forbidden when a pinned route_ref has no user context", %{conn: conn} do
       doc_id = create_doc()
       {:ok, token} = Gateway.issue_route_ref(@ctx, %{purpose: "get", document_id: doc_id})
 
@@ -171,16 +292,12 @@ defmodule ContractWeb.MCP.MCPPlugTest do
 
       assert resp.status == 200
       {:ok, env} = Jason.decode(resp.resp_body)
-      assert env["result"]["isError"] == false
-      [%{"type" => "text", "text" => text}] = env["result"]["content"]
-      assert {:ok, decoded} = Jason.decode(text)
-      assert decoded["document_id"] == doc_id
-      assert decoded["revision"] >= 1
+      assert env["error"]["code"] == -32_001
     end
 
     test "forbidden when route_ref pins a different document", %{conn: conn} do
       doc_id = create_doc()
-      other = Ecto.UUID.generate()
+      other = create_doc(title: "Other pinned doc")
 
       {:ok, token} = Gateway.issue_route_ref(@ctx, %{purpose: "wrong", document_id: other})
 
@@ -211,8 +328,10 @@ defmodule ContractWeb.MCP.MCPPlugTest do
 
   describe "method: tools/call — studio.submit_action" do
     test "drives Runtime.apply and produces a Change via :rename_document", %{conn: conn} do
-      doc_id = create_doc()
-      {:ok, token} = Gateway.issue_route_ref(@ctx, %{purpose: "submit", document_id: doc_id})
+      user = user_fixture()
+      ctx = Context.for_user(user)
+      doc_id = create_doc(ctx, [])
+      token = Phoenix.Token.sign(ContractWeb.Endpoint, "api_token", %{user_id: user.id})
 
       args = %{
         "name" => "studio.submit_action",
@@ -221,7 +340,7 @@ defmodule ContractWeb.MCP.MCPPlugTest do
             "kind" => "rename_document",
             "document_id" => doc_id,
             "actor_type" => "user",
-            "actor_id" => Ecto.UUID.generate(),
+            "actor_id" => user.id,
             "base_revision" => 1,
             "idempotency_key" => "plug-rn-1",
             "payload" => %{"title" => "Plug-Renamed"}
@@ -238,8 +357,8 @@ defmodule ContractWeb.MCP.MCPPlugTest do
 
       [%{"text" => text}] = env["result"]["content"]
       {:ok, payload} = Jason.decode(text)
-      assert payload["action_kind"] == "rename_document"
-      assert payload["applied_revision"] == 2
+      assert payload["command_kind"] == "rename_document"
+      assert payload["result_revision"] == 2
     end
 
     test "returns -32602 for an invalid action shape", %{conn: conn} do
@@ -259,8 +378,10 @@ defmodule ContractWeb.MCP.MCPPlugTest do
 
   describe "method: tools/call — studio.get_change_history and studio.list_marks" do
     test "studio.get_change_history returns recorded changes", %{conn: conn} do
-      doc_id = create_doc()
-      {:ok, token} = Gateway.issue_route_ref(@ctx, %{purpose: "hist", document_id: doc_id})
+      user = user_fixture()
+      ctx = Context.for_user(user)
+      doc_id = create_doc(ctx, [])
+      token = Phoenix.Token.sign(ContractWeb.Endpoint, "api_token", %{user_id: user.id})
 
       resp =
         jsonrpc_call(conn, token, 1, "tools/call", %{
@@ -278,8 +399,10 @@ defmodule ContractWeb.MCP.MCPPlugTest do
     end
 
     test "studio.list_marks returns the marks list", %{conn: conn} do
-      doc_id = create_doc()
-      {:ok, token} = Gateway.issue_route_ref(@ctx, %{purpose: "marks", document_id: doc_id})
+      user = user_fixture()
+      ctx = Context.for_user(user)
+      doc_id = create_doc(ctx, [])
+      token = Phoenix.Token.sign(ContractWeb.Endpoint, "api_token", %{user_id: user.id})
 
       resp =
         jsonrpc_call(conn, token, 1, "tools/call", %{
@@ -425,20 +548,25 @@ defmodule ContractWeb.MCP.MCPPlugTest do
   # helpers
   # ---------------------------------------------------------------------------
 
-  defp create_doc do
+  defp create_doc(opts \\ []) do
+    create_doc(@ctx, opts)
+  end
+
+  defp create_doc(%Context{} = ctx, opts) do
     doc_id = Ecto.UUID.generate()
+    title = Keyword.get(opts, :title, "Plug Doc")
 
     action = %Command{
       kind: :create_document,
       document_id: doc_id,
       actor_type: :user,
-      actor_id: Ecto.UUID.generate(),
+      actor_id: ctx.user.id,
       base_revision: 0,
       idempotency_key: "create-#{doc_id}",
-      payload: %{"title" => "Plug Doc", "type_key" => "nda"}
+      payload: %{"title" => title, "type_key" => "nda"}
     }
 
-    {:ok, %Change{}} = Runtime.apply(@ctx, action)
+    {:ok, %Change{}} = Runtime.apply(ctx, action)
     doc_id
   end
 

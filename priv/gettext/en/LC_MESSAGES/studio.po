@@ -668,7 +668,7 @@ msgstr ""
 
 #: lib/contract_web/live/studio/components/modal_host.ex:324
 #, elixir-autogen, elixir-format, fuzzy
-msgid "Link to workspace field"
+msgid "Link to shared document fact"
 msgstr ""
 
 #: lib/contract_web/live/studio/components/modal_host.ex:858

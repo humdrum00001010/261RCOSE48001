@@ -28,9 +28,9 @@ defmodule ContractWeb.Live.Studio.Components.ModalHost do
   not need a new state field. The type-picker is also opened by the
   global Cmd+K command palette — the parent LV's
   `handle_event("command_palette_picked", %{"kind" =>
-  "set_contract_type"}, ...)` flips
+  "document.type.set"}, ...)` flips
   `studio_state.type_picker_open?` to true when no `type_key` is
-  supplied, and each picker row fires `set_contract_type` with the
+  supplied, and each picker row fires `document.type.set` with the
   chosen `type_key` (which the parent's `event_to_action/3` funnel
   then converts into an Action and flips the flag back to false).
 
@@ -40,14 +40,14 @@ defmodule ContractWeb.Live.Studio.Components.ModalHost do
   here — so the parent's `event_to_action/3` funnel can map them to
   Actions:
 
-      "open_document"               (picker)
-      "rename_document"             (metadata)
-      "set_contract_type"           (metadata)
-      "upload_document"             (upload)
-      "request_export"              (export picker)
-      "create_variant"              (migration wizard, step 3)
-      "create_document"             (new-document modal, via Action kind)
-      "resolve_revoke"              (reconcile)
+      "document.open"              (picker)
+      "document.rename"            (metadata)
+      "document.type.set"           (metadata)
+      "document.upload"             (upload)
+      "export.request"              (export picker)
+      "conversion.create_variant"              (migration wizard, step 3)
+      "document.create"             (new-document modal)
+      "revoke.resolve"              (reconcile)
 
   Component-local events (target=@myself):
 
@@ -67,8 +67,8 @@ defmodule ContractWeb.Live.Studio.Components.ModalHost do
     1. Pass `migration_plan` assign — a `%Contract.Conversion.Plan{}` —
        once the user has picked a target type. While `migration_plan`
        is `nil`, step 1 still renders the target-type dropdown.
-    2. Handle the `start_type_conversion`, `set_field_migration_strategy`,
-       and `create_variant` events that bubble out of the wizard.
+    2. Handle the `conversion.start`, `conversion.field_strategy.set`,
+       and `conversion.create_variant` events that bubble out of the wizard.
   """
 
   use ContractWeb, :live_component
@@ -78,9 +78,9 @@ defmodule ContractWeb.Live.Studio.Components.ModalHost do
   # The strategy enum mandated by SPEC for field migration. Rendered as
   # the dropdown options on step 2 of the wizard. Wave 4 will validate
   # these against `Contract.Conversion`.
-  @field_strategies ~w(copy_once link_to_matter_field derive reference_only ignore ask_user)a
+  @field_strategies ~w(copy_once link_to_shared_fact derive reference_only ignore ask_user)a
 
-  @export_formats ~w(pdf docx hwpx html)
+  @export_formats ~w(pdf docx hwpx markdown lawyer_packet)
 
   # --- attrs --------------------------------------------------------------
 
@@ -88,6 +88,7 @@ defmodule ContractWeb.Live.Studio.Components.ModalHost do
   attr :studio_state, :map, required: true
   attr :current_scope, :map, required: true
   attr :projection, :map, default: %{}
+  attr :document_upload, :any, default: nil
   attr :reconcile_modal_open?, :boolean, default: false
   attr :reconcile_request, :map, default: nil
 
@@ -105,7 +106,7 @@ defmodule ContractWeb.Live.Studio.Components.ModalHost do
   # Optional — parent LV passes a built `%Contract.Conversion.Plan{}`
   # once the user has picked a target type. While `nil`, the wizard
   # renders the target-type dropdown so the user can kick the planner
-  # off via `start_type_conversion`.
+  # off via `conversion.start`.
   attr :migration_plan, :any, default: nil
 
   # Wave 4.5 — parent flips this to `true` after the async
@@ -149,6 +150,7 @@ defmodule ContractWeb.Live.Studio.Components.ModalHost do
       |> assign(:studio_state, Map.get(assigns, :studio_state))
       |> assign(:current_scope, Map.get(assigns, :current_scope))
       |> assign(:projection, Map.get(assigns, :projection, %{}))
+      |> assign(:document_upload, Map.get(assigns, :document_upload))
       |> assign(:reconcile_modal_open?, Map.get(assigns, :reconcile_modal_open?, false))
       |> assign(:reconcile_request, Map.get(assigns, :reconcile_request))
       |> assign(:documents, Map.get(assigns, :documents, []))
@@ -322,7 +324,10 @@ defmodule ContractWeb.Live.Studio.Components.ModalHost do
   end
 
   defp strategy_label(:copy_once), do: dgettext("studio", "Copy once (snapshot)")
-  defp strategy_label(:link_to_matter_field), do: dgettext("studio", "Link to workspace field")
+
+  defp strategy_label(:link_to_shared_fact),
+    do: dgettext("studio", "Link to shared document fact")
+
   defp strategy_label(:derive), do: dgettext("studio", "Derive")
   defp strategy_label(:reference_only), do: dgettext("studio", "Reference only")
   defp strategy_label(:ignore), do: dgettext("studio", "Ignore")
@@ -331,11 +336,13 @@ defmodule ContractWeb.Live.Studio.Components.ModalHost do
   defp format_label(:pdf), do: "PDF"
   defp format_label(:docx), do: "Word (.docx)"
   defp format_label(:hwpx), do: "Hangul (.hwpx)"
-  defp format_label(:html), do: "HTML"
+  defp format_label(:markdown), do: "Markdown"
+  defp format_label(:lawyer_packet), do: "Lawyer packet"
   defp format_label("pdf"), do: "PDF"
   defp format_label("docx"), do: "Word (.docx)"
   defp format_label("hwpx"), do: "Hangul (.hwpx)"
-  defp format_label("html"), do: "HTML"
+  defp format_label("markdown"), do: "Markdown"
+  defp format_label("lawyer_packet"), do: "Lawyer packet"
   defp format_label(other), do: to_string(other)
 
   # --- render -----------------------------------------------------------
@@ -460,7 +467,7 @@ defmodule ContractWeb.Live.Studio.Components.ModalHost do
           <li :for={doc <- @filtered_documents} id={"picker-#{doc_field(doc, :id)}"}>
             <button
               type="button"
-              phx-click="open_document"
+              phx-click="document.open"
               phx-value-document_id={doc_field(doc, :id)}
             >
               <span class="font-medium">{doc_field(doc, :title)}</span>
@@ -485,10 +492,7 @@ defmodule ContractWeb.Live.Studio.Components.ModalHost do
       assigns
       |> assign(:current_title, Map.get(projection, :title))
       |> assign(:current_type_key, Map.get(projection, :type_key))
-      |> assign(
-        :current_notes,
-        projection |> Map.get(:metadata, %{}) |> Map.get(:notes, "")
-      )
+      |> assign(:current_notes, projection |> Map.get(:metadata, %{}) |> Map.get(:notes, ""))
 
     ~H"""
     <div
@@ -527,28 +531,16 @@ defmodule ContractWeb.Live.Studio.Components.ModalHost do
             ✕
           </button>
         </header>
-
-        <.form
-          for={%{}}
-          as={:metadata}
-          phx-submit="rename_document"
-          data-role="metadata-rename-form"
-        >
-          <.input
-            type="text"
-            name="title"
-            value={@current_title}
-            label={dgettext("studio", "Title")}
-          />
+        <.form for={%{}} as={:metadata} phx-submit="document.rename" data-role="metadata-rename-form">
+          <.input type="text" name="title" value={@current_title} label={dgettext("studio", "Title")} />
           <button type="submit" class="btn btn-primary btn-sm mt-2">
             {dgettext("studio", "Save title")}
           </button>
         </.form>
-
         <.form
           for={%{}}
           as={:type}
-          phx-submit="set_contract_type"
+          phx-submit="document.type.set"
           class="mt-4"
           data-role="metadata-type-form"
         >
@@ -564,11 +556,10 @@ defmodule ContractWeb.Live.Studio.Components.ModalHost do
             {dgettext("studio", "Apply type")}
           </button>
         </.form>
-
         <.form
           for={%{}}
           as={:notes}
-          phx-submit="update_metadata"
+          phx-submit="document.metadata.update"
           class="mt-4"
           data-role="metadata-notes-form"
         >
@@ -625,37 +616,32 @@ defmodule ContractWeb.Live.Studio.Components.ModalHost do
             ✕
           </button>
         </header>
-
         <.form
           for={%{}}
           as={:upload}
-          phx-submit="upload_document"
-          phx-change="upload_document"
+          phx-submit="document.upload"
+          phx-change="document.upload.validate"
           data-role="upload-form"
         >
-          <%!--
-            `<.live_file_input>` requires the parent LV to declare
-            `allow_upload/3`. Until that lands in StudioLive we render a
-            plain file input so the form shell is real and clickable;
-            the parent's `event_to_action/3` already maps
-            `"upload_document"` regardless of payload shape.
-          --%>
-          <.input
-            type="file"
-            name="upload"
-            value={nil}
-            label={dgettext("studio", "Choose a file")}
-            accept=".pdf,.docx,.hwpx,.txt,.md"
-            data-role="upload-file-input"
-          />
-
-          <.input
-            type="text"
-            name="title"
-            value=""
-            label={dgettext("studio", "Title (optional)")}
-          />
-
+          <label class="block text-sm font-medium text-base-content/80">
+            {dgettext("studio", "Choose a file")}
+          </label>
+          <%= if upload_config = @document_upload do %>
+            <.live_file_input
+              upload={upload_config}
+              class="file-input file-input-bordered file-input-sm mt-1 w-full"
+              data-role="upload-file-input"
+            />
+          <% else %>
+            <.input
+              type="file"
+              name="upload"
+              value={nil}
+              accept=".pdf,.docx,.hwpx,.txt,.md"
+              data-role="upload-file-input"
+            />
+          <% end %>
+          <.input type="text" name="title" value="" label={dgettext("studio", "Title (optional)")} />
           <button type="submit" class="btn btn-primary btn-sm mt-2">
             {dgettext("studio", "Upload")}
           </button>
@@ -733,14 +719,17 @@ defmodule ContractWeb.Live.Studio.Components.ModalHost do
     ~H"""
     <section data-role="migration-step-plan" data-step="plan">
       <p class="text-sm text-base-content/70 mb-3">
-        {dgettext("studio", "Pick the target contract type. The planner will report which fields can carry over.")}
+        {dgettext(
+          "studio",
+          "Pick the target contract type. The planner will report which fields can carry over."
+        )}
       </p>
 
       <.form
         for={%{}}
         as={:plan}
         phx-change="set_migration_target"
-        phx-submit="start_type_conversion"
+        phx-submit="conversion.start"
         phx-target={@myself}
         data-role="migration-target-form"
       >
@@ -772,7 +761,9 @@ defmodule ContractWeb.Live.Studio.Components.ModalHost do
             <span>
               <%= if @migration_plan.source_type_key do %>
                 {ContractTypes.display_name(@migration_plan.source_type_key)}
-                <span class="font-mono text-xs text-base-content/60">{@migration_plan.source_type_key}</span>
+                <span class="font-mono text-xs text-base-content/60">
+                  {@migration_plan.source_type_key}
+                </span>
               <% else %>
                 <span class="font-mono">—</span>
               <% end %>
@@ -782,18 +773,24 @@ defmodule ContractWeb.Live.Studio.Components.ModalHost do
             <span class="font-medium">{dgettext("studio", "Target type:")}</span>
             <span>
               {ContractTypes.display_name(@migration_plan.target_type_key)}
-              <span class="font-mono text-xs text-base-content/60">{@migration_plan.target_type_key}</span>
+              <span class="font-mono text-xs text-base-content/60">
+                {@migration_plan.target_type_key}
+              </span>
             </span>
           </p>
           <p>
             <span class="font-medium">{dgettext("studio", "Fields to consider:")}</span>
             <span>{length(@migration_plan.field_plans || [])}</span>
           </p>
-          <p :if={@migration_plan.impact && @migration_plan.impact[:compatible?] == false}
-             class="text-warning"
-             data-role="migration-incompatible-warning"
+          <p
+            :if={@migration_plan.impact && @migration_plan.impact[:compatible?] == false}
+            class="text-warning"
+            data-role="migration-incompatible-warning"
           >
-            {dgettext("studio", "These types are not declared compatible — every field defaults to Ask user.")}
+            {dgettext(
+              "studio",
+              "These types are not declared compatible — every field defaults to Ask user."
+            )}
           </p>
         </div>
       <% else %>
@@ -801,7 +798,9 @@ defmodule ContractWeb.Live.Studio.Components.ModalHost do
           class="border-l-2 border-base-300 bg-base-200/60 p-4 rounded-md text-sm mt-3"
           data-role="migration-plan-prompt"
         >
-          <span class="text-base-content/70">{dgettext("studio", "Choose a target type then run the planner.")}</span>
+          <span class="text-base-content/70">
+            {dgettext("studio", "Choose a target type then run the planner.")}
+          </span>
         </div>
       <% end %>
 
@@ -818,7 +817,7 @@ defmodule ContractWeb.Live.Studio.Components.ModalHost do
           :if={is_nil(@migration_plan)}
           type="button"
           class="btn btn-secondary btn-sm"
-          phx-click="start_type_conversion"
+          phx-click="conversion.start"
           phx-value-target_type_key={@migration_target}
           disabled={is_nil(@migration_target)}
           data-role="migration-run-planner"
@@ -862,7 +861,9 @@ defmodule ContractWeb.Live.Studio.Components.ModalHost do
 
       <%= if @plans == [] do %>
         <div class="alert alert-info" data-role="migration-fields-empty">
-          <span>{dgettext("studio", "No source fields to migrate — go back and run the planner first.")}</span>
+          <span>
+            {dgettext("studio", "No source fields to migrate — go back and run the planner first.")}
+          </span>
         </div>
       <% end %>
 
@@ -874,9 +875,10 @@ defmodule ContractWeb.Live.Studio.Components.ModalHost do
           </tr>
         </thead>
         <tbody>
-          <tr :for={fp <- @plans}
-              data-role="migration-field-row"
-              data-source-field-id={fp.source_field_id}
+          <tr
+            :for={fp <- @plans}
+            data-role="migration-field-row"
+            data-source-field-id={fp.source_field_id}
           >
             <td>
               <span class="font-mono text-xs">{fp.source_field_id}</span>
@@ -888,7 +890,7 @@ defmodule ContractWeb.Live.Studio.Components.ModalHost do
               <.form
                 for={%{}}
                 as={:strategy}
-                phx-change="set_field_migration_strategy"
+                phx-change="conversion.field_strategy.set"
                 data-role="migration-field-form"
               >
                 <input type="hidden" name="source_field_id" value={fp.source_field_id} />
@@ -933,7 +935,10 @@ defmodule ContractWeb.Live.Studio.Components.ModalHost do
     ~H"""
     <section data-role="migration-step-confirm" data-step="create-variant">
       <p class="text-sm text-base-content/70 mb-3">
-        {dgettext("studio", "Review and create the converted variant. This does not modify the original document.")}
+        {dgettext(
+          "studio",
+          "Review and create the converted variant. This does not modify the original document."
+        )}
       </p>
 
       <dl class="text-sm space-y-1 mb-4" data-role="migration-summary">
@@ -954,7 +959,7 @@ defmodule ContractWeb.Live.Studio.Components.ModalHost do
       <.form
         for={%{}}
         as={:variant}
-        phx-submit="create_variant"
+        phx-submit="conversion.create_variant"
         data-role="migration-create-form"
       >
         <input type="hidden" name="target_type_key" value={@migration_target || ""} />
@@ -1028,7 +1033,10 @@ defmodule ContractWeb.Live.Studio.Components.ModalHost do
         </header>
 
         <p class="text-sm text-base-content/70 mb-3">
-          {dgettext("studio", "Another change has touched the same content since you asked to revoke. Choose how to proceed.")}
+          {dgettext(
+            "studio",
+            "Another change has touched the same content since you asked to revoke. Choose how to proceed."
+          )}
         </p>
 
         <pre
@@ -1040,7 +1048,7 @@ defmodule ContractWeb.Live.Studio.Components.ModalHost do
           <button
             type="button"
             class="btn btn-sm"
-            phx-click="resolve_revoke"
+            phx-click="revoke.resolve"
             phx-value-resolution="cancel"
             data-role="reconcile-cancel"
           >
@@ -1049,7 +1057,7 @@ defmodule ContractWeb.Live.Studio.Components.ModalHost do
           <button
             type="button"
             class="btn btn-warning btn-sm"
-            phx-click="resolve_revoke"
+            phx-click="revoke.resolve"
             phx-value-resolution="force"
             data-role="reconcile-force"
           >
@@ -1062,18 +1070,12 @@ defmodule ContractWeb.Live.Studio.Components.ModalHost do
   end
 
   # Per SPEC.md §18 the contract type is set AFTER creation via
-  # `Action(:set_contract_type)` — by the user via Cmd+K or by the
+  # `Action(:document.type.set)` — by the user via Cmd+K or by the
   # agent once it has read enough context. The new-document modal
-  # therefore renders ONLY the title input (required) and a read-only
-  # matter label. A `matter_id` hidden input + the implicit current
-  # scope drive the create; `type_key` is intentionally omitted so the
-  # action lands with `type_key: nil`.
+  # therefore renders ONLY the title input (required). Ownership comes
+  # from `current_scope`; `type_key` is intentionally omitted so the
+  # command lands with `type_key: nil`.
   defp render_new_document_modal(assigns) do
-    matter = assigns.current_scope && Map.get(assigns.current_scope, :matter)
-    matter_id = matter && Map.get(matter, :id)
-    matter_name = matter && Map.get(matter, :name)
-    assigns = assigns |> assign(:matter_id, matter_id) |> assign(:matter_name, matter_name)
-
     ~H"""
     <div
       id={"#{@id}-new-document"}
@@ -1110,29 +1112,11 @@ defmodule ContractWeb.Live.Studio.Components.ModalHost do
 
         <.form
           for={%{}}
-          as={:command_palette_picked}
-          phx-submit="command_palette_picked"
+          as={:document}
+          phx-submit="document.create"
           data-role="new-document-form"
         >
-          <%!-- Routed through command_palette_picked so the parent's
-                event_to_action funnel can build the right Action kind.
-                No `type_key` field — SPEC.md §18 sets it later. --%>
-          <input type="hidden" name="kind" value="create_document" />
-          <input :if={@matter_id} type="hidden" name="matter_id" value={@matter_id} />
-
-          <%!-- Workspace (internal: Matter) is implicit from the current
-                scope; show as a read-only label so the user knows which
-                workspace the new document will live in. User-facing label
-                is "Workspace" per SPEC.md Document-pivot. --%>
-          <div class="form-control mb-2" data-role="new-document-matter">
-            <label class="label py-1">
-              <span class="label-text text-sm">{dgettext("studio", "Workspace")}</span>
-            </label>
-            <p class="text-sm text-base-content/70" data-role="new-document-matter-name">
-              {@matter_name || dgettext("studio", "—")}
-            </p>
-          </div>
-
+          <%!-- No `type_key` field — SPEC.md §18 sets it later. --%>
           <.input
             type="text"
             name="title"
@@ -1224,7 +1208,7 @@ defmodule ContractWeb.Live.Studio.Components.ModalHost do
           <li :for={format <- @export_formats} id={"export-#{format}"}>
             <button
               type="button"
-              phx-click="request_export"
+              phx-click="export.request"
               phx-value-format={format}
               data-format={format}
             >
@@ -1238,10 +1222,10 @@ defmodule ContractWeb.Live.Studio.Components.ModalHost do
   end
 
   # State-driven export picker (Wave 3C1 small-task #77). Opened by the
-  # Cmd+K command palette which routes `request_export` (no format) through
+  # Cmd+K command palette which routes `export.request` (no format) through
   # the parent LV; the parent flips `studio_state.export_picker_open?` and
-  # this dialog renders. The form submits `request_export` with the chosen
-  # `format`, the parent then emits `Action(:request_export)` and flips the
+  # this dialog renders. The form submits `export.request` with the chosen
+  # `format`, the parent then emits `Action(:export.request)` and flips the
   # flag back to false. Hairline borders only per the studio visual lang.
   defp render_export_picker(assigns) do
     ~H"""
@@ -1271,10 +1255,10 @@ defmodule ContractWeb.Live.Studio.Components.ModalHost do
         <h2 id={"#{@id}-export-picker-title"} class="font-serif text-lg mb-4">
           {dgettext("studio", "Export format")}
         </h2>
-        <form phx-submit="request_export">
+        <form phx-submit="export.request">
           <fieldset class="space-y-2">
             <label
-              :for={fmt <- ~w(hwpx pdf docx html)a}
+              :for={fmt <- @export_formats}
               class="flex items-center gap-2 px-3 py-2 border border-base-200 rounded-md cursor-pointer hover:bg-base-200"
               data-role="export-picker-row"
               data-format={fmt}
@@ -1309,10 +1293,10 @@ defmodule ContractWeb.Live.Studio.Components.ModalHost do
 
   # Set-contract-type picker. Opened by Cmd+K → "Set contract type…" or by
   # the mobile chat-command-button (both routes fire `command_palette_picked`
-  # with `kind=set_contract_type` and no `type_key`; the parent LV catches
-  # that case and `send_update`s `modal_param: "type_picker"` here).
+  # with `kind=document.type.set` and no `type_key`; the parent LV catches
+  # that case and opens this modal).
   #
-  # Each row submits the `set_contract_type` Action directly (bubbles to
+  # Each row submits the `document.type.set` Action directly (bubbles to
   # the parent LV) with the picked `type_key`. The list is sourced from
   # `Contract.ContractTypes.list/0` so it stays in sync with the registry.
   defp render_type_picker(assigns) do
@@ -1361,8 +1345,7 @@ defmodule ContractWeb.Live.Studio.Components.ModalHost do
           <li :for={{label, key, version} <- @contract_types} id={"type-picker-#{key}"}>
             <button
               type="button"
-              phx-click="command_palette_picked"
-              phx-value-kind="set_contract_type"
+              phx-click="document.type.set"
               phx-value-type_key={key}
               data-type-key={key}
               data-role="type-picker-row"
@@ -1376,5 +1359,4 @@ defmodule ContractWeb.Live.Studio.Components.ModalHost do
     </div>
     """
   end
-
 end

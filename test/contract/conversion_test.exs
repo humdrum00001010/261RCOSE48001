@@ -154,7 +154,7 @@ defmodule Contract.ConversionTest do
   describe "create_variant/2" do
     test "produces a new Document with parent + new type_key + a Change" do
       s = scope()
-      {m, source} = build_source_doc(s, "nda_v1")
+      {_m, source} = build_source_doc(s, "nda_v1")
       {:ok, plan} = Conversion.plan(s, source.id, "service_agreement_v1", [])
 
       # The default plan from nda→service_agreement is fully compatible
@@ -165,8 +165,8 @@ defmodule Contract.ConversionTest do
 
       assert new_doc.parent_document_id == source.id
       assert new_doc.type_key == "service_agreement_v1"
-      assert new_doc.matter_id == m.id
-      assert change.action_kind == "create_converted_variant"
+      assert new_doc.owner_id == source.owner_id
+      assert change.command_kind == "create_converted_variant"
       assert change.document_id == new_doc.id
     end
 
@@ -266,14 +266,14 @@ defmodule Contract.ConversionTest do
       assert {:error, :forbidden} = Conversion.create_variant(s, plan)
     end
 
-    test "the resulting Change has inverse_ops for round-trip via Engine.inverse" do
+    test "the resulting Change has inverse for round-trip via Engine.inverse" do
       s = scope()
       {_m, source} = build_source_doc(s, "nda_v1")
       {:ok, plan} = Conversion.plan(s, source.id, "service_agreement_v1", [])
 
       {:ok, {_new_doc, change}} = Conversion.create_variant(s, plan)
-      # The Engine builds inverse_ops for :create_converted_variant.
-      assert is_list(change.inverse_ops)
+      # The Engine builds inverse for :create_converted_variant.
+      assert is_list(change.inverse)
     end
   end
 
@@ -281,7 +281,7 @@ defmodule Contract.ConversionTest do
     test "matches the SPEC.md §19 enumeration" do
       assert Conversion.allowed_strategies() == [
                :copy_once,
-               :link_to_matter_field,
+               :link_to_shared_fact,
                :derive,
                :reference_only,
                :ignore,
@@ -310,7 +310,8 @@ defmodule Contract.ConversionTest do
 
       assert Enum.all?(lineage, fn row ->
                %FieldLineage{strategy: strat, source_document_id: sdoc} = row
-               strat in [:copy_once, :link_to_matter_field, :derive, :reference_only] and
+
+               strat in [:copy_once, :link_to_shared_fact, :derive, :reference_only] and
                  sdoc == source.id
              end)
     end

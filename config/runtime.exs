@@ -22,10 +22,7 @@ end
 if config_env() != :test do
   config :contract, ContractWeb.Endpoint,
     http: [
-      port:
-        String.to_integer(
-          System.get_env("SERVER_PORT") || System.get_env("PORT") || "4000"
-        )
+      port: String.to_integer(System.get_env("SERVER_PORT") || System.get_env("PORT") || "4000")
     ]
 end
 
@@ -44,8 +41,7 @@ if config_env() != :test do
   scheme = scheme || "https"
   endpoint_port = port || if(scheme == "https", do: 443, else: 80)
 
-  config :contract, ContractWeb.Endpoint,
-    url: [host: host, port: endpoint_port, scheme: scheme]
+  config :contract, ContractWeb.Endpoint, url: [host: host, port: endpoint_port, scheme: scheme]
 end
 
 # ---------------------------------------------------------------------------
@@ -98,8 +94,7 @@ end
 if System.get_env("MAIL_FROM_ADDRESS") not in [nil, ""] do
   config :contract,
          :mail_from,
-         {System.get_env("MAIL_FROM_NAME", "Contract"),
-          System.fetch_env!("MAIL_FROM_ADDRESS")}
+         {System.get_env("MAIL_FROM_NAME", "Contract"), System.fetch_env!("MAIL_FROM_ADDRESS")}
 end
 
 # ---------------------------------------------------------------------------

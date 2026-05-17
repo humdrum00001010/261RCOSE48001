@@ -4,7 +4,7 @@ defmodule Contract.Documents.FieldLineage do
   type-conversion variants (SPEC.md §19 + invariant 14).
 
   Inserted by `Contract.Conversion.create_variant/2` for every field
-  whose strategy preserved data (`:copy_once`, `:link_to_matter_field`,
+  whose strategy preserved data (`:copy_once`, `:link_to_shared_fact`,
   `:derive`, or `:reference_only`). Ignored / asked-user fields produce
   no row.
 
@@ -29,7 +29,7 @@ defmodule Contract.Documents.FieldLineage do
     field :source_field_id, :string
 
     field :strategy, Ecto.Enum,
-      values: [:copy_once, :link_to_matter_field, :derive, :reference_only]
+      values: [:copy_once, :link_to_shared_fact, :link_to_matter_field, :derive, :reference_only]
 
     field :justification, :string
     timestamps()

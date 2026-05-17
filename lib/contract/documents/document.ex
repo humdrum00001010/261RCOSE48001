@@ -2,16 +2,16 @@ defmodule Contract.Documents.Document do
   @moduledoc """
   Ecto schema for a Document.
 
-  A Document is the unit a Studio user edits. It belongs to a Matter
-  (the ACL boundary) and may reference a contract type from
-  `Contract.ContractTypes` via `type_key`.
+  A Document is the primary user-facing object in Contract Studio
+  (SPEC.md v0.5 §7.1). It is owned by a single user via `:owner_id`;
+  the Matter container is gone in v1.
 
   ## Untyped documents (SPEC.md §18)
 
   `type_key` is nullable: per SPEC.md §18 the contract type is set
   AFTER the document is created — either by the user via Cmd+K or by
   the agent once it has read enough of the document. A freshly-created
-  document therefore has `type_key: nil`; `Action(:set_contract_type)`
+  document therefore has `type_key: nil`; `Command(:set_contract_type)`
   fills it in later.
 
   ## Variants
@@ -43,18 +43,21 @@ defmodule Contract.Documents.Document do
   @foreign_key_type :binary_id
 
   schema "documents" do
-    field :matter_id, :binary_id
+    field :owner_id, :binary_id
     field :title, :string
     field :type_key, :string
-    field :status, Ecto.Enum, values: [:active, :archived, :template], default: :active
+
+    field :status, Ecto.Enum,
+      values: [:draft, :importing, :editing, :reviewing, :export_ready, :archived],
+      default: :draft
+
     field :parent_document_id, :binary_id
     field :variant_of_change_id, :binary_id
     field :latest_revision, :integer, default: 0
     field :metadata, :map, default: %{}
 
     # SPEC.md v0.5 §7.1 — state_snapshot is the materialized document
-    # state at :current_revision. Session.Reducer (W4) populates both;
-    # in this foundation wave they default to empty / 0.
+    # state at :current_revision.
     field :state_snapshot, :map, default: %{}
     field :current_revision, :integer, default: 0
     timestamps()
@@ -65,14 +68,18 @@ defmodule Contract.Documents.Document do
   @doc """
   Changeset for inserting or updating a document.
 
-  `:matter_id` and `:title` are required on insert. `:type_key` is
-  optional — SPEC.md §18 sets it later via `Action(:set_contract_type)`.
+  `:owner_id` and `:title` are required on insert. `:owner_id` is derived
+  from `ctx.user.id` by the Documents context. `:type_key` is
+  optional — SPEC.md §18 sets it later via `Command(:set_contract_type)`.
+
+  v0.5: `:matter_id` is silently dropped from `attrs` if present —
+  Matter is gone in the product model.
   """
   @spec changeset(t(), map()) :: Ecto.Changeset.t()
   def changeset(document, attrs) do
     document
     |> cast(attrs, [
-      :matter_id,
+      :owner_id,
       :title,
       :type_key,
       :status,
@@ -83,7 +90,7 @@ defmodule Contract.Documents.Document do
       :state_snapshot,
       :current_revision
     ])
-    |> validate_required([:matter_id, :title])
+    |> validate_required([:owner_id, :title])
     |> validate_length(:title, min: 1, max: 300)
   end
 end

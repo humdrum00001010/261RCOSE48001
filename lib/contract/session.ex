@@ -246,7 +246,7 @@ defmodule Contract.Session do
   # accept changes from other writers (shouldn't happen with the lease,
   # but defensive).
   def handle_info({:change_committed, %Change{} = change}, data) do
-    if change.applied_revision <= data.state.revision do
+    if change.result_revision <= data.state.revision do
       {:noreply, data}
     else
       input = Store.change_to_input(change)
@@ -295,7 +295,7 @@ defmodule Contract.Session do
       case Store.append(document_id, change, data.lease.fencing_token) do
         {:ok, persisted} ->
           {:ok, new_state} = Reducer.apply(input, state)
-          {:ok, persisted, %{new_state | revision: persisted.applied_revision}}
+          {:ok, persisted, %{new_state | revision: persisted.result_revision}}
 
         {:error, {:fenced_out, _, _, _} = reason} ->
           {:fenced_out, reason}
@@ -394,7 +394,7 @@ defmodule Contract.Session do
   end
 
   defp enrich_revoke_action(%Command{payload: payload} = action, %Change{} = target_change) do
-    inverse_ops = decode_stored_ops(target_change.inverse_ops || [])
+    inverse_ops = decode_stored_ops(target_change.inverse || [])
 
     payload =
       payload
@@ -410,22 +410,22 @@ defmodule Contract.Session do
 
   defp find_overlaps(document_id, %Change{} = target_change) do
     target_refs = ref_set(target_change.affected_refs)
-    target_targets = op_target_set(target_change.ops)
+    target_targets = op_target_set(target_change.payload)
 
     later_changes =
       from(c in Change,
         where:
           c.document_id == ^document_id and
-            c.applied_revision > ^target_change.applied_revision and
+            c.result_revision > ^target_change.result_revision and
             c.id != ^target_change.id and
             c.status == :active,
-        order_by: [asc: c.applied_revision]
+        order_by: [asc: c.result_revision]
       )
       |> Repo.all()
 
     Enum.filter(later_changes, fn c ->
       refs_overlap?(target_refs, ref_set(c.affected_refs)) or
-        op_targets_overlap?(target_targets, op_target_set(c.ops))
+        op_targets_overlap?(target_targets, op_target_set(c.payload))
     end)
   end
 

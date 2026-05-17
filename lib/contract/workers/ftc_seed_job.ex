@@ -14,8 +14,8 @@ defmodule Contract.Workers.FtcSeedJob do
 
   ## Pipeline
 
-    1. `ensure_templates_matter/0` — gets or creates the system-owned
-       "FTC 표준약관" matter (NOT a user-owned matter).
+    1. `ensure_templates_matter/0` — gets or creates the legacy seed bucket
+       used by older FTC-template rows.
     2. `check_not_already_seeded/2` — short-circuits with `:ok` if a
        `status: :template` Document with this `type_key` already
        exists in the templates matter. Re-running the seed task is
@@ -27,10 +27,8 @@ defmodule Contract.Workers.FtcSeedJob do
        Parse and returns the raw elements.
     5. `Upstage.normalize_elements/1` — maps elements to the hard-IR
        node taxonomy (paragraph/heading/list/table/figure/...).
-    6. `Contract.Documents.create/2` — inserts the Document row with
-       `status: :template`, owned by the templates matter, scoped to
-       the system user (synthesized in the seed-system-user
-       migration).
+    6. `Contract.Documents.create/2` — inserts the owner-scoped Document
+       row. The system user is synthesized in the seed-system-user migration.
     7. `emit_initial_change/2` — runs an `Action(:create_document)`
        through `Contract.Runtime.apply/2` so an audit Change row
        lands. The parsed nodes ride along in the Action payload for
@@ -87,10 +85,9 @@ defmodule Contract.Workers.FtcSeedJob do
          projection_nodes <- normalize_to_projection(parsed),
          {:ok, doc} <-
            Documents.create(scope, %{
-             "matter_id" => templates_matter.id,
              "title" => title,
              "type_key" => type_key,
-             "status" => :template,
+             "status" => :draft,
              "metadata" => %{
                "source_url" => url,
                "source_mime" => mime_type,
@@ -180,15 +177,15 @@ defmodule Contract.Workers.FtcSeedJob do
   # check_not_already_seeded/3
   # ----------------------------------------------------------------------------
 
-  defp check_not_already_seeded(_scope, %Matter{id: matter_id}, type_key) do
+  defp check_not_already_seeded(_scope, %Matter{owner_id: owner_id}, type_key) do
     import Ecto.Query
 
     exists? =
       from(d in Document,
         where:
-          d.matter_id == ^matter_id and
+          d.owner_id == ^owner_id and
             d.type_key == ^type_key and
-            d.status == :template,
+            d.status == :draft,
         limit: 1
       )
       |> Repo.exists?()
@@ -215,7 +212,10 @@ defmodule Contract.Workers.FtcSeedJob do
       {:ok, %Req.Response{status: 200, body: body, headers: resp_headers}} when is_binary(body) ->
         mime = mime_for(resp_headers, url)
         ext = ext_for_mime(mime, url)
-        path = Path.join(System.tmp_dir!(), "ftc-seed-#{System.unique_integer([:positive])}.#{ext}")
+
+        path =
+          Path.join(System.tmp_dir!(), "ftc-seed-#{System.unique_integer([:positive])}.#{ext}")
+
         File.write!(path, body)
         {:ok, path, mime}
 
@@ -287,7 +287,6 @@ defmodule Contract.Workers.FtcSeedJob do
 
     action = %Command{
       kind: :create_document,
-      matter_id: doc.matter_id,
       document_id: doc.id,
       actor_type: :system,
       actor_id: actor_id,
@@ -303,7 +302,15 @@ defmodule Contract.Workers.FtcSeedJob do
       message: "FTC template seed"
     }
 
-    case Runtime.apply(nil, action) do
+    case Runtime.apply(
+           %Context{
+             user: %Contract.Accounts.User{
+               id: doc.owner_id || actor_id,
+               email: @system_user_email
+             }
+           },
+           action
+         ) do
       {:ok, change} -> {:ok, change}
       {:error, _} = err -> err
     end

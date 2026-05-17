@@ -11,15 +11,17 @@ defmodule Contract.Types do
   @type result(value) :: {:ok, value} | {:error, term()}
 
   @type user_id :: id()
+  @type owner_id :: id()
   @type tenant_id :: id()
-  @type matter_id :: id()
   @type document_id :: id()
-  @type artifact_id :: id()
+  @type source_document_id :: id()
+  @type source_claim_id :: id()
   @type change_id :: id()
   @type mark_id :: id()
   @type field_id :: id()
   @type migration_id :: id()
   @type agent_run_id :: id()
+  @type chat_thread_id :: id()
   @type export_id :: id()
   @type route_ref_token :: String.t()
 

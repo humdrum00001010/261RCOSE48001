@@ -151,6 +151,8 @@ defmodule Contract.IO.OpenAI do
       base_tools ++
         slack_tools ++ List.wrap(Map.get(params, :tools, [])) ++ List.wrap(extra_tools)
 
+    tools = deduplicate_mcp_tools(tools)
+
     request =
       params
       |> Map.put_new(:model, cfg[:default_model] || "gpt-5-mini")
@@ -159,6 +161,34 @@ defmodule Contract.IO.OpenAI do
 
     {client, request}
   end
+
+  defp deduplicate_mcp_tools(tools) do
+    {deduped, _seen_labels} =
+      Enum.reduce(tools, {[], MapSet.new()}, fn tool, {acc, seen_labels} ->
+        case mcp_server_label(tool) do
+          nil ->
+            {[tool | acc], seen_labels}
+
+          label ->
+            if MapSet.member?(seen_labels, label) do
+              {acc, seen_labels}
+            else
+              {[tool | acc], MapSet.put(seen_labels, label)}
+            end
+        end
+      end)
+
+    Enum.reverse(deduped)
+  end
+
+  defp mcp_server_label(%{} = tool) do
+    type = Map.get(tool, :type) || Map.get(tool, "type")
+    label = Map.get(tool, :server_label) || Map.get(tool, "server_label")
+
+    if type == "mcp" and is_binary(label) and label != "", do: label, else: nil
+  end
+
+  defp mcp_server_label(_tool), do: nil
 
   defp normalize_stream(body_stream) do
     body_stream

@@ -672,7 +672,7 @@ msgstr ""
 
 #: lib/contract_web/live/studio/components/modal_host.ex:324
 #, elixir-autogen, elixir-format
-msgid "Link to workspace field"
+msgid "Link to document field"
 msgstr "워크스페이스 필드와 연결"
 
 #: lib/contract_web/live/studio/components/modal_host.ex:858

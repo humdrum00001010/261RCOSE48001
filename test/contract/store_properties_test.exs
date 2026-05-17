@@ -3,12 +3,12 @@ defmodule Contract.StorePropertiesTest do
   Property-based invariants for `Contract.Store`. SPEC.md §16 calls these
   out implicitly via "Store is durable truth":
 
-    1. Across any sequence of successful appends, `applied_revision`
+    1. Across any sequence of successful appends, `result_revision`
        advances by exactly +1 each step.
     2. `Store.load(doc)` reconstructs the same `Runtime.State` as folding
        `Engine.apply/2` over every persisted Change.
   """
-  use Contract.DataCase, async: true
+  use Contract.DataCase, async: false
   use ExUnitProperties
 
   alias Contract.Change
@@ -54,17 +54,17 @@ defmodule Contract.StorePropertiesTest do
   defp build_change(doc, base_revision, op, i) do
     %Change{
       document_id: doc,
-      action_kind: "rename_document",
+      command_kind: "rename_document",
       actor_type: :user,
       actor_id: Ecto.UUID.generate(),
       base_revision: base_revision,
       idempotency_key: "prop-#{i}",
-      ops: [build_op(op, doc, i)],
+      payload: [build_op(op, doc, i)],
       marks: [],
       message: nil,
       affected_refs: [],
       preimage: %{},
-      inverse_ops: [],
+      inverse: [],
       status: :active
     }
   end
@@ -72,12 +72,12 @@ defmodule Contract.StorePropertiesTest do
   defp create_change(doc) do
     %Change{
       document_id: doc,
-      action_kind: "create_document",
+      command_kind: "create_document",
       actor_type: :user,
       actor_id: Ecto.UUID.generate(),
       base_revision: 0,
       idempotency_key: "create-#{doc}",
-      ops: [
+      payload: [
         %{
           "op" => "create_node",
           "target_type" => "document",
@@ -89,23 +89,23 @@ defmodule Contract.StorePropertiesTest do
       message: nil,
       affected_refs: [],
       preimage: %{},
-      inverse_ops: [],
+      inverse: [],
       status: :active
     }
   end
 
-  property "applied_revision is strictly monotonic across any sequence of appends" do
+  property "result_revision is strictly monotonic across any sequence of appends" do
     check all(sequence <- StreamData.list_of(action_gen(), min_length: 1, max_length: 8)) do
       doc = Ecto.UUID.generate()
       {:ok, lease} = Lease.acquire(doc, "prop-owner-#{System.unique_integer([:positive])}")
 
-      {:ok, %Change{applied_revision: rev0}} =
+      {:ok, %Change{result_revision: rev0}} =
         Store.append(doc, create_change(doc), lease.fencing_token)
 
       revisions =
         Enum.reduce(Enum.with_index(sequence), [rev0], fn {op, i}, [prev | _] = acc ->
           change = build_change(doc, prev, op, i)
-          {:ok, %Change{applied_revision: r}} = Store.append(doc, change, lease.fencing_token)
+          {:ok, %Change{result_revision: r}} = Store.append(doc, change, lease.fencing_token)
           [r | acc]
         end)
 
@@ -128,7 +128,7 @@ defmodule Contract.StorePropertiesTest do
       Enum.reduce(Enum.with_index(sequence), 1, fn {op, i}, prev ->
         change = build_change(doc, prev, op, i)
         {:ok, c} = Store.append(doc, change, lease.fencing_token)
-        c.applied_revision
+        c.result_revision
       end)
 
       {:ok, loaded} = Store.load(doc)
@@ -159,7 +159,7 @@ defmodule Contract.StorePropertiesTest do
       Enum.reduce(Enum.with_index(sequence), 1, fn {op, i}, prev ->
         change = build_change(doc, prev, op, i)
         {:ok, c} = Store.append(doc, change, lease.fencing_token)
-        c.applied_revision
+        c.result_revision
       end)
 
       {:ok, before_snap} = Store.load(doc)

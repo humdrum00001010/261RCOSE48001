@@ -5,7 +5,7 @@ defmodule ContractWeb.Live.Studio.Components.Canvas.ReviewTest do
   Drives the LiveComponent through `Phoenix.LiveViewTest.render_component/2`
   with a synthetic `:changes_stream` (list of `{dom_id, change}` tuples)
   to exercise the changes-feed rendering without spinning up the full
-  StudioLive. LV-level interaction tests for `revoke_change` /
+  StudioLive. LV-level interaction tests for `change.revoke` /
   `set_node_focus` belong in `studio_live_test.exs`.
   """
   use ExUnit.Case, async: true
@@ -25,7 +25,6 @@ defmodule ContractWeb.Live.Studio.Components.Canvas.ReviewTest do
   defp base_studio_state(overrides \\ %{}) do
     Map.merge(
       %State{
-        matter_id: "matter-1",
         selected_document_id: "doc-1",
         selected_node_id: nil,
         last_seen_revision: 5,
@@ -91,14 +90,13 @@ defmodule ContractWeb.Live.Studio.Components.Canvas.ReviewTest do
   defp change(attrs \\ %{}) do
     defaults = %Contract.Change{
       id: Ecto.UUID.generate(),
-      matter_id: "matter-1",
       document_id: "doc-1",
-      action_kind: "edit_document",
+      command_kind: "edit_document",
       actor_type: :user,
       actor_id: Ecto.UUID.generate(),
       base_revision: 1,
-      applied_revision: 2,
-      ops: [],
+      result_revision: 2,
+      payload: [],
       marks: [],
       message: "Tightened indemnity wording.",
       affected_refs: [%{node_id: "n1"}],
@@ -137,7 +135,10 @@ defmodule ContractWeb.Live.Studio.Components.Canvas.ReviewTest do
 
   describe "render" do
     test "renders the document body + changes feed (1)" do
-      changes = [change(%{action_kind: "edit_document"}), change(%{action_kind: "set_contract_type"})]
+      changes = [
+        change(%{command_kind: "edit_document"}),
+        change(%{command_kind: "set_contract_type"})
+      ]
 
       html =
         render_review(
@@ -202,7 +203,7 @@ defmodule ContractWeb.Live.Studio.Components.Canvas.ReviewTest do
     end
 
     test "click on a feed entry pushes set_node_focus with node_id (3)" do
-      changes = [change(%{action_kind: "edit_document", affected_refs: [%{node_id: "n2"}]})]
+      changes = [change(%{command_kind: "edit_document", affected_refs: [%{node_id: "n2"}]})]
 
       html =
         render_review(
@@ -227,7 +228,7 @@ defmodule ContractWeb.Live.Studio.Components.Canvas.ReviewTest do
           current_scope: scope([:read, :write, :revoke])
         )
 
-      assert html =~ ~s(phx-click="revoke_change")
+      assert html =~ ~s(phx-click="change.revoke")
       assert html =~ ~s(phx-value-change_id=")
       assert html =~ "되돌리기"
     end
@@ -246,7 +247,7 @@ defmodule ContractWeb.Live.Studio.Components.Canvas.ReviewTest do
       assert html =~ "Tightened indemnity wording."
 
       # But no revoke affordance.
-      refute html =~ ~s(phx-click="revoke_change")
+      refute html =~ ~s(phx-click="change.revoke")
       refute html =~ "되돌리기"
     end
 
@@ -259,7 +260,7 @@ defmodule ContractWeb.Live.Studio.Components.Canvas.ReviewTest do
           current_scope: scope([:read, :revoke])
         )
 
-      refute html =~ ~s(phx-click="revoke_change")
+      refute html =~ ~s(phx-click="change.revoke")
     end
 
     test "empty changes feed renders the Korean empty state msgid (5)" do
@@ -353,7 +354,7 @@ defmodule ContractWeb.Live.Studio.Components.Canvas.ReviewTest do
     end
 
     # Swallow shell-level events so the harness doesn't crash when the
-    # component bubbles up `set_node_focus` or `revoke_change`.
+    # component bubbles up `set_node_focus` or `change.revoke`.
     def handle_event(_event, _params, socket), do: {:noreply, socket}
   end
 

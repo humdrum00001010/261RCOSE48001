@@ -238,7 +238,7 @@ msgstr ""
 
 #: lib/contract_web/live/user_live/settings_hub.ex:84
 #, elixir-autogen, elixir-format
-msgid "Team-scoped defaults. Coming soon."
+msgid "Document defaults. Coming soon."
 msgstr ""
 
 #: lib/contract_web/live/user_live/settings_hub.ex:79
@@ -260,7 +260,7 @@ msgstr ""
 #: lib/contract_web/live/user_live/settings_hub.ex:83
 #: lib/contract_web/live/user_live/settings_hub.ex:161
 #, elixir-autogen, elixir-format
-msgid "Workspace"
+msgid "Documents"
 msgstr ""
 
 #: lib/contract_web/live/user_live/settings_hub.ex:47

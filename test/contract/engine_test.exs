@@ -85,7 +85,7 @@ defmodule Contract.EngineTest do
           affected_refs: refs
       }
 
-      assert {:ok, %Contract.Change{action_kind: "create_document"}} =
+      assert {:ok, %Contract.Change{command_kind: "create_document"}} =
                Engine.build_change(command, enriched, state)
     end
   end

@@ -11,7 +11,7 @@ defmodule ContractWeb.Live.Studio.Components.ChatCommandButtonTest do
     5. Korean labels render in the sheet chrome.
 
   Plus a few small sanity checks (close button, sheet a11y, no Documents
-  group without a matter) so the file behaves as a self-contained guarantee
+  group without a current document) so the file behaves as a self-contained guarantee
   on the component's contract.
   """
   use ContractWeb.ConnCase, async: true
@@ -27,31 +27,28 @@ defmodule ContractWeb.Live.Studio.Components.ChatCommandButtonTest do
   defp lawyer_scope(user) do
     %Context{
       Context.for_user(user)
-      | matter: %{id: "matter-abc", name: "Acme"},
-        perms: ~w(read write commit revoke export type_change agent_run)a
+      | perms: ~w(read write commit revoke export type_change agent_run)a
     }
   end
 
   defp paralegal_scope(user) do
     %Context{
       Context.for_user(user)
-      | matter: %{id: "matter-abc", name: "Acme"},
-        perms: ~w(read write commit revoke type_change agent_run)a
+      | perms: ~w(read write commit revoke type_change agent_run)a
     }
   end
 
   defp viewer_scope(user) do
     %Context{
       Context.for_user(user)
-      | matter: %{id: "matter-abc", name: "Acme"},
-        perms: ~w(read)a
+      | perms: ~w(read)a
     }
   end
 
-  defp empty_studio_state do
+  defp empty_studio_state(selected_document_id \\ "doc-abc") do
     %{
-      matter_id: "matter-abc",
-      selected_document_id: nil,
+      matter_id: nil,
+      selected_document_id: selected_document_id,
       selected_node_id: nil,
       last_seen_revision: 0,
       mode: :no_document,
@@ -160,13 +157,13 @@ defmodule ContractWeb.Live.Studio.Components.ChatCommandButtonTest do
           base_assigns(lawyer_scope(user), %{initial_open?: true})
         )
 
-      # Row for "Request export…" emits `request_export`.
+      # Row for "Request export…" emits the dotted export command.
       assert html =~ ~s(data-cmd-id="doc_request_export")
       assert html =~ ~s(phx-click="command_palette_picked")
-      assert html =~ ~s(phx-value-action_kind="request_export")
+      assert html =~ ~s(phx-value-action_kind="export.request")
       # Companion `kind` attribute lets the Studio LV's event_to_action/3
       # funnel route the event without per-event-name special casing.
-      assert html =~ ~s(phx-value-kind="request_export")
+      assert html =~ ~s(phx-value-kind="export.request")
     end
 
     test "navigation rows fire a JS.navigate (no phx event)", %{user: user} do
@@ -183,7 +180,7 @@ defmodule ContractWeb.Live.Studio.Components.ChatCommandButtonTest do
       assert html =~ "/dashboard"
     end
 
-    test "set_contract_type row is present for a lawyer with matter", %{user: user} do
+    test "document.type.set row is present for a lawyer with current document", %{user: user} do
       html =
         render_component(
           ChatCommandButton,
@@ -191,18 +188,18 @@ defmodule ContractWeb.Live.Studio.Components.ChatCommandButtonTest do
         )
 
       assert html =~ ~s(data-cmd-id="doc_set_type")
-      assert html =~ ~s(phx-value-action_kind="set_contract_type")
+      assert html =~ ~s(phx-value-action_kind="document.type.set")
     end
 
-    test "revoke_change row is present for a lawyer with matter", %{user: user} do
+    test "change.revoke row is hidden until a revocable change id can be supplied", %{user: user} do
       html =
         render_component(
           ChatCommandButton,
           base_assigns(lawyer_scope(user), %{initial_open?: true})
         )
 
-      assert html =~ ~s(data-cmd-id="doc_revoke_last")
-      assert html =~ ~s(phx-value-action_kind="revoke_change")
+      refute html =~ ~s(data-cmd-id="doc_revoke_last")
+      refute html =~ ~s(phx-value-action_kind="change.revoke")
     end
   end
 
@@ -213,7 +210,7 @@ defmodule ContractWeb.Live.Studio.Components.ChatCommandButtonTest do
       %{user: user_fixture()}
     end
 
-    test "paralegal sheet hides Request export but keeps revoke/set-type", %{user: user} do
+    test "paralegal sheet hides Request export and revoke but keeps set-type", %{user: user} do
       html =
         render_component(
           ChatCommandButton,
@@ -221,7 +218,7 @@ defmodule ContractWeb.Live.Studio.Components.ChatCommandButtonTest do
         )
 
       refute html =~ ~s(data-cmd-id="doc_request_export")
-      assert html =~ ~s(data-cmd-id="doc_revoke_last")
+      refute html =~ ~s(data-cmd-id="doc_revoke_last")
       assert html =~ ~s(data-cmd-id="doc_set_type")
     end
 
@@ -239,13 +236,16 @@ defmodule ContractWeb.Live.Studio.Components.ChatCommandButtonTest do
       assert html =~ ~s(data-cmd-id="nav_dashboard")
     end
 
-    test "Documents rows disappear when matter is nil", %{user: user} do
-      scope = %Context{lawyer_scope(user) | matter: nil}
+    test "Documents rows disappear when no current document is selected", %{user: user} do
+      scope = lawyer_scope(user)
 
       html =
         render_component(
           ChatCommandButton,
-          base_assigns(scope, %{initial_open?: true})
+          base_assigns(scope, %{
+            initial_open?: true,
+            studio_state: empty_studio_state(nil)
+          })
         )
 
       refute html =~ ~s(data-cmd-id="doc_request_export")
@@ -270,7 +270,7 @@ defmodule ContractWeb.Live.Studio.Components.ChatCommandButtonTest do
     end
 
     test "sheet_commands/1 strips :mode sub-mode entries", %{user: user} do
-      cmds = ChatCommandButton.sheet_commands(lawyer_scope(user))
+      cmds = ChatCommandButton.sheet_commands(lawyer_scope(user), "doc-abc")
       ids = Enum.map(cmds, & &1.id)
 
       refute :search_law in ids
@@ -315,8 +315,8 @@ defmodule ContractWeb.Live.Studio.Components.ChatCommandButtonTest do
     test "empty-commands state shows Korean message", %{user: _user} do
       # A logged-out (`nil`) scope yields navigation-only — we need an even
       # more constrained scope to trigger the empty branch. Build one with
-      # zero perms and no matter: it'll still see navigation, so the
-      # empty-message branch fires when matter is nil AND no nav commands
+      # zero perms and no current document: it still sees navigation, so the
+      # empty-message branch is only reachable when no nav commands
       # exist. Since nav commands have no `scopes_required`, the empty
       # path is only reachable in pathological scopes. We verify the
       # branch renders for an explicitly empty catalog by skipping
@@ -327,9 +327,7 @@ defmodule ContractWeb.Live.Studio.Components.ChatCommandButtonTest do
       # Smoke-check the string ships in the source so the assertion is
       # meaningful even though the branch is hard to reach via fixtures.
       source =
-        File.read!(
-          "lib/contract_web/live/studio/components/chat_command_button.ex"
-        )
+        File.read!("lib/contract_web/live/studio/components/chat_command_button.ex")
 
       assert source =~ "사용할 수 있는 명령어가 없습니다"
     end
@@ -390,7 +388,7 @@ defmodule ContractWeb.Live.Studio.Components.ChatCommandButtonTest do
 
       socket =
         Phoenix.Component.assign(socket, :studio_state, %{
-          matter_id: "matter-abc",
+          matter_id: nil,
           mode: :no_document,
           chat_open?: true,
           document_picker_open?: false,

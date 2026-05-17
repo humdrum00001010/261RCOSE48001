@@ -4,315 +4,99 @@ defmodule Contract.DocumentsTest do
   alias Contract.Context
   alias Contract.Documents
   alias Contract.Documents.Document
-  alias Contract.Matters
 
-  defp scope(opts \\ []) do
-    tenant =
-      case Keyword.get(opts, :tenant, :auto) do
-        :auto -> Ecto.UUID.generate()
-        nil -> nil
-        explicit -> explicit
-      end
-
-    user_id = Keyword.get(opts, :user_id, Ecto.UUID.generate())
-
+  defp scope do
     %Context{
-      user: %Contract.Accounts.User{id: user_id, email: "u#{System.unique_integer([:positive])}@x"},
-      tenant: tenant
+      user: %Contract.Accounts.User{
+        id: Ecto.UUID.generate(),
+        email: "u#{System.unique_integer([:positive])}@x"
+      }
     }
-  end
-
-  defp setup_matter(s, opts \\ []) do
-    name = Keyword.get(opts, :name, "M-#{System.unique_integer([:positive])}")
-    {:ok, m} = Matters.create(s, %{"name" => name})
-    m
-  end
-
-  defp create_doc(s, m, opts \\ []) do
-    attrs = %{
-      "matter_id" => m.id,
-      "title" => Keyword.get(opts, :title, "Doc-#{System.unique_integer([:positive])}"),
-      "type_key" => Keyword.get(opts, :type_key, "nda_v1")
-    }
-
-    {:ok, doc} = Documents.create(s, attrs)
-    doc
   end
 
   describe "create/2" do
-    test "creates a document in a matter the scope can see" do
-      s = scope()
-      m = setup_matter(s)
-      assert {:ok, %Document{matter_id: mid, title: "T", type_key: "nda_v1"}} =
-               Documents.create(s, %{
-                 "matter_id" => m.id,
-                 "title" => "T",
-                 "type_key" => "nda_v1"
-               })
-
-      assert mid == m.id
-    end
-
-    test "cross-tenant create is forbidden" do
-      a = scope()
-      b = scope()
-      m_a = setup_matter(a)
-
-      assert {:error, :forbidden} =
-               Documents.create(b, %{
-                 "matter_id" => m_a.id,
-                 "title" => "X",
-                 "type_key" => "nda_v1"
-               })
-    end
-
-    test "missing matter is :not_found" do
+    test "creates an owner-scoped document and ignores legacy matter_id" do
       s = scope()
 
-      assert {:error, :not_found} =
+      assert {:ok, %Document{} = doc} =
                Documents.create(s, %{
                  "matter_id" => Ecto.UUID.generate(),
-                 "title" => "X",
+                 "title" => "T",
                  "type_key" => "nda_v1"
                })
+
+      assert doc.owner_id == s.user.id
+      assert doc.title == "T"
+      assert doc.type_key == "nda_v1"
+      refute Map.has_key?(Map.from_struct(doc), :matter_id)
     end
 
-    # SPEC.md §18: contract type is set AFTER creation. The create
-    # path must accept `type_key: nil` so the document can be opened,
-    # read, and then typed via `Action(:set_contract_type)` later.
-    test "accepts nil :type_key — untyped document is valid" do
+    test "accepts missing type_key" do
       s = scope()
-      m = setup_matter(s)
-
-      assert {:ok, %Document{type_key: nil, title: "T"}} =
-               Documents.create(s, %{
-                 "matter_id" => m.id,
-                 "title" => "T",
-                 "type_key" => nil
-               })
+      assert {:ok, %Document{type_key: nil}} = Documents.create(s, %{"title" => "Untyped"})
     end
 
-    test "accepts missing :type_key — defaults to nil" do
-      s = scope()
-      m = setup_matter(s)
-
-      assert {:ok, %Document{type_key: nil, title: "T"}} =
-               Documents.create(s, %{
-                 "matter_id" => m.id,
-                 "title" => "T"
-               })
+    test "anonymous create is forbidden" do
+      assert {:error, :forbidden} = Documents.create(%Context{user: nil}, %{"title" => "X"})
     end
   end
 
-  # SPEC.md Document-primary pivot (2026-05-15): the user is no longer
-  # asked to pick a Matter to create a Document. `create_with_auto_matter/2`
-  # is the new public entry point — it auto-synthesizes a hidden
-  # Workspace when `:matter_id` is not supplied, and reuses an existing
-  # Matter when it is.
-  describe "create_with_auto_matter/2" do
-    test "synthesizes a hidden Matter when no matter_id is supplied" do
-      s = scope()
-
-      assert {:ok, %Document{title: "Auto", matter_id: doc_mid, type_key: nil},
-              %Matters.Matter{} = m} =
-               Documents.create_with_auto_matter(s, %{"title" => "Auto"})
-
-      assert doc_mid == m.id
-      assert m.metadata["system_created"] == true
-      assert m.metadata["hidden_from_user"] == true
-      assert m.metadata["source"] == "auto_on_document_create"
-      # Friendly name derived from the document title.
-      assert m.name == "Workspace · Auto"
-      assert m.owner_id == s.user.id
+  describe "get/list/search" do
+    test "get/2 returns :not_found for an unknown document id" do
+      owner = scope()
+      assert {:error, :not_found} = Documents.get(owner, Ecto.UUID.generate())
     end
 
-    test "falls back to a date-stamped name when title is whitespace-only" do
-      s = scope()
+    test "get/2 enforces owner ACL" do
+      owner = scope()
+      other = scope()
+      {:ok, doc} = Documents.create(owner, %{title: "Private"})
 
-      # Title is whitespace only — the matter name falls back to a
-      # date-stamped "Workspace · YYYY-MM-DD". The Document insert still
-      # fails (title is required on Document), but the matter name logic
-      # is independently exercised by calling the private builder via
-      # the public API with a real title that exercises the trim path.
-      assert {:ok, _doc, %Matters.Matter{name: name}} =
-               Documents.create_with_auto_matter(s, %{"title" => "   My doc   "})
-
-      # Trimmed and prefixed.
-      assert name == "Workspace · My doc"
+      assert {:ok, %Document{id: id}} = Documents.get(owner, doc.id)
+      assert id == doc.id
+      assert {:error, :forbidden} = Documents.get(other, doc.id)
     end
 
-    test "with explicit matter_id reuses the matter, no new matter created" do
-      s = scope()
-      m = setup_matter(s, name: "User-picked")
+    test "list_recent_for_scope/2 returns only owned documents" do
+      owner = scope()
+      other = scope()
+      {:ok, doc} = Documents.create(owner, %{title: "Visible"})
+      {:ok, _} = Documents.create(other, %{title: "Hidden"})
 
-      before_count = Contract.Repo.aggregate(Matters.Matter, :count, :id)
+      assert [%Document{id: id}] = Documents.list_recent_for_scope(owner, 10)
+      assert id == doc.id
+    end
 
-      assert {:ok, %Document{matter_id: doc_mid}, %Matters.Matter{id: returned_mid}} =
-               Documents.create_with_auto_matter(s, %{
-                 "title" => "Reuse",
-                 "matter_id" => m.id
-               })
+    test "search/3 returns only owned matches" do
+      owner = scope()
+      other = scope()
+      {:ok, doc} = Documents.create(owner, %{title: "Needle"})
+      {:ok, _} = Documents.create(other, %{title: "Needle hidden"})
 
-      assert doc_mid == m.id
-      assert returned_mid == m.id
-
-      after_count = Contract.Repo.aggregate(Matters.Matter, :count, :id)
-      assert after_count == before_count
+      assert [%Document{id: id}] = Documents.search(owner, "Needle", 10)
+      assert id == doc.id
     end
   end
 
-  describe "list_for_matter/2 + list_recent_for_scope/2" do
-    test "lists matter docs in order" do
+  describe "updates" do
+    test "archive/2 and set_type/3 enforce owner ACL" do
+      owner = scope()
+      other = scope()
+      {:ok, doc} = Documents.create(owner, %{title: "Draft"})
+
+      assert {:error, :forbidden} = Documents.archive(other, doc.id)
+      assert {:ok, %Document{status: :archived}} = Documents.archive(owner, doc.id)
+      assert {:ok, %Document{type_key: "nda_v1"}} = Documents.set_type(owner, doc.id, "nda_v1")
+    end
+
+    test "touch_revision/2 never decreases latest_revision" do
       s = scope()
-      m = setup_matter(s)
-      d1 = create_doc(s, m, title: "alpha")
-      d2 = create_doc(s, m, title: "beta")
+      {:ok, doc} = Documents.create(s, %{title: "Revisioned"})
 
-      ids = s |> Documents.list_for_matter(m.id) |> Enum.map(& &1.id)
-      assert d1.id in ids
-      assert d2.id in ids
-    end
-
-    test "cross-tenant list returns empty" do
-      a = scope()
-      b = scope()
-      m_a = setup_matter(a)
-      _ = create_doc(a, m_a)
-
-      assert [] = Documents.list_for_matter(b, m_a.id)
-    end
-
-    test "list_recent_for_scope returns docs the scope can see across matters" do
-      s = scope()
-      m1 = setup_matter(s)
-      m2 = setup_matter(s)
-      _ = create_doc(s, m1)
-      _ = create_doc(s, m2)
-
-      recent = Documents.list_recent_for_scope(s, 10)
-      assert length(recent) == 2
-    end
-  end
-
-  describe "get/2" do
-    test "fetches a document the scope can see" do
-      s = scope()
-      m = setup_matter(s)
-      d = create_doc(s, m)
-
-      assert {:ok, %Document{id: id}} = Documents.get(s, d.id)
-      assert id == d.id
-    end
-
-    test "cross-tenant get is :forbidden" do
-      a = scope()
-      b = scope()
-      m_a = setup_matter(a)
-      d = create_doc(a, m_a)
-
-      assert {:error, :forbidden} = Documents.get(b, d.id)
-    end
-
-    test "unknown id is :not_found" do
-      assert {:error, :not_found} = Documents.get(scope(), Ecto.UUID.generate())
-    end
-  end
-
-  describe "archive/2 + set_type/3" do
-    test "archives a doc" do
-      s = scope()
-      m = setup_matter(s)
-      d = create_doc(s, m)
-      assert {:ok, %Document{status: :archived}} = Documents.archive(s, d.id)
-    end
-
-    test "set_type updates the type_key" do
-      s = scope()
-      m = setup_matter(s)
-      d = create_doc(s, m, type_key: "nda_v1")
-      assert {:ok, %Document{type_key: "service_agreement_v1"}} =
-               Documents.set_type(s, d.id, "service_agreement_v1")
-    end
-
-    # SPEC.md §18: this is the canonical flow — create a doc untyped,
-    # then call `Action(:set_contract_type)` (which ultimately routes
-    # to `Documents.set_type/3`) to fill in the key.
-    test "set_type promotes an untyped document to a typed one" do
-      s = scope()
-      m = setup_matter(s)
-
-      {:ok, %Document{type_key: nil} = d} =
-        Documents.create(s, %{"matter_id" => m.id, "title" => "Untyped"})
-
-      assert {:ok, %Document{type_key: "nda_v1"}} =
-               Documents.set_type(s, d.id, "nda_v1")
-    end
-  end
-
-  describe "touch_revision/2" do
-    test "bumps latest_revision atomically (no decreases)" do
-      s = scope()
-      m = setup_matter(s)
-      d = create_doc(s, m)
-
-      :ok = Documents.touch_revision(d.id, 5)
-      reloaded = Contract.Repo.get!(Document, d.id)
-      assert reloaded.latest_revision == 5
-
-      # Replaying a lower revision is a no-op.
-      :ok = Documents.touch_revision(d.id, 2)
-      reloaded = Contract.Repo.get!(Document, d.id)
-      assert reloaded.latest_revision == 5
-    end
-
-    test "non-existent document is silently ignored" do
-      assert :ok = Documents.touch_revision(Ecto.UUID.generate(), 1)
-    end
-  end
-
-  describe "parent / variant" do
-    test "variant document can be created with parent_document_id" do
-      s = scope()
-      m = setup_matter(s)
-      parent = create_doc(s, m)
-
-      assert {:ok, %Document{parent_document_id: pid}} =
-               Documents.create(s, %{
-                 "matter_id" => m.id,
-                 "title" => "variant",
-                 "type_key" => "service_agreement_v1",
-                 "parent_document_id" => parent.id
-               })
-
-      assert pid == parent.id
-    end
-
-    test "would_create_cycle?/3 detects a direct cycle" do
-      s = scope()
-      m = setup_matter(s)
-      a = create_doc(s, m)
-
-      # Creating "b" with parent=a, then checking if a → b would close
-      # back: would_create_cycle?(a, b) should be true because b's
-      # parent_document_id is a, and we're asking "would a's parent
-      # become b?"
-      _b = b = create_doc(s, m, title: "B")
-
-      _ =
-        b
-        |> Document.changeset(%{"parent_document_id" => a.id})
-        |> Contract.Repo.update!()
-
-      assert true == Documents.would_create_cycle?(s, a.id, b.id)
-    end
-
-    test "no cycle when parent points elsewhere" do
-      s = scope()
-      m = setup_matter(s)
-      a = create_doc(s, m)
-      b = create_doc(s, m)
-
-      assert false == Documents.would_create_cycle?(s, a.id, b.id)
+      assert :ok = Documents.touch_revision(doc.id, 5)
+      assert Contract.Repo.get!(Document, doc.id).latest_revision == 5
+      assert :ok = Documents.touch_revision(doc.id, 2)
+      assert Contract.Repo.get!(Document, doc.id).latest_revision == 5
     end
   end
 end

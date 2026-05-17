@@ -75,8 +75,8 @@ defmodule ContractWeb.Live.Studio.Components.ChatRailTest do
     end
 
     @impl true
-    def handle_event("send_chat_message", params, socket) do
-      if pid = socket.assigns[:test_pid], do: send(pid, {:captured, "send_chat_message", params})
+    def handle_event("chat.submit", params, socket) do
+      if pid = socket.assigns[:test_pid], do: send(pid, {:captured, "chat.submit", params})
       {:noreply, socket}
     end
 
@@ -251,6 +251,52 @@ defmodule ContractWeb.Live.Studio.Components.ChatRailTest do
       assert html =~ "무엇으로 시작할까요?"
     end
 
+    test "no-document welcome is not counted as a real chat message" do
+      no_doc_state = %State{mode: :no_document, last_seen_revision: 0, agent_run_id: nil}
+
+      html =
+        render_component(ChatRail,
+          id: "chat-rail",
+          studio_state: no_doc_state,
+          streams: %{chat_messages: empty_stream()},
+          current_scope: lawyer_scope()
+        )
+
+      assert html =~ ~s(id="chat-rail-no-doc-welcome")
+      assert html =~ ~s(data-role="chat-no-doc-welcome")
+      refute html =~ ~s(data-message-id="welcome-no-doc")
+      refute html =~ ~s(data-role="chat-message")
+    end
+
+    test "no-document welcome hides only after a real streamed chat message exists", %{
+      conn: conn
+    } do
+      no_doc_state = %State{mode: :no_document, last_seen_revision: 0, agent_run_id: nil}
+
+      {:ok, lv, html} =
+        live_isolated(conn, WrapperLive,
+          session: %{"scope" => lawyer_scope(), "studio_state" => no_doc_state}
+        )
+
+      assert html =~ ~s(id="chat-rail-no-doc-welcome")
+      refute html =~ ~s(data-role="chat-message")
+
+      send(lv.pid, {
+        :insert,
+        %{
+          id: "user-real-1",
+          role: :user,
+          body: "Start from a discussion",
+          transient?: false
+        }
+      })
+
+      html = render(lv)
+      assert html =~ ~s(id="chat-rail-no-doc-welcome")
+      assert html =~ ~s(id="chat-msg-user-real-1")
+      assert html =~ ~s(data-role="chat-message")
+    end
+
     test "no-document Korean copy is clean precomposed Hangul (no jamo decomposition)" do
       no_doc_state = %State{mode: :no_document, last_seen_revision: 0, agent_run_id: nil}
 
@@ -317,6 +363,170 @@ defmodule ContractWeb.Live.Studio.Components.ChatRailTest do
         )
 
       assert busy_html =~ ~s(data-status="responding")
+    end
+
+    test "operation protocol messages render structured blocks with stable DOM ids" do
+      html =
+        render_component(ChatRail,
+          id: "chat-rail",
+          studio_state: default_state(),
+          streams: %{
+            chat_messages: [
+              {"chat-msg-op-1",
+               %{
+                 id: "op-1",
+                 role: :agent,
+                 operation: %{
+                   id: "tool-search-1",
+                   type: "tool_call",
+                   title: "law.search",
+                   status: "running",
+                   summary: "Searching statutes",
+                   details: %{"query" => "상법 제542조"}
+                 },
+                 transient?: true
+               }}
+            ]
+          },
+          current_scope: lawyer_scope()
+        )
+
+      assert html =~ ~s(id="operation-block-tool-search-1")
+      assert html =~ ~s(data-role="operation-block")
+      assert html =~ ~s(data-operation-type="tool_call")
+      assert html =~ ~s(data-operation-status="running")
+      assert html =~ "law.search"
+    end
+
+    test "source interpretation block renders parse summary and proposed claims" do
+      html =
+        render_component(ChatRail,
+          id: "chat-rail",
+          studio_state: default_state(),
+          streams: %{
+            chat_messages: [
+              {"chat-msg-source-1",
+               %{
+                 id: "source-1",
+                 role: :agent,
+                 operation: %{
+                   id: "source-doc-1",
+                   type: "source_interpretation",
+                   title: "Counterparty draft",
+                   status: "ready",
+                   summary: "2 claims",
+                   details: %{
+                     "source_document_id" => "source-doc-1",
+                     "regions" => [%{"region_id" => "r1", "raw_text" => "Effective Date"}],
+                     "claims" => [
+                       %{
+                         "id" => "claim-1",
+                         "proposed_kind" => "effective_date",
+                         "proposed_value" => "2026-01-01"
+                       },
+                       %{
+                         "id" => "claim-2",
+                         "proposed_kind" => "party_a",
+                         "proposed_value" => "Acme"
+                       }
+                     ]
+                   }
+                 },
+                 transient?: false
+               }}
+            ]
+          },
+          current_scope: lawyer_scope()
+        )
+
+      assert html =~ ~s(data-role="source-interpretation-block")
+      assert html =~ "Counterparty draft"
+      assert html =~ "2 claims"
+      assert html =~ "effective_date"
+      assert html =~ "2026-01-01"
+      assert html =~ "party_a"
+    end
+
+    test "source claim block renders anchors and supervision controls" do
+      html =
+        render_component(ChatRail,
+          id: "chat-rail",
+          studio_state: default_state(),
+          streams: %{
+            chat_messages: [
+              {"chat-msg-claim-1",
+               %{
+                 id: "claim-1",
+                 role: :agent,
+                 operation: %{
+                   id: "claim-1",
+                   type: "source_claim",
+                   title: "Effective date",
+                   status: "proposed",
+                   details: %{
+                     "source_claim_id" => "claim-1",
+                     "source_document_id" => "source-doc-1",
+                     "proposed_kind" => "effective_date",
+                     "proposed_value" => "2026-01-01",
+                     "confidence" => 0.91,
+                     "anchors" => [%{"page" => 1, "text" => "Effective Date: 2026-01-01"}]
+                   }
+                 },
+                 transient?: false
+               }}
+            ]
+          },
+          current_scope: lawyer_scope()
+        )
+
+      assert html =~ ~s(data-role="source-claim-block")
+      assert html =~ "effective_date"
+      assert html =~ "2026-01-01"
+      assert html =~ "0.91"
+      assert html =~ "Effective Date: 2026-01-01"
+      assert html =~ ~s(phx-click="source_claim.confirm")
+      assert html =~ ~s(phx-submit="source_claim.correct")
+      assert html =~ ~s(phx-click="source_claim.reject")
+      assert html =~ ~s(phx-click="source_claim.link_to_document")
+      assert html =~ ~s(phx-click="source_claim.unlink")
+      assert html =~ ~s(phx-value-source_claim_id="claim-1")
+    end
+
+    test "source claim correct control renders a value input form" do
+      html =
+        render_component(ChatRail,
+          id: "chat-rail",
+          studio_state: default_state(),
+          streams: %{
+            chat_messages: [
+              {"chat-msg-claim-1",
+               %{
+                 id: "claim-1",
+                 role: :agent,
+                 operation: %{
+                   id: "claim-1",
+                   type: "source_claim",
+                   title: "Effective date",
+                   status: "proposed",
+                   details: %{
+                     "source_claim_id" => "claim-1",
+                     "source_document_id" => "source-doc-1",
+                     "proposed_kind" => "effective_date",
+                     "proposed_value" => "2026-01-01"
+                   }
+                 },
+                 transient?: false
+               }}
+            ]
+          },
+          current_scope: lawyer_scope()
+        )
+
+      assert html =~ ~s(data-role="source-claim-correct-form")
+      assert html =~ ~s(id="source-claim-correct-form-claim-1")
+      assert html =~ ~s(phx-submit="source_claim.correct")
+      assert html =~ ~s(name="value")
+      assert html =~ ~s(value="2026-01-01")
     end
   end
 
@@ -392,7 +602,7 @@ defmodule ContractWeb.Live.Studio.Components.ChatRailTest do
       refute html =~ ~s(data-transient="true")
     end
 
-    test "case 5 — phx-submit on the form emits send_chat_message with the body",
+    test "case 5 — phx-submit on the form emits chat.submit with the body",
          %{conn: conn} do
       {:ok, lv, _html} =
         live_isolated(conn, WrapperLive,
@@ -403,7 +613,7 @@ defmodule ContractWeb.Live.Studio.Components.ChatRailTest do
       |> form("#chat-rail-form", %{"message" => "hi agent"})
       |> render_submit()
 
-      assert_receive {:captured, "send_chat_message", %{"message" => "hi agent"}}
+      assert_receive {:captured, "chat.submit", %{"message" => "hi agent"}}
     end
 
     test "case 7 — GrillRail mounts when grill_active? is true", %{conn: conn} do
@@ -419,6 +629,80 @@ defmodule ContractWeb.Live.Studio.Components.ChatRailTest do
 
       assert html =~ ~s(id="chat-rail-grill")
       assert html =~ ~s(data-component="grill-rail")
+    end
+
+    test "renders structured evidence operation blocks with citation and attach action", %{
+      conn: conn
+    } do
+      {:ok, lv, _html} =
+        live_isolated(conn, WrapperLive, session: %{"scope" => lawyer_scope()})
+
+      send(lv.pid, {
+        :insert,
+        %{
+          id: "evidence-msg-1",
+          role: :agent,
+          operation: %{
+            id: "evidence-op-1",
+            type: "evidence",
+            status: "completed",
+            title: "민법 제390조",
+            summary: "채무불이행 손해배상 근거",
+            evidence_snapshot_id: "11111111-1111-1111-1111-111111111111",
+            provider: "law_mcp.search_law",
+            source: "Korea Law MCP",
+            citation: "민법 제390조",
+            captured_at: "2026-05-17T12:00:00Z"
+          },
+          transient?: false
+        }
+      })
+
+      html = render(lv)
+      assert html =~ ~s(data-role="evidence-block")
+      assert html =~ ~s(data-provider="law_mcp.search_law")
+      assert html =~ "민법 제390조"
+      assert html =~ "Korea Law MCP"
+      assert html =~ "2026-05-17T12:00:00Z"
+      assert html =~ ~s(data-role="evidence-attach")
+      assert html =~ ~s(phx-click="evidence.attach")
+      assert html =~ ~s(phx-value-evidence_snapshot_id="11111111-1111-1111-1111-111111111111")
+    end
+
+    test "ui.toggle_expand toggles an operation block", %{conn: conn} do
+      {:ok, lv, _html} =
+        live_isolated(conn, WrapperLive, session: %{"scope" => lawyer_scope()})
+
+      send(lv.pid, {
+        :insert,
+        %{
+          id: "op-toggle-1",
+          role: :agent,
+          operation: %{
+            id: "tool-toggle-1",
+            type: "tool_call",
+            title: "law.search",
+            status: "completed",
+            summary: "Found 2 clauses",
+            details: %{"citations" => ["상법 제542조"]}
+          },
+          expanded?: false,
+          transient?: false
+        }
+      })
+
+      html = render(lv)
+      assert html =~ ~s(id="operation-block-tool-toggle-1")
+      assert html =~ ~s(id="operation-block-tool-toggle-1-toggle")
+      refute html =~ ~s(data-role="operation-details")
+
+      html =
+        lv
+        |> element("#operation-block-tool-toggle-1-toggle")
+        |> render_click()
+
+      assert html =~ ~s(data-role="operation-details")
+      assert html =~ "상법 제542조"
     end
   end
 end

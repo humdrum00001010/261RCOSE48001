@@ -126,7 +126,9 @@ defmodule ContractWeb.Live.Studio.Components.ToastQueueTest do
       # LV's process. We can still drive the function directly to assert
       # it returns {:noreply, socket}.
       socket = %Phoenix.LiveView.Socket{assigns: %{__changed__: %{}}}
-      assert {:noreply, _} = ToastQueue.handle_event("dismiss_toast", %{"toast_id" => "x"}, socket)
+
+      assert {:noreply, _} =
+               ToastQueue.handle_event("dismiss_toast", %{"toast_id" => "x"}, socket)
     end
   end
 

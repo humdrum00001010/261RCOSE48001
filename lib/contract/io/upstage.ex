@@ -21,19 +21,18 @@ defmodule Contract.IO.Upstage do
   map `%{path: tmpfile_path, client_name: name, client_size: bytes,
   client_type: mime}`.
   """
-  @spec import_upload(T.ctx(), T.matter_id(), map() | T.upload()) ::
+  @spec import_upload(T.ctx(), T.user_id() | nil, map() | T.upload()) ::
           {:ok, Contract.Command.t()} | {:error, term()}
-  def import_upload(_ctx, matter_id, upload) do
+  def import_upload(_ctx, owner_id, upload) do
     with {:ok, info} <- read_upload(upload),
          artifact_id <- Ecto.UUID.generate(),
-         {:ok, _r2} <- upload_source(matter_id, artifact_id, info),
+         {:ok, _r2} <- upload_source(owner_id, artifact_id, info),
          {:ok, parsed} <- parse(info.path, []) do
       nodes = normalize_elements(parsed.elements)
       node_order = Enum.map(nodes, & &1["id"])
 
       action = %Contract.Command{
         kind: :create_document,
-        matter_id: matter_id,
         actor_type: :system,
         idempotency_key: "import:#{artifact_id}",
         payload: %{
@@ -45,7 +44,7 @@ defmodule Contract.IO.Upstage do
           "node_order" => node_order,
           "source" => %{
             "kind" => "r2",
-            "key" => source_key(matter_id, artifact_id, info),
+            "key" => source_key(owner_id, artifact_id, info),
             "bytes" => info.byte_size
           }
         }
@@ -73,7 +72,8 @@ defmodule Contract.IO.Upstage do
       document: file_part,
       ocr: Keyword.get(opts, :ocr, "auto"),
       coordinates: to_string(Keyword.get(opts, :coordinates, true)),
-      output_formats: Jason.encode!(Keyword.get(opts, :output_formats, ["html", "markdown", "text"])),
+      output_formats:
+        Jason.encode!(Keyword.get(opts, :output_formats, ["html", "markdown", "text"])),
       model: Keyword.get(opts, :model, "document-parse")
     ]
 
@@ -294,7 +294,9 @@ defmodule Contract.IO.Upstage do
 
   defp read_upload(%{path: path} = upload) do
     title = Map.get(upload, :client_name) || Map.get(upload, :title) || Path.basename(path)
-    mime = Map.get(upload, :client_type) || Map.get(upload, :mime_type) || "application/octet-stream"
+
+    mime =
+      Map.get(upload, :client_type) || Map.get(upload, :mime_type) || "application/octet-stream"
 
     case File.stat(path) do
       {:ok, %{size: size}} ->
@@ -311,10 +313,10 @@ defmodule Contract.IO.Upstage do
 
   defp read_upload(other), do: {:error, {:invalid_upload, other}}
 
-  defp upload_source(matter_id, artifact_id, info) do
+  defp upload_source(owner_id, artifact_id, info) do
     case File.read(info.path) do
       {:ok, body} ->
-        key = source_key(matter_id, artifact_id, info)
+        key = source_key(owner_id, artifact_id, info)
         Contract.IO.R2.put(key, body, content_type: info.mime_type)
 
       {:error, reason} ->
@@ -322,9 +324,9 @@ defmodule Contract.IO.Upstage do
     end
   end
 
-  defp source_key(matter_id, artifact_id, info) do
+  defp source_key(owner_id, artifact_id, info) do
     ext = info.title |> Path.extname() |> String.trim_leading(".") |> default_ext()
-    "matters/#{matter_id}/sources/#{artifact_id}.#{ext}"
+    "uploads/#{owner_id || "anon"}/sources/#{artifact_id}.#{ext}"
   end
 
   defp default_ext(""), do: "bin"

@@ -51,8 +51,15 @@ defmodule ContractWeb.Router do
       get "/revoke_requests/:document_id", TestDbController, :revoke_requests
       get "/documents", TestDbController, :documents
       get "/oban_jobs", TestDbController, :oban_jobs
-      post "/matters", TestDbController, :seed_matter
       post "/documents", TestDbController, :seed_document
+    end
+
+    # Test/dev-only Studio browser QA helpers. Compile-gated with the same
+    # `:test_auth` flag as persona and DB helpers, so this route does not
+    # exist in production builds.
+    scope "/test/studio", ContractWeb do
+      pipe_through :test_auth
+      post "/operation_blocks", TestStudioController, :operation_blocks
     end
   end
 
@@ -62,39 +69,9 @@ defmodule ContractWeb.Router do
     get "/", PageController, :home
   end
 
-  # Contract Studio LiveView routes (SPEC.md §4).
-  # Browser product flow is LiveView-only — no `/api` for user actions.
-  scope "/", ContractWeb do
-    pipe_through [:browser, :require_authenticated_user]
-
-    live_session :authenticated,
-      on_mount: [
-        {ContractWeb.UserAuth, :require_authenticated},
-        ContractWeb.Locale,
-        {ContractWeb.MatterScope, :assign_scope}
-      ] do
-      live "/dashboard", DashboardLive
-
-      # Primary product surface — document-first (SPEC.md §4, 2026-05-15
-      # Document-pivot). The Document is the user-facing object; the
-      # workspace/matter is internal context.
-      live "/studio", StudioLive
-      live "/documents/:document_id", StudioLive
-      live "/documents/:document_id/review", StudioLive
-
-      # Optional secondary — internal Workspace surface. User-facing label
-      # is 워크스페이스 (Workspace) or hidden; do NOT show "사건" (Matter)
-      # in casual UI unless the audience is law-firm operators.
-      live "/workspaces/:matter_id", StudioLive
-      live "/matters/:matter_id/studio", StudioLive
-    end
-
-    # Backwards-compat: legacy `/matters/:matter_id/documents/:document_id`
-    # now redirects to `/documents/:document_id` (SPEC.md §4).
-    get "/matters/:matter_id/documents/:document_id",
-        LegacyRedirectController,
-        :matter_document
-  end
+  # Browser product flow is LiveView-only. The document-first product
+  # routes live in the authenticated browser scope below, inside the
+  # single `:require_authenticated_user` live_session.
 
   # Inbound MCP server (SPEC.md §4, §21). Streamable HTTP transport: accepts
   # JSON-RPC 2.0 bodies, returns either application/json or
@@ -146,13 +123,27 @@ defmodule ContractWeb.Router do
     pipe_through [:browser, :require_authenticated_user]
 
     live_session :require_authenticated_user,
-      on_mount: [{ContractWeb.UserAuth, :require_authenticated}, ContractWeb.Locale] do
+      on_mount: [
+        {ContractWeb.UserAuth, :require_authenticated},
+        ContractWeb.Locale,
+        {ContractWeb.DocumentScope, :assign_scope}
+      ] do
+      live "/dashboard", DashboardLive
+      live "/studio", StudioLive
+      live "/documents/:document_id", StudioLive
+      live "/documents/:document_id/review", StudioLive
       live "/users/settings", UserLive.Settings, :edit
       live "/users/settings/confirm-email/:token", UserLive.Settings, :confirm_email
       live "/settings", UserLive.SettingsHub, :index
       live "/settings/api-tokens", UserLive.ApiTokens, :index
       live "/settings/integrations", UserLive.Integrations, :index
     end
+
+    get "/matters/:matter_id/documents/:document_id",
+        LegacyRedirectController,
+        :matter_document
+
+    get "/exports/:export_id/download", ExportDownloadController, :show
 
     post "/users/update-password", UserSessionController, :update_password
 

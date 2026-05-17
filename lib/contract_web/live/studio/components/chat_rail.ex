@@ -147,9 +147,7 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
           class="group-has-[[data-role=chat-message]]/chat:hidden flex flex-col gap-3 max-w-[88%] self-start"
         >
           <div
-            data-role="chat-message"
-            data-message-role="agent"
-            data-message-id="welcome-no-doc"
+            data-role="chat-no-doc-message"
             class="rounded-lg bg-base-200 text-base-content text-sm px-3 py-2"
           >
             <p class="mb-2">{dgettext("studio", "새 문서를 시작합니다. 어떻게 시작할까요?")}</p>
@@ -226,14 +224,23 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
               msg_role(msg) == "agent" && "self-start items-start"
             ]}
           >
-            <div class={[
-              "rounded-lg px-3 py-2 text-sm whitespace-pre-wrap break-words",
-              msg_role(msg) == "user" && "bg-primary text-primary-content",
-              msg_role(msg) == "agent" && msg_transient?(msg) == "true" &&
-                "bg-base-200 text-base-content/70 italic",
-              msg_role(msg) == "agent" && msg_transient?(msg) == "false" &&
-                "bg-base-200 text-base-content"
-            ]}>
+            <.operation_block
+              :if={msg_operation(msg)}
+              operation={msg_operation(msg)}
+              expanded={operation_expanded?(@expanded_operation_ids, msg, msg_operation(msg))}
+              target={@myself}
+            />
+            <div
+              :if={is_nil(msg_operation(msg))}
+              class={[
+                "rounded-lg px-3 py-2 text-sm whitespace-pre-wrap break-words",
+                msg_role(msg) == "user" && "bg-primary text-primary-content",
+                msg_role(msg) == "agent" && msg_transient?(msg) == "true" &&
+                  "bg-base-200 text-base-content/70 italic",
+                msg_role(msg) == "agent" && msg_transient?(msg) == "false" &&
+                  "bg-base-200 text-base-content"
+              ]}
+            >
               {msg_body(msg)}
             </div>
             <time
@@ -251,7 +258,7 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
       <form
         id={"#{@id}-form"}
         phx-hook=".ChatInput"
-        phx-submit="send_chat_message"
+        phx-submit="chat.submit"
         data-role="chat-form"
         class={[
           "border-t border-base-200 bg-base-100 shrink-0 px-3 py-2",
@@ -303,7 +310,7 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
               if (!this.textarea) return
               const value = this.textarea.value
               if (!value || !value.trim()) return
-              this.pushEvent("send_chat_message", { message: value })
+              this.pushEvent("chat.submit", { message: value })
               this.textarea.value = ""
               this.autosize()
               // Keep focus on the textarea so the mobile keyboard never hides.
@@ -354,6 +361,240 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
       </script>
     </aside>
     """
+  end
+
+  attr :operation, :map, required: true
+  attr :expanded, :boolean, default: false
+  attr :target, :any, default: nil
+
+  def operation_block(assigns) do
+    assigns =
+      assigns
+      |> assign(:operation_id, operation_id(assigns.operation))
+      |> assign(:operation_type, operation_type(assigns.operation))
+      |> assign(:operation_status, operation_status(assigns.operation))
+      |> assign(:operation_title, operation_title(assigns.operation))
+      |> assign(:operation_summary, operation_summary(assigns.operation))
+
+    ~H"""
+    <section
+      id={"operation-block-#{@operation_id}"}
+      data-role="operation-block"
+      data-operation-type={@operation_type}
+      data-operation-status={@operation_status}
+      class="w-full rounded-md border border-base-300 bg-base-100 text-base-content shadow-sm overflow-hidden"
+    >
+      <button
+        id={"operation-block-#{@operation_id}-toggle"}
+        type="button"
+        phx-click="ui.toggle_expand"
+        phx-value-operation_id={@operation_id}
+        phx-target={@target}
+        class="flex w-full items-start gap-2 px-3 py-2 text-left transition hover:bg-base-200/70"
+      >
+        <.icon
+          name={if(@expanded, do: "hero-chevron-down", else: "hero-chevron-right")}
+          class="mt-0.5 size-4 shrink-0 text-base-content/50"
+        />
+        <div class="min-w-0 flex-1">
+          <div class="flex items-center gap-2">
+            <span class="truncate text-xs font-semibold uppercase text-base-content/60">
+              {operation_label(@operation_type)}
+            </span>
+            <span class="rounded-full bg-base-200 px-1.5 py-0.5 text-[10px] font-medium text-base-content/60">
+              {@operation_status}
+            </span>
+          </div>
+          <p class="truncate text-sm font-medium text-base-content">{@operation_title}</p>
+          <p :if={@operation_summary != ""} class="mt-0.5 text-xs text-base-content/60">
+            {@operation_summary}
+          </p>
+        </div>
+      </button>
+      <div
+        :if={@operation_type == "evidence"}
+        data-role="evidence-block"
+        data-provider={evidence_provider(@operation)}
+        class="border-t border-base-200 bg-base-50 px-3 py-2 text-xs text-base-content/70"
+      >
+        <div class="flex items-start justify-between gap-3">
+          <dl class="grid min-w-0 flex-1 grid-cols-[auto_1fr] gap-x-2 gap-y-1">
+            <dt class="text-base-content/50">Citation</dt>
+            <dd class="truncate font-medium text-base-content">{evidence_citation(@operation)}</dd>
+            <dt class="text-base-content/50">Source</dt>
+            <dd class="truncate">{evidence_source(@operation)}</dd>
+            <dt class="text-base-content/50">Provider</dt>
+            <dd class="truncate">{evidence_provider(@operation)}</dd>
+            <dt class="text-base-content/50">Captured</dt>
+            <dd>
+              <time datetime={evidence_captured_at(@operation)}>
+                {evidence_captured_at(@operation)}
+              </time>
+            </dd>
+          </dl>
+          <button
+            :if={evidence_snapshot_id(@operation)}
+            type="button"
+            data-role="evidence-attach"
+            phx-click="evidence.attach"
+            phx-value-evidence_snapshot_id={evidence_snapshot_id(@operation)}
+            class="inline-flex size-8 shrink-0 items-center justify-center rounded-md border border-base-300 text-base-content/70 transition hover:bg-base-200 hover:text-base-content"
+            aria-label="Attach evidence"
+          >
+            <.icon name="hero-link" class="size-4" />
+          </button>
+        </div>
+      </div>
+      <div
+        :if={@operation_type == "source_interpretation"}
+        data-role="source-interpretation-block"
+        class="border-t border-base-200 bg-base-50 px-3 py-2 text-xs text-base-content/70"
+      >
+        <div class="flex items-center justify-between gap-3">
+          <span class="font-medium text-base-content">{source_document_id(@operation)}</span>
+          <span>{length(source_operation_claims(@operation))} claims</span>
+        </div>
+        <ul
+          :if={source_operation_regions(@operation) != []}
+          class="mt-2 space-y-1"
+          data-role="source-regions"
+        >
+          <li :for={region <- source_operation_regions(@operation)} class="truncate">
+            <span class="font-mono">{detail_value(region, "region_id")}</span>
+            <span>{detail_value(region, "raw_text")}</span>
+          </li>
+        </ul>
+        <ul
+          :if={source_operation_claims(@operation) != []}
+          class="mt-2 space-y-1"
+          data-role="source-claims"
+        >
+          <li
+            :for={claim <- source_operation_claims(@operation)}
+            class="rounded border border-base-200 px-2 py-1"
+          >
+            <span class="font-medium">{claim_kind(claim)}</span>
+            <span class="ml-1">{claim_value(claim)}</span>
+          </li>
+        </ul>
+      </div>
+      <div
+        :if={@operation_type == "source_claim"}
+        data-role="source-claim-block"
+        class="border-t border-base-200 bg-base-50 px-3 py-2 text-xs text-base-content/70"
+      >
+        <dl class="grid grid-cols-[auto_minmax(0,1fr)] gap-x-2 gap-y-1">
+          <dt class="font-medium text-base-content/60">Field</dt>
+          <dd class="font-mono">{source_claim_field(@operation)}</dd>
+          <dt class="font-medium text-base-content/60">Value</dt>
+          <dd>{source_claim_value(@operation)}</dd>
+          <dt class="font-medium text-base-content/60">Confidence</dt>
+          <dd>{source_claim_confidence(@operation)}</dd>
+        </dl>
+        <ul
+          :if={source_claim_anchors(@operation) != []}
+          class="mt-2 space-y-1"
+          data-role="source-claim-anchors"
+        >
+          <li
+            :for={anchor <- source_claim_anchors(@operation)}
+            class="rounded border border-base-200 px-2 py-1"
+          >
+            <span :if={detail_value(anchor, "page")}>p.{detail_value(anchor, "page")}</span>
+            <span>{detail_value(anchor, "text") || inspect(anchor)}</span>
+          </li>
+        </ul>
+        <div class="mt-2 flex flex-wrap gap-1.5" data-role="source-claim-controls">
+          <button
+            type="button"
+            class="btn btn-xs btn-primary"
+            phx-click="source_claim.confirm"
+            phx-value-source_claim_id={source_claim_id(@operation)}
+            phx-value-source_document_id={source_document_id(@operation)}
+          >
+            Confirm
+          </button>
+          <details class="group/correct" data-role="source-claim-correct-panel">
+            <summary class="btn btn-xs list-none marker:hidden">
+              Correct
+            </summary>
+            <.form
+              for={source_claim_correction_form(@operation)}
+              id={"source-claim-correct-form-#{source_claim_id(@operation)}"}
+              phx-submit="source_claim.correct"
+              data-role="source-claim-correct-form"
+              class="mt-2 flex w-full min-w-64 items-end gap-2 rounded-md border border-base-200 bg-base-100 p-2"
+            >
+              <input type="hidden" name="source_claim_id" value={source_claim_id(@operation)} />
+              <input type="hidden" name="source_document_id" value={source_document_id(@operation)} />
+              <.input
+                id={"source-claim-correct-value-#{source_claim_id(@operation)}"}
+                name="value"
+                type="text"
+                value={source_claim_value(@operation)}
+                class="input input-xs min-w-0 flex-1"
+              />
+              <button type="submit" class="btn btn-xs btn-primary">Save</button>
+            </.form>
+          </details>
+          <button
+            type="button"
+            class="btn btn-xs btn-ghost"
+            phx-click="source_claim.reject"
+            phx-value-source_claim_id={source_claim_id(@operation)}
+            phx-value-source_document_id={source_document_id(@operation)}
+          >
+            Reject
+          </button>
+          <button
+            type="button"
+            class="btn btn-xs"
+            phx-click="source_claim.link_to_document"
+            phx-value-source_claim_id={source_claim_id(@operation)}
+            phx-value-source_document_id={source_document_id(@operation)}
+          >
+            Link
+          </button>
+          <button
+            type="button"
+            class="btn btn-xs btn-ghost"
+            phx-click="source_claim.unlink"
+            phx-value-source_claim_id={source_claim_id(@operation)}
+            phx-value-source_document_id={source_document_id(@operation)}
+          >
+            Unlink
+          </button>
+        </div>
+      </div>
+      <div
+        :if={@expanded}
+        id={"operation-block-#{@operation_id}-details"}
+        data-role="operation-details"
+        class="border-t border-base-200 bg-base-50 px-3 py-2"
+      >
+        <pre class="whitespace-pre-wrap break-words text-xs leading-relaxed text-base-content/70">{operation_details(@operation)}</pre>
+      </div>
+    </section>
+    """
+  end
+
+  @impl true
+  def mount(socket) do
+    {:ok, assign(socket, :expanded_operation_ids, MapSet.new())}
+  end
+
+  @impl true
+  def handle_event("ui.toggle_expand", %{"operation_id" => operation_id}, socket) do
+    expanded = socket.assigns[:expanded_operation_ids] || MapSet.new()
+
+    expanded =
+      if MapSet.member?(expanded, operation_id) do
+        MapSet.delete(expanded, operation_id)
+      else
+        MapSet.put(expanded, operation_id)
+      end
+
+    {:noreply, assign(socket, :expanded_operation_ids, expanded)}
   end
 
   # ----------------------------------------------------------------------------
@@ -440,10 +681,136 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
   #   * agent complete: %{id, role: :agent, result: <result>, transient?: false}
   # ----------------------------------------------------------------------------
 
+  defp msg_operation(%{operation: operation}) when is_map(operation), do: operation
+  defp msg_operation(%{"operation" => operation}) when is_map(operation), do: operation
+  defp msg_operation(_), do: nil
+
+  defp operation_expanded?(expanded_ids, msg, operation) do
+    operation_id = operation_id(operation)
+    MapSet.member?(expanded_ids || MapSet.new(), operation_id) || msg_expanded?(msg)
+  end
+
+  defp msg_expanded?(%{expanded?: true}), do: true
+  defp msg_expanded?(%{"expanded?" => true}), do: true
+  defp msg_expanded?(_), do: false
+
+  defp operation_id(operation), do: operation_value(operation, "id") || Ecto.UUID.generate()
+  defp operation_type(operation), do: operation_value(operation, "type") || "operation"
+  defp operation_status(operation), do: operation_value(operation, "status") || "pending"
+
+  defp operation_title(operation),
+    do: operation_value(operation, "title") || operation_label(operation_type(operation))
+
+  defp operation_summary(operation) do
+    operation_value(operation, "summary") || operation_value(operation, "body") || ""
+  end
+
+  defp evidence_snapshot_id(operation), do: operation_value(operation, "evidence_snapshot_id")
+  defp evidence_provider(operation), do: operation_value(operation, "provider") || "law_mcp"
+  defp evidence_source(operation), do: operation_value(operation, "source") || "Legal source"
+
+  defp evidence_citation(operation),
+    do: operation_value(operation, "citation") || operation_title(operation)
+
+  defp evidence_captured_at(operation), do: operation_value(operation, "captured_at") || ""
+
+  defp operation_details_map(operation) do
+    case operation_value(operation, "details") do
+      details when is_map(details) -> stringify_detail_keys(details)
+      _ -> %{}
+    end
+  end
+
+  defp stringify_detail_keys(map),
+    do: Map.new(map, fn {key, value} -> {to_string(key), value} end)
+
+  defp source_operation_claims(operation),
+    do: operation |> operation_details_map() |> Map.get("claims", []) |> List.wrap()
+
+  defp source_operation_regions(operation),
+    do: operation |> operation_details_map() |> Map.get("regions", []) |> List.wrap()
+
+  defp source_claim_id(operation),
+    do: operation_details_map(operation)["source_claim_id"] || operation_value(operation, "id")
+
+  defp source_claim_correction_form(operation),
+    do: Phoenix.Component.to_form(%{"value" => source_claim_value(operation)})
+
+  defp source_document_id(operation),
+    do: operation_details_map(operation)["source_document_id"] || ""
+
+  defp source_claim_anchors(operation) do
+    details = operation_details_map(operation)
+
+    (details["anchors"] || get_in(details, ["proposed_structured", "anchors"]) || [])
+    |> List.wrap()
+  end
+
+  defp source_claim_confidence(operation),
+    do: operation |> operation_details_map() |> Map.get("confidence") |> display_value()
+
+  defp source_claim_field(operation) do
+    details = operation_details_map(operation)
+    details["proposed_kind"] || details["field"] || details["field_id"] || ""
+  end
+
+  defp source_claim_value(operation) do
+    details = operation_details_map(operation)
+    details["user_value"] || details["value"] || details["proposed_value"] || ""
+  end
+
+  defp display_value(nil), do: ""
+  defp display_value(value) when is_binary(value), do: value
+  defp display_value(value) when is_integer(value), do: Integer.to_string(value)
+  defp display_value(value) when is_float(value), do: Float.to_string(value)
+  defp display_value(value), do: inspect(value)
+
+  defp claim_kind(claim),
+    do: detail_value(claim, "proposed_kind") || detail_value(claim, "kind") || ""
+
+  defp claim_value(claim),
+    do: detail_value(claim, "proposed_value") || detail_value(claim, "value") || ""
+
+  defp detail_value(map, key) when is_map(map),
+    do: Map.get(map, key) || Map.get(map, String.to_atom(key))
+
+  defp detail_value(_map, _key), do: nil
+
+  defp operation_details(operation) do
+    details = operation_value(operation, "details") || operation
+
+    case Jason.encode(details, pretty: true) do
+      {:ok, encoded} -> encoded
+      {:error, _} -> inspect(details, pretty: true)
+    end
+  end
+
+  defp operation_value(operation, key) when is_map(operation) do
+    Map.get(operation, key) || Map.get(operation, String.to_atom(key))
+  rescue
+    ArgumentError -> Map.get(operation, key)
+  end
+
+  defp operation_value(_operation, _key), do: nil
+
+  defp operation_label("tool_call"), do: "Tool call"
+  defp operation_label("source_interpretation"), do: "Source interpretation"
+  defp operation_label("source_claim"), do: "Source claim"
+  defp operation_label("evidence"), do: "Evidence"
+  defp operation_label("export_status"), do: "Export"
+  defp operation_label("conversion_plan"), do: "Conversion plan"
+
+  defp operation_label(type) when is_binary(type),
+    do: type |> String.replace("_", " ") |> String.capitalize()
+
+  defp operation_label(_), do: "Operation"
+
   defp msg_role(%{role: :user}), do: "user"
   defp msg_role(%{role: "user"}), do: "user"
   defp msg_role(%{role: :agent}), do: "agent"
   defp msg_role(%{role: "agent"}), do: "agent"
+  defp msg_role(%{role: :assistant}), do: "agent"
+  defp msg_role(%{role: "assistant"}), do: "agent"
   defp msg_role(_), do: "agent"
 
   defp msg_transient?(%{transient?: true}), do: "true"

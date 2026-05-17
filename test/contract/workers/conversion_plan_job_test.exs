@@ -67,8 +67,8 @@ defmodule Contract.Workers.ConversionPlanJobTest do
             },
             %{
               "source_field_id" => "field_2",
-              "suggested_strategy" => "link_to_matter_field",
-              "justification" => "Party identity is matter-level."
+              "suggested_strategy" => "link_to_shared_fact",
+              "justification" => "Party identity is shared."
             },
             %{
               "source_field_id" => "field_3",
@@ -91,7 +91,7 @@ defmodule Contract.Workers.ConversionPlanJobTest do
 
       assert by_id["field_1"].strategy == :copy_once
       assert by_id["field_1"].justification == "Looks like a commercial term."
-      assert by_id["field_2"].strategy == :link_to_matter_field
+      assert by_id["field_2"].strategy == :link_to_shared_fact
       assert by_id["field_3"].strategy == :ignore
     end
 
@@ -116,7 +116,7 @@ defmodule Contract.Workers.ConversionPlanJobTest do
       {:ok, plan} = Conversion.plan(scope, d.id, "service_agreement_v1", [])
 
       # nda → service_agreement is compatible: default strategies are
-      # :copy_once / :link_to_matter_field, so well under 3 :ask_user.
+      # :copy_once / :link_to_shared_fact, so well under 3 :ask_user.
       assert Enum.count(plan.field_plans, &(&1.strategy == :ask_user)) < 3
 
       assert {:ok, _plans} = Conversion.propose_fields(scope, plan)

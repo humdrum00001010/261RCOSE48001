@@ -106,8 +106,8 @@ config :contract, :law_mcp,
 config :contract, :r2,
   bucket: "test-bucket",
   account_id: "test-account",
-  access_key_id: "test-access-key",
-  secret_access_key: "test-secret",
+  access_key_id: "0123456789abcdef0123456789abcdef",
+  secret_access_key: "0123456789abcdef0123456789abcdef01234567",
   endpoint: "http://localhost:0"
 
 # Mox-based OpenAI driver for the Agent runtime tests.
@@ -119,8 +119,8 @@ config :contract, :io_drivers,
   r2: Contract.IO.R2
 
 config :ex_aws,
-  access_key_id: "test-access-key",
-  secret_access_key: "test-secret",
+  access_key_id: "0123456789abcdef0123456789abcdef",
+  secret_access_key: "0123456789abcdef0123456789abcdef01234567",
   region: "auto"
 
 # External HWPX validator — used by `test/contract/export/hwpx_external_validator_test.exs`

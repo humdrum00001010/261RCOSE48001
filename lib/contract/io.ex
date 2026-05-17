@@ -28,10 +28,10 @@ defmodule Contract.IO do
 
   # parse_document/2 path — kept as Upstage.import_upload so legacy
   # callers that still expect a `Command(:create_document)` keep working.
-  @spec import_upload(T.ctx(), T.matter_id(), T.upload() | map()) ::
+  @spec import_upload(T.ctx(), T.user_id() | nil, T.upload() | map()) ::
           T.result(Contract.Command.t())
-  def import_upload(ctx, matter_id, upload),
-    do: Contract.IO.Upstage.import_upload(ctx, matter_id, upload)
+  def import_upload(ctx, owner_id, upload),
+    do: Contract.IO.Upstage.import_upload(ctx, owner_id, upload)
 
   @spec parse_source(T.ctx(), String.t(), T.opts()) :: T.result(map())
   def parse_source(ctx, source_ref, opts \\ []),

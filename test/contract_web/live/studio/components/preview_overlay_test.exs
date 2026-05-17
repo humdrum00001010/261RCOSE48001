@@ -18,18 +18,16 @@ defmodule ContractWeb.Live.Studio.Components.PreviewOverlayTest do
 
   # --- Persona-scope fixtures (mirror Contract.PersonaFactory) ---------------
 
-  defp lawyer_scope(user, opts \\ []),
+  defp lawyer_scope(user, _opts \\ []),
     do: %Context{
       Context.for_user(user)
-      | perms: ~w(read write commit revoke export type_change agent_run)a,
-        matter: Keyword.get(opts, :matter)
+      | perms: ~w(read write commit revoke export type_change agent_run)a
     }
 
-  defp viewer_scope(user, opts \\ []),
+  defp viewer_scope(user, _opts \\ []),
     do: %Context{
       Context.for_user(user)
-      | perms: ~w(read)a,
-        matter: Keyword.get(opts, :matter)
+      | perms: ~w(read)a
     }
 
   defp base_state, do: %State{mode: :reviewing, last_seen_revision: 1}
@@ -73,7 +71,7 @@ defmodule ContractWeb.Live.Studio.Components.PreviewOverlayTest do
   describe "render — mobile viewport" do
     setup do
       user = user_fixture()
-      %{user: user, scope: lawyer_scope(user, matter: %{id: "m1", name: "Acme · NDA"})}
+      %{user: user, scope: lawyer_scope(user)}
     end
 
     test "renders the overlay shell when mounted (test 1: renders when open)", %{scope: scope} do
@@ -88,7 +86,7 @@ defmodule ContractWeb.Live.Studio.Components.PreviewOverlayTest do
 
       assert html =~ ~s(data-role="preview-overlay")
       assert html =~ ~s(data-viewport="mobile")
-      assert html =~ "Acme · NDA"
+      assert html =~ "Master Services Agreement"
       # Close button is present
       assert html =~ ~s(data-role="preview-close")
       # Body tab is selected by default
@@ -264,12 +262,13 @@ defmodule ContractWeb.Live.Studio.Components.PreviewOverlayTest do
   describe "body tab — projection rendering" do
     test "test 5a: renders Korean content in the body without jamo decomposition" do
       user = user_fixture()
-      scope = lawyer_scope(user, matter: %{id: "m1", name: "한국 계약"})
+      scope = lawyer_scope(user)
+      projection = Map.put(sample_projection(), :title, "한국 계약")
 
       html =
         render_component(PreviewOverlay,
           id: "preview-overlay",
-          projection: sample_projection(),
+          projection: projection,
           studio_state: base_state(),
           current_scope: scope,
           viewport: :mobile
@@ -278,7 +277,7 @@ defmodule ContractWeb.Live.Studio.Components.PreviewOverlayTest do
       # NFC Korean content should round-trip intact (no jamo splitting).
       assert html =~ "조항 1. 서비스 범위"
       assert html =~ "당사자는 다음 서비스를 제공한다."
-      # Matter name with Korean characters renders in the header.
+      # Document title with Korean characters renders in the header.
       assert html =~ "한국 계약"
       # Sanity: assert the syllable-level codepoint is present, not the
       # NFD-decomposed jamo sequence. "조" is U+C870.

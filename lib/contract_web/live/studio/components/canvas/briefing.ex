@@ -176,7 +176,7 @@ defmodule ContractWeb.Live.Studio.Components.Canvas.Briefing do
 
   # A viewer persona has read perms only (no :write).
   defp viewer?(%{perms: perms}) when is_list(perms) do
-    :read in perms and not (:write in perms)
+    :read in perms and :write not in perms
   end
 
   defp viewer?(_), do: false

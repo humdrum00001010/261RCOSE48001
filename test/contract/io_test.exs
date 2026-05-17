@@ -60,7 +60,9 @@ defmodule Contract.IOTest do
             "jsonrpc" => "2.0",
             "id" => 1,
             "result" => %{
-              "content" => [%{"text" => Jason.encode!([%{"citation" => "민법 제390조", "valid" => true}])}]
+              "content" => [
+                %{"text" => Jason.encode!([%{"citation" => "민법 제390조", "valid" => true}])}
+              ]
             }
           })
         )

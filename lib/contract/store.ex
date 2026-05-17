@@ -19,7 +19,7 @@ defmodule Contract.Store do
        unchanged. This is the §15.6 replay-safe path.
     5. Revision check: `change.base_revision` must equal the current
        `latest_revision/1` — otherwise `{:error, {:revision_conflict, ...}}`.
-    6. Bumps `change.applied_revision` to `latest + 1` and inserts.
+    6. Bumps `change.result_revision` to `latest + 1` and inserts.
     7. **After** the transaction commits, broadcasts
        `{:change_committed, change}` on the document's PubSub topic.
        Broadcast happens post-commit on purpose — clients must never see
@@ -29,7 +29,7 @@ defmodule Contract.Store do
 
   `load/1` fetches the most recent `Contract.Snapshot` row (if any),
   reconstructs the `Runtime.State` from it, then folds every change
-  whose `applied_revision > snapshot.revision` through `Engine.apply/2`.
+  whose `result_revision > snapshot.revision` through `Engine.apply/2`.
 
   An empty document (no snapshot, no changes) loads as an empty
   `Runtime.State` at `revision: 0`.
@@ -180,12 +180,12 @@ defmodule Contract.Store do
         {:ok, existing}
 
       {:ok, %Change{} = persisted} ->
-        # Mirror the highest applied_revision onto Documents.latest_revision
+        # Mirror the highest result_revision onto Documents.latest_revision
         # so dashboard / list queries don't need a fold over `changes`.
         # Best-effort: if the documents table doesn't exist yet (test
         # envs that don't run the Wave-4 migration) or the row is
         # missing, touch_revision/2 swallows the error.
-        _ = Contract.Documents.touch_revision(document_id, persisted.applied_revision)
+        _ = Contract.Documents.touch_revision(document_id, persisted.result_revision)
 
         Phoenix.PubSub.broadcast(@pubsub, topic(document_id), {:change_committed, persisted})
         {:ok, persisted}
@@ -207,21 +207,25 @@ defmodule Contract.Store do
     next_rev = current_rev + 1
 
     attrs = %{
-      matter_id: change.matter_id,
       document_id: document_id,
-      artifact_id: change.artifact_id,
-      action_kind: change.action_kind,
+      chat_thread_id: change.chat_thread_id,
+      source_document_id: change.source_document_id,
+      source_claim_id: change.source_claim_id,
+      agent_run_id: change.agent_run_id,
+      command_kind: change.command_kind,
       actor_type: change.actor_type,
       actor_id: change.actor_id,
       base_revision: base || current_rev,
-      applied_revision: next_rev,
+      result_revision: next_rev,
       idempotency_key: change.idempotency_key,
-      ops: Enum.map(change.ops || [], &normalize_op_for_storage/1),
+      field_path: change.field_path || [],
+      op: change.op,
+      payload: Enum.map(change.payload || [], &normalize_op_for_storage/1),
       marks: change.marks,
       message: change.message,
       affected_refs: change.affected_refs,
       preimage: encode_preimage(change.preimage),
-      inverse_ops: Enum.map(change.inverse_ops || [], &normalize_op_for_storage/1),
+      inverse: Enum.map(change.inverse || [], &normalize_op_for_storage/1),
       status: change.status || :active
     }
 
@@ -258,7 +262,7 @@ defmodule Contract.Store do
   # outer `Repo.transaction/1` so the row + Change row commit atomically.
   # ----------------------------------------------------------------------------
 
-  defp propagate_to_documents(document_id, %Change{ops: ops}) when is_list(ops) do
+  defp propagate_to_documents(document_id, %Change{payload: ops}) when is_list(ops) do
     ops
     |> Enum.map(&decode_op/1)
     |> Enum.filter(&document_set_attr?/1)
@@ -324,8 +328,8 @@ defmodule Contract.Store do
   def changes_since(document_id, revision) when is_integer(revision) and revision >= 0 do
     changes =
       from(c in Change,
-        where: c.document_id == ^document_id and c.applied_revision > ^revision,
-        order_by: [asc: c.applied_revision]
+        where: c.document_id == ^document_id and c.result_revision > ^revision,
+        order_by: [asc: c.result_revision]
       )
       |> Repo.all()
 
@@ -345,7 +349,7 @@ defmodule Contract.Store do
     rev =
       from(c in Change,
         where: c.document_id == ^document_id,
-        select: max(c.applied_revision)
+        select: max(c.result_revision)
       )
       |> Repo.one()
 
@@ -415,26 +419,25 @@ defmodule Contract.Store do
   @spec change_to_input(Change.t()) :: ChangeInput.t()
   def change_to_input(%Change{} = c) do
     %ChangeInput{
-      action_kind: action_kind_atom(c.action_kind),
-      matter_id: c.matter_id,
+      action_kind: command_kind_atom(c.command_kind),
       document_id: c.document_id,
       base_revision: c.base_revision,
       idempotency_key: c.idempotency_key,
       actor_type: c.actor_type,
       actor_id: c.actor_id,
-      ops: Enum.map(c.ops, &decode_op/1),
+      ops: Enum.map(c.payload || [], &decode_op/1),
       marks: c.marks,
       message: c.message,
       affected_refs: c.affected_refs,
       preimage: c.preimage,
-      inverse_ops: Enum.map(c.inverse_ops, &decode_op/1)
+      inverse_ops: Enum.map(c.inverse || [], &decode_op/1)
     }
   end
 
-  defp action_kind_atom(nil), do: nil
-  defp action_kind_atom(atom) when is_atom(atom), do: atom
+  defp command_kind_atom(nil), do: nil
+  defp command_kind_atom(atom) when is_atom(atom), do: atom
 
-  defp action_kind_atom(str) when is_binary(str) do
+  defp command_kind_atom(str) when is_binary(str) do
     String.to_existing_atom(str)
   rescue
     ArgumentError -> nil

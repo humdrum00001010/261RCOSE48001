@@ -15,7 +15,6 @@ defmodule ContractWeb.Live.Studio.Components.Canvas.BriefingTest do
   defp lawyer_scope do
     %Context{
       user: nil,
-      matter: %{id: "matter-1", name: "Acme v. Doe"},
       perms: ~w(read write commit revoke export type_change agent_run)a
     }
   end
@@ -23,14 +22,12 @@ defmodule ContractWeb.Live.Studio.Components.Canvas.BriefingTest do
   defp viewer_scope do
     %Context{
       user: nil,
-      matter: %{id: "matter-1", name: "Acme v. Doe"},
       perms: ~w(read)a
     }
   end
 
   defp briefing_state do
     %StudioState{
-      matter_id: "matter-1",
       selected_document_id: "doc-1",
       mode: :briefing,
       last_seen_revision: 3
@@ -85,7 +82,6 @@ defmodule ContractWeb.Live.Studio.Components.Canvas.BriefingTest do
       html = render_briefing(projection: proj)
 
       # Header surfaces matter + document title + briefing badge.
-      assert html =~ "Acme v. Doe"
       assert html =~ "Lease Agreement"
       assert html =~ ~s(data-role="briefing-badge")
 

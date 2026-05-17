@@ -1,21 +1,21 @@
 /**
  * Cmd+Z diagnostic — Why does the Playwright clean-revoke scenario fail
- * to produce a `revoke_change` row even though the JS hook was patched?
+ * to produce a `change.revoke` UI event / revoke row even though the JS hook was patched?
  *
  * The scenario is exercised end-to-end against the deployed sprite:
  *
  *   1. Sign in as `lawyer` (test-only persona endpoint).
- *   2. Seed an inline matter + document.
+ *   2. Seed an inline document.
  *   3. Navigate to the Studio LV.
  *   4. Hook console + pageerror + request listeners to capture every
  *      event the page emits — we want to see the hook's own console
  *      breadcrumbs, any JS errors, and every Phoenix push.
- *   5. Push `edit_document` via `pushHookEvent` (same as the spec).
+ *   5. Push `document.edit` via `pushHookEvent` (same as the spec).
  *   6. Wait for the edit change to land in `/test/db/changes/:id`.
  *   7. Press the OS-appropriate undo combo and (separately) the
  *      Mac-style `Meta+z` to rule out keymap mismatches. Also pull a
  *      fallback `keydown` dispatch on `window` so we can compare paths.
- *   8. Poll `/test/db/changes/:id` for a `revoke_change` row.
+ *   8. Poll `/test/db/changes/:id` for the revoke row.
  *   9. Dump the hook's introspected state (last cached change id,
  *      whether `data-can-revoke` is set, listener counts) and the
  *      console/network transcript.
@@ -39,15 +39,8 @@ interface SignInResp {
 interface SeedDocResp {
   ok: boolean;
   id: string;
-  matter_id: string;
   type_key: string;
   title: string;
-}
-
-interface SeedMatterResp {
-  ok: boolean;
-  id: string;
-  name: string;
 }
 
 interface ChangeRow {
@@ -94,8 +87,8 @@ async function run(): Promise<void> {
     if (url.includes('/live/longpoll') || url.includes('/live/websocket')) {
       const body = req.postData() || '';
       if (
-        body.includes('revoke_change') ||
-        body.includes('edit_document') ||
+        body.includes('change.revoke') ||
+        body.includes('document.edit') ||
         body.includes('editor:')
       ) {
         pushedEvents.push(`${req.method()} ${url} :: ${body.slice(0, 200)}`);
@@ -114,25 +107,18 @@ async function run(): Promise<void> {
   const sign = (await signResp.json()) as SignInResp;
   console.log(`[1] signed in as ${sign.persona} email=${sign.email}`);
 
-  // 2. Seed matter + doc.
-  const matterResp = await page.request.post(`${BASE_URL}/test/db/matters`, {
-    data: { name: 'cmdz-diag matter' }
-  });
-  const matter = (await matterResp.json()) as SeedMatterResp;
-  console.log(`[2a] seeded matter id=${matter.id}`);
-
+  // 2. Seed document.
   const docResp = await page.request.post(`${BASE_URL}/test/db/documents`, {
     data: {
-      matter_id: matter.id,
       type_key: 'nda_v1',
       title: 'cmdz-diag doc'
     }
   });
   const doc = (await docResp.json()) as SeedDocResp;
-  console.log(`[2b] seeded document id=${doc.id} matter_id=${doc.matter_id}`);
+  console.log(`[2a] seeded document id=${doc.id}`);
 
   // 3. Navigate to Studio.
-  await page.goto(`${BASE_URL}/matters/${doc.matter_id}/documents/${doc.id}`, {
+  await page.goto(`${BASE_URL}/documents/${doc.id}`, {
     waitUntil: 'networkidle',
     timeout: 30_000
   });
@@ -178,18 +164,18 @@ async function run(): Promise<void> {
   // doc to land changes that flip derive_mode to `:editing`, then
   // reload so the LV re-mounts with the new mode. `derive_mode`
   // gates first on `projection.type_key` (nil → briefing regardless of
-  // history), so we MUST push `set_contract_type` here — a plain
-  // `edit_document` alone leaves type_key nil and mode stays briefing.
+  // history), so we MUST push `document.type.set` here - a plain
+  // `document.edit` alone leaves type_key nil and mode stays briefing.
   // Then we also push a `:create_node` op so the projection's
   // `node_order` ends up non-empty.
   const FIRST_NODE_ID = 'cmdz-diag-node-1';
   if (!canvasMeta.editorPresent) {
     console.log('[3c] editor NOT mounted — running warm-edit + reload sequence');
-    await pushHookEvent(page, 'set_contract_type', {
+    await pushHookEvent(page, 'document.type.set', {
       document_id: doc.id,
       type_key: 'nda_v1'
     });
-    await pushHookEvent(page, 'edit_document', {
+    await pushHookEvent(page, 'document.edit', {
       document_id: doc.id,
       ops: [
         {
@@ -313,7 +299,7 @@ async function run(): Promise<void> {
     });
   });
 
-  // 5. Push edit_document via pushHookEvent — same as the failing spec.
+  // 5. Push document.edit via pushHookEvent - same as the failing spec.
   const firstNodeId = await page.evaluate(() => {
     const el = document.querySelector('[data-node-id]') as HTMLElement | null;
     return el?.dataset.nodeId ?? null;
@@ -326,7 +312,7 @@ async function run(): Promise<void> {
   const editTargetId = firstNodeId ?? FIRST_NODE_ID;
   console.log(`[5b] editTargetId=${editTargetId}`);
 
-  await pushHookEvent(page, 'edit_document', {
+  await pushHookEvent(page, 'document.edit', {
     document_id: doc.id,
     ops: [
       {
@@ -339,7 +325,7 @@ async function run(): Promise<void> {
   });
   await page.evaluate(() => {
     // eslint-disable-next-line no-console
-    console.log('[cmdz-diag] pushed edit_document via pushHookEvent');
+    console.log('[cmdz-diag] pushed document.edit via pushHookEvent');
   });
 
   // 6. Wait for the edit change to land.
@@ -453,7 +439,7 @@ async function run(): Promise<void> {
   });
 
   // 11. Replay every captured push to the server.
-  console.log(`[11] phx pushes containing revoke/edit/editor: ${pushedEvents.length}`);
+  console.log(`[11] phx pushes containing change.revoke/document.edit/editor: ${pushedEvents.length}`);
   pushedEvents.forEach((e, i) => {
     console.log(`     #${i}: ${e}`);
   });
@@ -466,10 +452,10 @@ async function run(): Promise<void> {
 
   // Exit non-zero if revoke didn't land — the script is also CI-usable.
   if (!revokeLanded.found) {
-    console.log('[RESULT] FAIL — revoke_change did not appear');
+    console.log('[RESULT] FAIL - change.revoke did not produce a revoke row');
     process.exit(2);
   }
-  console.log('[RESULT] PASS — revoke_change landed');
+  console.log('[RESULT] PASS - change.revoke produced a revoke row');
 }
 
 async function pushHookEvent(

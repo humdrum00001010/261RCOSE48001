@@ -1,20 +1,25 @@
 defmodule ContractWeb.DashboardLive do
   @moduledoc """
   Authenticated home for Contract Studio. Shows a greeting, a Resume link
-  to the most-recent document, the matters the scope can see, recent
-  documents, and an activity feed.
+  to the most-recent document, recent documents, and an activity feed.
 
-  Per the 2026-05-15 product directive ("a lawyer is not a programmer"),
-  the dashboard no longer counts things — counts add noise without value
-  for the legal persona. The old stat row (active matters / documents /
-  open agent runs) was removed.
+  Per the 2026-05-15 product directives:
+
+    * "a lawyer is not a programmer" — the dashboard no longer counts
+      things; the old stat row (active matters / documents / open
+      agent runs) was removed.
+    * Document-pivot — Matter is an internal context container, not a
+      user-facing object. The Matters dashboard section is dropped
+      entirely; the user-facing label policy is "Workspace" or hidden,
+      and we chose hidden here. Existing matter rows are still listed
+      visibility-wise through `Contract.Matters.list_for_scope/1` for
+      the New-Document fallback path.
 
   ## Data sources
 
-    * `Contract.Matters.list_for_scope/1` — visible matters for the scope.
-    * `Contract.Documents.list_recent_for_scope/2` — recent documents
-      for the scope, across all visible matters. The head of this list
-      drives the "Resume" affordance in the greeting area.
+    * `Contract.Documents.list_recent_for_scope/2` — recent owner-scoped
+      documents. The head of this list drives the "Resume" affordance in
+      the greeting area.
     * `Contract.ContractTypes.list/2` — compile-time TOML-backed type
       registry, drives the "New Document" modal.
     * `Contract.Repo.all/1` on a small `changes` query — flattened into
@@ -26,6 +31,7 @@ defmodule ContractWeb.DashboardLive do
 
   alias Contract.Change
   alias Contract.ContractTypes
+  alias Contract.Documents
   alias Contract.Documents.Document
   alias Contract.Repo
 
@@ -53,23 +59,15 @@ defmodule ContractWeb.DashboardLive do
   end
 
   # Per SPEC.md §18 a document is created untyped (`type_key: nil`); the
-  # type is set later via `Action(:set_contract_type)` by the user (Cmd+K)
-  # or the agent. Per SPEC.md Document-primary pivot (2026-05-15) the
-  # user is NOT asked to pick a Matter — `create_with_auto_matter/2`
-  # synthesizes a hidden Workspace if needed, or reuses the current
-  # scope's matter when the user is already inside an existing Workspace
-  # context (e.g. `/workspaces/:matter_id/...`).
-  def handle_event("create_new_document", %{"title" => title} = params, socket)
+  # type is set later via `Command(:set_contract_type)` by the user or agent.
+  # v0.5 removes Matter from the product model, so creation is owner-scoped
+  # through `Documents.create/2` and navigation is `/documents/:document_id`.
+  def handle_event("create_new_document", %{"title" => title}, socket)
       when is_binary(title) do
     scope = socket.assigns.current_scope
-    matter_id = resolve_matter_id(scope, params["matter_id"])
 
-    attrs =
-      %{"title" => title}
-      |> maybe_put("matter_id", matter_id)
-
-    case Contract.Documents.create_with_auto_matter(scope, attrs) do
-      {:ok, doc, matter} ->
+    case Documents.create(scope, %{"title" => title}) do
+      {:ok, doc} ->
         {:noreply,
          socket
          |> assign(:show_new_doc_modal, false)
@@ -81,7 +79,7 @@ defmodule ContractWeb.DashboardLive do
              "New document created. Pick a contract type with Cmd+K, or let the agent suggest one."
            )
          )
-         |> push_navigate(to: document_path(matter, doc))}
+         |> push_navigate(to: ~p"/documents/#{doc.id}")}
 
       {:error, _reason} ->
         {:noreply,
@@ -93,46 +91,12 @@ defmodule ContractWeb.DashboardLive do
     end
   end
 
-  # Resolve the matter_id we should pass to `create_with_auto_matter/2`:
-  #
-  #   * explicit param wins (legacy form submissions that include it),
-  #   * else if the scope is already inside a non-system Matter context
-  #     (e.g. mounted under `/workspaces/:matter_id/...`), reuse that id
-  #     so we don't synthesize a duplicate Workspace,
-  #   * else nil — let the backend auto-create a hidden Workspace.
-  defp resolve_matter_id(_scope, explicit) when is_binary(explicit) and explicit != "",
-    do: explicit
-
-  defp resolve_matter_id(%Contract.Context{matter: %{id: id} = matter}, _) when is_binary(id) do
-    if system_created?(matter), do: nil, else: id
-  end
-
-  defp resolve_matter_id(_scope, _), do: nil
-
-  defp system_created?(%{metadata: %{"system_created" => true}}), do: true
-  defp system_created?(%{metadata: %{system_created: true}}), do: true
-  defp system_created?(_), do: false
-
-  # Document-first navigation target. The proper `/documents/:id` route
-  # lands via Impl B; until then, route through the legacy nested
-  # matter path so the existing StudioLive mount still hydrates state.
-  defp document_path(matter, doc) do
-    matter_id = matter && matter.id
-    ~p"/matters/#{matter_id}/documents/#{doc.id}"
-  end
-
-  defp maybe_put(map, _key, nil), do: map
-  defp maybe_put(map, _key, ""), do: map
-  defp maybe_put(map, key, value), do: Map.put(map, key, value)
-
   defp load_data(socket) do
-    matters = list_matters(socket.assigns.current_scope)
     recent_documents = list_recent_documents(socket.assigns.current_scope)
     ftc_templates = list_ftc_templates()
     activity = list_activity(socket.assigns.current_scope)
 
     socket
-    |> assign(:matters, matters)
     |> assign(:recent_documents, recent_documents)
     |> assign(:resume_document, most_recent_document(recent_documents))
     |> assign(:ftc_templates, ftc_templates)
@@ -150,88 +114,19 @@ defmodule ContractWeb.DashboardLive do
 
   defp most_recent_document([doc | _]), do: doc
 
-  # System-owned `:template` documents seeded by `Contract.Workers.FtcSeedJob`
-  # (Wave 5). They live in the special "FTC 표준약관" matter owned by the
-  # synthetic `system@contract.local` user. Surfacing them on the dashboard
-  # gives every persona a one-click entry point to spawn a new document
-  # from a canonical FTC template.
-  defp list_ftc_templates do
-    matter_name = Contract.Workers.FtcSeedJob.templates_matter_name()
+  # FTC templates still need a v0.5 source-document backed model. Until that
+  # lands, keep the dashboard document-first and omit the legacy Matter query.
+  defp list_ftc_templates, do: []
 
-    from(d in Document,
-      join: m in Contract.Matters.Matter,
-      on: d.matter_id == m.id,
-      where: m.name == ^matter_name and d.status == :template,
-      order_by: [asc: d.type_key],
-      select: %{
-        document_id: d.id,
-        title: d.title,
-        type_key: d.type_key,
-        metadata: d.metadata
-      }
-    )
-    |> Repo.all()
-  rescue
-    DBConnection.ConnectionError -> []
-    Postgrex.Error -> []
-  end
-
-  defp list_matters(scope) do
-    matters =
-      scope
-      |> Contract.Matters.list_for_scope()
-
-    # One cheap aggregate query to get document counts per matter, rather
-    # than N+1 queries from a card-grid.
-    doc_counts =
-      case matters do
-        [] ->
-          %{}
-
-        list ->
-          ids = Enum.map(list, & &1.id)
-
-          from(d in Document,
-            where: d.matter_id in ^ids,
-            group_by: d.matter_id,
-            select: {d.matter_id, count(d.id)}
-          )
-          |> Repo.all()
-          |> Map.new()
-      end
-
-    Enum.map(matters, fn m ->
-      %{
-        id: m.id,
-        name: m.name,
-        status: m.status,
-        doc_count: Map.get(doc_counts, m.id, 0),
-        last_activity_at: m.updated_at
-      }
-    end)
-  rescue
-    DBConnection.ConnectionError -> []
-    Postgrex.Error -> []
-  end
+  # Single source of truth for the dashboard's recent-documents row cap.
+  defp recent_documents_limit, do: 20
 
   defp list_recent_documents(scope) do
-    # Wave 4.6: matters_by_id is used by the table to render the "Matter"
-    # column — we batch-load the matter rows the scope can see and stitch
-    # them in, rather than N+1.
-    matters_by_id =
-      scope
-      |> Contract.Matters.list_for_scope()
-      |> Map.new(fn m -> {m.id, m} end)
-
     scope
-    |> Contract.Documents.list_recent_for_scope(8)
+    |> Documents.list_recent_for_scope(limit: recent_documents_limit())
     |> Enum.map(fn d ->
-      matter = Map.get(matters_by_id, d.matter_id)
-
       %{
         document_id: d.id,
-        matter_id: d.matter_id,
-        matter_name: matter && matter.name,
         title: d.title,
         type_key: d.type_key,
         status: d.status,
@@ -240,25 +135,26 @@ defmodule ContractWeb.DashboardLive do
       }
     end)
   rescue
-    # Test envs and fresh installs may not have the table yet — degrade
-    # cleanly to "no documents" rather than crashing the dashboard.
     DBConnection.ConnectionError -> []
     Postgrex.Error -> []
   end
 
-  # Last 10 changes the scope can see, flattened into a feed. Activity ROWS
-  # are intentionally raw — no joins to a Matter or User table that doesn't
-  # exist yet.
-  defp list_activity(_scope) do
+  # Last 10 changes for documents owned by the current scope. Keep the
+  # rendered activity rows raw, but gate them through documents.owner_id so
+  # another user's document activity never appears on this dashboard.
+  defp list_activity(%{user: %{id: user_id}}) do
     from(c in Change,
+      join: d in Document,
+      on: d.id == c.document_id,
+      where: d.owner_id == ^user_id,
       order_by: [desc: c.inserted_at],
       limit: 10,
       select: %{
         actor_type: c.actor_type,
         actor_id: c.actor_id,
-        action_kind: c.action_kind,
+        action_kind: c.command_kind,
         document_id: c.document_id,
-        applied_revision: c.applied_revision,
+        applied_revision: c.result_revision,
         message: c.message,
         inserted_at: c.inserted_at
       }
@@ -268,6 +164,8 @@ defmodule ContractWeb.DashboardLive do
     DBConnection.ConnectionError -> []
     Postgrex.Error -> []
   end
+
+  defp list_activity(_scope), do: []
 
   @impl true
   def render(assigns) do
@@ -296,7 +194,10 @@ defmodule ContractWeb.DashboardLive do
               phx-click="open_new_document"
               class="btn btn-primary flex-1 sm:flex-none"
             >
-              <.icon name="hero-document-plus" class="size-4" /> {dgettext("dashboard", "New Document")}
+              <.icon name="hero-document-plus" class="size-4" /> {dgettext(
+                "dashboard",
+                "New Document"
+              )}
             </button>
             <.link navigate={~p"/studio"} class="btn btn-ghost flex-1 sm:flex-none">
               {dgettext("dashboard", "Open Studio")} <span aria-hidden="true">→</span>
@@ -359,7 +260,10 @@ defmodule ContractWeb.DashboardLive do
               id="documents-empty"
               class="rounded-box border border-dashed border-base-300 p-8 text-center bg-base-200/30 text-sm text-base-content/60"
             >
-              {dgettext("dashboard", "No documents yet. Drag a PDF in, or start from a contract type.")}
+              {dgettext(
+                "dashboard",
+                "No documents yet. Drag a PDF in, or start from a contract type."
+              )}
             </div>
           <% else %>
             <div class="overflow-x-auto rounded-box border border-base-200 bg-base-100">
@@ -411,6 +315,13 @@ defmodule ContractWeb.DashboardLive do
                 </tbody>
               </table>
             </div>
+            <p
+              :if={length(@recent_documents) >= recent_documents_limit()}
+              data-role="recent-documents-footer"
+              class="mt-2 text-xs text-base-content/50 text-right"
+            >
+              {dgettext("dashboard", "최근 %{n}개 표시 중", n: recent_documents_limit())}
+            </p>
           <% end %>
         </section>
 
@@ -427,7 +338,10 @@ defmodule ContractWeb.DashboardLive do
             </span>
           </header>
 
-          <ul id="ftc-templates-list" class="rounded-box border border-base-200 md:divide-y md:divide-base-200 bg-base-100 space-y-2 md:space-y-0 p-2 md:p-0">
+          <ul
+            id="ftc-templates-list"
+            class="rounded-box border border-base-200 md:divide-y md:divide-base-200 bg-base-100 space-y-2 md:space-y-0 p-2 md:p-0"
+          >
             <li
               :for={tpl <- @ftc_templates}
               class="rounded-box md:rounded-none border border-base-200 md:border-0 bg-base-100 px-4 py-3 flex flex-col md:flex-row md:items-center gap-2 md:gap-4 hover:bg-base-200/30"
@@ -468,7 +382,10 @@ defmodule ContractWeb.DashboardLive do
               id="activity-empty"
               class="rounded-box border border-dashed border-base-300 p-8 text-center bg-base-200/30 text-sm text-base-content/60"
             >
-              {dgettext("dashboard", "The activity feed will populate as you and the agent make changes.")}
+              {dgettext(
+                "dashboard",
+                "The activity feed will populate as you and the agent make changes."
+              )}
             </div>
           <% else %>
             <ol id="activity-feed" class="space-y-3">
@@ -562,14 +479,6 @@ defmodule ContractWeb.DashboardLive do
 
             <p class="text-xs text-base-content/60" data-role="new-document-type-hint">
               {dgettext("dashboard", "Type is set later by you or the agent.")}
-            </p>
-
-            <%!-- SPEC.md Document-primary pivot (2026-05-15): the user is no --%>
-            <%!-- longer asked to pick a Matter. A hidden Workspace is        --%>
-            <%!-- auto-created on submit; this hint surfaces that mechanic    --%>
-            <%!-- without ever showing the word "Matter" in casual UI.        --%>
-            <p class="text-xs text-base-content/60" data-role="new-document-workspace-hint">
-              {dgettext("dashboard", "워크스페이스가 자동으로 생성됩니다")}
             </p>
 
             <div class="flex justify-end gap-2 pt-2">

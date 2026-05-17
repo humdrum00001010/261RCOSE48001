@@ -40,6 +40,7 @@ defmodule ContractWeb.Layouts do
 
   attr :variant, :string, default: "default", values: ~w(default narrow split)
   attr :page_title, :string, default: nil
+  attr :current_document_id, :any, default: nil
 
   attr :breadcrumbs, :list,
     default: [],
@@ -77,7 +78,10 @@ defmodule ContractWeb.Layouts do
       </div>
     </div>
 
-    <CommandPalette.mount_if_live current_scope={@current_scope} />
+    <CommandPalette.mount_if_live
+      current_scope={@current_scope}
+      current_document_id={@current_document_id}
+    />
 
     <.flash_group flash={@flash} />
     """

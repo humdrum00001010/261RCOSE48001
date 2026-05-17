@@ -33,7 +33,6 @@ export interface RevokeRequestRow {
 
 export interface DocumentRow {
   id: string;
-  matter_id: string | null;
   name: string | null;
   type_key: string | null;
   inserted_at: string;
@@ -153,15 +152,13 @@ export async function findOrSkipDocument(
 
 /**
  * Navigates `page` to the Studio LV for `document`. When called without a
- * matter id we send the doc-only route, which the LV happily resolves via
+ * the Studio document-first route, which the LV resolves via
  * `Studio.load/2`.
  */
 export async function openStudio(
   page: Page,
   document: DocumentRow
 ): Promise<void> {
-  const route = document.matter_id
-    ? `/matters/${document.matter_id}/documents/${document.id}`
-    : `/studio?document_id=${document.id}`;
+  const route = `/documents/${document.id}`;
   await page.goto(route);
 }

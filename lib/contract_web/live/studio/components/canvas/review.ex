@@ -17,7 +17,7 @@ defmodule ContractWeb.Live.Studio.Components.Canvas.Review do
 
   No edit affordances. Persona `:viewer` hides the revoke button; any
   persona carrying `:revoke` in `current_scope.perms` sees an inline
-  "↶ Revoke" button next to each feed entry that emits `revoke_change`.
+  "↶ Revoke" button next to each feed entry that emits `change.revoke`.
 
   Local-only events handled here (LiveComponent target):
 
@@ -26,7 +26,7 @@ defmodule ContractWeb.Live.Studio.Components.Canvas.Review do
   Bubbled events (shell handles):
 
     * `set_node_focus` — phx-value-node_id
-    * `revoke_change`  — phx-value-change_id
+    * `change.revoke`  — phx-value-change_id
 
   Dependencies:
 
@@ -200,7 +200,7 @@ defmodule ContractWeb.Live.Studio.Components.Canvas.Review do
                 change_revoked?(change) && "opacity-60"
               ]}
               data-change-id={change.id}
-              data-action-kind={change.action_kind}
+              data-action-kind={change.command_kind}
             >
               <button
                 type="button"
@@ -208,7 +208,7 @@ defmodule ContractWeb.Live.Studio.Components.Canvas.Review do
                 phx-value-node_id={change_node_id(change)}
                 class="w-full text-left flex items-start gap-2"
                 aria-label={
-                  dgettext("studio", "변경 강조 / Highlight change %{kind}", kind: change.action_kind)
+                  dgettext("studio", "변경 강조 / Highlight change %{kind}", kind: change.command_kind)
                 }
               >
                 <div class="size-7 shrink-0 rounded-full bg-base-200 flex items-center justify-center text-xs font-mono">
@@ -217,7 +217,7 @@ defmodule ContractWeb.Live.Studio.Components.Canvas.Review do
                 <div class="flex-1 min-w-0">
                   <div class="flex items-center gap-2 flex-wrap">
                     <span class="font-semibold text-xs">{actor_label(change)}</span>
-                    <span class="badge badge-ghost badge-xs font-mono">{change.action_kind}</span>
+                    <span class="badge badge-ghost badge-xs font-mono">{change.command_kind}</span>
                   </div>
                   <div class="text-xs text-base-content/60 mt-0.5">
                     {format_timestamp(change.inserted_at)}
@@ -231,7 +231,7 @@ defmodule ContractWeb.Live.Studio.Components.Canvas.Review do
               <div :if={can_revoke?(@current_scope, change)} class="mt-2 flex justify-end">
                 <button
                   type="button"
-                  phx-click="revoke_change"
+                  phx-click="change.revoke"
                   phx-value-change_id={change.id}
                   class="btn btn-ghost btn-xs"
                   aria-label={dgettext("studio", "변경 되돌리기 / Revoke change")}

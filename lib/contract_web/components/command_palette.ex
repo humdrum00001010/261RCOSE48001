@@ -104,6 +104,7 @@ defmodule ContractWeb.Components.CommandPalette do
   `$initial_call` markers Phoenix sets on every LV GenServer.
   """
   attr :current_scope, :any, default: nil
+  attr :current_document_id, :any, default: nil
 
   def mount_if_live(assigns) do
     cond do
@@ -127,6 +128,7 @@ defmodule ContractWeb.Components.CommandPalette do
           module={ContractWeb.Components.CommandPalette}
           id="cmd-k-palette"
           current_scope={@current_scope}
+          current_document_id={@current_document_id}
         />
         """
     end
@@ -181,12 +183,17 @@ defmodule ContractWeb.Components.CommandPalette do
   @impl true
   def update(assigns, socket) do
     current_scope = Map.get(assigns, :current_scope)
+    current_document_id = Map.get(assigns, :current_document_id)
 
     socket =
       socket
       |> assign(:id, Map.get(assigns, :id, "cmd-k-palette"))
       |> assign(:current_scope, current_scope)
-      |> assign(:available_commands, available_commands(current_scope))
+      |> assign(:current_document_id, current_document_id)
+      |> assign(
+        :available_commands,
+        available_commands(current_scope, current_document_id: current_document_id)
+      )
 
     # `:initial_open?` is a test-only assign — set it from `render_component`
     # to force the modal open without simulating the Cmd+K keydown.
@@ -720,26 +727,28 @@ defmodule ContractWeb.Components.CommandPalette do
       command is dropped if any required perm is missing from
       `scope.perms`.
 
-    * Documents-group commands additionally require `scope.matter` to be
-      non-nil — the palette is global but Studio-only commands hide on
-      pages without a matter.
+    * Documents-group commands additionally require a current document id.
+      Matter is intentionally ignored; document commands are document-route
+      actions gated by route state plus `current_scope.perms`.
   """
-  @spec available_commands(map() | nil) :: [Command.t()]
-  def available_commands(scope) do
+  @spec available_commands(map() | nil, keyword()) :: [Command.t()]
+  def available_commands(scope, opts \\ []) do
     perms = scope_perms(scope)
-    matter = scope_matter(scope)
+    current_document_id = Keyword.get(opts, :current_document_id) || scope_document_id(scope)
 
     all_commands()
     |> Enum.filter(fn cmd ->
-      perms_ok?(cmd, perms) and group_ok?(cmd, matter)
+      perms_ok?(cmd, perms) and group_ok?(cmd, current_document_id)
     end)
   end
 
   defp scope_perms(%{perms: perms}) when is_list(perms), do: perms
   defp scope_perms(_), do: []
 
-  defp scope_matter(%{matter: matter}) when not is_nil(matter), do: matter
-  defp scope_matter(_), do: nil
+  defp scope_document_id(%{current_document_id: id}) when is_binary(id) and id != "", do: id
+  defp scope_document_id(%{document_id: id}) when is_binary(id) and id != "", do: id
+  defp scope_document_id(%{selected_document_id: id}) when is_binary(id) and id != "", do: id
+  defp scope_document_id(_), do: nil
 
   defp perms_ok?(%Command{scopes_required: []}, _perms), do: true
 
@@ -748,7 +757,8 @@ defmodule ContractWeb.Components.CommandPalette do
   end
 
   defp group_ok?(%Command{group: :documents}, nil), do: false
-  defp group_ok?(_cmd, _matter), do: true
+  defp group_ok?(%Command{group: :documents}, ""), do: false
+  defp group_ok?(_cmd, _current_document_id), do: true
 
   defp all_commands do
     [
@@ -780,7 +790,7 @@ defmodule ContractWeb.Components.CommandPalette do
         id: :doc_set_type,
         label: "Set contract type…",
         hint: "current document",
-        action: {:emit, :command_palette_picked, %{action_kind: "set_contract_type"}},
+        action: {:emit, :command_palette_picked, %{action_kind: "document.type.set"}},
         group: :documents,
         scopes_required: [:type_change]
       },
@@ -788,19 +798,10 @@ defmodule ContractWeb.Components.CommandPalette do
         id: :doc_request_export,
         label: "Request export…",
         hint: "PDF / DOCX",
-        action: {:emit, :command_palette_picked, %{action_kind: "request_export"}},
+        action: {:emit, :command_palette_picked, %{action_kind: "export.request"}},
         group: :documents,
         scopes_required: [:export]
       },
-      %Command{
-        id: :doc_revoke_last,
-        label: "Revoke last change",
-        hint: "current document",
-        action: {:emit, :command_palette_picked, %{action_kind: "revoke_change"}},
-        group: :documents,
-        scopes_required: [:revoke]
-      },
-
       # --- Search
       %Command{
         id: :search_documents,
@@ -947,16 +948,15 @@ defmodule ContractWeb.Components.CommandPalette do
         — revoke the last change (Studio).
       </li>
       <li>
-        <kbd class="kbd kbd-sm">↑</kbd> / <kbd class="kbd kbd-sm">↓</kbd>
+        <kbd class="kbd kbd-sm">↑</kbd>
+        / <kbd class="kbd kbd-sm">↓</kbd>
         — move selection inside the palette.
       </li>
       <li>
-        <kbd class="kbd kbd-sm">↵</kbd>
-        — fire the selected command.
+        <kbd class="kbd kbd-sm">↵</kbd> — fire the selected command.
       </li>
       <li>
-        <kbd class="kbd kbd-sm">Esc</kbd>
-        — close the palette / step back from a sub-panel.
+        <kbd class="kbd kbd-sm">Esc</kbd> — close the palette / step back from a sub-panel.
       </li>
     </ul>
     <p class="text-xs text-base-content/60">

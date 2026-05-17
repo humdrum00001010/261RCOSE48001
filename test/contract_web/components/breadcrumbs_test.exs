@@ -31,20 +31,20 @@ defmodule ContractWeb.Components.BreadcrumbsTest do
       refute html =~ ~s(<a data-phx-link)
     end
 
-    test "studio trail with matter + document renders 3 crumbs, last is current" do
+    test "studio trail with document section renders 3 crumbs, last is current" do
       trail = [
         %{label: "Dashboard", navigate: "/dashboard", current?: false},
-        %{label: "Acme Acquisition", navigate: "/matters/m_1", current?: false},
+        %{label: "Documents", navigate: "/dashboard", current?: false},
         %{label: "Term Sheet v3", navigate: nil, current?: true}
       ]
 
       html = render_component(&Breadcrumbs.breadcrumbs/1, trail: trail)
 
       assert html =~ "Dashboard"
-      assert html =~ "Acme Acquisition"
+      assert html =~ "Documents"
       assert html =~ "Term Sheet v3"
       assert html =~ ~s(href="/dashboard")
-      assert html =~ ~s(href="/matters/m_1")
+      assert html =~ ~s(href="/dashboard")
       # The last crumb is plain text, not a link
       assert html =~ ~s(aria-current="page")
 

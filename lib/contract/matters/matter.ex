@@ -1,27 +1,11 @@
 defmodule Contract.Matters.Matter do
   @moduledoc """
-  Ecto schema for a Matter.
+  Legacy Ecto schema for the pre-v0.5 `matters` table.
 
-  A Matter is the unit of scope that holds documents, evidence, and agent
-  runs for a single client engagement (SPEC.md §3 / §15). It owns the
-  ACL boundary: every Document, Change, and FieldLineage belongs to a
-  Matter, and `Contract.Matters` is the only module that gates
-  visibility based on `Context.tenant`/`Context.user.id`.
-
-  ## Fields
-
-    * `:name` — display name. Required.
-    * `:status` — `:active` (default) or `:archived`. Archived matters
-      are filtered out of `list_for_scope/1` but remain fetchable via
-      `get/2`.
-    * `:tenant_id` — nullable. When `nil`, the matter is "single-tenant"
-      and any scope can read it. When set, it MUST match the scope's
-      `tenant` for the ACL gate to pass.
-    * `:owner_id` — the user who created the matter. Required. Only the
-      owner can archive the matter (SPEC.md §15 ACL invariant).
-    * `:metadata` — free-form JSONB. The schema does not validate shape.
+  This schema is migration compatibility only. Matter is no longer the
+  user-facing product container and no longer owns document ACL; document
+  access is enforced by `Contract.Documents` through `documents.owner_id`.
   """
-
   use Ecto.Schema
   import Ecto.Changeset
 

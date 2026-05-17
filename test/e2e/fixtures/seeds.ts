@@ -19,68 +19,42 @@ function resolveRequest(arg: APIRequestContext | Page): APIRequestContext {
 }
 
 /**
- * Programmatic seed helpers for the Wave 3C1 scenario specs.
+ * Programmatic seed helpers for Studio E2E scenario specs.
  *
- * These hit the test-only POST endpoints exposed by
- * `ContractWeb.TestDbController` (`POST /test/db/matters`,
- * `POST /test/db/documents`), which are gated by
- * `Application.compile_env(:contract, :test_auth)` — so they 404 in
- * production builds.
+ * Studio specs seed owner-scoped Documents directly through the test-only
+ * `ContractWeb.TestDbController` route (`POST /test/db/documents`), gated by
+ * `Application.compile_env(:contract, :test_auth)` so it 404s in production
+ * builds.
  *
- * Each helper expects the Playwright `APIRequestContext` to share a
- * cookie jar with the page under test (i.e. you must call
- * `signInAs(page, ...)` before seeding so the controller can read the
- * `user_token` from the session and attribute ownership). If no session
- * is present the seeder falls back to a throwaway lawyer persona; the
- * resulting matter then has `tenant_id: nil`, which is read-visible to
- * any scope.
+ * Each helper expects the Playwright `APIRequestContext` to share a cookie jar
+ * with the page under test (i.e. call `signInAs(page, ...)` before seeding) so
+ * the controller can read the `user_token` from the session and attribute
+ * document ownership. If no session is present the seeder falls back to a
+ * throwaway lawyer persona and still creates an owner-scoped row.
  */
-
-export interface SeededMatter {
-  id: string;
-  name: string;
-}
 
 export interface SeededDocument {
   id: string;
-  matter_id: string;
+  owner_id: string;
   type_key: string;
   title: string;
 }
 
-export interface SeedBundle {
-  matter: SeededMatter;
+export interface SeedDocumentBundle {
   document: SeededDocument;
 }
 
 /**
- * Seeds a single matter. Returns the new matter's id + name.
- */
-export async function seedMatter(
-  request: APIRequestContext | Page,
-  opts: { name?: string } = {}
-): Promise<SeededMatter> {
-  const ctx = resolveRequest(request);
-  const resp = await ctx.post('/test/db/matters', {
-    data: { name: opts.name ?? 'E2E matter' }
-  });
-  expect(resp.status(), `seedMatter: expected 200, got ${resp.status()}`).toBe(200);
-  const body = (await resp.json()) as { ok: boolean; id: string; name: string };
-  expect(body.ok).toBe(true);
-  return { id: body.id, name: body.name };
-}
-
-/**
- * Seeds a document inside an existing matter.
+ * Seeds an owner-scoped document. The test controller tags the row with E2E
+ * metadata so `/test/reset` can remove it without relying on legacy matters.
  */
 export async function seedDocument(
   request: APIRequestContext | Page,
-  opts: { matter_id: string; type_key?: string; title?: string }
+  opts: { type_key?: string; title?: string } = {}
 ): Promise<SeededDocument> {
   const ctx = resolveRequest(request);
   const resp = await ctx.post('/test/db/documents', {
     data: {
-      matter_id: opts.matter_id,
       type_key: opts.type_key ?? 'nda_v1',
       title: opts.title ?? 'E2E doc'
     }
@@ -89,37 +63,32 @@ export async function seedDocument(
   const body = (await resp.json()) as {
     ok: boolean;
     id: string;
-    matter_id: string;
+    owner_id: string;
     type_key: string;
     title: string;
   };
   expect(body.ok).toBe(true);
   return {
     id: body.id,
-    matter_id: body.matter_id,
+    owner_id: body.owner_id,
     type_key: body.type_key,
     title: body.title
   };
 }
 
 /**
- * Convenience: seeds a matter and a document inside it in one call.
- * The default `type_key` is `nda_v1`. Returns both rows so the scenario
- * can navigate to `/matters/${matter.id}/documents/${document.id}`.
+ * Seeds the document bundle shape used by Studio scenario specs.
  */
-export async function seedMatterAndDocument(
+export async function seedDocumentBundle(
   request: APIRequestContext | Page,
   opts: {
-    matter_name?: string;
     title?: string;
     type_key?: string;
   } = {}
-): Promise<SeedBundle> {
-  const matter = await seedMatter(request, { name: opts.matter_name });
+): Promise<SeedDocumentBundle> {
   const document = await seedDocument(request, {
-    matter_id: matter.id,
     type_key: opts.type_key,
     title: opts.title
   });
-  return { matter, document };
+  return { document };
 }

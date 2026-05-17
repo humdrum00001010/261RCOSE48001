@@ -63,17 +63,6 @@ defmodule Contract.Session.Reducer do
     :request_export
   ]
 
-  # SPEC.md v0.5 §7.4 / §7.5: source_claim_* commands are recognized
-  # here but their reducer wiring lands in W6 (claims pipeline). Until
-  # then, the dispatch returns a structured error instead of crashing
-  # with FunctionClauseError, so callers can rely on the contract.
-  @not_implemented_kinds [
-    :source_claim_confirm,
-    :source_claim_correct,
-    :source_claim_reject,
-    :source_claim_link_to_document
-  ]
-
   # ----------------------------------------------------------------------------
   # compile/2
   # ----------------------------------------------------------------------------
@@ -106,20 +95,12 @@ defmodule Contract.Session.Reducer do
             "route it via the appropriate layer (Runtime, Studio, Agent, IO, Conversion)."
   end
 
-  def compile(%Command{kind: kind}, _state) when kind in @not_implemented_kinds do
-    # Source-claim Command kinds will be implemented in W6. The dispatch
-    # is wired here so callers get a structured error instead of a
-    # FunctionClauseError crash.
-    {:error, :not_implemented}
-  end
-
   def compile(%Command{} = command, %Runtime.State{} = state) do
     {ops, marks, metadata} = build_ops_and_marks(command, state)
 
     {:ok,
      %ChangeInput{
        action_kind: command.kind,
-       matter_id: command.matter_id,
        document_id: command.document_id || state.document_id,
        base_revision: command.base_revision,
        idempotency_key: command.idempotency_key,
@@ -206,14 +187,14 @@ defmodule Contract.Session.Reducer do
 
   defp validate_op_shape(%Operation{op: :set_attr} = op, idx, state) do
     with :ok <-
-           (if needs_target?(op), do: check_target_exists(op, idx, state), else: :ok),
+           if(needs_target?(op), do: check_target_exists(op, idx, state), else: :ok),
          :ok <- check_set_attr_node_kind(op, idx, state) do
       :ok
     end
   end
 
   defp validate_op_shape(%Operation{op: kind} = op, idx, state)
-       when kind in [:delete_node, :move_node, :set_field, :bind_ref, :unbind_ref] do
+       when kind in [:delete_node, :move_node, :bind_ref, :unbind_ref] do
     if needs_target?(op) do
       check_target_exists(op, idx, state)
     else
@@ -226,7 +207,11 @@ defmodule Contract.Session.Reducer do
   # IR-richness (task #37): structural validation of the table/cell attr keys.
   # Additive — only rejects when a *known* key is present with the wrong shape;
   # unknown keys and absent keys are always allowed.
-  defp check_set_attr_node_kind(%Operation{target_type: :node, target_id: id, args: args}, idx, state)
+  defp check_set_attr_node_kind(
+         %Operation{target_type: :node, target_id: id, args: args},
+         idx,
+         state
+       )
        when not is_nil(id) do
     args = normalize_args(args)
     key = Map.get(args, :key)
@@ -823,26 +808,71 @@ defmodule Contract.Session.Reducer do
   @spec build_change(Command.t(), ChangeInput.t(), Runtime.State.t()) ::
           Types.result(Change.t())
   def build_change(%Command{} = command, %ChangeInput{} = input, %Runtime.State{} = state) do
+    payload = Enum.map(input.ops, &op_to_map/1)
+
     change = %Change{
-      matter_id: input.matter_id || command.matter_id,
       document_id: input.document_id || command.document_id || state.document_id,
-      action_kind: Atom.to_string(input.action_kind || command.kind),
+      chat_thread_id: command.chat_thread_id,
+      source_document_id: command.source_document_id,
+      source_claim_id: command.source_claim_id,
+      agent_run_id: input.agent_run_id || command.agent_run_id,
+      command_kind: Atom.to_string(input.action_kind || command.kind),
+      field_path: field_path_from_ops(input.ops),
+      op: first_op_kind(input.ops),
       actor_type: input.actor_type || command.actor_type || :user,
       actor_id: input.actor_id || command.actor_id,
       base_revision: input.base_revision || command.base_revision,
-      applied_revision: state.revision + 1,
+      result_revision: state.revision + 1,
       idempotency_key: input.idempotency_key || command.idempotency_key,
-      ops: Enum.map(input.ops, &op_to_map/1),
+      payload: payload,
       marks: Enum.map(input.marks, &mark_to_map/1),
       message: input.message || command.message,
       affected_refs: input.affected_refs,
       preimage: input.preimage,
-      inverse_ops: Enum.map(input.inverse_ops, &op_to_map/1),
+      inverse: Enum.map(input.inverse_ops, &op_to_map/1),
       status: :active
     }
 
     {:ok, change}
   end
+
+  defp first_op_kind([%Operation{op: op} | _]), do: Atom.to_string(op)
+  defp first_op_kind([%{op: op} | _]) when is_atom(op), do: Atom.to_string(op)
+  defp first_op_kind([%{op: op} | _]) when is_binary(op), do: op
+  defp first_op_kind([%{"op" => op} | _]) when is_binary(op), do: op
+  defp first_op_kind(_), do: nil
+
+  defp field_path_from_ops([%Operation{target_type: target_type, args: args} | _]) do
+    field_path_from_op(target_type, args)
+  end
+
+  defp field_path_from_ops([%{target_type: target_type, args: args} | _]) do
+    field_path_from_op(target_type, args)
+  end
+
+  defp field_path_from_ops([%{"target_type" => target_type, "args" => args} | _]) do
+    field_path_from_op(target_type, args)
+  end
+
+  defp field_path_from_ops(_), do: []
+
+  defp field_path_from_op(target_type, args) when is_map(args) do
+    key = Map.get(args, :key) || Map.get(args, "key")
+
+    [target_type, key]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.map(&field_path_segment/1)
+  end
+
+  defp field_path_from_op(target_type, _args) when not is_nil(target_type) do
+    [field_path_segment(target_type)]
+  end
+
+  defp field_path_from_op(_target_type, _args), do: []
+
+  defp field_path_segment(value) when is_atom(value), do: Atom.to_string(value)
+  defp field_path_segment(value) when is_binary(value), do: value
+  defp field_path_segment(value), do: inspect(value)
 
   defp op_to_map(%Operation{} = op) do
     %{
@@ -937,7 +967,7 @@ defmodule Contract.Session.Reducer do
       op: :set_attr,
       target_type: :document,
       target_id: command.document_id,
-      args: %{key: :status, value: :active}
+      args: %{key: :status, value: :draft}
     }
 
     {[op], [], %{}}
@@ -1004,6 +1034,129 @@ defmodule Contract.Session.Reducer do
     payload = normalize_payload(command.payload)
     marks = parse_marks(Map.get(payload, :marks, [payload]))
     {[], marks, %{update: true}}
+  end
+
+  defp build_ops_and_marks(%Command{kind: kind} = command, _state)
+       when kind in [:source_claim_confirm, :source_claim_correct] do
+    payload = normalize_payload(command.payload)
+
+    field_id =
+      Map.get(payload, :field_id) || Map.get(payload, :proposed_kind) || command.source_claim_id
+
+    value = Map.get(payload, :value) || Map.get(payload, :proposed_value)
+
+    op = %Operation{
+      op: :set_field,
+      target_type: :field,
+      target_id: field_id,
+      args: %{
+        key: :value,
+        value: value,
+        source_claim_id: command.source_claim_id,
+        source_document_id: command.source_document_id
+      }
+    }
+
+    mark = %MarkInput{
+      target_type: :field,
+      target_id: field_id,
+      intent: :source_claim,
+      source: command.actor_type || :user,
+      confidence: :confirmed,
+      text: value,
+      data: %{
+        source_claim_id: command.source_claim_id,
+        source_document_id: command.source_document_id,
+        action: kind
+      }
+    }
+
+    {[op], [mark], %{source_claim_id: command.source_claim_id, value: value}}
+  end
+
+  defp build_ops_and_marks(%Command{kind: :source_claim_reject} = command, _state) do
+    payload = normalize_payload(command.payload)
+
+    mark = %MarkInput{
+      target_type: :document,
+      target_id: command.document_id,
+      intent: :source_claim_rejected,
+      source: command.actor_type || :user,
+      confidence: :confirmed,
+      text: Map.get(payload, :reason),
+      data: %{
+        source_claim_id: command.source_claim_id,
+        source_document_id: command.source_document_id,
+        reason: Map.get(payload, :reason)
+      }
+    }
+
+    {[], [mark], %{source_claim_id: command.source_claim_id, rejected: true}}
+  end
+
+  defp build_ops_and_marks(%Command{kind: :source_claim_link_to_document} = command, _state) do
+    payload = normalize_payload(command.payload)
+    node_id = Map.get(payload, :node_id) || Map.get(payload, :linked_node_id)
+    field_id = Map.get(payload, :field_id) || Map.get(payload, :proposed_kind)
+    ref_id = "source-claim:#{command.source_claim_id}"
+
+    op = %Operation{
+      op: :bind_ref,
+      target_type: :artifact,
+      target_id: ref_id,
+      args: %{
+        ref: %{
+          id: ref_id,
+          type: :source_claim,
+          source_document_id: command.source_document_id,
+          source_claim_id: command.source_claim_id,
+          source_node_id: node_id,
+          target_id: node_id,
+          field_id: field_id
+        }
+      }
+    }
+
+    mark = %MarkInput{
+      target_type: :node,
+      target_id: node_id,
+      intent: :link,
+      source: command.actor_type || :user,
+      confidence: :confirmed,
+      data: %{
+        source_claim_id: command.source_claim_id,
+        source_document_id: command.source_document_id,
+        field_id: field_id
+      }
+    }
+
+    {[op], [mark], %{source_claim_id: command.source_claim_id, linked_node_id: node_id}}
+  end
+
+  defp build_ops_and_marks(%Command{kind: :source_claim_unlink_from_document} = command, _state) do
+    ref_id = "source-claim:#{command.source_claim_id}"
+
+    op = %Operation{
+      op: :unbind_ref,
+      target_type: :artifact,
+      target_id: ref_id,
+      args: %{}
+    }
+
+    mark = %MarkInput{
+      target_type: :document,
+      target_id: command.document_id,
+      intent: :link,
+      source: command.actor_type || :user,
+      confidence: :confirmed,
+      data: %{
+        source_claim_id: command.source_claim_id,
+        source_document_id: command.source_document_id,
+        unlinked: true
+      }
+    }
+
+    {[op], [mark], %{source_claim_id: command.source_claim_id, unlinked: true}}
   end
 
   defp build_ops_and_marks(%Command{kind: :create_converted_variant} = command, _state) do
@@ -1101,10 +1254,9 @@ defmodule Contract.Session.Reducer do
   defp atomize_kind(k) when is_atom(k), do: k
 
   defp atomize_kind(k) when is_binary(k) do
-    try do
-      String.to_existing_atom(k)
-    rescue
-      ArgumentError -> String.to_atom(k)
+    case atomize(k) do
+      atom when is_atom(atom) -> atom
+      _ -> :paragraph
     end
   end
 
@@ -1125,7 +1277,9 @@ defmodule Contract.Session.Reducer do
   defp atomize(k) when is_atom(k), do: k
 
   defp atomize(k) when is_binary(k) do
-    String.to_atom(k)
+    String.to_existing_atom(k)
+  rescue
+    ArgumentError -> k
   end
 
   defp atomize(other), do: other

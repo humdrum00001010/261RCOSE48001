@@ -23,7 +23,6 @@ defmodule Contract.Blobs do
   """
 
   alias Contract.BlobRef
-  alias Contract.IO.R2
   alias Contract.Repo
   alias Contract.Types, as: T
 
@@ -51,8 +50,10 @@ defmodule Contract.Blobs do
   """
   @spec put(T.ctx() | nil, String.t(), binary(), keyword()) ::
           {:ok, %{key: String.t(), etag: String.t() | nil}} | {:error, term()}
-  def put(_ctx \\ nil, key, body, opts \\ []) when is_binary(key) and is_binary(body) do
-    R2.put(key, body, opts)
+  def put(ctx \\ nil, key, body, opts \\ [])
+
+  def put(_ctx, key, body, opts) when is_binary(key) and is_binary(body) do
+    r2_driver().put(key, body, opts)
   end
 
   # ---------------------------------------------------------------------------
@@ -92,7 +93,7 @@ defmodule Contract.Blobs do
         |> Keyword.take([:bucket, :cache_control])
         |> Keyword.put_new(:content_type, info.mime_type)
 
-      case R2.put(object_key, body, put_opts) do
+      case r2_driver().put(object_key, body, put_opts) do
         {:ok, %{key: ^object_key}} ->
           insert_blob_ref(blob_id, %{
             owner_id: owner_id,
@@ -102,8 +103,7 @@ defmodule Contract.Blobs do
             size_bytes: info.byte_size,
             sha256: sha256_hex,
             kind: kind,
-            metadata:
-              Map.merge(%{"client_name" => info.title}, Keyword.get(opts, :metadata, %{}))
+            metadata: Map.merge(%{"client_name" => info.title}, Keyword.get(opts, :metadata, %{}))
           })
 
         {:error, _} = err ->
@@ -131,12 +131,14 @@ defmodule Contract.Blobs do
   @spec get(T.ctx() | nil, blob_like(), keyword()) :: {:ok, binary()} | {:error, term()}
   def get(ctx \\ nil, blob_ref, opts \\ [])
 
-  def get(_ctx, %BlobRef{object_key: key}, opts) when is_binary(key), do: R2.get(key, opts)
-  def get(_ctx, %{object_key: key}, opts) when is_binary(key), do: R2.get(key, opts)
-  def get(_ctx, %{"object_key" => key}, opts) when is_binary(key), do: R2.get(key, opts)
-  def get(_ctx, %{key: key}, opts) when is_binary(key), do: R2.get(key, opts)
-  def get(_ctx, %{"key" => key}, opts) when is_binary(key), do: R2.get(key, opts)
-  def get(_ctx, key, opts) when is_binary(key), do: R2.get(key, opts)
+  def get(_ctx, %BlobRef{object_key: key}, opts) when is_binary(key),
+    do: r2_driver().get(key, opts)
+
+  def get(_ctx, %{object_key: key}, opts) when is_binary(key), do: r2_driver().get(key, opts)
+  def get(_ctx, %{"object_key" => key}, opts) when is_binary(key), do: r2_driver().get(key, opts)
+  def get(_ctx, %{key: key}, opts) when is_binary(key), do: r2_driver().get(key, opts)
+  def get(_ctx, %{"key" => key}, opts) when is_binary(key), do: r2_driver().get(key, opts)
+  def get(_ctx, key, opts) when is_binary(key), do: r2_driver().get(key, opts)
 
   # ---------------------------------------------------------------------------
   # signed_url/3 — presigned URL.
@@ -154,22 +156,22 @@ defmodule Contract.Blobs do
   def signed_url(ctx \\ nil, blob_ref, opts \\ [])
 
   def signed_url(_ctx, %BlobRef{object_key: key}, opts) when is_binary(key),
-    do: R2.presigned_url(key, opts)
+    do: r2_driver().presigned_url(key, opts)
 
   def signed_url(_ctx, %{object_key: key}, opts) when is_binary(key),
-    do: R2.presigned_url(key, opts)
+    do: r2_driver().presigned_url(key, opts)
 
   def signed_url(_ctx, %{"object_key" => key}, opts) when is_binary(key),
-    do: R2.presigned_url(key, opts)
+    do: r2_driver().presigned_url(key, opts)
 
   def signed_url(_ctx, %{key: key}, opts) when is_binary(key),
-    do: R2.presigned_url(key, opts)
+    do: r2_driver().presigned_url(key, opts)
 
   def signed_url(_ctx, %{"key" => key}, opts) when is_binary(key),
-    do: R2.presigned_url(key, opts)
+    do: r2_driver().presigned_url(key, opts)
 
   def signed_url(_ctx, key, opts) when is_binary(key),
-    do: R2.presigned_url(key, opts)
+    do: r2_driver().presigned_url(key, opts)
 
   # ---------------------------------------------------------------------------
   # delete/2 — remove the object.
@@ -178,16 +180,27 @@ defmodule Contract.Blobs do
   @spec delete(T.ctx() | nil, blob_like(), keyword()) :: :ok | {:error, term()}
   def delete(ctx \\ nil, blob_ref, opts \\ [])
 
-  def delete(_ctx, %BlobRef{object_key: key}, opts) when is_binary(key), do: R2.delete(key, opts)
-  def delete(_ctx, %{object_key: key}, opts) when is_binary(key), do: R2.delete(key, opts)
-  def delete(_ctx, %{"object_key" => key}, opts) when is_binary(key), do: R2.delete(key, opts)
-  def delete(_ctx, %{key: key}, opts) when is_binary(key), do: R2.delete(key, opts)
-  def delete(_ctx, %{"key" => key}, opts) when is_binary(key), do: R2.delete(key, opts)
-  def delete(_ctx, key, opts) when is_binary(key), do: R2.delete(key, opts)
+  def delete(_ctx, %BlobRef{object_key: key}, opts) when is_binary(key),
+    do: r2_driver().delete(key, opts)
+
+  def delete(_ctx, %{object_key: key}, opts) when is_binary(key),
+    do: r2_driver().delete(key, opts)
+
+  def delete(_ctx, %{"object_key" => key}, opts) when is_binary(key),
+    do: r2_driver().delete(key, opts)
+
+  def delete(_ctx, %{key: key}, opts) when is_binary(key), do: r2_driver().delete(key, opts)
+  def delete(_ctx, %{"key" => key}, opts) when is_binary(key), do: r2_driver().delete(key, opts)
+  def delete(_ctx, key, opts) when is_binary(key), do: r2_driver().delete(key, opts)
 
   # ---------------------------------------------------------------------------
   # Internals
   # ---------------------------------------------------------------------------
+
+  defp r2_driver do
+    Application.get_env(:contract, :io_drivers, [])
+    |> Keyword.get(:r2, Contract.IO.R2)
+  end
 
   defp read_upload(%Plug.Upload{path: path, filename: filename, content_type: ct}) do
     case File.stat(path) do
@@ -212,6 +225,23 @@ defmodule Contract.Blobs do
       Map.get(upload, :client_type) || Map.get(upload, :mime_type) || "application/octet-stream"
 
     declared = Map.get(upload, :client_size) || Map.get(upload, :byte_size)
+
+    case File.stat(path) do
+      {:ok, %{size: size}} ->
+        {:ok, %{path: path, title: title, mime_type: mime, byte_size: declared || size}}
+
+      {:error, reason} ->
+        {:error, {:upload_stat_failed, reason}}
+    end
+  end
+
+  defp read_upload(%{"path" => path} = upload) do
+    title = Map.get(upload, "client_name") || Map.get(upload, "title") || Path.basename(path)
+
+    mime =
+      Map.get(upload, "client_type") || Map.get(upload, "mime_type") || "application/octet-stream"
+
+    declared = Map.get(upload, "client_size") || Map.get(upload, "byte_size")
 
     case File.stat(path) do
       {:ok, %{size: size}} ->

@@ -16,7 +16,7 @@ defmodule Contract.Gateway do
   ## Auth model
 
   Per SPEC.md §15 invariant 2: a route_ref carries durable binary_ids
-  (`matter_id`, `document_id`) only — never pids, never session refs.
+  (`document_id`) only — never pids, never session refs.
   Tokens are minted with `Phoenix.Token.sign/4` against
   `ContractWeb.Endpoint` and the salt `"route_ref"`. Default TTL is 1 hour;
   callers may override via `attrs.ttl` (seconds).
@@ -33,10 +33,9 @@ defmodule Contract.Gateway do
 
   alias Contract.Command
   alias Contract.Context
-  alias Contract.IO.LawMCP
+  alias Contract.MCP
   alias Contract.RouteRef
   alias Contract.Runtime
-  alias Contract.Store
 
   @salt "route_ref"
   @default_ttl 3_600
@@ -49,23 +48,19 @@ defmodule Contract.Gateway do
   """
   @spec tool_names() :: [String.t()]
   def tool_names do
-    [
-      "studio.search_documents",
-      "studio.get_document",
-      "studio.submit_action",
-      "studio.get_change_history",
-      "studio.list_marks",
-      "studio.search_law",
-      "studio.verify_citations"
-    ]
+    Enum.map(tools_descriptor(), & &1["name"])
   end
 
   @doc """
-  Returns the canonical MCP `tools/list` payload — one entry per tool with
+  Returns the canonical MCP `tools/list` payload -- one entry per tool with
   name, description, and JSON-schema `inputSchema`.
   """
   @spec tools_descriptor() :: [map()]
   def tools_descriptor do
+    legacy_tools_descriptor() ++ MCP.expanded_tool_descriptors()
+  end
+
+  defp legacy_tools_descriptor do
     [
       %{
         "name" => "studio.search_documents",
@@ -101,7 +96,6 @@ defmodule Contract.Gateway do
               "properties" => %{
                 "kind" => %{"type" => "string"},
                 "document_id" => %{"type" => "string"},
-                "matter_id" => %{"type" => "string"},
                 "base_revision" => %{"type" => "integer"},
                 "idempotency_key" => %{"type" => "string"},
                 "payload" => %{"type" => "object"},
@@ -168,7 +162,6 @@ defmodule Contract.Gateway do
   @doc """
   Mints a signed route_ref token. `attrs` may include:
 
-    * `:matter_id` — binary_id (UUID) string or nil
     * `:document_id` — binary_id (UUID) string or nil
     * `:purpose` — string label (e.g. "slack_thread", "deep_link", "mcp")
     * `:scopes` — list of permission scopes (strings or atoms)
@@ -179,36 +172,44 @@ defmodule Contract.Gateway do
   route_refs MUST carry only durable binary_ids).
   """
   @spec issue_route_ref(Context.t() | nil, map()) :: {:ok, route_ref_token()} | {:error, term()}
-  def issue_route_ref(_ctx, attrs) when is_map(attrs) do
-    matter_id = fetch_id(attrs, :matter_id)
+  def issue_route_ref(ctx, attrs) when is_map(attrs) do
     document_id = fetch_id(attrs, :document_id)
     purpose = Map.get(attrs, :purpose) || Map.get(attrs, "purpose") || "generic"
     scopes = Map.get(attrs, :scopes) || Map.get(attrs, "scopes") || []
     ttl = Map.get(attrs, :ttl) || Map.get(attrs, "ttl") || @default_ttl
+    user_id = Map.get(attrs, :user_id) || Map.get(attrs, "user_id") || user_id(ctx)
+    chat_thread_id = Map.get(attrs, :chat_thread_id) || Map.get(attrs, "chat_thread_id")
+    agent_run_id = Map.get(attrs, :agent_run_id) || Map.get(attrs, "agent_run_id")
+    base_revision = Map.get(attrs, :base_revision) || Map.get(attrs, "base_revision")
 
     cond do
-      contains_pid_or_ref?(matter_id) or contains_pid_or_ref?(document_id) or
-        contains_pid_or_ref?(purpose) or contains_pid_or_ref?(scopes) ->
+      contains_pid_or_ref?(document_id) or contains_pid_or_ref?(purpose) or
+          contains_pid_or_ref?(scopes) ->
         {:error, :pid_in_attrs}
 
       not is_integer(ttl) or ttl <= 0 ->
         {:error, :invalid_ttl}
 
       true ->
-        now = DateTime.utc_now()
-        expires = DateTime.add(now, ttl, :second)
+        with :ok <- authorize_route_ref_issue(ctx, document_id) do
+          now = DateTime.utc_now()
+          expires = DateTime.add(now, ttl, :second)
 
-        payload = %{
-          matter_id: matter_id,
-          document_id: document_id,
-          purpose: to_string(purpose),
-          issued_at: DateTime.to_iso8601(now),
-          expires_at: DateTime.to_iso8601(expires),
-          scopes: Enum.map(scopes, &to_string/1)
-        }
+          payload = %{
+            document_id: document_id,
+            user_id: user_id,
+            chat_thread_id: chat_thread_id,
+            agent_run_id: agent_run_id,
+            base_revision: base_revision,
+            purpose: to_string(purpose),
+            issued_at: DateTime.to_iso8601(now),
+            expires_at: DateTime.to_iso8601(expires),
+            scopes: Enum.map(scopes, &to_string/1)
+          }
 
-        token = Phoenix.Token.sign(endpoint(), @salt, payload, max_age: ttl)
-        {:ok, token}
+          token = Phoenix.Token.sign(endpoint(), @salt, payload, max_age: ttl)
+          {:ok, token}
+        end
     end
   end
 
@@ -237,8 +238,11 @@ defmodule Contract.Gateway do
           else
             {:ok,
              %RouteRef{
-               matter_id: Map.get(payload, :matter_id),
                document_id: Map.get(payload, :document_id),
+               user_id: Map.get(payload, :user_id),
+               chat_thread_id: Map.get(payload, :chat_thread_id),
+               agent_run_id: Map.get(payload, :agent_run_id),
+               base_revision: Map.get(payload, :base_revision),
                purpose: Map.get(payload, :purpose),
                issued_at: issued_at,
                expires_at: expires_at,
@@ -317,8 +321,11 @@ defmodule Contract.Gateway do
           since = Map.get(args, "since_revision") || Map.get(args, :since_revision) || 0
 
           case Runtime.sync_since(ctx, doc_id, since) do
-            {:ok, changes} -> {:ok, %{document_id: doc_id, changes: Enum.map(changes, &render_change/1)}}
-            {:error, _} = err -> err
+            {:ok, changes} ->
+              {:ok, %{document_id: doc_id, changes: Enum.map(changes, &render_change/1)}}
+
+            {:error, _} = err ->
+              err
           end
         end
 
@@ -361,13 +368,20 @@ defmodule Contract.Gateway do
     text = Map.get(args, "text") || Map.get(args, :text)
 
     if is_binary(text) and text != "" do
-      LawMCP.verify_citations(ctx, text, [])
+      Contract.Providers.verify_citation(ctx, text, [])
     else
       {:error, :invalid_text}
     end
   end
 
-  def mcp_tool(_ctx, tool, _args), do: {:error, {:unknown_tool, tool}}
+  def mcp_tool(ctx, tool, args) do
+    if tool in MCP.expanded_tool_names() do
+      route_ref = ctx && Map.get(ctx.perms || %{}, :route_ref)
+      MCP.call_tool(ctx, route_ref, tool, args)
+    else
+      {:error, {:unknown_tool, tool}}
+    end
+  end
 
   # ----------------------------------------------------------------------------
   # Slack — explicitly not implemented in this build
@@ -391,9 +405,23 @@ defmodule Contract.Gateway do
 
   defp endpoint, do: ContractWeb.Endpoint
 
+  defp user_id(%Context{user: %{id: id}}), do: id
+  defp user_id(_ctx), do: nil
+
   defp fetch_id(attrs, key) do
     Map.get(attrs, key) || Map.get(attrs, to_string(key))
   end
+
+  defp authorize_route_ref_issue(_ctx, nil), do: :ok
+
+  defp authorize_route_ref_issue(%Context{} = ctx, document_id) when is_binary(document_id) do
+    case Contract.Documents.get(ctx, document_id) do
+      {:ok, _doc} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp authorize_route_ref_issue(_ctx, _document_id), do: {:error, :forbidden}
 
   defp parse_iso(nil), do: {:error, :missing}
 
@@ -452,98 +480,52 @@ defmodule Contract.Gateway do
   def authorize_document(%Context{} = ctx, doc_id) when is_binary(doc_id) do
     case Map.get(ctx.perms || %{}, :route_ref) do
       %RouteRef{document_id: nil} ->
-        # Wildcard route_ref — purpose-restricted but not document-restricted.
-        :ok
+        authorize_visible_document(ctx, doc_id)
 
       %RouteRef{document_id: ^doc_id} ->
-        :ok
+        authorize_pinned_document(ctx, doc_id)
 
       %RouteRef{} ->
         {:error, :forbidden}
 
       _ ->
-        # User-API-token (no route_ref pin); document-level scoping is
-        # delegated to the user's matter/perm set, which is not yet modeled
-        # in this build — allow.
-        :ok
+        case ctx.user do
+          nil ->
+            {:error, :forbidden}
+
+          _ ->
+            case Contract.Documents.get(ctx, doc_id) do
+              {:ok, _doc} -> :ok
+              {:error, reason} -> {:error, reason}
+            end
+        end
     end
   end
 
   def authorize_document(_ctx, _doc_id), do: {:error, :forbidden}
 
+  defp authorize_visible_document(%Context{} = ctx, doc_id) do
+    case Contract.Documents.get(ctx, doc_id) do
+      {:ok, _doc} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp authorize_pinned_document(%Context{} = ctx, doc_id),
+    do: authorize_visible_document(ctx, doc_id)
+
   # ---- search ----------------------------------------------------------------
 
-  defp search_documents(_ctx, query, limit) do
-    import Ecto.Query, only: [from: 2]
-
-    pattern = "%" <> String.downcase(query) <> "%"
-
-    rows =
-      from(s in Contract.Snapshot,
-        order_by: [desc: s.revision],
-        select: %{
-          document_id: s.document_id,
-          revision: s.revision,
-          projection: s.projection
-        }
-      )
-      |> Contract.Repo.all()
-
-    # Snapshots may have multiple revisions per doc; dedupe to latest.
-    latest =
-      rows
-      |> Enum.reduce(%{}, fn row, acc -> Map.put_new(acc, row.document_id, row) end)
-      |> Map.values()
-
+  defp search_documents(ctx, query, limit) do
     matches =
-      latest
-      |> Enum.map(fn row ->
-        title = projection_title(row.projection)
-        %{document_id: row.document_id, revision: row.revision, title: title}
+      ctx
+      |> Contract.Documents.search(query, limit)
+      |> Enum.map(fn doc ->
+        %{document_id: doc.id, title: doc.title, revision: doc.latest_revision}
       end)
-      |> Enum.filter(fn %{title: t} ->
-        is_binary(t) and String.contains?(String.downcase(t), pattern |> String.trim_leading("%") |> String.trim_trailing("%"))
-      end)
-      |> Enum.take(limit)
-      |> Enum.map(fn r -> %{document_id: r.document_id, title: r.title, revision: r.revision} end)
-
-    # Fallback: if no snapshots, scan distinct documents from Change rows so
-    # newly-created docs that haven't been snapshotted yet still surface.
-    matches =
-      if matches == [] do
-        from(c in Contract.Change,
-          select: c.document_id,
-          distinct: true
-        )
-        |> Contract.Repo.all()
-        |> Enum.map(fn doc_id ->
-          case Store.load(doc_id) do
-            {:ok, state} ->
-              title = projection_title(state.projection)
-              %{document_id: doc_id, title: title, revision: state.revision}
-
-            _ ->
-              nil
-          end
-        end)
-        |> Enum.filter(fn
-          nil -> false
-          %{title: t} when is_binary(t) -> String.contains?(String.downcase(t), String.downcase(query))
-          _ -> false
-        end)
-        |> Enum.take(limit)
-      else
-        matches
-      end
 
     %{query: query, count: length(matches), results: matches}
   end
-
-  defp projection_title(%{} = projection) do
-    Map.get(projection, :title) || Map.get(projection, "title")
-  end
-
-  defp projection_title(_), do: nil
 
   defp render_projection(%Contract.Runtime.State{} = state) do
     %{
@@ -557,9 +539,9 @@ defmodule Contract.Gateway do
     %{
       id: c.id,
       document_id: c.document_id,
-      action_kind: c.action_kind,
+      command_kind: c.command_kind,
       base_revision: c.base_revision,
-      applied_revision: c.applied_revision,
+      result_revision: c.result_revision,
       status: c.status,
       actor_type: c.actor_type,
       actor_id: c.actor_id,
@@ -574,8 +556,7 @@ defmodule Contract.Gateway do
 
   defp build_action(raw) when is_map(raw) do
     attrs = %{
-      kind: parse_atom(Map.get(raw, "kind") || Map.get(raw, :kind), valid_action_kinds()),
-      matter_id: Map.get(raw, "matter_id") || Map.get(raw, :matter_id),
+      kind: parse_atom(Map.get(raw, "kind") || Map.get(raw, :kind), valid_command_kinds()),
       document_id: Map.get(raw, "document_id") || Map.get(raw, :document_id),
       change_id: Map.get(raw, "change_id") || Map.get(raw, :change_id),
       agent_run_id: Map.get(raw, "agent_run_id") || Map.get(raw, :agent_run_id),
@@ -614,7 +595,7 @@ defmodule Contract.Gateway do
 
   defp parse_atom(_, _), do: nil
 
-  defp valid_action_kinds do
+  defp valid_command_kinds do
     [
       :open_document,
       :create_document,

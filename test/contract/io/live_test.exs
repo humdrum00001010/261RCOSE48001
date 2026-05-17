@@ -66,7 +66,8 @@ defmodule Contract.IO.LiveTest do
     end)
 
     params = %{
-      input: "Reply with the literal JSON object {\"mode\":\"edit\",\"ops\":[],\"marks\":[],\"message\":\"ok\"}.",
+      input:
+        "Reply with the literal JSON object {\"mode\":\"edit\",\"ops\":[],\"marks\":[],\"message\":\"ok\"}.",
       text: %{format: %{type: "json_object"}}
     }
 

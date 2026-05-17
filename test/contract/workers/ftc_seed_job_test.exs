@@ -83,14 +83,14 @@ defmodule Contract.Workers.FtcSeedJobTest do
       assert matter.metadata["system"] == true
       assert matter.metadata["source"] == "ftc"
 
-      # Document landed with :template status + parsed metadata.
+      # Document landed under the system owner with parsed metadata.
       [doc] =
         Repo.all(
           from d in Document,
-            where: d.matter_id == ^matter.id and d.type_key == "franchise_v1"
+            where: d.owner_id == ^matter.owner_id and d.type_key == "franchise_v1"
         )
 
-      assert doc.status == :template
+      assert doc.status == :draft
       assert doc.title == "가맹사업 표준계약서"
       assert doc.metadata["source_url"] == url_for(bypass)
       assert doc.metadata["node_count"] == 3
@@ -100,7 +100,7 @@ defmodule Contract.Workers.FtcSeedJobTest do
       changes =
         Repo.all(from c in Change, where: c.document_id == ^doc.id)
 
-      assert [%Change{action_kind: action_kind, actor_type: :system} = change] = changes
+      assert [%Change{command_kind: action_kind, actor_type: :system} = change] = changes
       assert action_kind in [:create_document, "create_document"]
       assert change.idempotency_key == "ftc-seed:#{doc.id}"
     end
@@ -141,7 +141,7 @@ defmodule Contract.Workers.FtcSeedJobTest do
       assert 1 =
                Repo.aggregate(
                  from(d in Document,
-                   where: d.matter_id == ^matter.id and d.type_key == "franchise_v1"
+                   where: d.owner_id == ^matter.owner_id and d.type_key == "franchise_v1"
                  ),
                  :count,
                  :id

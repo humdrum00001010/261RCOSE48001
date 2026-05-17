@@ -34,12 +34,12 @@ defmodule Contract.GatewayTest do
 
   describe "issue_route_ref/2 → verify_route_ref/2" do
     test "round-trips a freshly-issued token" do
-      doc_id = Ecto.UUID.generate()
-      matter_id = Ecto.UUID.generate()
+      owner = scope()
+      doc_id = create_doc(owner)
 
       assert {:ok, token} =
-               Gateway.issue_route_ref(@ctx, %{
-                 matter_id: matter_id,
+               Gateway.issue_route_ref(owner, %{
+                 matter_id: Ecto.UUID.generate(),
                  document_id: doc_id,
                  purpose: "mcp",
                  scopes: ["read", "write"]
@@ -48,7 +48,7 @@ defmodule Contract.GatewayTest do
       assert is_binary(token)
 
       assert {:ok, %RouteRef{} = ref} = Gateway.verify_route_ref(@ctx, token)
-      assert ref.matter_id == matter_id
+      refute Map.has_key?(Map.from_struct(ref), :matter_id)
       assert ref.document_id == doc_id
       assert ref.purpose == "mcp"
       assert ref.scopes == ["read", "write"]
@@ -57,10 +57,11 @@ defmodule Contract.GatewayTest do
     end
 
     test "accepts string keys in attrs" do
-      doc_id = Ecto.UUID.generate()
+      owner = scope()
+      doc_id = create_doc(owner)
 
       assert {:ok, token} =
-               Gateway.issue_route_ref(@ctx, %{
+               Gateway.issue_route_ref(owner, %{
                  "document_id" => doc_id,
                  "purpose" => "deep_link"
                })
@@ -71,6 +72,7 @@ defmodule Contract.GatewayTest do
 
     test "defaults TTL to one hour" do
       assert {:ok, token} = Gateway.issue_route_ref(@ctx, %{purpose: "default-ttl"})
+
       assert {:ok, %RouteRef{issued_at: issued, expires_at: expires}} =
                Gateway.verify_route_ref(@ctx, token)
 
@@ -86,6 +88,18 @@ defmodule Contract.GatewayTest do
     test "rejects non-positive TTLs" do
       assert {:error, :invalid_ttl} = Gateway.issue_route_ref(@ctx, %{ttl: 0})
       assert {:error, :invalid_ttl} = Gateway.issue_route_ref(@ctx, %{ttl: -5})
+    end
+
+    test "denies document-scoped route_ref issuance for a foreign document" do
+      owner = scope()
+      other = scope()
+      foreign_doc_id = create_doc(other, title: "Foreign route_ref target")
+
+      assert {:error, :forbidden} =
+               Gateway.issue_route_ref(owner, %{
+                 document_id: foreign_doc_id,
+                 purpose: "foreign"
+               })
     end
   end
 
@@ -129,7 +143,6 @@ defmodule Contract.GatewayTest do
         DateTime.utc_now() |> DateTime.add(-3_600, :second) |> DateTime.to_unix(:millisecond)
 
       payload = %{
-        matter_id: nil,
         document_id: nil,
         purpose: "expired",
         issued_at: DateTime.to_iso8601(DateTime.utc_now() |> DateTime.add(-3_600, :second)),
@@ -167,12 +180,12 @@ defmodule Contract.GatewayTest do
     end
 
     test "successful tokens decode to only binary_id strings and atoms" do
-      doc_id = Ecto.UUID.generate()
-      matter_id = Ecto.UUID.generate()
+      owner = scope()
+      doc_id = create_doc(owner)
 
       assert {:ok, token} =
-               Gateway.issue_route_ref(@ctx, %{
-                 matter_id: matter_id,
+               Gateway.issue_route_ref(owner, %{
+                 matter_id: Ecto.UUID.generate(),
                  document_id: doc_id,
                  purpose: "no-pid",
                  scopes: ["read"]
@@ -206,28 +219,42 @@ defmodule Contract.GatewayTest do
       end)
     end
 
+    test "studio.submit_action schema does not expose legacy matter_id" do
+      submit = Enum.find(Gateway.tools_descriptor(), &(&1["name"] == "studio.submit_action"))
+      action_props = submit["inputSchema"]["properties"]["action"]["properties"]
+
+      refute Map.has_key?(action_props, "matter_id")
+    end
+
     test "unknown tool returns {:error, {:unknown_tool, name}}" do
       assert {:error, {:unknown_tool, "studio.does_not_exist"}} =
                Gateway.mcp_tool(@ctx, "studio.does_not_exist", %{})
     end
 
     test "studio.get_document returns the projection for an existing doc" do
-      doc_id = create_doc()
+      owner = scope()
+      doc_id = create_doc(owner)
 
-      ctx = ctx_for(doc_id)
-      assert {:ok, payload} = Gateway.mcp_tool(ctx, "studio.get_document", %{"document_id" => doc_id})
+      ctx = ctx_for(owner, doc_id)
+
+      assert {:ok, payload} =
+               Gateway.mcp_tool(ctx, "studio.get_document", %{"document_id" => doc_id})
+
       assert payload.document_id == doc_id
       assert payload.revision >= 1
       assert is_map(payload.projection)
     end
 
     test "studio.get_document is forbidden when route_ref doesn't authorize the doc" do
-      _doc_id = create_doc()
-      other_doc = Ecto.UUID.generate()
-      ctx = ctx_for(other_doc)
+      owner = scope()
+      doc_id = create_doc(owner)
+      other_doc = create_doc(owner)
+      ctx = ctx_for(owner, other_doc)
 
       assert {:error, :forbidden} =
-               Gateway.mcp_tool(ctx, "studio.get_document", %{"document_id" => Ecto.UUID.generate()})
+               Gateway.mcp_tool(ctx, "studio.get_document", %{
+                 "document_id" => doc_id
+               })
     end
 
     test "studio.get_document requires a document_id" do
@@ -236,8 +263,9 @@ defmodule Contract.GatewayTest do
     end
 
     test "studio.submit_action drives Runtime.apply and returns a Change" do
-      doc_id = create_doc()
-      ctx = ctx_for(doc_id)
+      owner = scope()
+      doc_id = create_doc(owner)
+      ctx = ctx_for(owner, doc_id)
 
       action_args = %{
         "action" => %{
@@ -252,19 +280,21 @@ defmodule Contract.GatewayTest do
       }
 
       assert {:ok, payload} = Gateway.mcp_tool(ctx, "studio.submit_action", action_args)
-      assert payload.action_kind == "rename_document"
+      assert payload.command_kind == "rename_document"
       assert is_binary(payload.id)
     end
 
     test "studio.submit_action rejects an invalid action shape" do
       ctx = ctx_for(Ecto.UUID.generate())
+
       assert {:error, {:invalid_action, _}} =
                Gateway.mcp_tool(ctx, "studio.submit_action", %{"action" => %{"kind" => "bogus"}})
     end
 
     test "studio.get_change_history returns changes" do
-      doc_id = create_doc()
-      ctx = ctx_for(doc_id)
+      owner = scope()
+      doc_id = create_doc(owner)
+      ctx = ctx_for(owner, doc_id)
 
       assert {:ok, payload} =
                Gateway.mcp_tool(ctx, "studio.get_change_history", %{
@@ -274,12 +304,13 @@ defmodule Contract.GatewayTest do
 
       assert payload.document_id == doc_id
       assert length(payload.changes) >= 1
-      assert hd(payload.changes).action_kind == "create_document"
+      assert hd(payload.changes).command_kind == "create_document"
     end
 
     test "studio.list_marks returns an empty list for a fresh document" do
-      doc_id = create_doc()
-      ctx = ctx_for(doc_id)
+      owner = scope()
+      doc_id = create_doc(owner)
+      ctx = ctx_for(owner, doc_id)
 
       assert {:ok, %{document_id: ^doc_id, marks: marks}} =
                Gateway.mcp_tool(ctx, "studio.list_marks", %{"document_id" => doc_id})
@@ -287,13 +318,18 @@ defmodule Contract.GatewayTest do
       assert is_list(marks)
     end
 
-    test "studio.search_documents returns matches by title substring" do
-      doc_id = create_doc(title: "MCP-Searchable Contract")
-      ctx = ctx_for(doc_id)
+    test "studio.search_documents returns owner-scoped matches by title substring" do
+      owner = scope()
+      other = scope()
+      owner_doc_id = create_doc(owner, title: "MCP-Searchable Contract")
+      other_doc_id = create_doc(other, title: "MCP-Searchable Hidden")
 
-      assert {:ok, payload} = Gateway.mcp_tool(ctx, "studio.search_documents", %{"query" => "Searchable"})
-      assert payload.query == "Searchable"
-      assert Enum.any?(payload.results, fn r -> r.document_id == doc_id end)
+      assert {:ok, payload} =
+               Gateway.mcp_tool(owner, "studio.search_documents", %{"query" => "Searchable"})
+
+      result_ids = Enum.map(payload.results, & &1.document_id)
+      assert owner_doc_id in result_ids
+      refute other_doc_id in result_ids
     end
 
     test "studio.search_documents requires a non-empty query" do
@@ -313,34 +349,76 @@ defmodule Contract.GatewayTest do
   end
 
   describe "authorize_document/2" do
-    test "denies when ctx has no perms and no document_id authority" do
-      assert :ok = Gateway.authorize_document(%Context{}, "any-doc-id")
-      # When ctx has nothing pinned, we allow (user_api_token style).
+    test "denies when ctx has no user and no route_ref authority" do
+      assert {:error, :forbidden} = Gateway.authorize_document(%Context{}, Ecto.UUID.generate())
     end
 
-    test "allows the pinned doc when route_ref pins document_id" do
-      doc_id = Ecto.UUID.generate()
-      ref = %RouteRef{document_id: doc_id, scopes: [], purpose: "t",
-                      issued_at: DateTime.utc_now(), expires_at: DateTime.utc_now()}
+    test "denies a pinned route_ref without user context even when the document exists" do
+      doc_id = create_doc(scope(), title: "No-user pinned bypass")
+
+      ref = %RouteRef{
+        document_id: doc_id,
+        scopes: [],
+        purpose: "t",
+        issued_at: DateTime.utc_now(),
+        expires_at: DateTime.utc_now()
+      }
+
       ctx = %Context{perms: %{route_ref: ref}}
 
-      assert :ok = Gateway.authorize_document(ctx, doc_id)
+      assert {:error, :forbidden} = Gateway.authorize_document(ctx, doc_id)
     end
 
     test "denies a different doc when route_ref pins document_id" do
-      ref = %RouteRef{document_id: Ecto.UUID.generate(), scopes: [], purpose: "t",
-                      issued_at: DateTime.utc_now(), expires_at: DateTime.utc_now()}
+      ref = %RouteRef{
+        document_id: Ecto.UUID.generate(),
+        scopes: [],
+        purpose: "t",
+        issued_at: DateTime.utc_now(),
+        expires_at: DateTime.utc_now()
+      }
+
       ctx = %Context{perms: %{route_ref: ref}}
 
       assert {:error, :forbidden} = Gateway.authorize_document(ctx, Ecto.UUID.generate())
     end
 
-    test "allows any doc when route_ref has wildcard document_id (nil)" do
-      ref = %RouteRef{document_id: nil, scopes: [], purpose: "t",
-                      issued_at: DateTime.utc_now(), expires_at: DateTime.utc_now()}
-      ctx = %Context{perms: %{route_ref: ref}}
+    test "denies pinned route_ref when ctx user does not own that document" do
+      owner = scope()
+      other = scope()
+      other_doc_id = create_doc(other, title: "Pinned foreign doc")
 
-      assert :ok = Gateway.authorize_document(ctx, Ecto.UUID.generate())
+      ref = %RouteRef{
+        document_id: other_doc_id,
+        scopes: [],
+        purpose: "t",
+        issued_at: DateTime.utc_now(),
+        expires_at: DateTime.utc_now()
+      }
+
+      ctx = %Context{user: owner.user, perms: %{route_ref: ref}}
+
+      assert {:error, :forbidden} = Gateway.authorize_document(ctx, other_doc_id)
+    end
+
+    test "wildcard route_ref still requires the ctx user to own the document" do
+      owner = scope()
+      other = scope()
+      owner_doc_id = create_doc(owner, title: "Wildcard owner doc")
+      other_doc_id = create_doc(other, title: "Wildcard foreign doc")
+
+      ref = %RouteRef{
+        document_id: nil,
+        scopes: [],
+        purpose: "t",
+        issued_at: DateTime.utc_now(),
+        expires_at: DateTime.utc_now()
+      }
+
+      ctx = %Context{user: owner.user, perms: %{route_ref: ref}}
+
+      assert :ok = Gateway.authorize_document(ctx, owner_doc_id)
+      assert {:error, :forbidden} = Gateway.authorize_document(ctx, other_doc_id)
     end
 
     test "denies nil document_id" do
@@ -366,34 +444,53 @@ defmodule Contract.GatewayTest do
   # helpers
   # ---------------------------------------------------------------------------
 
-  defp create_doc(opts \\ []) do
-    doc_id = Ecto.UUID.generate()
+  defp create_doc(%Context{} = ctx), do: create_doc(ctx, [])
+
+  defp create_doc(opts) when is_list(opts) do
+    ctx = scope()
+    create_doc(ctx, opts)
+  end
+
+  defp create_doc(%Context{} = ctx, opts) do
     title = Keyword.get(opts, :title, "Doc")
+    doc_id = Ecto.UUID.generate()
 
     action = %Command{
       kind: :create_document,
       document_id: doc_id,
       actor_type: :user,
-      actor_id: Ecto.UUID.generate(),
+      actor_id: ctx.user.id,
       base_revision: 0,
       idempotency_key: "create-#{doc_id}",
-      payload: %{"title" => title, "type_key" => "nda"}
+      payload: %{"title" => title, "type_key" => "nda_v1"}
     }
 
-    {:ok, %Change{}} = Runtime.apply(@ctx, action)
+    {:ok, %Change{}} = Runtime.apply(ctx, action)
     doc_id
   end
 
-  defp ctx_for(doc_id) do
+  defp scope do
+    user_id = Ecto.UUID.generate()
+
+    %Context{
+      user: %Contract.Accounts.User{
+        id: user_id,
+        email: "gateway-#{user_id}@example.test"
+      }
+    }
+  end
+
+  defp ctx_for(doc_id), do: ctx_for(%Context{}, doc_id)
+
+  defp ctx_for(%Context{} = ctx, doc_id) do
     ref = %RouteRef{
       document_id: doc_id,
-      matter_id: nil,
       purpose: "test",
       issued_at: DateTime.utc_now(),
       expires_at: DateTime.utc_now() |> DateTime.add(3_600, :second),
       scopes: ["read", "write"]
     }
 
-    %Context{perms: %{route_ref: ref}, now: DateTime.utc_now()}
+    %Context{user: ctx.user, perms: %{route_ref: ref}, now: DateTime.utc_now()}
   end
 end

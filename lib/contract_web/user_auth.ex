@@ -37,7 +37,7 @@ defmodule ContractWeb.UserAuth do
   `ContractWeb.UserSessionController.create/2` threads `:user_perms`
   into the session for real (non-Persona) users — the perm set is
   otherwise lost when `renew_session` wipes the session at log-in
-  time. See `Contract.PersonaFactory` and `ContractWeb.MatterScope`
+  time. See `Contract.PersonaFactory` and `ContractWeb.DocumentScope`
   for the read side.
   """
   def log_in_user(conn, user, params \\ %{}, extra_session \\ %{}) do

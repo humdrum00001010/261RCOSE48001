@@ -5,7 +5,7 @@ import {
   openStudio,
   pollUntil
 } from '../../fixtures/studio';
-import { seedMatterAndDocument } from '../../fixtures/seeds';
+import { seedDocumentBundle } from '../../fixtures/seeds';
 
 /**
  * Scenario 5 — socket reconnect + sync.
@@ -32,21 +32,20 @@ test.describe('Scenario 5: socket reconnect + Studio.sync', () => {
       await resetE2EState(request);
       await signInAs(page, 'lawyer');
 
-      const { document } = await seedMatterAndDocument(page, {
+      const { document: seededDocument } = await seedDocumentBundle(page, {
         title: 'Socket-reconnect scenario doc',
         type_key: 'nda_v1'
       });
 
       await openStudio(page, {
-        id: document.id,
-        matter_id: document.matter_id,
-        name: document.title,
-        type_key: document.type_key,
+        id: seededDocument.id,
+        name: seededDocument.title,
+        type_key: seededDocument.type_key,
         inserted_at: ''
       });
 
       // Capture starting head revision.
-      const baseline = await getChanges(request, document.id);
+      const baseline = await getChanges(request, seededDocument.id);
       const baseHead = baseline[baseline.length - 1]?.applied_revision ?? 0;
 
       // Intercept and abort the WS upgrade once we have the page settled.
@@ -73,7 +72,7 @@ test.describe('Scenario 5: socket reconnect + Studio.sync', () => {
       let postReconnectHead = baseHead;
       try {
         const after = await pollUntil(
-          () => getChanges(request, document.id),
+          () => getChanges(request, seededDocument.id),
           (rows) => (rows[rows.length - 1]?.applied_revision ?? 0) > baseHead,
           { timeoutMs: 4_000, label: 'concurrent change appears' }
         );

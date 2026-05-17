@@ -32,7 +32,8 @@ defmodule Contract.Command do
     :source_claim_confirm,
     :source_claim_correct,
     :source_claim_reject,
-    :source_claim_link_to_document
+    :source_claim_link_to_document,
+    :source_claim_unlink_from_document
   ]
 
   @primary_key false
@@ -56,6 +57,7 @@ defmodule Contract.Command do
         :source_claim_correct,
         :source_claim_reject,
         :source_claim_link_to_document,
+        :source_claim_unlink_from_document,
         :start_type_conversion,
         :set_field_migration_strategy,
         :create_converted_variant,
@@ -66,8 +68,9 @@ defmodule Contract.Command do
         :request_export
       ]
 
-    field :matter_id, :binary_id
     field :document_id, :binary_id
+    field :chat_thread_id, :binary_id
+    field :source_document_id, :binary_id
     field :source_claim_id, :binary_id
     field :change_id, :binary_id
     field :agent_run_id, :binary_id
@@ -102,8 +105,9 @@ defmodule Contract.Command do
     command
     |> cast(attrs, [
       :kind,
-      :matter_id,
       :document_id,
+      :chat_thread_id,
+      :source_document_id,
       :source_claim_id,
       :change_id,
       :agent_run_id,

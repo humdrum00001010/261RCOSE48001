@@ -134,7 +134,9 @@ defmodule Contract.IO.R2Test do
       end)
 
       render_fun = fn _ -> {:ok, "DOCXBYTES", "application/vnd.openxmlformats..."} end
-      assert {:ok, %Contract.Export{format: :docx}} = R2.export(nil, "doc1", :docx, render_fun: render_fun)
+
+      assert {:ok, %Contract.Export{format: :docx}} =
+               R2.export(nil, "doc1", :docx, render_fun: render_fun)
     end
 
     test "propagates render error" do

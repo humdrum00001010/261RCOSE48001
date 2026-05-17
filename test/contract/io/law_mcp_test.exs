@@ -94,7 +94,12 @@ defmodule Contract.IO.LawMCPTest do
     test "honors :oc opt override", %{bypass: bypass} do
       Bypass.expect_once(bypass, "POST", "/mcp", fn conn ->
         assert conn.query_string == "oc=overridden"
-        Plug.Conn.resp(conn, 200, Jason.encode!(%{"jsonrpc" => "2.0", "id" => 1, "result" => %{}}))
+
+        Plug.Conn.resp(
+          conn,
+          200,
+          Jason.encode!(%{"jsonrpc" => "2.0", "id" => 1, "result" => %{}})
+        )
       end)
 
       assert {:ok, _} = LawMCP.call("x", %{}, oc: "overridden")
@@ -194,7 +199,9 @@ defmodule Contract.IO.LawMCPTest do
             "jsonrpc" => "2.0",
             "id" => 1,
             "result" => %{
-              "content" => [%{"text" => Jason.encode!([%{"citation" => "민법 제390조", "valid" => true}])}]
+              "content" => [
+                %{"text" => Jason.encode!([%{"citation" => "민법 제390조", "valid" => true}])}
+              ]
             }
           })
         )

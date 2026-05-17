@@ -14,7 +14,7 @@ defmodule ContractWeb.UserLive.SettingsHub do
     * API tokens → `/settings/api-tokens` (Wave 3C0-B)
     * Appearance → `/settings/appearance` (route NOT yet defined; rendered
       as disabled "Coming soon")
-    * Workspace → disabled "Coming soon" (Wave 4+)
+    * Documents → disabled "Coming soon" (Wave 4+)
     * Notifications → disabled "Coming soon" (Wave 4+)
 
   The same sidebar / chrome is shared by `ContractWeb.UserLive.ApiTokens`
@@ -80,9 +80,9 @@ defmodule ContractWeb.UserLive.SettingsHub do
               icon="hero-paint-brush"
             />
             <.quick_card_disabled
-              title={dgettext("settings", "Workspace")}
-              description={dgettext("settings", "Team-scoped defaults. Coming soon.")}
-              icon="hero-building-office"
+              title={dgettext("settings", "Documents")}
+              description={dgettext("settings", "Document defaults. Coming soon.")}
+              icon="hero-document-text"
             />
           </div>
         </section>
@@ -158,8 +158,8 @@ defmodule ContractWeb.UserLive.SettingsHub do
           icon="hero-paint-brush-mini"
         />
         <.sidebar_item_disabled
-          label={dgettext("settings", "Workspace")}
-          icon="hero-building-office-mini"
+          label={dgettext("settings", "Documents")}
+          icon="hero-document-text-mini"
         />
         <.sidebar_item_disabled
           label={dgettext("settings", "Notifications")}

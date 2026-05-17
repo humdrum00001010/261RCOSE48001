@@ -36,8 +36,7 @@ defmodule Contract.PersonaFactoryTest do
       paralegal: ~w(read write commit revoke type_change agent_run)a,
       agent_supervised: ~w(read write commit revoke agent_run)a,
       viewer: ~w(read)a,
-      admin:
-        ~w(read write commit revoke export type_change agent_run tenant_admin matter_admin)a
+      admin: ~w(read write commit revoke export type_change agent_run tenant_admin matter_admin)a
     }
 
     for {persona, perms} <- expectations do

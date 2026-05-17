@@ -19,8 +19,7 @@ defmodule ContractWeb.LegacyRedirectController do
   GET /matters/:matter_id/documents/:document_id
     → 301 /documents/:document_id
 
-  The matter_id is dropped — `MatterScope` re-derives it from the
-  document on mount of the new URL.
+  The matter_id is dropped; the document id is the canonical route key.
   """
   def matter_document(conn, %{"document_id" => document_id}) do
     conn

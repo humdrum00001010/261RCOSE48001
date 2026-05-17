@@ -262,8 +262,8 @@ msgstr "로그인, 매직 링크, 감사 로그 식별에 사용됩니다."
 #: lib/contract_web/live/user_live/settings_hub.ex:83
 #: lib/contract_web/live/user_live/settings_hub.ex:161
 #, elixir-autogen, elixir-format
-msgid "Workspace"
-msgstr "워크스페이스"
+msgid "Documents"
+msgstr "문서"
 
 #: lib/contract_web/live/user_live/settings_hub.ex:47
 #, elixir-autogen, elixir-format

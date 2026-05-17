@@ -33,8 +33,10 @@ defmodule ContractWeb.MCP.MCPPlug do
 
   import Plug.Conn
 
+  alias Contract.Accounts
   alias Contract.Context
   alias Contract.Gateway
+  alias Contract.MCP
   alias Contract.RouteRef
   alias ContractWeb.MCP.JSONRPC
 
@@ -69,23 +71,35 @@ defmodule ContractWeb.MCP.MCPPlug do
     end
   end
 
-  defp dispatch(conn, %{method: "initialize", id: id}, _ctx) do
-    result = %{
-      "protocolVersion" => "2024-11-05",
-      "serverInfo" => %{
-        "name" => "contract-studio",
-        "version" => "0.1.0"
-      },
-      "capabilities" => %{
-        "tools" => %{"listChanged" => false}
-      }
-    }
-
-    send_response(conn, JSONRPC.success(id, result))
+  defp dispatch(conn, %{method: "initialize", id: id, params: params}, _ctx) do
+    send_response(conn, JSONRPC.success(id, MCP.initialize(params)))
   end
 
-  defp dispatch(conn, %{method: "tools/list", id: id}, _ctx) do
-    send_response(conn, JSONRPC.success(id, %{"tools" => Gateway.tools_descriptor()}))
+  defp dispatch(conn, %{method: "tools/list", id: id}, ctx) do
+    route_ref = route_ref(ctx)
+    send_response(conn, JSONRPC.success(id, MCP.list_tools(ctx, route_ref)))
+  end
+
+  defp dispatch(conn, %{method: "resources/list", id: id}, ctx) do
+    route_ref = route_ref(ctx)
+    send_response(conn, JSONRPC.success(id, MCP.list_resources(ctx, route_ref)))
+  end
+
+  defp dispatch(conn, %{method: "resources/read", id: id, params: params}, ctx) do
+    route_ref = route_ref(ctx)
+    uri = Map.get(params, "uri") || Map.get(params, :uri)
+
+    if is_binary(uri) and uri != "" do
+      case MCP.read_resource(ctx, route_ref, uri) do
+        {:ok, payload} -> send_response(conn, JSONRPC.success(id, payload))
+        {:error, reason} -> send_response(conn, JSONRPC.from_gateway_error(id, reason))
+      end
+    else
+      send_response(
+        conn,
+        JSONRPC.error_response(id, JSONRPC.invalid_params_code(), "missing uri")
+      )
+    end
   end
 
   defp dispatch(conn, %{method: "tools/call", id: id, params: params}, ctx) do
@@ -222,29 +236,52 @@ defmodule ContractWeb.MCP.MCPPlug do
         case Phoenix.Token.verify(ContractWeb.Endpoint, @api_token_salt, token,
                max_age: @api_token_max_age
              ) do
-          {:ok, %{user_id: user_id} = payload} -> {:ok, :api_token, %{user_id: user_id, payload: payload}}
-          {:ok, user_id} when is_binary(user_id) -> {:ok, :api_token, %{user_id: user_id, payload: %{user_id: user_id}}}
-          {:error, _} -> :error
+          {:ok, %{user_id: user_id} = payload} ->
+            {:ok, :api_token, %{user_id: user_id, payload: payload}}
+
+          {:ok, user_id} when is_binary(user_id) ->
+            {:ok, :api_token, %{user_id: user_id, payload: %{user_id: user_id}}}
+
+          {:error, _} ->
+            :error
         end
     end
   end
 
   defp build_ctx(:route_ref, %RouteRef{} = ref) do
     %Context{
-      matter: ref.matter_id,
+      user: user_for_route_ref(ref),
       perms: %{route_ref: ref, scopes: ref.scopes},
       now: DateTime.utc_now()
     }
   end
 
   defp build_ctx(:api_token, %{user_id: user_id} = principal) do
+    user = Accounts.get_user!(user_id)
+
     %Context{
-      user: nil,
-      matter: nil,
-      perms: %{api_token: principal, user_id: user_id, scopes: Map.get(principal.payload, :scopes, [])},
+      user: user,
+      perms: %{
+        api_token: principal,
+        user_id: user_id,
+        scopes: Map.get(principal.payload, :scopes, [])
+      },
       now: DateTime.utc_now()
     }
+  rescue
+    Ecto.NoResultsError -> %Context{perms: %{api_token: principal, user_id: user_id}}
   end
+
+  defp route_ref(%Context{perms: %{route_ref: %RouteRef{} = ref}}), do: ref
+  defp route_ref(_ctx), do: nil
+
+  defp user_for_route_ref(%RouteRef{user_id: user_id}) when is_binary(user_id) do
+    Accounts.get_user!(user_id)
+  rescue
+    Ecto.NoResultsError -> nil
+  end
+
+  defp user_for_route_ref(_ref), do: nil
 
   defp send_unauthorized(conn) do
     body =

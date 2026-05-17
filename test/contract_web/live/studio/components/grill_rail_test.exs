@@ -3,7 +3,7 @@ defmodule ContractWeb.Live.Studio.Components.GrillRailTest do
   Wave 3C1 `grill-rail` component tests.
 
   Strategy: all cases hit `render_component/2` directly and assert
-  against the produced HTML. The `send_chat_message` event binding is
+  against the produced HTML. The `chat.submit` event binding is
   verified by inspecting the rendered `phx-click` / `phx-value-*`
   attributes; the matching `event_to_action/3` clause in `StudioLive`
   is already covered by `test/contract_web/live/studio_live_test.exs`.
@@ -129,11 +129,11 @@ defmodule ContractWeb.Live.Studio.Components.GrillRailTest do
       assert html =~ ~s(phx-submit="noop")
     end
 
-    test "submit button binds phx-click=\"send_chat_message\" and carries the mark_id" do
+    test "submit button binds phx-click=\"chat.submit\" and carries the mark_id" do
       marks = [ask_mark("ask-123", "Why?")]
       html = render_component(GrillRail, base_assigns(%{grill_marks: marks}))
 
-      assert html =~ ~s(phx-click="send_chat_message")
+      assert html =~ ~s(phx-click="chat.submit")
       assert html =~ ~s(phx-value-mark_id="ask-123")
       # phx-value-grill_response carries a JSON-encoded payload.
       assert html =~ ~s(phx-value-grill_response=)
@@ -141,24 +141,24 @@ defmodule ContractWeb.Live.Studio.Components.GrillRailTest do
     end
   end
 
-  # ---- 3. Submit emits send_chat_message — binding contract -----------
+  # ---- 3. Submit emits chat.submit — binding contract -----------
   #
-  # The component renders the submit as `phx-click="send_chat_message"`
+  # The component renders the submit as `phx-click="chat.submit"`
   # with the grill_response payload encoded as a phx-value-* attribute.
   # Because the button has NO `phx-target`, the click bubbles past the
   # LiveComponent and is handled by the parent LV's `handle_event/3` —
-  # whose `event_to_action("send_chat_message", _, _)` clause is already
+  # whose `event_to_action("chat.submit", _, _)` clause is already
   # covered in `test/contract_web/live/studio_live_test.exs`. Here we
   # verify the binding contract end of the seam.
 
   describe "submit event payload (parent-LV dispatch contract)" do
-    test "renders a phx-click=\"send_chat_message\" submit with grill_response payload" do
+    test "renders a phx-click=\"chat.submit\" submit with grill_response payload" do
       marks = [ask_mark("ask-x", "Reason for the change?")]
       html = render_component(GrillRail, base_assigns(%{grill_marks: marks}))
 
-      # The button is wired to phx-click="send_chat_message" with NO
+      # The button is wired to phx-click="chat.submit" with NO
       # phx-target attribute — the click bubbles up to the parent LV.
-      assert html =~ ~s(phx-click="send_chat_message")
+      assert html =~ ~s(phx-click="chat.submit")
 
       # The submit button row carries no phx-target. We pin to the exact
       # submit-button substring to avoid false positives from sibling
@@ -254,7 +254,7 @@ defmodule ContractWeb.Live.Studio.Components.GrillRailTest do
       refute html =~ ~s(data-role="grill-answer-input")
       refute html =~ ~s(data-role="grill-submit")
       refute html =~ ~s(<textarea)
-      refute html =~ ~s(phx-click="send_chat_message")
+      refute html =~ ~s(phx-click="chat.submit")
     end
   end
 
@@ -341,4 +341,3 @@ defmodule ContractWeb.Live.Studio.Components.GrillRailTest do
     end
   end
 end
-

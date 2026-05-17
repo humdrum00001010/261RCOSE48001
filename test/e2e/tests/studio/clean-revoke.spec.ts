@@ -5,7 +5,7 @@ import {
   openStudio,
   pollUntil
 } from '../../fixtures/studio';
-import { seedMatterAndDocument } from '../../fixtures/seeds';
+import { seedDocumentBundle } from '../../fixtures/seeds';
 
 /**
  * Scenario 2 — clean revoke (no overlap).
@@ -75,14 +75,13 @@ test.describe('Scenario 2: clean revoke', () => {
       // same cookie jar as `signInAs(page, ...)` — otherwise the
       // controller falls back to minting a throwaway persona, which
       // can flake on PersonaFactory email collisions.
-      const { document } = await seedMatterAndDocument(page, {
+      const { document } = await seedDocumentBundle(page, {
         title: 'Clean-revoke scenario doc',
         type_key: 'nda_v1'
       });
 
       await openStudio(page, {
         id: document.id,
-        matter_id: document.matter_id,
         name: document.title,
         type_key: document.type_key,
         inserted_at: ''

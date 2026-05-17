@@ -220,7 +220,7 @@ defmodule ContractWeb.Live.Studio.Components.PreviewOverlay do
       <%!-- Top bar: matter title, close, tabs --%>
       <header class="flex items-center justify-between gap-3 border-b border-base-200 px-4 py-3">
         <h2 class="text-base font-serif font-semibold truncate flex-1 min-w-0">
-          {matter_title(@current_scope, @projection)}
+          {document_title(@projection)}
         </h2>
 
         <button
@@ -474,9 +474,9 @@ defmodule ContractWeb.Live.Studio.Components.PreviewOverlay do
         >
           <div class="flex items-center justify-between gap-2">
             <span class="font-mono text-xs text-base-content/60">
-              r{change.applied_revision}
+              r{change.result_revision}
             </span>
-            <span class="badge badge-sm">{change.action_kind}</span>
+            <span class="badge badge-sm">{change.command_kind}</span>
           </div>
           <p :if={change.message} class="mt-1 whitespace-pre-wrap">{change.message}</p>
         </div>
@@ -493,11 +493,8 @@ defmodule ContractWeb.Live.Studio.Components.PreviewOverlay do
   # Helpers
   # ---------------------------------------------------------------------------
 
-  defp matter_title(scope, projection) do
+  defp document_title(projection) do
     cond do
-      is_map(scope) and is_map(scope.matter) and is_binary(Map.get(scope.matter, :name)) ->
-        scope.matter.name
-
       is_binary(projection[:title]) and projection[:title] != "" ->
         projection[:title]
 

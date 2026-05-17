@@ -26,6 +26,13 @@ defmodule Contract.Session.ReducerTest do
     "11111111-1111-1111-1111-#{digits}"
   end
 
+  defp existing_atom?(value) do
+    _ = String.to_existing_atom(value)
+    true
+  rescue
+    ArgumentError -> false
+  end
+
   defp action(kind, attrs \\ %{}) do
     base = %Command{
       kind: kind,
@@ -268,6 +275,21 @@ defmodule Contract.Session.ReducerTest do
 
       assert [%Operation{op: :set_attr, args: %{key: :title, value: "Renamed"}}] = input.ops
     end
+
+    test "does not create atoms for unknown payload keys" do
+      state = new_state()
+      unknown_key = "unsafe_payload_key_#{System.unique_integer([:positive])}"
+      refute existing_atom?(unknown_key)
+
+      a =
+        action(:rename_document,
+          payload: %{"title" => "Renamed", unknown_key => "ignored"}
+        )
+
+      assert {:ok, %ChangeInput{} = input} = Reducer.compile(a, state)
+      assert [%Operation{op: :set_attr, args: %{key: :title, value: "Renamed"}}] = input.ops
+      refute existing_atom?(unknown_key)
+    end
   end
 
   describe "compile/2 — archive_document / restore_document" do
@@ -277,10 +299,10 @@ defmodule Contract.Session.ReducerTest do
       assert [%Operation{op: :set_attr, args: %{key: :status, value: :archived}}] = input.ops
     end
 
-    test "restore sets status=:active" do
+    test "restore sets status=:draft" do
       state = new_state()
       {:ok, input} = Reducer.compile(action(:restore_document), state)
-      assert [%Operation{op: :set_attr, args: %{key: :status, value: :active}}] = input.ops
+      assert [%Operation{op: :set_attr, args: %{key: :status, value: :draft}}] = input.ops
     end
   end
 
@@ -826,14 +848,42 @@ defmodule Contract.Session.ReducerTest do
       {input, _new_state} = run_pipeline(a, state)
       {:ok, %Change{} = change} = Reducer.build_change(a, input, state)
 
-      assert change.applied_revision == 10
+      assert change.result_revision == 10
       assert change.base_revision == 9
-      assert change.action_kind == "rename_document"
+      assert change.command_kind == "rename_document"
       assert change.actor_type == :user
       assert change.status == :active
-      assert length(change.ops) == 1
+      assert length(change.payload) == 1
       assert is_map(change.preimage)
-      assert is_list(change.inverse_ops)
+      assert is_list(change.inverse)
+    end
+
+    test "builds a v0.5 Change with direct command and source fields" do
+      state = new_state(revision: 3)
+
+      a =
+        action(:rename_document,
+          chat_thread_id: uuid(30),
+          source_document_id: uuid(31),
+          source_claim_id: uuid(32),
+          agent_run_id: uuid(33),
+          base_revision: 3,
+          payload: %{"title" => "Direct fields"}
+        )
+
+      {input, _new_state} = run_pipeline(a, state)
+      {:ok, %Change{} = change} = Reducer.build_change(a, input, state)
+
+      assert change.command_kind == "rename_document"
+      assert change.result_revision == 4
+      assert change.chat_thread_id == uuid(30)
+      assert change.source_document_id == uuid(31)
+      assert change.source_claim_id == uuid(32)
+      assert change.agent_run_id == uuid(33)
+      assert change.op == "set_attr"
+      assert [%{op: :set_attr}] = change.payload
+      assert is_list(change.inverse)
+      refute Map.has_key?(Map.from_struct(change), :action_kind)
     end
 
     test "carries idempotency_key through" do
@@ -1084,9 +1134,7 @@ defmodule Contract.Session.ReducerTest do
     end
 
     property "set_attr on a table's :column_widths round-trips through inverse" do
-      check all(
-              widths <- list_of(integer(100..10_000), min_length: 1, max_length: 5)
-            ) do
+      check all(widths <- list_of(integer(100..10_000), min_length: 1, max_length: 5)) do
         table_id = uuid(200)
 
         proj =
@@ -1143,34 +1191,78 @@ defmodule Contract.Session.ReducerTest do
   end
 
   # ============================================================================
-  # compile/2 — source_claim_* kinds (W6 placeholder dispatch)
+  # compile/2 — source_claim_* kinds
   # ============================================================================
 
-  describe "compile/2 — source_claim_* (W6 not yet implemented)" do
-    # SPEC.md v0.5 §7.4 / §7.5: the four source_claim_* Command kinds are
-    # part of the v0.5 surface but their reducer wiring lands in W6. The
-    # dispatch is wired here so callers get a structured error instead
-    # of a FunctionClauseError crash.
-    for kind <- [
-          :source_claim_confirm,
-          :source_claim_correct,
-          :source_claim_reject,
-          :source_claim_link_to_document
-        ] do
-      test "#{kind} returns {:error, :not_implemented} (no FunctionClauseError)" do
-        state = new_state()
+  describe "compile/2 — source_claim_*" do
+    test "confirm compiles to a source-backed field update and mark" do
+      state = new_state(document_id: uuid(10))
 
-        command = %Command{
-          kind: unquote(kind),
+      command =
+        action(:source_claim_confirm,
+          document_id: uuid(10),
+          source_document_id: uuid(98),
           source_claim_id: uuid(99),
-          actor_type: :user,
-          actor_id: uuid(2),
-          base_revision: 0,
-          payload: %{}
-        }
+          payload: %{"field_id" => "effective_date", "value" => "2026-01-01"}
+        )
 
-        assert {:error, :not_implemented} = Reducer.compile(command, state)
-      end
+      assert {:ok, input} = Reducer.compile(command, state)
+      assert input.action_kind == :source_claim_confirm
+
+      assert [%Operation{op: :set_field, target_type: :field, target_id: "effective_date"}] =
+               input.ops
+
+      assert [%MarkInput{intent: :source_claim, target_id: "effective_date"}] = input.marks
+    end
+
+    test "correct compiles the corrected user value" do
+      state = new_state(document_id: uuid(10))
+
+      command =
+        action(:source_claim_correct,
+          document_id: uuid(10),
+          source_claim_id: uuid(99),
+          payload: %{"field_id" => "effective_date", "value" => "2026-02-01"}
+        )
+
+      assert {:ok, input} = Reducer.compile(command, state)
+      assert [%Operation{op: :set_field, args: %{value: "2026-02-01"}}] = input.ops
+    end
+
+    test "reject compiles to a review mark without document ops" do
+      state = new_state(document_id: uuid(10))
+
+      command =
+        action(:source_claim_reject,
+          document_id: uuid(10),
+          source_claim_id: uuid(99),
+          payload: %{"reason" => "wrong field"}
+        )
+
+      assert {:ok, input} = Reducer.compile(command, state)
+      assert input.ops == []
+      assert [%MarkInput{intent: :source_claim_rejected, target_type: :document}] = input.marks
+    end
+
+    test "link_to_document compiles to a durable ref binding" do
+      state = new_state(document_id: uuid(10))
+
+      command =
+        action(:source_claim_link_to_document,
+          document_id: uuid(10),
+          source_document_id: uuid(98),
+          source_claim_id: uuid(99),
+          payload: %{"node_id" => uuid(77), "field_id" => "effective_date"}
+        )
+
+      assert {:ok, input} = Reducer.compile(command, state)
+
+      assert [%Operation{op: :bind_ref, target_type: :artifact, target_id: ref_id, args: args}] =
+               input.ops
+
+      assert ref_id == "source-claim:#{uuid(99)}"
+      assert args.ref.target_id == uuid(77)
+      assert args.ref.source_claim_id == uuid(99)
     end
   end
 end

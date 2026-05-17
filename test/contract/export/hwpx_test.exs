@@ -313,6 +313,40 @@ defmodule Contract.Export.HWPXTest do
     end)
   end
 
+  test "browser-style table rows matrix emits a real HWPX table" do
+    table = %{
+      id: "matrix-table",
+      kind: "table",
+      content: "A1\tA2\nB1\tB2",
+      attrs: %{"rows" => [["A1", "A2"], ["B1", "B2"]]}
+    }
+
+    state = %State{
+      document_id: "doc-0000-0000-0000-000000000013",
+      revision: 0,
+      projection: %{
+        State.empty_projection()
+        | nodes: %{"matrix-table" => table},
+          node_order: ["matrix-table"]
+      }
+    }
+
+    {:ok, bin} = HWPX.render(state)
+    section = unzip_body(bin, "Contents/section0.xml")
+
+    assert section |> String.split("<hp:tbl ") |> length() |> Kernel.-(1) == 1
+    assert section =~ ~s(rowCnt="2")
+    assert section =~ ~s(colCnt="2")
+    assert section |> String.split("<hp:tr>") |> length() |> Kernel.-(1) == 2
+    assert section |> String.split("<hp:tc ") |> length() |> Kernel.-(1) == 4
+
+    for text <- ["A1", "A2", "B1", "B2"] do
+      assert section =~ text
+    end
+
+    refute section =~ "A1\tA2\nB1\tB2"
+  end
+
   # --------------------------------------------------------------------------
   # 10. UTF-8 Korean content round-trip
   # --------------------------------------------------------------------------
@@ -612,6 +646,7 @@ defmodule Contract.Export.HWPXTest do
     lsa_count = section |> String.split("<hp:linesegarray>") |> length() |> Kernel.-(1)
 
     assert p_count > 0
+
     assert p_count == lsa_count,
            "expected #{p_count} <hp:linesegarray>, got #{lsa_count}"
   end
@@ -686,7 +721,8 @@ defmodule Contract.Export.HWPXTest do
     assert section =~ ~s(<hp:tbl id="0" )
     assert section =~ ~s(borderFillIDRef="4")
     # The second cell should carry borderFillIDRef="9" (its override).
-    assert section =~ ~s(<hp:tc name="" header="0" hasMargin="0" protect="0" editable="0" dirty="0" borderFillIDRef="9">)
+    assert section =~
+             ~s(<hp:tc name="" header="0" hasMargin="0" protect="0" editable="0" dirty="0" borderFillIDRef="9">)
   end
 
   test "cell row_span/col_span flow through to <hp:cellSpan>" do

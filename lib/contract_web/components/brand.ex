@@ -18,7 +18,11 @@ defmodule ContractWeb.Brand do
   """
   def wordmark(assigns) do
     ~H"""
-    <span class={["inline-flex items-baseline gap-1 font-semibold tracking-tight chrome", size_class(@size), @class]}>
+    <span class={[
+      "inline-flex items-baseline gap-1 font-semibold tracking-tight chrome",
+      size_class(@size),
+      @class
+    ]}>
       <span>Contract Studio</span>
       <span class="text-primary" aria-hidden="true">.</span>
     </span>

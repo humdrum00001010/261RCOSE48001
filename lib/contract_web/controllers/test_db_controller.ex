@@ -13,7 +13,7 @@ if Application.compile_env(:contract, :test_auth, false) do
     Endpoints (all GET, all under `/test/db`):
 
       * `GET /test/db/changes/:document_id`
-        → list of changes for the doc, ordered by `applied_revision asc`.
+        → list of changes for the doc, ordered by `result_revision asc`.
       * `GET /test/db/revoke_requests/:document_id`
         → list of revoke_request rows for the doc, ordered by `inserted_at asc`.
       * `GET /test/db/documents`
@@ -27,7 +27,7 @@ if Application.compile_env(:contract, :test_auth, false) do
 
     use ContractWeb, :controller
 
-    alias Contract.{Accounts, Context, Documents, Matters, PersonaFactory, Repo}
+    alias Contract.{Accounts, Context, Documents, PersonaFactory, Repo}
 
     plug :gate_test_auth
 
@@ -38,11 +38,11 @@ if Application.compile_env(:contract, :test_auth, false) do
       rows =
         safe_query!(
           """
-          SELECT id::text, action_kind, applied_revision, base_revision, status,
+          SELECT id::text, command_kind, result_revision, base_revision, status,
                  actor_type, idempotency_key, inserted_at
             FROM changes
            WHERE document_id = $1
-           ORDER BY applied_revision ASC
+           ORDER BY result_revision ASC
           """,
           [cast_uuid(doc_id)]
         )
@@ -81,7 +81,7 @@ if Application.compile_env(:contract, :test_auth, false) do
       rows =
         safe_query!(
           """
-          SELECT id::text, matter_id::text, title, type_key,
+          SELECT id::text, owner_id::text, title, type_key,
                  parent_document_id::text, variant_of_change_id::text,
                  status, latest_revision, inserted_at
             FROM documents
@@ -118,78 +118,42 @@ if Application.compile_env(:contract, :test_auth, false) do
     end
 
     @doc """
-    `POST /test/db/matters`
+    `POST /test/db/documents`
 
-    Seeds a Matter for the current Playwright session. Returns the new
-    matter's `id` and `name`. The owner is taken from the session's
-    `user_token`; if no session is present the controller builds a
-    throwaway lawyer persona on the fly so the route still works for the
-    smoke flow.
+    Seeds an owner-scoped Document for the current Playwright session.
 
-    Body params:
-      * `name` (optional) — display name; defaults to `"E2E matter <n>"`.
+    Optional body params:
+      * `title` — defaults to `"E2E document <n>"`.
+      * `type_key` — defaults to `"nda_v1"`.
+
+    Seeded documents are tagged with `%{"e2e" => true}` metadata so
+    `/test/reset` can clean them up without relying on legacy Matters.
     """
-    def seed_matter(conn, params) do
+    def seed_document(conn, params) do
       scope = ensure_scope!(conn)
 
       attrs = %{
-        "name" => Map.get(params, "name") || "E2E matter #{System.unique_integer([:positive])}"
+        "title" =>
+          Map.get(params, "title") || "E2E document #{System.unique_integer([:positive])}",
+        "type_key" => Map.get(params, "type_key") || "nda_v1",
+        "metadata" => %{"e2e" => true}
       }
 
-      case Matters.create(scope, attrs) do
-        {:ok, matter} ->
-          json(conn, %{ok: true, id: matter.id, name: matter.name})
+      case Documents.create(scope, attrs) do
+        {:ok, doc} ->
+          json(conn, %{
+            ok: true,
+            id: doc.id,
+            owner_id: doc.owner_id,
+            type_key: doc.type_key,
+            title: doc.title
+          })
 
         {:error, %Ecto.Changeset{} = cs} ->
           conn |> put_status(422) |> json(%{ok: false, errors: format_errors(cs)})
 
         {:error, reason} ->
           conn |> put_status(422) |> json(%{ok: false, error: inspect(reason)})
-      end
-    end
-
-    @doc """
-    `POST /test/db/documents`
-
-    Seeds a Document inside an existing Matter. Required body params:
-      * `matter_id` — the seeded matter's id.
-
-    Optional body params:
-      * `title` — defaults to `"E2E document <n>"`.
-      * `type_key` — defaults to `"nda_v1"`.
-    """
-    def seed_document(conn, params) do
-      scope = ensure_scope!(conn)
-
-      case Map.get(params, "matter_id") do
-        nil ->
-          conn
-          |> put_status(422)
-          |> json(%{ok: false, error: "matter_id is required"})
-
-        matter_id ->
-          attrs = %{
-            "matter_id" => matter_id,
-            "title" => Map.get(params, "title") || "E2E document #{System.unique_integer([:positive])}",
-            "type_key" => Map.get(params, "type_key") || "nda_v1"
-          }
-
-          case Documents.create(scope, attrs) do
-            {:ok, doc} ->
-              json(conn, %{
-                ok: true,
-                id: doc.id,
-                matter_id: doc.matter_id,
-                type_key: doc.type_key,
-                title: doc.title
-              })
-
-            {:error, %Ecto.Changeset{} = cs} ->
-              conn |> put_status(422) |> json(%{ok: false, errors: format_errors(cs)})
-
-            {:error, reason} ->
-              conn |> put_status(422) |> json(%{ok: false, error: inspect(reason)})
-          end
       end
     end
 
@@ -247,8 +211,7 @@ if Application.compile_env(:contract, :test_auth, false) do
     # user pulled from the session cookie set by
     # `ContractWeb.TestAuthController.sign_in/2`. If no session is
     # present (Playwright forgot to sign in first), we mint a throwaway
-    # lawyer persona so the route still produces a useful row — the
-    # ACL gate in `Contract.Matters.create/2` requires a real user.
+    # lawyer persona so the route still produces a useful owner-scoped row.
     defp ensure_scope!(conn) do
       case current_scope_from_session(conn) do
         %Context{user: %{}} = scope -> scope

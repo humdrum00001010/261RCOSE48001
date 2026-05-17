@@ -3,6 +3,7 @@ defmodule Contract.Workers.ExportJobTest do
   use Oban.Testing, repo: Contract.Repo
 
   alias Contract.Export
+  alias Contract.Repo
   alias Contract.IO.R2Stub
   alias Contract.Workers.ExportJob
 
@@ -25,80 +26,110 @@ defmodule Contract.Workers.ExportJobTest do
       perms: [:read, :write, :type_change]
     }
 
-    {:ok, matter} = Contract.Matters.create(scope, %{"name" => "m"})
+    doc_id = Ecto.UUID.generate()
 
-    {:ok, doc} =
-      Contract.Documents.create(scope, %{
-        "matter_id" => matter.id,
-        "title" => "export-job-fixture",
-        "type_key" => "nda_v1"
-      })
+    action = %Contract.Command{
+      kind: :create_document,
+      document_id: doc_id,
+      actor_type: :user,
+      actor_id: scope.user.id,
+      base_revision: 0,
+      idempotency_key: "create-export-#{doc_id}",
+      payload: %{"title" => "export-job-fixture", "type_key" => "nda_v1"}
+    }
 
-    {doc.id, scope.user.id}
+    {:ok, %Contract.Change{}} = Contract.Runtime.apply(scope, action)
+
+    {doc_id, scope.user.id, scope}
+  end
+
+  defp existing_atom?(value) do
+    _ = String.to_existing_atom(value)
+    true
+  rescue
+    ArgumentError -> false
   end
 
   describe "perform/1" do
-    test "renders HTML, uploads to R2, and broadcasts {:export_ready, export}" do
-      {doc_id, requester_id} = seed_document()
+    test "renders Markdown, uploads to R2, persists ready status, and broadcasts export status" do
+      {doc_id, requester_id, _scope} = seed_document()
+      export_id = Ecto.UUID.generate()
+      insert_export!(export_id, doc_id, requester_id, "markdown")
       :ok = Phoenix.PubSub.subscribe(Contract.PubSub, "document:#{doc_id}")
 
       args = %{
+        "export_id" => export_id,
         "document_id" => doc_id,
-        "format" => "html",
+        "format" => "markdown",
         "requester_id" => requester_id
       }
 
       assert :ok = perform_job(ExportJob, args)
 
-      # PubSub broadcast lands on the subscribed topic.
+      assert_receive {:export_status, %{id: ^export_id, status: :ready, progress: 100}}, 1_000
       assert_receive {:export_ready, %Export{} = export}, 1_000
+      assert export.id == export_id
       assert export.document_id == doc_id
-      assert export.format == :html
+      assert export.format == :markdown
       assert export.requester_id == requester_id
-      assert export.key |> String.starts_with?("exports/")
-      assert export.url |> String.starts_with?("https://stub.r2/exports/")
+      assert export.key |> String.ends_with?(".md")
+      assert export.url |> String.starts_with?("/exports/#{export_id}/download")
 
-      # R2 stub recorded the put with the right content-type.
+      persisted = export_record(export_id)
+      assert persisted.status == :ready
+      assert persisted.progress == 100
+      assert persisted.key == export.key
+      assert persisted.download_url == export.url
+
       [{:put, _key, _size, opts}] =
         R2Stub.calls()
         |> Enum.filter(&match?({:put, _, _, _}, &1))
 
-      assert Keyword.get(opts, :content_type) =~ "text/html"
+      assert Keyword.get(opts, :content_type) == "text/markdown"
 
-      # Object body is real HTML.
       objects = R2Stub.objects()
       [{key, body}] = Map.to_list(objects)
       assert key == export.key
-      assert String.starts_with?(body, "<!doctype html>")
+      assert body =~ "# export-job-fixture"
     end
 
-    test "renders HWPX and broadcasts a ready export with format=:hwpx" do
-      {doc_id, requester_id} = seed_document()
+    test "renders lawyer_packet artifact and persists ready status" do
+      {doc_id, requester_id, _scope} = seed_document()
+      export_id = Ecto.UUID.generate()
+      insert_export!(export_id, doc_id, requester_id, "lawyer_packet")
       :ok = Phoenix.PubSub.subscribe(Contract.PubSub, "document:#{doc_id}")
 
       args = %{
+        "export_id" => export_id,
         "document_id" => doc_id,
-        "format" => "hwpx",
+        "format" => "lawyer_packet",
         "requester_id" => requester_id
       }
 
       assert :ok = perform_job(ExportJob, args)
-      assert_receive {:export_ready, %Export{format: :hwpx} = export}, 1_000
-      assert export.key |> String.ends_with?(".hwpx")
+      assert_receive {:export_status, %{id: ^export_id, status: :ready, progress: 100}}, 1_000
+      assert_receive {:export_ready, %Export{format: :lawyer_packet} = export}, 1_000
+      assert export.key |> String.ends_with?(".md")
+
+      persisted = export_record(export_id)
+      assert persisted.status == :ready
+      assert persisted.progress == 100
 
       [{_key, body}] = R2Stub.objects() |> Map.to_list()
-      assert <<"PK", _::binary>> = body
+      assert body =~ "# Lawyer Packet:"
+      assert body =~ "## Rendered Contract"
+      refute body =~ "not_implemented"
     end
 
     test "broadcasts {:export_failed, id, reason} when R2 put fails" do
-      {doc_id, _requester_id} = seed_document()
+      {doc_id, _requester_id, _scope} = seed_document()
       :ok = Phoenix.PubSub.subscribe(Contract.PubSub, "document:#{doc_id}")
 
       R2Stub.fail_next(:put, :boom)
 
       args = %{
         "document_id" => doc_id,
-        "format" => "html",
+        "format" => "markdown",
         "requester_id" => nil
       }
 
@@ -107,12 +138,26 @@ defmodule Contract.Workers.ExportJobTest do
     end
 
     test "unsupported format surfaces as a renderer error and failed broadcast" do
-      {doc_id, _requester_id} = seed_document()
+      {doc_id, _requester_id, _scope} = seed_document()
       :ok = Phoenix.PubSub.subscribe(Contract.PubSub, "document:#{doc_id}")
 
       args = %{"document_id" => doc_id, "format" => "wat", "requester_id" => nil}
       assert {:error, _} = perform_job(ExportJob, args)
-      assert_receive {:export_failed, _, {:unsupported_format, :wat}}, 1_000
+      assert_receive {:export_failed, _, {:unsupported_format, "wat"}}, 1_000
+    end
+
+    test "unsupported string format does not create an atom" do
+      {doc_id, _requester_id, _scope} = seed_document()
+      :ok = Phoenix.PubSub.subscribe(Contract.PubSub, "document:#{doc_id}")
+
+      format = "unsafe_export_format_#{System.unique_integer([:positive])}"
+      refute existing_atom?(format)
+
+      args = %{"document_id" => doc_id, "format" => format, "requester_id" => nil}
+
+      assert {:error, {:unsupported_format, ^format}} = perform_job(ExportJob, args)
+      assert_receive {:export_failed, _, {:unsupported_format, ^format}}, 1_000
+      refute existing_atom?(format)
     end
 
     test "missing args produces {:error, {:bad_export_args, _}}" do
@@ -121,24 +166,31 @@ defmodule Contract.Workers.ExportJobTest do
   end
 
   describe "Runtime.apply/2 → ExportJob enqueue" do
-    test "enqueues a job with normalized args" do
-      {doc_id, requester_id} = seed_document()
-      ctx = nil
+    test "persists a queued export and enqueues a job with normalized args" do
+      {doc_id, requester_id, ctx} = seed_document()
 
       action = %Contract.Command{
         kind: :request_export,
         document_id: doc_id,
         actor_id: requester_id,
         actor_type: :user,
-        payload: %{"format" => "html"}
+        payload: %{"format" => "markdown"}
       }
 
       assert {:ok, %Oban.Job{} = job} = Contract.Runtime.apply(ctx, action)
       assert job.worker == "Contract.Workers.ExportJob"
       assert job.args["document_id"] == doc_id
-      assert job.args["format"] == "html"
+      assert job.args["format"] == "markdown"
       assert job.args["requester_id"] == requester_id
       assert job.queue == "export"
+      assert is_binary(job.args["export_id"])
+
+      persisted = export_record(job.args["export_id"])
+      assert persisted.document_id == doc_id
+      assert persisted.requester_id == requester_id
+      assert persisted.format == :markdown
+      assert persisted.status == :queued
+      assert persisted.progress == 0
     end
 
     test "missing document_id → {:error, :missing_document_id}" do
@@ -146,4 +198,20 @@ defmodule Contract.Workers.ExportJobTest do
       assert {:error, :missing_document_id} = Contract.Runtime.apply(nil, action)
     end
   end
+
+  defp insert_export!(export_id, doc_id, requester_id, format) do
+    %Export{id: export_id}
+    |> Export.changeset(%{
+      document_id: doc_id,
+      requester_id: requester_id,
+      format: format,
+      status: :queued,
+      progress: 0
+    })
+    |> Repo.insert!()
+
+    export_id
+  end
+
+  defp export_record(export_id), do: Repo.get!(Export, export_id)
 end

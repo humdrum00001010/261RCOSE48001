@@ -29,8 +29,15 @@ defmodule Contract.Runtime do
       :request_export              → Contract.IO.export
   """
 
+  alias Contract.ChatThreads
   alias Contract.Command
   alias Contract.Change
+  alias Contract.Documents
+  alias Contract.Exports
+  alias Contract.Documents.Document
+  alias Contract.RouteRef
+  alias Contract.SourceClaims
+  alias Contract.SourceDocuments
   alias Contract.Runtime, as: Self
   alias Contract.Session
   alias Contract.Store
@@ -52,6 +59,15 @@ defmodule Contract.Runtime do
   ]
 
   @revoke_kinds [:revoke_change, :resolve_revoke]
+
+  @source_claim_kinds [
+    :source_claim_confirm,
+    :source_claim_correct,
+    :source_claim_reject,
+    :source_claim_link_to_document,
+    :source_claim_unlink_from_document
+  ]
+  @export_formats [:pdf, :docx, :hwpx, :markdown, :lawyer_packet]
 
   @conversion_kinds [
     :start_type_conversion,
@@ -76,16 +92,24 @@ defmodule Contract.Runtime do
   # ----------------------------------------------------------------------------
 
   @spec load(T.ctx(), T.document_id()) :: T.result(Contract.Runtime.State.t())
-  def load(_ctx, document_id), do: Store.load(document_id)
-
-  @spec sync_since(T.ctx(), T.document_id(), T.revision()) :: T.result([Change.t()])
-  def sync_since(_ctx, document_id, revision) do
-    Store.changes_since(document_id, revision)
+  def load(ctx, document_id) do
+    with :ok <- authorize_document(ctx, document_id) do
+      Store.load(document_id)
+    end
   end
 
-  @spec subscribe(T.ctx(), T.document_id()) :: :ok
-  def subscribe(_ctx, document_id) do
-    Phoenix.PubSub.subscribe(@pubsub, Store.pubsub_topic(document_id))
+  @spec sync_since(T.ctx(), T.document_id(), T.revision()) :: T.result([Change.t()])
+  def sync_since(ctx, document_id, revision) do
+    with :ok <- authorize_document(ctx, document_id) do
+      Store.changes_since(document_id, revision)
+    end
+  end
+
+  @spec subscribe(T.ctx(), T.document_id()) :: :ok | {:error, term()}
+  def subscribe(ctx, document_id) do
+    with :ok <- authorize_document(ctx, document_id) do
+      Phoenix.PubSub.subscribe(@pubsub, Store.pubsub_topic(document_id))
+    end
   end
 
   # ----------------------------------------------------------------------------
@@ -109,26 +133,37 @@ defmodule Contract.Runtime do
   end
 
   def apply(ctx, %Command{kind: :chat_message} = action) do
-    Contract.Agent.start(ctx, action)
+    with {:ok, _thread, persisted_action, _message} <-
+           ChatThreads.persist_user_message(ctx, action) do
+      Contract.Agent.start(ctx, persisted_action)
+    end
   end
 
-  def apply(_ctx, %Command{kind: :request_export} = action) do
+  def apply(ctx, %Command{kind: kind} = action) when kind in @source_claim_kinds do
+    SourceClaims.apply_command(ctx, action)
+  end
+
+  def apply(ctx, %Command{kind: :request_export} = action) do
     cond do
       is_nil(action.document_id) ->
         {:error, :missing_document_id}
 
       true ->
-        format = export_format(action)
+        with :ok <- authorize_document(ctx, action.document_id),
+             {:ok, format} <- export_format(action),
+             {:ok, export} <-
+               Exports.create_request(ctx, action.document_id, format, action.actor_id) do
+          args = %{
+            "export_id" => export.id,
+            "document_id" => action.document_id,
+            "format" => Atom.to_string(format),
+            "requester_id" => action.actor_id
+          }
 
-        args = %{
-          "document_id" => action.document_id,
-          "format" => Atom.to_string(format),
-          "requester_id" => action.actor_id
-        }
-
-        args
-        |> Contract.Workers.ExportJob.new()
-        |> Oban.insert()
+          args
+          |> Contract.Workers.ExportJob.new()
+          |> Oban.insert()
+        end
     end
   end
 
@@ -178,7 +213,8 @@ defmodule Contract.Runtime do
   end
 
   def apply(ctx, %Command{kind: kind} = action) when kind in @session_kinds do
-    with {:ok, _pid} <- ensure_session(ctx, action.document_id) do
+    with :ok <- authorize_document(ctx, action.document_id),
+         {:ok, _pid} <- ensure_session(ctx, action.document_id) do
       Session.commit(action.document_id, action)
     end
   end
@@ -202,7 +238,8 @@ defmodule Contract.Runtime do
         {:error, :missing_document_id}
 
       doc_id ->
-        with {:ok, _pid} <- ensure_session(ctx, doc_id) do
+        with :ok <- authorize_document(ctx, doc_id),
+             {:ok, _pid} <- ensure_session(ctx, doc_id) do
           Session.revoke(doc_id, action)
         end
     end
@@ -240,53 +277,130 @@ defmodule Contract.Runtime do
   # internals
   # ----------------------------------------------------------------------------
 
-  defp create_document_directly(_ctx, %Command{} = action) do
-    document_id = action.document_id || Ecto.UUID.generate()
-    action = %{action | document_id: document_id, base_revision: action.base_revision || 0}
+  defp create_document_directly(ctx, %Command{} = action) do
+    payload = normalize_payload(action.payload)
 
-    empty_state = %Contract.Runtime.State{document_id: document_id, revision: 0}
+    attrs = %{
+      "id" => action.document_id,
+      "title" => Map.get(payload, "title") || Map.get(payload, :title) || "Untitled document",
+      "type_key" => Map.get(payload, "type_key") || Map.get(payload, :type_key),
+      "metadata" => Map.get(payload, "metadata") || Map.get(payload, :metadata) || %{}
+    }
 
-    with {:ok, %Contract.ChangeInput{} = input} <- Contract.Session.Reducer.compile(action, empty_state),
-         {:ok, _} <- Contract.Session.Reducer.validate(input, empty_state),
-         {:ok, preimage} <- Contract.Session.Reducer.preimage(input, empty_state),
-         {:ok, inverse_ops} <- Contract.Session.Reducer.inverse(input, preimage),
-         {:ok, affected_refs} <- Contract.Session.Reducer.affected_refs(input, empty_state),
-         input = %Contract.ChangeInput{
-           input
-           | preimage: preimage,
-             inverse_ops: inverse_ops,
-             affected_refs: affected_refs
-         },
-         {:ok, change} <- Contract.Session.Reducer.build_change(action, input, empty_state) do
-      # Create-document needs no lease since the document doesn't exist yet.
-      # We use a synthetic fencing token of 0 + skip the lease assertion
-      # path by acquiring a fresh lease first.
-      with {:ok, lease} <- Contract.Lease.acquire(document_id, "system:create"),
-           {:ok, persisted} <- Store.append(document_id, change, lease.fencing_token) do
-        _ = Contract.Lease.release(document_id, "system:create", lease.fencing_token)
-        {:ok, persisted}
+    with {:ok, %Document{} = doc} <- get_or_create_document(ctx, attrs) do
+      document_id = doc.id
+      action = %{action | document_id: document_id, base_revision: action.base_revision || 0}
+
+      empty_state = %Contract.Runtime.State{document_id: document_id, revision: 0}
+
+      with {:ok, %Contract.ChangeInput{} = input} <-
+             Contract.Session.Reducer.compile(action, empty_state),
+           {:ok, _} <- Contract.Session.Reducer.validate(input, empty_state),
+           {:ok, preimage} <- Contract.Session.Reducer.preimage(input, empty_state),
+           {:ok, inverse_ops} <- Contract.Session.Reducer.inverse(input, preimage),
+           {:ok, affected_refs} <- Contract.Session.Reducer.affected_refs(input, empty_state),
+           input = %Contract.ChangeInput{
+             input
+             | preimage: preimage,
+               inverse_ops: inverse_ops,
+               affected_refs: affected_refs
+           },
+           {:ok, change} <- Contract.Session.Reducer.build_change(action, input, empty_state) do
+        # Create-document needs no lease since the document doesn't exist yet.
+        # We use a synthetic fencing token of 0 + skip the lease assertion
+        # path by acquiring a fresh lease first.
+        with {:ok, lease} <- Contract.Lease.acquire(document_id, "system:create"),
+             {:ok, persisted} <- Store.append(document_id, change, lease.fencing_token) do
+          _ = Contract.Lease.release(document_id, "system:create", lease.fencing_token)
+          {:ok, persisted}
+        end
       end
     end
   end
 
-  defp import_via_io(ctx, %Command{} = action) do
-    upload = Map.get(action.payload, "upload") || Map.get(action.payload, :upload)
-    matter_id = action.matter_id
-
-    case Contract.IO.import_upload(ctx, matter_id, upload) do
-      {:ok, %Command{} = next_action} -> Self.apply(ctx, next_action)
+  defp get_or_create_document(ctx, %{"id" => id} = attrs) when is_binary(id) do
+    case Documents.get(ctx, id) do
+      {:ok, %Document{} = doc} -> {:ok, doc}
+      {:error, :not_found} -> Documents.create(ctx, attrs)
       {:error, _} = err -> err
     end
   end
 
-  defp export_format(%Command{payload: payload}) do
-    case payload do
-      %{"format" => fmt} when is_binary(fmt) -> String.to_atom(fmt)
-      %{format: fmt} when is_atom(fmt) -> fmt
-      %{format: fmt} when is_binary(fmt) -> String.to_atom(fmt)
-      _ -> :pdf
+  defp get_or_create_document(ctx, attrs), do: Documents.create(ctx, attrs)
+
+  defp import_via_io(ctx, %Command{} = action) do
+    payload = normalize_payload(action.payload)
+    upload = Map.get(payload, "upload") || Map.get(payload, :upload)
+
+    opts =
+      []
+      |> maybe_put_opt(:document_id, action.document_id)
+      |> maybe_put_opt(:chat_thread_id, action.chat_thread_id)
+
+    SourceDocuments.create_from_upload(ctx, upload, opts)
+  end
+
+  @doc false
+  @spec authorize_document(T.ctx(), T.document_id() | nil) :: :ok | {:error, term()}
+  def authorize_document(_ctx, nil), do: {:error, :missing_document_id}
+
+  def authorize_document(ctx, document_id) when is_binary(document_id) do
+    case route_ref(ctx) do
+      %RouteRef{document_id: ^document_id} ->
+        authorize_visible_document(ctx, document_id)
+
+      %RouteRef{document_id: nil} ->
+        {:error, :forbidden}
+
+      %RouteRef{} ->
+        {:error, :forbidden}
+
+      _ ->
+        authorize_visible_document(ctx, document_id)
     end
   end
+
+  def authorize_document(_ctx, _document_id), do: {:error, :forbidden}
+
+  defp authorize_visible_document(ctx, document_id) do
+    case Documents.get(ctx, document_id) do
+      {:ok, %Document{}} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp route_ref(%Contract.Context{perms: %{route_ref: %RouteRef{} = ref}}), do: ref
+  defp route_ref(_ctx), do: nil
+
+  defp maybe_put_opt(opts, _key, nil), do: opts
+  defp maybe_put_opt(opts, key, value), do: Keyword.put(opts, key, value)
+
+  defp export_format(%Command{payload: payload}) do
+    format =
+      case payload do
+        %{"format" => fmt} -> fmt
+        %{format: fmt} -> fmt
+        _ -> :pdf
+      end
+
+    parse_export_format(format)
+  end
+
+  defp parse_export_format(format) when format in @export_formats, do: {:ok, format}
+
+  defp parse_export_format(format) when is_binary(format) do
+    case format do
+      "pdf" -> {:ok, :pdf}
+      "docx" -> {:ok, :docx}
+      "hwpx" -> {:ok, :hwpx}
+      "markdown" -> {:ok, :markdown}
+      "md" -> {:ok, :markdown}
+      "lawyer_packet" -> {:ok, :lawyer_packet}
+      _ -> {:error, {:unsupported_export_format, format}}
+    end
+  end
+
+  defp parse_export_format(format), do: {:error, {:unsupported_export_format, format}}
 
   defp normalize_payload(nil), do: %{}
   defp normalize_payload(map) when is_map(map), do: map

@@ -37,43 +37,62 @@ defmodule ContractWeb.Components.CommandPaletteTest do
           ~w(read write commit revoke export type_change agent_run tenant_admin matter_admin)a
     }
 
-  describe "available_commands/1 — persona perms matrix" do
+  describe "available_commands/2 — persona perms + current document matrix" do
     setup do
       %{user: user_fixture()}
     end
 
-    test "lawyer sees export, revoke, set-type (Studio matter present)", %{user: user} do
-      scope = %Context{lawyer_scope(user) | matter: "matter-abc"}
-      ids = scope |> CommandPalette.available_commands() |> Enum.map(& &1.id)
+    test "lawyer sees export and set-type, but no revoke without a revocable change id", %{
+      user: user
+    } do
+      scope = lawyer_scope(user)
+
+      ids =
+        scope
+        |> CommandPalette.available_commands(current_document_id: "doc-abc")
+        |> Enum.map(& &1.id)
 
       assert :doc_request_export in ids
-      assert :doc_revoke_last in ids
+      refute :doc_revoke_last in ids
       assert :doc_set_type in ids
       assert :nav_dashboard in ids
       assert :search_law in ids
     end
 
-    test "paralegal sees revoke + set-type but NOT request export", %{user: user} do
-      scope = %Context{paralegal_scope(user) | matter: "matter-abc"}
-      ids = scope |> CommandPalette.available_commands() |> Enum.map(& &1.id)
+    test "paralegal sees set-type but NOT request export or revoke", %{user: user} do
+      scope = paralegal_scope(user)
 
-      assert :doc_revoke_last in ids
+      ids =
+        scope
+        |> CommandPalette.available_commands(current_document_id: "doc-abc")
+        |> Enum.map(& &1.id)
+
+      refute :doc_revoke_last in ids
       assert :doc_set_type in ids
       refute :doc_request_export in ids
     end
 
-    test "agent_supervised sees revoke but NOT export or set-type", %{user: user} do
-      scope = %Context{agent_supervised_scope(user) | matter: "matter-abc"}
-      ids = scope |> CommandPalette.available_commands() |> Enum.map(& &1.id)
+    test "agent_supervised does not see document actions without export/type_change or revocable change id",
+         %{user: user} do
+      scope = agent_supervised_scope(user)
 
-      assert :doc_revoke_last in ids
+      ids =
+        scope
+        |> CommandPalette.available_commands(current_document_id: "doc-abc")
+        |> Enum.map(& &1.id)
+
+      refute :doc_revoke_last in ids
       refute :doc_request_export in ids
       refute :doc_set_type in ids
     end
 
     test "viewer sees only navigation/search/help — no Documents at all", %{user: user} do
-      scope = %Context{viewer_scope(user) | matter: "matter-abc"}
-      ids = scope |> CommandPalette.available_commands() |> Enum.map(& &1.id)
+      scope = viewer_scope(user)
+
+      ids =
+        scope
+        |> CommandPalette.available_commands(current_document_id: "doc-abc")
+        |> Enum.map(& &1.id)
 
       refute :doc_request_export in ids
       refute :doc_revoke_last in ids
@@ -83,19 +102,38 @@ defmodule ContractWeb.Components.CommandPaletteTest do
       assert :help_shortcuts in ids
     end
 
-    test "admin sees the full Documents group", %{user: user} do
-      scope = %Context{admin_scope(user) | matter: "matter-abc"}
-      ids = scope |> CommandPalette.available_commands() |> Enum.map(& &1.id)
+    test "admin sees document actions that can be built without extra payload", %{user: user} do
+      scope = admin_scope(user)
+
+      ids =
+        scope
+        |> CommandPalette.available_commands(current_document_id: "doc-abc")
+        |> Enum.map(& &1.id)
 
       assert :doc_request_export in ids
-      assert :doc_revoke_last in ids
+      refute :doc_revoke_last in ids
       assert :doc_set_type in ids
     end
 
-    test "Documents commands hide when scope.matter is nil even for a lawyer",
+    test "document commands emit dotted command-palette action kinds", %{user: user} do
+      scope = lawyer_scope(user)
+      commands = CommandPalette.available_commands(scope, current_document_id: "doc-abc")
+
+      assert %{action: {:emit, :command_palette_picked, %{action_kind: "document.type.set"}}} =
+               Enum.find(commands, &(&1.id == :doc_set_type))
+
+      assert %{action: {:emit, :command_palette_picked, %{action_kind: "export.request"}}} =
+               Enum.find(commands, &(&1.id == :doc_request_export))
+
+      refute Enum.find(commands, &(&1.id == :doc_revoke_last))
+    end
+
+    test "Documents commands hide when there is no current document even for a lawyer",
          %{user: user} do
-      scope = %Context{lawyer_scope(user) | matter: nil}
-      ids = scope |> CommandPalette.available_commands() |> Enum.map(& &1.id)
+      scope = lawyer_scope(user)
+
+      ids =
+        scope |> CommandPalette.available_commands(current_document_id: nil) |> Enum.map(& &1.id)
 
       refute :doc_request_export in ids
       refute :doc_revoke_last in ids
@@ -106,7 +144,10 @@ defmodule ContractWeb.Components.CommandPaletteTest do
 
     test "nil scope yields navigation+search+help only (no Documents group)",
          %{user: _user} do
-      ids = nil |> CommandPalette.available_commands() |> Enum.map(& &1.id)
+      ids =
+        nil
+        |> CommandPalette.available_commands(current_document_id: "doc-abc")
+        |> Enum.map(& &1.id)
 
       refute :doc_request_export in ids
       refute :doc_revoke_last in ids
@@ -119,8 +160,8 @@ defmodule ContractWeb.Components.CommandPaletteTest do
   describe "filter_commands/2 — fuzzy subsequence matching" do
     setup %{} do
       user = user_fixture()
-      scope = %Context{lawyer_scope(user) | matter: "matter-abc"}
-      %{commands: CommandPalette.available_commands(scope)}
+      scope = lawyer_scope(user)
+      %{commands: CommandPalette.available_commands(scope, current_document_id: "doc-abc")}
     end
 
     test "empty query returns the full catalog in order", %{commands: commands} do
@@ -239,13 +280,16 @@ defmodule ContractWeb.Components.CommandPaletteTest do
       assert html =~ "Navigation"
     end
 
-    test "open palette for a lawyer with matter shows Request export…", %{user: user} do
-      scope = %Context{lawyer_scope(user) | matter: "matter-abc"}
+    test "open palette for a lawyer with current document and no Matter shows Request export…", %{
+      user: user
+    } do
+      scope = lawyer_scope(user)
 
       html =
         render_component(CommandPalette,
           id: "cmd-k-palette",
           current_scope: scope,
+          current_document_id: "doc-abc",
           initial_open?: true
         )
 
@@ -254,12 +298,13 @@ defmodule ContractWeb.Components.CommandPaletteTest do
     end
 
     test "open palette for a viewer hides the Documents group entirely", %{user: user} do
-      scope = %Context{viewer_scope(user) | matter: "matter-abc"}
+      scope = viewer_scope(user)
 
       html =
         render_component(CommandPalette,
           id: "cmd-k-palette",
           current_scope: scope,
+          current_document_id: "doc-abc",
           initial_open?: true
         )
 

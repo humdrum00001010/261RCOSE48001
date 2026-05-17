@@ -5,7 +5,7 @@ import {
   openStudio,
   pollUntil
 } from '../../fixtures/studio';
-import { seedMatterAndDocument } from '../../fixtures/seeds';
+import { seedDocumentBundle } from '../../fixtures/seeds';
 
 /**
  * Scenario 6 — Cmd+K palette → set contract type.
@@ -30,14 +30,13 @@ test.describe('Scenario 6: Cmd+K palette (mobile: chat-command button)', () => {
       await resetE2EState(request);
       await signInAs(page, 'lawyer');
 
-      const { document } = await seedMatterAndDocument(page, {
+      const { document } = await seedDocumentBundle(page, {
         title: 'Cmd+K palette scenario doc',
         type_key: 'nda_v1'
       });
 
       await openStudio(page, {
         id: document.id,
-        matter_id: document.matter_id,
         name: document.title,
         type_key: document.type_key,
         inserted_at: ''
@@ -117,14 +116,13 @@ test.describe('Cmd+K palette: global binding is hot-on-mount', () => {
     await resetE2EState(request);
     await signInAs(page, 'lawyer');
 
-    const { document } = await seedMatterAndDocument(page, {
+    const { document } = await seedDocumentBundle(page, {
       title: 'Cmd+K hot-on-mount doc',
       type_key: 'nda_v1'
     });
 
     await openStudio(page, {
       id: document.id,
-      matter_id: document.matter_id,
       name: document.title,
       type_key: document.type_key,
       inserted_at: ''

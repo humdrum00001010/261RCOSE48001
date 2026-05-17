@@ -17,13 +17,11 @@ defmodule ContractWeb.StudioLive do
         current_scope: %Contract.Context{
           user: %Contract.Accounts.User{},
           tenant: ...,
-          matter: %{id: matter_id, name: matter_name} | nil,
           perms: [...]
         },
 
         # Set by mount
         studio_state: %Contract.Studio.State{
-          matter_id: ...,
           selected_document_id: ...,
           selected_node_id: ...,
           last_seen_revision: ...,
@@ -88,14 +86,11 @@ defmodule ContractWeb.StudioLive do
 
   use ContractWeb, :live_view
 
+  alias Contract.ChatThreads
   alias Contract.Command
-  alias Contract.Context
   alias Contract.Studio
   alias ContractWeb.Components.Breadcrumbs
   alias ContractWeb.Live.Studio.Components
-
-  on_mount {ContractWeb.UserAuth, :require_authenticated}
-  on_mount {ContractWeb.MatterScope, :assign_scope}
 
   @impl true
   def mount(params, _session, socket) do
@@ -104,6 +99,12 @@ defmodule ContractWeb.StudioLive do
     case Studio.load(scope, params) do
       {:ok, {studio_state, projection}} ->
         _ = Studio.subscribe(scope, studio_state)
+        _ = maybe_subscribe_test_operation_blocks(scope)
+
+        # v0.5 W-CR: Context Reservoir is removed; keep the helper call so
+        # callers can re-introduce a refresh primitive later without changing
+        # this mount path.
+        _ = safe_refresh_reservoir(scope, studio_state)
 
         breadcrumbs = build_breadcrumbs(scope, studio_state, projection)
 
@@ -130,7 +131,7 @@ defmodule ContractWeb.StudioLive do
             max_file_size: 50_000_000
           )
           |> stream_configure(:chat_messages, dom_id: &"chat-msg-#{&1.id}")
-          |> stream(:chat_messages, [])
+          |> stream(:chat_messages, ChatThreads.list_visible_messages(scope, studio_state))
           |> stream_configure(:changes, dom_id: &"change-#{&1.id}")
           |> stream(:changes, [])
           |> stream_configure(:toasts, dom_id: &"toast-#{&1.id}")
@@ -221,9 +222,10 @@ defmodule ContractWeb.StudioLive do
 
   def handle_event(
         "command_palette_picked",
-        %{"kind" => "set_contract_type"} = params,
+        %{"kind" => kind} = params,
         socket
-      ) do
+      )
+      when kind in ["set_contract_type", "document.type.set"] do
     case Map.get(params, "type_key") do
       type_key when is_binary(type_key) and type_key != "" ->
         # User has a type_key — dispatch as a normal set_contract_type Command,
@@ -260,6 +262,10 @@ defmodule ContractWeb.StudioLive do
   # Conversion wizard events (Wave 4 — Contract.Conversion)
   # ---------------------------------------------------------------------------
 
+  def handle_event("conversion.start", params, socket),
+    do: handle_event("start_type_conversion", params, socket)
+
+  # Compatibility alias for pre-dotted callers. Product UI emits `conversion.start`.
   def handle_event("start_type_conversion", params, socket) do
     target_type_key =
       Map.get(params, "target_type_key") || Map.get(params, "type_key")
@@ -322,6 +328,10 @@ defmodule ContractWeb.StudioLive do
     end
   end
 
+  def handle_event("conversion.field_strategy.set", params, socket),
+    do: handle_event("set_field_migration_strategy", params, socket)
+
+  # Compatibility alias for pre-dotted callers. Product UI emits `conversion.field_strategy.set`.
   def handle_event("set_field_migration_strategy", params, socket) do
     case socket.assigns[:migration_plan] do
       nil ->
@@ -346,6 +356,10 @@ defmodule ContractWeb.StudioLive do
     end
   end
 
+  def handle_event("conversion.create_variant", params, socket),
+    do: handle_event("create_variant", params, socket)
+
+  # Compatibility alias for pre-dotted callers. Product UI emits `conversion.create_variant`.
   def handle_event("create_variant", _params, socket) do
     case socket.assigns[:migration_plan] do
       nil ->
@@ -405,6 +419,45 @@ defmodule ContractWeb.StudioLive do
     {:noreply, socket}
   end
 
+  def handle_event("document.upload.validate", _params, socket) do
+    {:noreply, socket}
+  end
+
+  def handle_event("document.upload", params, socket) do
+    uploads =
+      consume_uploaded_entries(socket, :document_upload, fn %{path: path}, entry ->
+        dest = Path.join(System.tmp_dir!(), "studio-upload-#{entry.uuid}-#{entry.client_name}")
+        File.cp!(path, dest)
+
+        {:ok,
+         %{
+           path: dest,
+           client_name: entry.client_name,
+           client_type: entry.client_type,
+           client_size: entry.client_size
+         }}
+      end)
+
+    params =
+      case uploads do
+        [upload | _] -> Map.put(params, "upload", upload)
+        [] -> params
+      end
+
+    case event_to_command("document.upload", params, socket.assigns) do
+      {:ok, %Command{} = action} ->
+        socket =
+          socket
+          |> dispatch(action)
+          |> update_modal("upload", false)
+
+        {:noreply, socket}
+
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, "Could not upload source: #{inspect(reason)}")}
+    end
+  end
+
   # ---------------------------------------------------------------------------
   # Export-picker — `request_export` without a `format` opens the picker
   # modal; with a `format` it emits the Command and closes the picker. Routed
@@ -413,10 +466,23 @@ defmodule ContractWeb.StudioLive do
   # speaks `{:ok, Command} | :local | {:error, _}`.
   # ---------------------------------------------------------------------------
 
+  def handle_event("export.request", params, socket),
+    do: handle_event("request_export", params, socket)
+
+  def handle_event("command_palette_picked", %{"kind" => kind} = params, socket)
+      when kind in ["request_export", "export.request"] do
+    handle_event(
+      "export.request",
+      Map.drop(params, ["kind", "action_kind", "command_kind"]),
+      socket
+    )
+  end
+
+  # Compatibility alias for pre-dotted callers. Product UI emits `export.request`.
   def handle_event("request_export", params, socket) do
     case Map.get(params, "format") do
       format when is_binary(format) and format != "" ->
-        case event_to_command("request_export", params, socket.assigns) do
+        case event_to_command("export.request", params, socket.assigns) do
           {:ok, %Command{} = action} ->
             socket =
               socket
@@ -447,49 +513,26 @@ defmodule ContractWeb.StudioLive do
     end
   end
 
-  # Helper: create a blank document, then navigate to it. If
-  # `Contract.Documents.create_with_auto_matter/2` exists (Impl A), use it.
-  # Otherwise require a matter on the scope/state and fall back to
-  # `Documents.create/2`.
+  # Helper: create a blank owner-scoped document through Runtime so both the
+  # documents row and initial Change exist, then navigate document-first.
   defp create_blank_document(socket) do
     scope = socket.assigns.current_scope
-    state = socket.assigns.studio_state
 
-    cond do
-      function_exported?(Contract.Documents, :create_with_auto_matter, 2) ->
-        case apply(Contract.Documents, :create_with_auto_matter, [
-               scope,
-               %{title: "새 문서"}
-             ]) do
-          {:ok, doc, matter} ->
-            {:noreply,
-             push_navigate(socket, to: ~p"/matters/#{matter.id}/documents/#{doc.id}")}
+    action = %Command{
+      kind: :create_document,
+      actor_type: :user,
+      actor_id: scope && scope.user && scope.user.id,
+      base_revision: 0,
+      idempotency_key: generate_idempotency_key(),
+      payload: %{"title" => "새 문서"}
+    }
 
-          {:ok, doc} ->
-            mid = doc.matter_id
-            {:noreply, push_navigate(socket, to: ~p"/matters/#{mid}/documents/#{doc.id}")}
+    case Contract.Runtime.apply(scope, action) do
+      {:ok, %Contract.Change{document_id: document_id}} ->
+        {:noreply, push_navigate(socket, to: ~p"/documents/#{document_id}")}
 
-          {:error, _} ->
-            {:noreply, put_flash(socket, :error, "문서 생성에 실패했습니다.")}
-        end
-
-      true ->
-        matter_id =
-          (state && state.matter_id) ||
-            (scope && scope.matter && Map.get(scope.matter, :id))
-
-        if is_nil(matter_id) do
-          {:noreply, put_flash(socket, :error, "안건이 선택되지 않았습니다.")}
-        else
-          case Contract.Documents.create(scope, %{matter_id: matter_id, title: "새 문서"}) do
-            {:ok, doc} ->
-              {:noreply,
-               push_navigate(socket, to: ~p"/matters/#{matter_id}/documents/#{doc.id}")}
-
-            {:error, _} ->
-              {:noreply, put_flash(socket, :error, "문서 생성에 실패했습니다.")}
-          end
-        end
+      {:error, _} ->
+        {:noreply, put_flash(socket, :error, "문서 생성에 실패했습니다.")}
     end
   end
 
@@ -523,18 +566,99 @@ defmodule ContractWeb.StudioLive do
     scope = socket.assigns.current_scope
     state = socket.assigns.studio_state
 
-    case Studio.submit(scope, state, action) do
-      {:ok, %Contract.Studio.State{} = new_state} ->
+    case Studio.submit_result(scope, state, action) do
+      {:ok, %Contract.Studio.State{} = new_state, result} ->
         # If a new agent run was registered, subscribe to its topic.
         if new_state.agent_run_id && new_state.agent_run_id != state.agent_run_id do
           _ = Studio.subscribe(scope, new_state)
         end
 
-        assign(socket, :studio_state, new_state)
+        socket
+        |> assign(:studio_state, new_state)
+        |> apply_submit_result(action, result)
+        |> maybe_refresh_chat_messages(action, new_state)
+
+      {:error, {:source_parse_failed, reason, source_document}} ->
+        socket
+        |> insert_source_document_failed(source_document, reason)
+        |> put_flash(:error, "Could not submit action: #{inspect(reason)}")
 
       {:error, reason} ->
         put_flash(socket, :error, "Could not submit action: #{inspect(reason)}")
     end
+  end
+
+  defp maybe_refresh_chat_messages(
+         socket,
+         %Command{kind: :chat_message},
+         %Contract.Studio.State{} = state
+       ) do
+    messages = ChatThreads.list_visible_messages(socket.assigns.current_scope, state)
+    stream(socket, :chat_messages, messages, reset: true)
+  end
+
+  defp maybe_refresh_chat_messages(
+         socket,
+         %Command{kind: kind},
+         %Contract.Studio.State{} = state
+       )
+       when kind in [
+              :source_claim_confirm,
+              :source_claim_correct,
+              :source_claim_reject,
+              :source_claim_link_to_document,
+              :source_claim_unlink_from_document
+            ] do
+    messages = ChatThreads.list_visible_messages(socket.assigns.current_scope, state)
+
+    if messages == [] do
+      socket
+    else
+      stream(socket, :chat_messages, messages, reset: true)
+    end
+  end
+
+  defp maybe_refresh_chat_messages(socket, _action, _state), do: socket
+
+  defp apply_submit_result(
+         socket,
+         %Command{kind: :upload_document},
+         {%Contract.SourceDocument{} = source_document, claims}
+       ) do
+    socket = handle_protocol_message({:source_document_parsed, source_document}, socket)
+
+    socket =
+      handle_protocol_message({:source_interpretation_ready, source_document.id, claims}, socket)
+
+    Enum.reduce(List.wrap(claims), socket, fn claim, socket ->
+      handle_protocol_message({:source_claim_updated, claim}, socket)
+    end)
+  end
+
+  defp apply_submit_result(socket, %Command{kind: kind}, %Contract.SourceClaim{} = claim)
+       when kind in [
+              :source_claim_confirm,
+              :source_claim_correct,
+              :source_claim_reject,
+              :source_claim_link_to_document,
+              :source_claim_unlink_from_document
+            ] do
+    handle_protocol_message({:source_claim_updated, claim}, socket)
+  end
+
+  defp apply_submit_result(socket, _action, _result), do: socket
+
+  defp insert_source_document_failed(socket, source_document, reason) do
+    source_id = protocol_id(source_document) || System.unique_integer([:positive])
+
+    insert_operation_chat(socket, "source-#{source_id}", %{
+      id: "source-#{source_id}",
+      type: "source_interpretation",
+      title: protocol_title(source_document),
+      status: "failed",
+      summary: "Source parsing failed",
+      details: Map.put(normalize_operation_details(source_document), :error, inspect(reason))
+    })
   end
 
   # ----------------------------------------------------------------------------
@@ -550,6 +674,73 @@ defmodule ContractWeb.StudioLive do
           {:ok, Command.t()} | :local | {:error, term()}
   def event_to_command(event, params, assigns)
 
+  def event_to_command("document.rename", params, assigns),
+    do: build_action(assigns, :rename_document, params)
+
+  def event_to_command("document.edit", params, assigns),
+    do: build_action(assigns, :edit_document, params)
+
+  def event_to_command("document.open", params, assigns),
+    do: build_action(assigns, :open_document, params)
+
+  def event_to_command("document.upload", params, assigns),
+    do: build_action(assigns, :upload_document, params, document_required: false)
+
+  def event_to_command("document.duplicate", params, assigns),
+    do: build_action(assigns, :duplicate_document, params)
+
+  def event_to_command("document.create", params, assigns),
+    do: build_action(assigns, :create_document, params, document_required: false)
+
+  def event_to_command("document.type.set", params, assigns),
+    do: build_action(assigns, :set_contract_type, params)
+
+  def event_to_command("document.metadata.update", params, assigns),
+    do: build_action(assigns, :update_metadata, params)
+
+  def event_to_command("document.set_contract_type", params, assigns),
+    do: build_action(assigns, :set_contract_type, params)
+
+  def event_to_command("chat.submit", params, assigns),
+    do: build_action(assigns, :chat_message, params, document_required: false)
+
+  def event_to_command("source_claim.confirm", params, assigns),
+    do: build_action(assigns, :source_claim_confirm, params, document_required: false)
+
+  def event_to_command("source_claim.correct", params, assigns),
+    do: build_action(assigns, :source_claim_correct, params, document_required: false)
+
+  def event_to_command("source_claim.reject", params, assigns),
+    do: build_action(assigns, :source_claim_reject, params, document_required: false)
+
+  def event_to_command("source_claim.link_to_document", params, assigns),
+    do: build_action(assigns, :source_claim_link_to_document, params, document_required: false)
+
+  def event_to_command("source_claim.unlink", params, assigns),
+    do:
+      build_action(assigns, :source_claim_unlink_from_document, params, document_required: false)
+
+  def event_to_command("change.revoke", params, assigns) do
+    case params["change_id"] || params[:change_id] do
+      change_id when is_binary(change_id) and change_id != "" ->
+        build_action(assigns, :revoke_change, params)
+
+      _ ->
+        {:error, {:missing_change_id, :revoke_change}}
+    end
+  end
+
+  def event_to_command("revoke.resolve", params, assigns),
+    do: build_action(assigns, :resolve_revoke, params)
+
+  def event_to_command("export.request", params, assigns),
+    do: build_action(assigns, :request_export, params)
+
+  def event_to_command("conversion.create_variant", params, assigns),
+    do: build_action(assigns, :create_converted_variant, params, document_required: false)
+
+  # Compatibility aliases for pre-dotted event producers. Product UI should use
+  # the dotted clauses above.
   def event_to_command("rename_document", params, assigns) do
     build_action(assigns, :rename_document, params)
   end
@@ -566,8 +757,12 @@ defmodule ContractWeb.StudioLive do
     build_action(assigns, :chat_message, params, document_required: false)
   end
 
+  def event_to_command("update_metadata", params, assigns) do
+    build_action(assigns, :update_metadata, params)
+  end
+
   def event_to_command("revoke_change", params, assigns) do
-    build_action(assigns, :revoke_change, params)
+    event_to_command("change.revoke", params, assigns)
   end
 
   def event_to_command("upload_document", params, assigns) do
@@ -596,9 +791,13 @@ defmodule ContractWeb.StudioLive do
 
   def event_to_command("command_palette_picked", %{"kind" => kind} = params, assigns)
       when is_binary(kind) do
-    build_action(assigns, String.to_existing_atom(kind), Map.drop(params, ["kind"]),
-      document_required: false
-    )
+    params = Map.drop(params, ["kind", "action_kind", "command_kind"])
+
+    if String.contains?(kind, ".") do
+      event_to_command(kind, params, assigns)
+    else
+      build_action(assigns, String.to_existing_atom(kind), params, document_required: false)
+    end
   rescue
     ArgumentError -> {:error, {:unknown_palette_kind, kind}}
   end
@@ -631,10 +830,6 @@ defmodule ContractWeb.StudioLive do
       params["document_id"] || params[:document_id] ||
         (state && state.selected_document_id)
 
-    matter_id =
-      params["matter_id"] || params[:matter_id] ||
-        (state && state.matter_id)
-
     if document_required and is_nil(document_id) do
       {:error, {:missing_document_id, kind}}
     else
@@ -643,8 +838,11 @@ defmodule ContractWeb.StudioLive do
          kind: kind,
          actor_type: :user,
          actor_id: actor_id,
-         matter_id: matter_id,
          document_id: document_id,
+         chat_thread_id: params["chat_thread_id"] || params[:chat_thread_id],
+         source_document_id: params["source_document_id"] || params[:source_document_id],
+         source_claim_id: params["source_claim_id"] || params[:source_claim_id],
+         change_id: params["change_id"] || params[:change_id],
          base_revision: state && state.last_seen_revision,
          idempotency_key: generate_idempotency_key(),
          payload: params_to_payload(params),
@@ -654,7 +852,22 @@ defmodule ContractWeb.StudioLive do
   end
 
   defp params_to_payload(params) when is_map(params) do
-    Map.drop(params, ["document_id", "matter_id", "message"])
+    Map.drop(params, [
+      "document_id",
+      :document_id,
+      "chat_thread_id",
+      :chat_thread_id,
+      "source_document_id",
+      :source_document_id,
+      "source_claim_id",
+      :source_claim_id,
+      "change_id",
+      :change_id,
+      "matter_id",
+      :matter_id,
+      "message",
+      :message
+    ])
   end
 
   defp generate_idempotency_key do
@@ -699,9 +912,9 @@ defmodule ContractWeb.StudioLive do
   def handle_protocol_message({:change_committed, %Contract.Change{} = change}, socket) do
     socket
     |> update(:studio_state, fn state ->
-      if change.applied_revision &&
-           change.applied_revision > (state.last_seen_revision || 0) do
-        %{state | last_seen_revision: change.applied_revision}
+      if change.result_revision &&
+           change.result_revision > (state.last_seen_revision || 0) do
+        %{state | last_seen_revision: change.result_revision}
       else
         state
       end
@@ -709,12 +922,14 @@ defmodule ContractWeb.StudioLive do
     |> stream_insert(:changes, change, at: 0)
     |> push_editor_last_change(change)
     |> recompute_grill_assigns()
+    |> refresh_reservoir_if_needed()
   end
 
   def handle_protocol_message({:change_revoked, %Contract.Change{} = change}, socket) do
     socket
     |> stream_insert(:changes, change, at: 0)
     |> push_event("editor:change-revoked", %{change_id: change.id})
+    |> refresh_reservoir_if_needed()
   end
 
   def handle_protocol_message({:revision_conflict, change_id, node_id}, socket) do
@@ -743,6 +958,7 @@ defmodule ContractWeb.StudioLive do
     socket
     |> update(:projection, fn proj -> Map.put(proj, :marks, marks) end)
     |> recompute_grill_assigns()
+    |> refresh_reservoir_if_needed()
   end
 
   def handle_protocol_message({:agent_stream, agent_run_id, stream_event}, socket) do
@@ -776,6 +992,7 @@ defmodule ContractWeb.StudioLive do
     end)
     |> stream_insert(:chat_messages, bubble)
     |> recompute_grill_assigns()
+    |> refresh_reservoir_if_needed()
   end
 
   def handle_protocol_message({:agent_failed, agent_run_id, reason}, socket) do
@@ -789,6 +1006,170 @@ defmodule ContractWeb.StudioLive do
     end)
     |> stream_insert(:toasts, build_toast(:error, "Agent failed", inspect(reason)))
     |> recompute_grill_assigns()
+  end
+
+  def handle_protocol_message({:tool_call_started, agent_run_id, tool_call}, socket) do
+    tool_id = protocol_id(tool_call) || System.unique_integer([:positive])
+    tool_name = protocol_name(tool_call)
+
+    insert_operation_chat(
+      socket,
+      "tool-#{agent_run_id}-#{tool_id}",
+      %{
+        id: "tool-#{agent_run_id}-#{tool_id}",
+        type: "tool_call",
+        title: tool_name,
+        status: "running",
+        summary: "Started",
+        details: normalize_operation_details(tool_call)
+      },
+      transient?: true
+    )
+  end
+
+  def handle_protocol_message({:tool_call_delta, agent_run_id, tool_call_id, delta}, socket) do
+    insert_operation_chat(
+      socket,
+      "tool-#{agent_run_id}-#{tool_call_id}",
+      %{
+        id: "tool-#{agent_run_id}-#{tool_call_id}",
+        type: "tool_call",
+        title: "Tool call",
+        status: "running",
+        summary: protocol_summary(delta),
+        details: normalize_operation_details(delta)
+      },
+      transient?: true
+    )
+  end
+
+  def handle_protocol_message({:tool_call_completed, agent_run_id, tool_call_id, result}, socket) do
+    insert_operation_chat(socket, "tool-#{agent_run_id}-#{tool_call_id}", %{
+      id: "tool-#{agent_run_id}-#{tool_call_id}",
+      type: "tool_call",
+      title: "Tool call",
+      status: "completed",
+      summary: protocol_summary(result),
+      details: normalize_operation_details(result)
+    })
+  end
+
+  def handle_protocol_message({:tool_call_failed, agent_run_id, tool_call_id, reason}, socket) do
+    insert_operation_chat(socket, "tool-#{agent_run_id}-#{tool_call_id}", %{
+      id: "tool-#{agent_run_id}-#{tool_call_id}",
+      type: "tool_call",
+      title: "Tool call",
+      status: "failed",
+      summary: protocol_summary(reason),
+      details: normalize_operation_details(reason)
+    })
+  end
+
+  def handle_protocol_message({:source_document_uploaded, source_document}, socket) do
+    source_id = protocol_id(source_document) || System.unique_integer([:positive])
+
+    insert_operation_chat(socket, "source-#{source_id}", %{
+      id: "source-#{source_id}",
+      type: "source_interpretation",
+      title: protocol_title(source_document),
+      status: "uploaded",
+      summary: "Source uploaded",
+      details: normalize_operation_details(source_document)
+    })
+  end
+
+  def handle_protocol_message({:source_document_parse_started, source_document_id}, socket) do
+    insert_operation_chat(
+      socket,
+      "source-#{source_document_id}",
+      %{
+        id: "source-#{source_document_id}",
+        type: "source_interpretation",
+        title: "Source #{short_id(source_document_id)}",
+        status: "parsing",
+        summary: "Parsing source document",
+        details: %{"source_document_id" => source_document_id}
+      },
+      transient?: true
+    )
+  end
+
+  def handle_protocol_message({:source_document_parsed, source_document}, socket) do
+    source_id = protocol_id(source_document) || System.unique_integer([:positive])
+
+    insert_operation_chat(socket, "source-#{source_id}", %{
+      id: "source-#{source_id}",
+      type: "source_interpretation",
+      title: protocol_title(source_document),
+      status: "parsed",
+      summary: "Source parsed",
+      details: normalize_operation_details(source_document)
+    })
+  end
+
+  def handle_protocol_message({:source_interpretation_ready, source_document_id, claims}, socket) do
+    insert_operation_chat(socket, "source-#{source_document_id}-interpretation", %{
+      id: "source-#{source_document_id}-interpretation",
+      type: "source_interpretation",
+      title: "Source interpretation",
+      status: "ready",
+      summary: "#{length(List.wrap(claims))} claims",
+      details: %{"source_document_id" => source_document_id, "claims" => List.wrap(claims)}
+    })
+  end
+
+  def handle_protocol_message({:source_claim_updated, claim}, socket) do
+    claim_id = protocol_id(claim) || System.unique_integer([:positive])
+
+    insert_operation_chat(socket, "source-claim-#{claim_id}", %{
+      id: "source-claim-#{claim_id}",
+      type: "source_claim",
+      title: "Source claim #{short_id(claim_id)}",
+      status: protocol_status(claim),
+      summary: "Source claim updated",
+      details: normalize_operation_details(claim)
+    })
+  end
+
+  def handle_protocol_message({:evidence_created, evidence}, socket) do
+    evidence_id = protocol_id(evidence) || System.unique_integer([:positive])
+
+    insert_operation_chat(socket, "evidence-#{evidence_id}", %{
+      id: "evidence-#{evidence_id}",
+      type: "evidence",
+      title: "Evidence #{short_id(evidence_id)}",
+      status: "created",
+      summary: protocol_summary(evidence),
+      details: normalize_operation_details(evidence)
+    })
+  end
+
+  def handle_protocol_message({:evidence_attached, evidence, mark}, socket) do
+    evidence_id = protocol_id(evidence) || System.unique_integer([:positive])
+    mark_id = protocol_id(mark) || System.unique_integer([:positive])
+
+    insert_operation_chat(socket, "evidence-#{evidence_id}-attached-#{mark_id}", %{
+      id: "evidence-#{evidence_id}-attached-#{mark_id}",
+      type: "evidence",
+      title: "Evidence #{short_id(evidence_id)}",
+      status: "attached",
+      summary: protocol_summary(evidence),
+      details: %{
+        "evidence" => normalize_operation_details(evidence),
+        "mark" => normalize_operation_details(mark)
+      }
+    })
+  end
+
+  def handle_protocol_message({:export_started, export_id}, socket) do
+    insert_operation_chat(socket, "export-#{export_id}", %{
+      id: "export-#{export_id}",
+      type: "export_status",
+      title: "Export #{short_id(export_id)}",
+      status: "started",
+      summary: short_id(export_id),
+      details: %{"export_id" => export_id}
+    })
   end
 
   def handle_protocol_message({:session_stale, document_id}, socket)
@@ -841,11 +1222,16 @@ defmodule ContractWeb.StudioLive do
   end
 
   def handle_protocol_message({:import_completed, document}, socket) do
-    stream_insert(
-      socket,
-      :toasts,
-      build_toast(:info, "Import completed", import_summary(document))
-    )
+    socket
+    |> stream_insert(:toasts, build_toast(:info, "Import completed", import_summary(document)))
+    |> refresh_reservoir_if_needed()
+  end
+
+  # SPEC.md §11 — `:evidence_attached` is in the refresh-trigger set. The
+  # emitter is TBD (a later evidence-attachment workflow); for now the
+  # handler exists so the protocol is complete and the reservoir refreshes.
+  def handle_protocol_message({:evidence_attached, _evidence}, socket) do
+    refresh_reservoir_if_needed(socket)
   end
 
   def handle_protocol_message({:import_failed, import_id, reason}, socket) do
@@ -856,12 +1242,21 @@ defmodule ContractWeb.StudioLive do
     )
   end
 
-  def handle_protocol_message({:export_ready, export}, socket) do
+  def handle_protocol_message({:export_status, status}, socket) when is_map(status) do
+    level = if status.status == :failed, do: :error, else: :info
+    title = if status.status == :ready, do: "Export ready", else: "Export #{status.status}"
+
     stream_insert(
       socket,
       :toasts,
-      build_toast(:info, "Export ready", export_summary(export))
+      build_toast(level, title, export_status_summary(status))
     )
+  end
+
+  def handle_protocol_message({:export_ready, export}, socket) do
+    socket
+    |> stream_insert(:toasts, build_toast(:info, "Export ready", export_summary(export)))
+    |> refresh_reservoir_if_needed()
   end
 
   def handle_protocol_message({:export_failed, export_id, reason}, socket) do
@@ -910,37 +1305,6 @@ defmodule ContractWeb.StudioLive do
     socket_after_event
   end
 
-  # ----------------------------------------------------------------------------
-  # Context Reservoir (SPEC.md §10a) — LiveComponent → parent LV bridge
-  # ----------------------------------------------------------------------------
-  #
-  # The reservoir LC keeps inline-edit UI state locally, but every actual
-  # mutation has to round-trip through the same Command funnel as any
-  # other event. So the LC `send/2`s these messages to the parent LV
-  # process; we translate them into the standard event funnel.
-  def handle_protocol_message(
-        {:context_reservoir_edit_field, field_id, value},
-        socket
-      )
-      when is_binary(field_id) do
-    params = %{"field_id" => field_id, "value" => to_string(value)}
-
-    case event_to_command("edit_document", params, socket.assigns) do
-      {:ok, %Command{} = action} -> dispatch(socket, action)
-      _ -> socket
-    end
-  end
-
-  def handle_protocol_message(
-        {:context_reservoir_focus_question, question_id},
-        socket
-      )
-      when is_binary(question_id) do
-    update(socket, :studio_state, fn state ->
-      %{state | selected_node_id: question_id}
-    end)
-  end
-
   def handle_protocol_message(_unknown, socket) do
     # Spec invariant 7: PubSub events are advisory. Ignore noise.
     socket
@@ -959,6 +1323,7 @@ defmodule ContractWeb.StudioLive do
       variant="split"
       breadcrumbs={@breadcrumbs}
       page_title={@page_title}
+      current_document_id={@studio_state.selected_document_id || assigns[:current_document_id]}
     >
       <div
         id="studio-root"
@@ -986,23 +1351,29 @@ defmodule ContractWeb.StudioLive do
           }
         </script>
 
-        <%!-- Desktop: 3-pane grid --%>
-        <%!--
-          SPEC.md §10a — Left rail is the **Context Reservoir** (live
-          projection of contract context), NOT a raw document list. The
-          legacy DocumentList is preserved as a module for potential
-          mobile-drawer reuse but is no longer mounted here.
-        --%>
+        <header
+          id="studio-document-header"
+          class="border-b border-base-200 bg-base-100 px-5 py-3 flex items-center justify-between gap-4"
+        >
+          <div class="min-w-0">
+            <p class="text-xs font-medium uppercase tracking-wide text-base-content/50">
+              {dgettext("studio", "Document")}
+            </p>
+            <h1 class="truncate text-base font-semibold tracking-tight">
+              {document_header_title(@projection, @studio_state)}
+            </h1>
+          </div>
+          <.link navigate={~p"/dashboard"} class="btn btn-sm btn-ghost shrink-0">
+            <.icon name="hero-arrow-left" class="size-4" />
+            {dgettext("studio", "Dashboard")}
+          </.link>
+        </header>
+
+        <%!-- Desktop: document canvas + right chat rail. No permanent Context Reservoir. --%>
         <div
           :if={@viewport == :desktop}
-          class="grid grid-cols-[320px_1fr_360px] flex-1 min-h-0 gap-0"
+          class="grid grid-cols-[minmax(0,1fr)_360px] flex-1 min-h-0 gap-0"
         >
-          <.live_component
-            module={Components.ContextReservoir}
-            id="context-reservoir"
-            reservoir={@studio_state.context_reservoir || %Contract.Studio.ContextReservoir{}}
-            current_scope={@current_scope}
-          />
           <div class="relative min-h-0">
             <.live_component
               :if={@studio_state.mode == :reviewing}
@@ -1095,6 +1466,8 @@ defmodule ContractWeb.StudioLive do
           migration_plan_refined?={assigns[:migration_plan_refined?] || false}
           migration_target={assigns[:migration_target]}
           field_strategies={assigns[:field_strategies]}
+          document_upload={@uploads.document_upload}
+          documents={Contract.Studio.list_documents(@current_scope)}
         />
 
         <.live_component
@@ -1112,31 +1485,54 @@ defmodule ContractWeb.StudioLive do
   # Helpers
   # ----------------------------------------------------------------------------
 
+  defp document_header_title(%{title: title}, _state) when is_binary(title) and title != "",
+    do: title
+
+  defp document_header_title(_projection, %{selected_document_id: id}) when is_binary(id),
+    do: "Document " <> String.slice(id, 0, 8)
+
+  defp document_header_title(_projection, _state), do: dgettext("studio", "No document selected")
+
   defp canvas_module(:briefing), do: Components.Canvas.Briefing
   defp canvas_module(:editing), do: Components.Canvas.Editor
   defp canvas_module(:reviewing), do: Components.Canvas.Review
   defp canvas_module(:no_document), do: Components.Canvas.Empty
   defp canvas_module(_), do: Components.Canvas.Empty
 
-  defp page_title(%Context{matter: %{name: name}}) when is_binary(name) do
-    "Studio · " <> name
-  end
-
   defp page_title(_), do: "Studio"
 
-  defp build_breadcrumbs(scope, _state, projection) do
-    # Document-pivot: trail is Dashboard > Document.title — pass the
-    # current projection title (if any) as the document crumb. The
-    # matter opt is still accepted by Breadcrumbs.build/2 for backwards
-    # compatibility but is no longer rendered.
-    document =
-      case projection do
-        %{title: title} when is_binary(title) and title != "" -> %{title: title}
-        _ -> nil
-      end
+  @doc false
+  def test_operation_topic(user_id) when is_binary(user_id),
+    do: "test:studio:operation_blocks:" <> user_id
 
+  defp maybe_subscribe_test_operation_blocks(%Contract.Context{user: %{id: user_id}})
+       when is_binary(user_id) do
+    if Application.get_env(:contract, :test_auth, false) do
+      Phoenix.PubSub.subscribe(Contract.PubSub, test_operation_topic(user_id))
+    else
+      :ok
+    end
+  end
+
+  defp maybe_subscribe_test_operation_blocks(_scope), do: :ok
+
+  defp build_breadcrumbs(scope, state, projection) do
+    document = breadcrumb_document(scope, state, projection)
     Breadcrumbs.build(scope, page: :studio, matter: nil, document: document)
   end
+
+  defp breadcrumb_document(_scope, _state, %{title: title}) when is_binary(title) and title != "",
+    do: %{title: title}
+
+  defp breadcrumb_document(scope, %{selected_document_id: document_id}, _projection)
+       when is_binary(document_id) do
+    case Contract.Documents.get(scope, document_id) do
+      {:ok, %{title: title}} when is_binary(title) and title != "" -> %{title: title}
+      _ -> nil
+    end
+  end
+
+  defp breadcrumb_document(_scope, _state, _projection), do: nil
 
   defp empty_projection, do: Contract.Runtime.State.empty_projection()
 
@@ -1171,7 +1567,10 @@ defmodule ContractWeb.StudioLive do
   # fire `revoke_change` with the right payload regardless of which DOM
   # node currently has focus. Skip revokes themselves and reconciled
   # changes so Cmd+Z never tries to revoke a revoke.
-  defp push_editor_last_change(socket, %Contract.Change{action_kind: kind, status: status} = change)
+  defp push_editor_last_change(
+         socket,
+         %Contract.Change{command_kind: kind, status: status} = change
+       )
        when kind in ["revoke_change", "resolve_revoke"]
        when status == :revoked do
     _ = change
@@ -1194,10 +1593,17 @@ defmodule ContractWeb.StudioLive do
 
     push_event(socket, "editor:last-change", %{
       change_id: change.id,
-      action_kind: change.action_kind,
+      command_kind: change.command_kind,
       node_id: node_id
     })
   end
+
+  # v0.5 W-CR: Context Reservoir is removed. These wrappers are kept as
+  # no-ops so the mount/handle paths still compile and the LV layout is
+  # unchanged. They can be deleted once nothing references them.
+  defp safe_refresh_reservoir(_scope, _state), do: {:error, :reservoir_removed}
+
+  defp refresh_reservoir_if_needed(socket), do: socket
 
   defp recompute_grill_assigns(socket) do
     marks = (socket.assigns[:projection] || %{})[:marks] || %{}
@@ -1220,6 +1626,74 @@ defmodule ContractWeb.StudioLive do
     |> assign(:grill_active?, grill_marks != [])
   end
 
+  defp insert_operation_chat(socket, id, operation, opts \\ []) do
+    stream_insert(socket, :chat_messages, %{
+      id: to_string(id),
+      role: :agent,
+      operation: stringify_operation(operation),
+      transient?: Keyword.get(opts, :transient?, false),
+      timestamp: DateTime.utc_now()
+    })
+  end
+
+  defp stringify_operation(operation) when is_map(operation) do
+    operation
+    |> Enum.map(fn {key, value} -> {to_string(key), stringify_operation_value(value)} end)
+    |> Map.new()
+  end
+
+  defp stringify_operation_value(%Decimal{} = value), do: Decimal.to_string(value)
+  defp stringify_operation_value(%DateTime{} = value), do: DateTime.to_iso8601(value)
+  defp stringify_operation_value(%NaiveDateTime{} = value), do: NaiveDateTime.to_iso8601(value)
+  defp stringify_operation_value(%Date{} = value), do: Date.to_iso8601(value)
+  defp stringify_operation_value(%Time{} = value), do: Time.to_iso8601(value)
+
+  defp stringify_operation_value(%_{} = value) do
+    value
+    |> Map.from_struct()
+    |> Map.drop([:__meta__])
+    |> stringify_operation()
+  end
+
+  defp stringify_operation_value(value) when is_map(value), do: stringify_operation(value)
+
+  defp stringify_operation_value(value) when is_list(value),
+    do: Enum.map(value, &stringify_operation_value/1)
+
+  defp stringify_operation_value(value), do: value
+
+  defp normalize_operation_details(%_{} = value),
+    do: value |> Map.from_struct() |> Map.drop([:__meta__])
+
+  defp normalize_operation_details(value) when is_map(value), do: value
+  defp normalize_operation_details(value), do: %{"value" => protocol_summary(value)}
+
+  defp protocol_id(%{id: id}), do: id
+  defp protocol_id(%{"id" => id}), do: id
+  defp protocol_id(_), do: nil
+
+  defp protocol_name(%{tool_name: name}) when is_binary(name), do: name
+  defp protocol_name(%{name: name}) when is_binary(name), do: name
+  defp protocol_name(%{"tool_name" => name}) when is_binary(name), do: name
+  defp protocol_name(%{"name" => name}) when is_binary(name), do: name
+  defp protocol_name(other), do: short_id(protocol_id(other))
+
+  defp protocol_title(%{title: title}) when is_binary(title), do: title
+  defp protocol_title(%{"title" => title}) when is_binary(title), do: title
+  defp protocol_title(other), do: "source " <> short_id(protocol_id(other))
+
+  defp protocol_summary(%{summary: summary}) when is_binary(summary), do: summary
+  defp protocol_summary(%{"summary" => summary}) when is_binary(summary), do: summary
+  defp protocol_summary(%{body: body}) when is_binary(body), do: body
+  defp protocol_summary(%{"body" => body}) when is_binary(body), do: body
+  defp protocol_summary(value) when is_binary(value), do: value
+  defp protocol_summary(value) when is_atom(value), do: Atom.to_string(value)
+  defp protocol_summary(value), do: inspect(value)
+
+  defp protocol_status(%{status: status}), do: protocol_summary(status)
+  defp protocol_status(%{"status" => status}), do: protocol_summary(status)
+  defp protocol_status(_), do: "updated"
+
   defp build_toast(level, title, body) do
     %{
       id: "toast-" <> (Ecto.UUID.generate() |> String.replace("-", "")),
@@ -1236,6 +1710,13 @@ defmodule ContractWeb.StudioLive do
   defp import_summary(%{title: title}) when is_binary(title), do: title
   defp import_summary(%{id: id}) when is_binary(id), do: "Document " <> short_id(id)
   defp import_summary(_), do: "Document imported."
+
+  defp export_status_summary(%{download_url: url}) when is_binary(url), do: url
+
+  defp export_status_summary(%{id: id, progress: progress}) when is_binary(id),
+    do: "Export #{short_id(id)} · #{progress}%"
+
+  defp export_status_summary(_), do: "Export status updated."
 
   defp export_summary(%{download_url: url}) when is_binary(url), do: url
   defp export_summary(%{id: id}) when is_binary(id), do: "Export " <> short_id(id)

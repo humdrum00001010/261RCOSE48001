@@ -54,7 +54,8 @@ defmodule ContractWeb.UserLive.SettingsHubTest do
       assert html =~ "Integrations"
       # The three disabled placeholders
       assert html =~ "Appearance"
-      assert html =~ "Workspace"
+      assert html =~ "Documents"
+      refute html =~ "Workspace"
       assert html =~ "Notifications"
       # Disabled markers
       assert html =~ "aria-disabled=\"true\""

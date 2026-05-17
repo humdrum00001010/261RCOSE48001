@@ -61,9 +61,7 @@ test.describe('Scenario 1: briefing → grill → edit @e2e:expensive', () => {
       );
       if (!document) return;
 
-      const route = document.matter_id
-        ? `/matters/${document.matter_id}/documents/${document.id}`
-        : `/studio?document_id=${document.id}`;
+      const route = `/documents/${document.id}`;
       await page.goto(route);
 
       // Upload the fixture via the live file input — the StudioLive

@@ -1,6 +1,6 @@
 ## Revision history
-- 2026-05-15: Pivot from Matter-primary to Document-primary product framing. Document is now the primary user-facing object; Matter remains the internal context container. Routes reorganized to document-first; matter_id becomes optional on most Actions. UI label "Matter" → "Workspace" (or hidden). DocumentSession is the per-Document live coordinator.
-- 2026-05-16: Add Context Reservoir as the persistent left-side projection of contract context...
+- 2026-05-15: Pivot from Matter-primary to Document-primary product framing. Document is now the primary user-facing object; document routes and sessions are document-first.
+- 2026-05-16: Remove the persistent Context Reservoir from the product surface; left-rail context becomes optional outline / related-docs UI.
 - 2026-05-16 (v0.5): Substantial revision. Rename Action → Command. Move Engine → Session.Reducer (internal). REMOVE Matter entirely (Document.owner_id replaces it). Add new persistent schemas: ChatThread, SourceDocument, SourceClaim, EvidenceSnapshot, AgentRun, ToolCall, BlobRef. Replace Contract.IO with Contract.Blobs + Contract.Providers. Expand Contract.MCP to full resource+tool surface (20 tools, 16 resources). Add Lawyer packet as export format. StudioLive handle_event names switch to dotted notation ("document.edit", "chat.submit", "source_claim.confirm", ...). Context Reservoir REMOVED from this draft — left rail becomes optional outline / related-docs.
 
 ---
@@ -89,29 +89,526 @@ Not v1:
 
 ⸻
 
-4. UI Layout
+4. StudioLive Concrete UI Specification
 
-The main product surface is one LiveView.
+StudioLive is not just a LiveView route. It is the core product screen.
 
-Top    = document title, contract type, metadata, export/share
-Center = working contract document
+The v1 layout is:
+
+Top    = document title / contract type / metadata / export-share actions
+Center = working contract document canvas
 Right  = always-open agent chat rail
-Left   = optional outline / related documents later; not required in v1
+Left   = optional; not required in v1
 
-The chat rail renders:
+v1 must not include a permanent left context panel.
 
-* normal agent/user messages,
+SourceDocument interpretation, tool calls, questions, revoke conflicts, export status,
+legal evidence, and conversion plans are rendered inside the right chat rail as
+expandable/collapsible LiveView components.
+
+Do not introduce persisted/domain objects named:
+
+* Card
+* WorkCard
+* ChatCard
+* persisted context reservoir objects or panels
+
+Those names may describe UI components only. They are not business objects and are
+not persisted schemas.
+
+4.1 Top Bar
+
+The top bar behaves like a Google Docs-style document header.
+
+It contains:
+
+* directly editable document title,
+* contract type selector,
+* document status,
+* metadata quick view,
+* export/share button,
+* optional version/revision indicator.
+
+Title editing behavior:
+
+user edits title
+→ debounce or blur
+→ Command(:rename_document)
+→ Change committed
+→ title updates live
+→ agent observes title change
+
+Contract type selector behavior:
+
+user selects type_key
+→ Command(:set_contract_type)
+→ Change committed
+→ no document rewrite
+→ chat rail may ask: "Contract type changed. Do you want to convert/adapt this document?"
+
+Changing Document.type_key is metadata only. It must not rewrite the contract text.
+Type conversion is a separate command:
+
+Command(:start_type_conversion)
+
+Export is available from the top bar and may also be requested from the chat rail.
+
+4.2 Center Document Canvas
+
+The center area is the working contract document editor.
+
+It supports:
+
+* inline paragraph/block editing,
+* field editing,
+* table/cell editing when parser/import created tables,
+* selection of node/block/field,
+* highlighting of agent-changed sections,
+* revoked/superseded change indicators,
+* layout/export warnings.
+
+If no document is selected, the center shows an empty state, not a document list.
+
+The empty state offers:
+
+* Upload existing contract
+* Create blank document
+* Ask agent to draft
+* Open recent document
+
+If there is a SourceDocument but no working Document yet, the center may show:
+
+No working document yet.
+The agent has interpreted the uploaded source.
+You can create a draft from it.
+
+The canvas is not the only interaction surface. The user can manipulate the
+document either by direct editing in the canvas or by speaking to the agent in the
+chat rail.
+
+4.3 Right Agent Chat Rail
+
+The right rail is always open. It is not a simple chat box; it is the visible agent
+operation surface.
+
+It renders:
+
+* chat messages,
+* agent streaming text,
 * tool-call progress,
-* source-document interpretation,
-* questions,
+* source-document interpretation blocks,
+* source-claim confirmation/correction UI,
+* open questions,
 * change summaries,
-* revoke conflicts,
-* export status,
-* legal evidence summaries.
+* revoke conflict UI,
+* conversion plans,
+* field migration choices,
+* legal evidence summaries,
+* export status.
 
-These are rendered as LiveView components.
+Examples of chat rail UI components:
 
-They are not persisted as a Card or WorkCard abstraction.
+* ChatMessageBlock
+* ToolCallBlock
+* SourceInterpretationBlock
+* SourceClaimBlock
+* QuestionBlock
+* ChangeBlock
+* RevokeBlock
+* ConversionPlanBlock
+* EvidenceBlock
+* ExportStatusBlock
+
+These are LiveView UI components only. Do not persist Card, WorkCard, ChatCard,
+or any context reservoir object/panel.
+
+Expand/collapse state is LiveView UI state:
+
+socket.assigns.expanded
+
+Example:
+
+{:tool_call, tool_call_id} => true
+{:source_document, source_document_id} => false
+{:change, change_id} => false
+
+4.4 Chat Rail When No Document Exists
+
+If the user opens /studio without a document, the chat rail guides the user.
+
+It asks:
+
+What do you want to do?
+
+* Upload an existing contract
+* Draft a new contract
+* Open recent document
+* Discuss first
+
+If the user starts by chatting:
+
+User: I need an NDA.
+→ ChatThread starts
+→ Agent asks useful context questions
+→ no Document required yet
+→ when enough context exists, agent may create Command(:create_document)
+
+The chat should not force a long form before drafting. It gathers context naturally.
+
+4.5 Upload and SourceDocument UI
+
+When the user uploads a document:
+
+Command(:upload_document)
+→ Blobs.put_upload
+→ SourceDocument created
+→ Providers.parse_document, usually Upstage
+→ SourceDocument regions extracted
+→ agent proposes SourceClaims
+
+The chat rail shows live progress:
+
+Uploading document...
+Parsing document...
+Interpreting source...
+
+When interpretation is ready, show SourceInterpretationBlock.
+
+Example:
+
+I read the uploaded contract.
+Detected:
+
+* Type: Mutual NDA
+* Party A: Alpha Inc.
+* Party B: Beta LLC
+* Effective date: missing
+* 5 blanks detected
+* 3 claims need confirmation
+
+Actions:
+
+* Review interpretation
+* Use this to draft
+* Correct parties
+* Reject interpretation
+
+If the user expands details, show claims with anchors:
+
+Claim: Party A appears to be Alpha Inc.
+Source: page 1, party table
+Confidence: medium
+Status: proposed
+Actions: confirm / correct / reject / link to document
+
+Do not expose hidden chain-of-thought or internal reasoning. Expose only structured
+claims, confidence, source anchors, and user actions.
+
+4.6 SourceClaim UI
+
+A SourceClaim is user-supervisable.
+
+The UI allows:
+
+* confirm claim,
+* correct claim,
+* reject claim,
+* link claim to working document,
+* unlink claim.
+
+Events:
+
+def handle_event("source_claim.confirm", params, socket)
+def handle_event("source_claim.correct", params, socket)
+def handle_event("source_claim.reject", params, socket)
+def handle_event("source_claim.link_to_document", params, socket)
+
+These events become Commands:
+
+Command(:source_claim_confirm)
+Command(:source_claim_correct)
+Command(:source_claim_reject)
+Command(:source_claim_link_to_document)
+
+They commit as Changes.
+
+4.7 Agent Tool Call UI
+
+Agent tool calls are visible in the chat rail.
+
+Examples:
+
+Reading document...
+Searching source regions...
+Checking Korean law...
+Rendering export...
+Preparing lawyer packet...
+
+Tool calls can expand/collapse.
+
+Persist ToolCall only when useful for:
+
+* audit,
+* replay,
+* legal traceability,
+* UI recovery.
+
+Tool call UI is not a separate domain abstraction.
+
+Signals:
+
+def handle_info({:tool_call_started, agent_run_id, tool_call}, socket)
+def handle_info({:tool_call_delta, agent_run_id, tool_call_id, delta}, socket)
+def handle_info({:tool_call_completed, agent_run_id, tool_call_id, result}, socket)
+def handle_info({:tool_call_failed, agent_run_id, tool_call_id, reason}, socket)
+
+4.8 Change and Revoke UI
+
+Every committed document mutation is a Change.
+
+The chat rail may show a ChangeBlock for important changes:
+
+Agent changed payment clause.
+Reason: user asked for stricter payment.
+Actions: revoke / inspect / ask why
+
+For small direct edits, the UI may not need a visible block unless the user opens
+history.
+
+Revoke behavior:
+
+User clicks revoke
+→ Command(:revoke_change)
+→ if clean inverse possible: Change committed
+→ if overlap exists: RevokeRequest shown
+
+Revoke conflict UI appears in the chat rail.
+
+It shows:
+
+This change overlaps with later edits.
+Choose:
+
+* ask agent to reconcile
+* keep later edits and remove agent contribution
+* restore older version
+* cancel revoke
+
+Signals:
+
+def handle_info({:change_revoked, document_id, change}, socket)
+def handle_info({:revoke_requested, document_id, request}, socket)
+def handle_info({:change_reconciled, document_id, change}, socket)
+
+4.9 Legal Evidence UI
+
+When the agent uses legal MCP / Korea-law-MCP tools such as:
+
+law.search
+law.verify_citation
+
+the result becomes an EvidenceSnapshot.
+
+The chat rail shows EvidenceBlock.
+
+Example:
+
+Legal evidence attached.
+Source: Korea-law-MCP
+Citation: ...
+Status: verified / weak / conflicting / stale
+Actions: view evidence / attach to lawyer packet / ask agent to explain
+
+Legal evidence must never directly mutate the document.
+
+Flow:
+
+legal MCP result
+→ EvidenceSnapshot
+→ Mark(:link or :flag)
+→ optional agent edit Command
+→ Change
+
+4.10 Export UI
+
+Export is triggered from the top bar or chat rail.
+
+Event:
+
+def handle_event("export.request", params, socket)
+
+Exports:
+
+* pdf
+* hwpx
+* docx
+* markdown
+* lawyer_packet
+
+The chat rail shows export progress:
+
+Preparing PDF...
+Preparing lawyer packet...
+Export ready.
+
+Signals:
+
+def handle_info({:export_started, export_id}, socket)
+def handle_info({:export_ready, export}, socket)
+def handle_info({:export_failed, export_id, reason}, socket)
+
+Export path:
+
+Command(:request_export)
+→ Studio.command
+→ Providers.render_export
+→ Blobs.put
+→ Export persisted
+→ StudioLive.handle_info({:export_ready, export})
+
+Lawyer packet UI explains what will be included:
+
+* clean draft,
+* source documents,
+* confirmed/corrected/rejected source claims,
+* important changes,
+* revokes,
+* unresolved questions,
+* marks,
+* EvidenceSnapshots,
+* citation status,
+* document revision.
+
+4.11 Conversion UI
+
+Changing Document.type_key is metadata only.
+
+If the user wants to convert:
+
+Command(:start_type_conversion)
+
+Show ConversionPlanBlock in the chat rail.
+
+Example:
+
+Create NDA variant from Service Agreement?
+Will carry:
+
+* Party A
+* Party B
+* Effective date
+* Jurisdiction
+
+Will derive:
+
+* Service purpose → NDA permitted purpose
+
+Will not carry:
+
+* Payment amount
+* Service deliverables
+
+Needs answer:
+
+* mutual or one-way NDA?
+* confidentiality duration?
+
+Field migration strategies:
+
+* copy_once
+* link_to_document_field
+* derive
+* reference_only
+* ignore
+* ask_user
+
+Events:
+
+def handle_event("conversion.start", params, socket)
+def handle_event("conversion.field_strategy.set", params, socket)
+def handle_event("conversion.variant.create", params, socket)
+
+4.12 Document Picker and Related Documents
+
+Do not make a large left document navigator in v1.
+
+If document switching is needed, use:
+
+* top-left document dropdown,
+* chat rail "Open recent document" component,
+* optional related-documents drawer.
+
+Related documents are expressed by DocumentLink, not Matter.
+
+Examples:
+
+* source_of
+* converted_from
+* variant_of
+* lawyer_packet_for
+* references
+
+If there are related documents, show them with meaningful labels:
+
+Current draft — Mutual NDA
+Uploaded source — counterparty draft
+Variant — NDA generated from service agreement
+Lawyer packet — review export
+
+Do not show raw IDs like:
+
+Document 5cad856e
+
+4.13 StudioLive Event and handle_info Protocol
+
+StudioLive uses dotted LiveView events for user actions and explicit handle_info/2
+messages for server-side progress. The complete protocol is specified again in
+section 9; this UI section names the visible flows those events must support.
+
+Core events include:
+
+def handle_event("chat.submit", params, socket)
+def handle_event("document.edit", params, socket)
+def handle_event("document.upload", params, socket)
+def handle_event("document.rename", params, socket)
+def handle_event("document.type.set", params, socket)
+def handle_event("source_claim.confirm", params, socket)
+def handle_event("source_claim.correct", params, socket)
+def handle_event("source_claim.reject", params, socket)
+def handle_event("source_claim.link_to_document", params, socket)
+def handle_event("conversion.start", params, socket)
+def handle_event("export.request", params, socket)
+def handle_event("ui.toggle_expand", params, socket)
+
+Core server signals include:
+
+def handle_info({:change_committed, document_id, change}, socket)
+def handle_info({:source_interpretation_ready, source_document_id, claims}, socket)
+def handle_info({:tool_call_started, agent_run_id, tool_call}, socket)
+def handle_info({:tool_call_completed, agent_run_id, tool_call_id, result}, socket)
+def handle_info({:evidence_created, evidence}, socket)
+def handle_info({:export_started, export_id}, socket)
+def handle_info({:export_ready, export}, socket)
+def handle_info({:export_failed, export_id, reason}, socket)
+
+Rules:
+
+LiveView tracks selected_document_id.
+LiveView tracks last_seen_revision.
+LiveView tracks expand/collapse UI state in socket.assigns.expanded.
+LiveView never owns truth.
+LiveView never owns Session.
+LiveView never calls OpenAI directly.
+PubSub is notification only.
+Agent streams/tool deltas mutate only UI.
+Only committed Change updates document projection.
+
+Final visual principle:
+
+The document canvas is where the contract changes.
+The chat rail is where the agent works visibly.
+The top bar is where title/type/export live.
+Source interpretation is supervised through chat-rail components.
 
 ⸻
 

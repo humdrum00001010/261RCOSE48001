@@ -137,6 +137,18 @@ defmodule ContractWeb.MCP.JSONRPC do
   def from_gateway_error(id, :invalid_text),
     do: error_response(id, @invalid_params, "invalid text")
 
+  def from_gateway_error(id, :invalid_params),
+    do: error_response(id, @invalid_params, "invalid params")
+
+  def from_gateway_error(id, :invalid_uri),
+    do: error_response(id, @invalid_params, "invalid uri")
+
+  def from_gateway_error(id, :not_found),
+    do: error_response(id, @tool_failure, "Not found")
+
+  def from_gateway_error(id, {:not_available, reason}),
+    do: error_response(id, @tool_failure, "Not available", reason)
+
   def from_gateway_error(id, {:invalid_action, errors}),
     do: error_response(id, @invalid_params, "invalid action", errors)
 

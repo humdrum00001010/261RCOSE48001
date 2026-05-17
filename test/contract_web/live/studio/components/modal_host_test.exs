@@ -53,7 +53,7 @@ defmodule ContractWeb.Live.Studio.Components.ModalHostTest do
       assert html =~ ~s(data-role="document-picker-list")
       assert html =~ "NDA draft"
       assert html =~ "Master agreement"
-      assert html =~ ~s(phx-click="open_document")
+      assert html =~ ~s(phx-click="document.open")
       # Search input
       assert html =~ ~s(data-role="document-picker-search")
     end
@@ -79,9 +79,10 @@ defmodule ContractWeb.Live.Studio.Components.ModalHostTest do
       assert html =~ ~s(data-role="metadata-notes-form")
       assert html =~ ~s(value="Draft v2")
       assert html =~ "Internal review pending."
-      assert html =~ ~s(phx-submit="rename_document")
-      assert html =~ ~s(phx-submit="set_contract_type")
-      assert html =~ ~s(phx-submit="update_metadata")
+      assert html =~ ~s(phx-submit="document.rename")
+      assert html =~ ~s(phx-submit="document.type.set")
+      assert html =~ ~s(phx-submit="document.metadata.update")
+      refute html =~ ~s(phx-submit="update_metadata")
     end
 
     test "upload_panel_open? renders the upload form" do
@@ -95,7 +96,7 @@ defmodule ContractWeb.Live.Studio.Components.ModalHostTest do
       assert html =~ ~s(data-modal="upload")
       assert html =~ ~s(data-role="upload-form")
       assert html =~ ~s(data-role="upload-file-input")
-      assert html =~ ~s(phx-submit="upload_document")
+      assert html =~ ~s(phx-submit="document.upload")
     end
 
     test "migration_panel_open? renders the 3-step wizard at step 1" do
@@ -125,8 +126,8 @@ defmodule ContractWeb.Live.Studio.Components.ModalHostTest do
           %Contract.Conversion.FieldPlan{
             source_field_id: "party_a",
             target_field_id: "party_a",
-            strategy: :link_to_matter_field,
-            justification: "Party identity is matter-level fact."
+            strategy: :link_to_shared_fact,
+            justification: "Party identity is a shared document fact."
           }
         ],
         impact: %{compatible?: true, source_field_count: 1, target_field_count: 1}
@@ -162,10 +163,10 @@ defmodule ContractWeb.Live.Studio.Components.ModalHostTest do
       # The diff dump contains the request.
       assert html =~ "req-abc-123"
       assert html =~ "touched_same_node"
-      # Two resolution buttons emitting resolve_revoke.
+      # Two resolution buttons emitting revoke.resolve.
       assert html =~ ~s(data-role="reconcile-cancel")
       assert html =~ ~s(data-role="reconcile-force")
-      assert html =~ ~s(phx-click="resolve_revoke")
+      assert html =~ ~s(phx-click="revoke.resolve")
       assert html =~ ~s(phx-value-resolution="cancel")
       assert html =~ ~s(phx-value-resolution="force")
     end
@@ -181,17 +182,17 @@ defmodule ContractWeb.Live.Studio.Components.ModalHostTest do
 
       assert html =~ ~s(data-modal="new_document")
       assert html =~ ~s(data-role="new-document-form")
-      # Routed through command_palette_picked with kind=create_document.
-      assert html =~ ~s(phx-submit="command_palette_picked")
-      assert html =~ ~s(name="kind" value="create_document")
+      assert html =~ ~s(phx-submit="document.create")
+      refute html =~ ~s(phx-submit="command_palette_picked")
+      refute html =~ ~s(name="kind" value="create_document")
     end
 
     # SPEC.md §18 — subagent fix `feat/no-type-at-create`:
     # The new-document modal no longer renders a contract-type
     # `<select>`. Type is set later via `Action(:set_contract_type)`
     # by the user (Cmd+K) or by the agent. This test pins the new
-    # shape: a title input + a read-only matter label, no type list.
-    test "new-document modal renders title input + matter label, NOT a type select" do
+    # shape: a title input, no matter or type fields.
+    test "new-document modal renders title input without matter or type fields" do
       html =
         render_component(ModalHost,
           id: "modal-host",
@@ -200,20 +201,19 @@ defmodule ContractWeb.Live.Studio.Components.ModalHostTest do
           initial_modal_param: "new_document"
         )
 
-      # Form shell still routes through command_palette_picked, so
-      # the parent's event_to_action funnel can build an Action.
       assert html =~ ~s(data-role="new-document-form")
-      assert html =~ ~s(phx-submit="command_palette_picked")
-      assert html =~ ~s(name="kind" value="create_document")
+      assert html =~ ~s(phx-submit="document.create")
+      refute html =~ ~s(phx-submit="command_palette_picked")
+      refute html =~ ~s(name="kind" value="create_document")
 
       # Title input is present and required.
       assert html =~ ~s(name="title")
       assert html =~ "required"
 
-      # Read-only matter label sourced from the current scope.
-      assert html =~ ~s(data-role="new-document-matter")
-      assert html =~ ~s(data-role="new-document-matter-name")
-      assert html =~ "Matter A"
+      # Matter is no longer part of document creation.
+      refute html =~ ~s(data-role="new-document-matter")
+      refute html =~ ~s(data-role="new-document-matter-name")
+      refute html =~ "Matter A"
 
       # Hint copy lives below the title input.
       assert html =~ ~s(data-role="new-document-type-hint")
@@ -244,9 +244,9 @@ defmodule ContractWeb.Live.Studio.Components.ModalHostTest do
       # No type_key input of any kind (hidden, select, text).
       refute html =~ ~r/name="type_key"/
 
-      # The only hidden inputs are `kind` and `matter_id`.
-      assert html =~ ~s(<input type="hidden" name="kind" value="create_document">)
-      assert html =~ ~s(<input type="hidden" name="matter_id")
+      # Document creation is owner-scoped; no legacy command kind hidden field leaks out.
+      refute html =~ ~s(<input type="hidden" name="kind" value="create_document">)
+      refute html =~ ~s(name="matter_id")
     end
 
     # Wave 5: type-picker modal also localizes the headline label.
@@ -286,8 +286,9 @@ defmodule ContractWeb.Live.Studio.Components.ModalHostTest do
       assert html =~ "PDF"
       assert html =~ "Word (.docx)"
       assert html =~ "Hangul (.hwpx)"
-      assert html =~ "HTML"
-      assert html =~ ~s(phx-click="request_export")
+      assert html =~ "Markdown"
+      assert html =~ "Lawyer packet"
+      assert html =~ ~s(phx-click="export.request")
       assert html =~ ~s(phx-value-format="pdf")
       assert html =~ ~s(phx-value-format="hwpx")
     end
@@ -310,28 +311,30 @@ defmodule ContractWeb.Live.Studio.Components.ModalHostTest do
 
       assert html =~ ~s(data-role="export-picker")
       assert html =~ ~s(data-modal="export")
-      # All four formats rendered as radio rows.
+      # Product-facing formats rendered as radio rows.
       assert html =~ ~s(name="format" value="hwpx")
       assert html =~ ~s(name="format" value="pdf")
       assert html =~ ~s(name="format" value="docx")
-      assert html =~ ~s(name="format" value="html")
+      assert html =~ ~s(name="format" value="markdown")
+      assert html =~ ~s(name="format" value="lawyer_packet")
       # Spec'd labels.
       assert html =~ "Hangul (.hwpx)"
       assert html =~ "PDF"
       assert html =~ "Word (.docx)"
-      assert html =~ "HTML"
-      # Form submits request_export so the parent funnel can pick up the
+      assert html =~ "Markdown"
+      assert html =~ "Lawyer packet"
+      # Form submits export.request so the parent funnel can pick up the
       # chosen format and emit Action(:request_export).
-      assert html =~ ~s(phx-submit="request_export")
+      assert html =~ ~s(phx-submit="export.request")
     end
 
     test "form submission emits request_export with format and flips the picker flag",
          %{conn: conn} do
       {:ok, lv, _html} = live(conn, ~p"/studio")
 
-      # Open the picker by routing a `request_export` event with no format,
+      # Open the picker by routing an `export.request` event with no format,
       # mirroring the Cmd+K palette path.
-      _ = render_hook(lv, "request_export", %{})
+      _ = render_hook(lv, "export.request", %{})
       assert assigns(lv).studio_state.export_picker_open? == true
 
       # Submitting the form with a `format` should close the picker —
@@ -345,7 +348,7 @@ defmodule ContractWeb.Live.Studio.Components.ModalHostTest do
         %{liveview | socket: %{socket | assigns: Map.put(socket.assigns, :studio_state, state)}}
       end)
 
-      _ = render_hook(lv, "request_export", %{"format" => "pdf"})
+      _ = render_hook(lv, "export.request", %{"format" => "pdf"})
       assert assigns(lv).studio_state.export_picker_open? == false
     end
 
@@ -353,7 +356,7 @@ defmodule ContractWeb.Live.Studio.Components.ModalHostTest do
          %{conn: conn} do
       {:ok, lv, _html} = live(conn, ~p"/studio")
 
-      _ = render_hook(lv, "request_export", %{})
+      _ = render_hook(lv, "export.request", %{})
       assert assigns(lv).studio_state.export_picker_open? == true
 
       # The Cancel button inside the picker dispatches `close_modal` with
@@ -379,7 +382,8 @@ defmodule ContractWeb.Live.Studio.Components.ModalHostTest do
       assert html =~ ~s(data-role="migration-run-planner")
       # `disabled` and `data-role` can land in either order; assert
       # both attributes appear on the same opening tag.
-      assert html =~ ~r/<button[^>]*disabled[^>]*data-role="migration-run-planner"|<button[^>]*data-role="migration-run-planner"[^>]*disabled/
+      assert html =~
+               ~r/<button[^>]*disabled[^>]*data-role="migration-run-planner"|<button[^>]*data-role="migration-run-planner"[^>]*disabled/
     end
 
     test "step :plan with an existing Plan shows the Next: field strategies button" do
@@ -413,8 +417,8 @@ defmodule ContractWeb.Live.Studio.Components.ModalHostTest do
           %Contract.Conversion.FieldPlan{
             source_field_id: "effective_date",
             target_field_id: "effective_date",
-            strategy: :link_to_matter_field,
-            justification: "Date is matter-level fact."
+            strategy: :link_to_shared_fact,
+            justification: "Date is a shared document fact."
           }
         ],
         impact: %{compatible?: true}
@@ -435,10 +439,13 @@ defmodule ContractWeb.Live.Studio.Components.ModalHostTest do
       assert html =~ "effective_date"
       # Each strategy option shows up.
       assert html =~ "Copy once"
-      # Document-pivot label: "Workspace" (was "Matter") — backend
-      # strategy key (:link_to_matter_field) is unchanged.
-      assert html =~ "Link to workspace field"
+      assert html =~ ~s(phx-change="conversion.field_strategy.set")
+      assert html =~ ~s(value="link_to_shared_fact")
+      refute html =~ ~s(value="link_to_matter_field")
+      assert html =~ "Link to shared document fact"
       refute html =~ "Link to matter field"
+      refute html =~ "Link to document field"
+      refute html =~ "Link to workspace field"
       assert html =~ "Derive"
       assert html =~ "Reference only"
       assert html =~ "Ignore"
@@ -457,7 +464,7 @@ defmodule ContractWeb.Live.Studio.Components.ModalHostTest do
       assert html =~ ~s(data-role="migration-step-confirm")
       assert html =~ ~s(data-role="migration-create-form")
       assert html =~ ~s(data-role="migration-create-variant")
-      assert html =~ ~s(phx-submit="create_variant")
+      assert html =~ ~s(phx-submit="conversion.create_variant")
     end
 
     # Wave 4 bugfix #3: the wizard's step-3 summary counter
@@ -468,7 +475,7 @@ defmodule ContractWeb.Live.Studio.Components.ModalHostTest do
     # are passed directly.
     test "step :confirm with seeded field_strategies + migration_target enables Create variant" do
       strategies = %{
-        "effective_date" => "link_to_matter_field",
+        "effective_date" => "link_to_shared_fact",
         "party_a" => "copy_once",
         "party_b" => "copy_once"
       }
@@ -490,7 +497,8 @@ defmodule ContractWeb.Live.Studio.Components.ModalHostTest do
       # Target also threads into the hidden form input.
       assert html =~ ~s(name="target_type_key" value="service_agreement_v1")
       # Create variant button must NOT be disabled — bugfix #2 + #3.
-      refute html =~ ~r/<button[^>]*disabled[^>]*data-role="migration-create-variant"|<button[^>]*data-role="migration-create-variant"[^>]*disabled/
+      refute html =~
+               ~r/<button[^>]*disabled[^>]*data-role="migration-create-variant"|<button[^>]*data-role="migration-create-variant"[^>]*disabled/
     end
 
     # Wave 4 bugfix #4 — the step 1 plan summary card must use the
@@ -592,8 +600,7 @@ defmodule ContractWeb.Live.Studio.Components.ModalHostTest do
   defp scope_for_user(perms \\ ~w(read write commit revoke export type_change)a) do
     %Context{
       user: %Contract.Accounts.User{id: Ecto.UUID.generate(), email: "x@example.com"},
-      perms: perms,
-      matter: %{id: Ecto.UUID.generate(), name: "Matter A"}
+      perms: perms
     }
   end
 

@@ -15,7 +15,6 @@ defmodule Contract.Context do
 
     * `:user` — the authenticated `Contract.Accounts.User` struct, or `nil`.
     * `:tenant` — tenant identifier, scoped per request (nil until populated).
-    * `:matter` — current matter identifier, when the request is matter-scoped.
     * `:request_id` — Plug request id, useful for log correlation.
     * `:now` — frozen request timestamp for deterministic time-based logic.
     * `:perms` — permission set (map or list, shape TBD).
@@ -26,7 +25,6 @@ defmodule Contract.Context do
   @type t :: %__MODULE__{
           user: User.t() | nil,
           tenant: term() | nil,
-          matter: term() | nil,
           request_id: String.t() | nil,
           now: DateTime.t() | nil,
           perms: term() | nil
@@ -34,7 +32,6 @@ defmodule Contract.Context do
 
   defstruct user: nil,
             tenant: nil,
-            matter: nil,
             request_id: nil,
             now: nil,
             perms: nil

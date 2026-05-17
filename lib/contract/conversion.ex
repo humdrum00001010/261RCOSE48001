@@ -25,7 +25,7 @@ defmodule Contract.Conversion do
 
     * `:copy_once`              — snapshot the source field value into
       the new document. Records lineage.
-    * `:link_to_matter_field`   — reference a Matter-level field
+    * `:link_to_shared_fact`    — reference a shared document-level fact
       instead of materialising the value. Records lineage.
     * `:derive`                 — keep a computed reference. Records
       lineage.
@@ -39,7 +39,7 @@ defmodule Contract.Conversion do
 
   ## Defaults (SPEC.md §19 table)
 
-      identity facts (party, date)            → :link_to_matter_field
+      identity facts (party, date)            → :link_to_shared_fact
       document-specific commercial terms      → :copy_once
       ambiguous fields                        → :ask_user
       irrelevant fields                       → :ignore
@@ -114,7 +114,7 @@ defmodule Contract.Conversion do
   # for set_field_strategy/4.
   @allowed_strategies [
     :copy_once,
-    :link_to_matter_field,
+    :link_to_shared_fact,
     :derive,
     :reference_only,
     :ignore,
@@ -170,7 +170,7 @@ defmodule Contract.Conversion do
         field_plans: field_plans,
         impact: %{
           compatible?: compatible?,
-          source_field_count: source_spec && length(source_spec.recommended_fields) || 0,
+          source_field_count: (source_spec && length(source_spec.recommended_fields)) || 0,
           target_field_count: length(target_spec.recommended_fields)
         }
       }
@@ -305,7 +305,6 @@ defmodule Contract.Conversion do
 
       with {:ok, new_doc} <-
              Documents.create(scope, %{
-               "matter_id" => source.matter_id,
                "title" => "#{title_prefix} (#{plan.target_type_key})",
                "type_key" => plan.target_type_key,
                "parent_document_id" => source.id,
@@ -327,7 +326,7 @@ defmodule Contract.Conversion do
   defp append_variant_change(%Document{} = new_doc, %Document{} = source, %Plan{} = plan, user) do
     action = %Command{
       kind: :create_converted_variant,
-      matter_id: new_doc.matter_id,
+      source_document_id: source.id,
       document_id: new_doc.id,
       actor_type: :user,
       actor_id: user && user.id,
@@ -371,22 +370,27 @@ defmodule Contract.Conversion do
 
   defp insert_lineage_rows(%Document{} = new_doc, %Document{} = source, %Plan{} = plan) do
     Enum.reduce_while(plan.field_plans || [], :ok, fn fp, _acc ->
+      strategy = normalize_strategy(fp.strategy)
+
       cond do
-        fp.strategy in [:ignore, :ask_user] ->
+        strategy in [:ignore, :ask_user] ->
           {:cont, :ok}
 
-        true ->
+        strategy in @allowed_strategies ->
           case Documents.insert_lineage(%{
                  "document_id" => new_doc.id,
                  "field_id" => fp.target_field_id || fp.source_field_id,
                  "source_document_id" => source.id,
                  "source_field_id" => fp.source_field_id,
-                 "strategy" => fp.strategy,
+                 "strategy" => strategy,
                  "justification" => fp.justification
                }) do
             {:ok, _row} -> {:cont, :ok}
             {:error, reason} -> {:halt, {:error, reason}}
           end
+
+        true ->
+          {:halt, {:error, :invalid_strategy}}
       end
     end)
   end
@@ -458,17 +462,18 @@ defmodule Contract.Conversion do
 
   # When source/target types are not declared compatible, every field
   # is :ask_user — the user must consciously handle each one.
-  defp default_strategy(_sf, _target, false), do: {:ask_user, "Types are not declared compatible."}
+  defp default_strategy(_sf, _target, false),
+    do: {:ask_user, "Types are not declared compatible."}
 
   # Target has no slot for this source field → ignore (irrelevant per §19).
   defp default_strategy(_sf, nil, true), do: {:ignore, "Field has no slot in target type."}
 
-  # Identity facts (parties, dates) → link to matter-level field.
+  # Identity facts (parties, dates) -> shared document-level facts.
   defp default_strategy(%{kind: :party}, _target, true),
-    do: {:link_to_matter_field, "Party identity is matter-level fact."}
+    do: {:link_to_shared_fact, "Party identity is a shared fact."}
 
   defp default_strategy(%{kind: :date}, _target, true),
-    do: {:link_to_matter_field, "Date is a matter-level fact."}
+    do: {:link_to_shared_fact, "Date is a shared fact."}
 
   # Money / number / text → copy_once. Document-specific commercial term.
   defp default_strategy(%{kind: :money}, _target, true),
@@ -508,15 +513,20 @@ defmodule Contract.Conversion do
     end
   end
 
-  defp normalize_strategy(s) when is_atom(s), do: s
+  @doc false
+  @spec normalize_strategy(atom() | String.t() | term()) :: atom()
+  def normalize_strategy(:link_to_matter_field), do: :link_to_shared_fact
+  def normalize_strategy(s) when is_atom(s), do: s
 
-  defp normalize_strategy(s) when is_binary(s) do
+  def normalize_strategy(s) when is_binary(s) do
     try do
-      String.to_existing_atom(s)
+      s
+      |> String.to_existing_atom()
+      |> normalize_strategy()
     rescue
       ArgumentError -> :__invalid__
     end
   end
 
-  defp normalize_strategy(_), do: :__invalid__
+  def normalize_strategy(_), do: :__invalid__
 end

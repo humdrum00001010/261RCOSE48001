@@ -16,7 +16,10 @@ defmodule Contract.MattersTest do
     user_id = Keyword.get(opts, :user_id, Ecto.UUID.generate())
 
     %Context{
-      user: %Contract.Accounts.User{id: user_id, email: "u#{System.unique_integer([:positive])}@x"},
+      user: %Contract.Accounts.User{
+        id: user_id,
+        email: "u#{System.unique_integer([:positive])}@x"
+      },
       tenant: tenant
     }
   end
@@ -24,6 +27,7 @@ defmodule Contract.MattersTest do
   describe "create/2" do
     test "creates a matter owned by the scope user" do
       s = scope()
+
       assert {:ok, %Matter{name: "M1", owner_id: owner, tenant_id: tenant}} =
                Matters.create(s, %{"name" => "M1"})
 

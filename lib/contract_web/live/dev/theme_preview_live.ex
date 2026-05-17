@@ -21,7 +21,9 @@ defmodule ContractWeb.Dev.ThemePreviewLive do
       <header class="flex items-center justify-between mb-6">
         <div>
           <h1 class="text-2xl font-semibold">Contract Studio — theme preview</h1>
-          <p class="text-sm opacity-70">DaisyUI <code>studio</code> / <code>studio-dark</code> tokens</p>
+          <p class="text-sm opacity-70">
+            DaisyUI <code>studio</code> / <code>studio-dark</code> tokens
+          </p>
         </div>
         <ContractWeb.Layouts.theme_toggle />
       </header>
@@ -64,8 +66,7 @@ defmodule ContractWeb.Dev.ThemePreviewLive do
         <div class="card-body">
           <h2 class="card-title">Typography</h2>
           <p class="chrome text-base">
-            <strong>Inter (chrome):</strong>
-            The quick brown fox jumps over the lazy dog. 0123456789.
+            <strong>Inter (chrome):</strong> The quick brown fox jumps over the lazy dog. 0123456789.
           </p>
           <p class="contract-body mt-4">
             <strong>Iosevka (contract-body):</strong>

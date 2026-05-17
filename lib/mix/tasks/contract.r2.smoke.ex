@@ -34,9 +34,7 @@ defmodule Mix.Tasks.Contract.R2.Smoke do
           Keyword.fetch!(r2, :bucket)
 
         :error ->
-          Mix.raise(
-            "Contract :r2 config is missing. Did config/runtime.exs see R2_* env vars?"
-          )
+          Mix.raise("Contract :r2 config is missing. Did config/runtime.exs see R2_* env vars?")
       end
 
     key = "contract/smoke/#{System.system_time(:millisecond)}.txt"

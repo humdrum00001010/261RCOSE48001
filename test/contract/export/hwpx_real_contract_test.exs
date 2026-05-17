@@ -86,7 +86,9 @@ defmodule Contract.Export.HWPXRealContractTest do
 
   test "rendered HWPX passes both strict (OWPML) and compat (Hancom) validation",
        %{validator: cmd, rendered_path: path} do
-    {output, status} = System.cmd(cmd, ["validate", "--mode", "both", path], stderr_to_stdout: true)
+    {output, status} =
+      System.cmd(cmd, ["validate", "--mode", "both", path], stderr_to_stdout: true)
+
     assert status == 0, "validate --mode both exited #{status}\nOutput:\n#{output}"
 
     # `validate --mode both` prints "Compat (Hancom OK): ✅ PASS" and
@@ -123,6 +125,7 @@ defmodule Contract.Export.HWPXRealContractTest do
 
     assert table_node, "Projection fixture must contain at least one :table node"
     expected_widths = get_in(table_node, [:attrs, :column_widths])
+
     assert is_list(expected_widths) and length(expected_widths) > 0,
            "Table node must declare :column_widths"
 

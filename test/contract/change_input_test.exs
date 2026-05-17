@@ -17,7 +17,6 @@ defmodule Contract.ChangeInputTest do
   test "all expected fields can be assigned" do
     ci = %ChangeInput{
       action_kind: :rename_document,
-      matter_id: "m",
       document_id: "d",
       base_revision: 1,
       idempotency_key: "key-12345",

@@ -10,18 +10,16 @@
  * Why persona signin instead of password form: the password form goes
  * through `UserSessionController.create/2`, which does not seed
  * `:user_perms` into the session. `Conversion.plan/4` requires
- * `:type_change` in `scope.perms`, which is only set by `MatterScope`
- * when the session has a `:user_perms` key — and that key is only put
+ * `:type_change` in `scope.perms`, which is mounted by the document
+ * scope when the session has a `:user_perms` key - and that key is only put
  * by `TestAuthController.sign_in/2`. So the persona route is the only
  * way to get a properly-permed scope through the LV today.
  *
- * The matter + document are seeded against a separate user with
- * tenant_id: nil; `Matters.authorize_read/2` is permissive for null
- * tenants, so the persona user can read and convert them just fine.
+ * The document is seeded through the document-first test DB helper for the
+ * same persona/user scope that opens Studio.
  *
  * Required env (no fallbacks):
  *   E2E_BASE_URL   — sprite URL
- *   MATTER_ID      — seeded matter
  *   DOCUMENT_ID    — seeded NDA document
  */
 import {
@@ -37,11 +35,10 @@ import { fileURLToPath } from 'node:url';
 const BASE_URL =
   process.env.E2E_BASE_URL ?? 'https://contract-studio-v7zk.sprites.app';
 
-const MATTER_ID = process.env.MATTER_ID ?? '';
 const DOCUMENT_ID = process.env.DOCUMENT_ID ?? '';
 
-if (!MATTER_ID || !DOCUMENT_ID) {
-  throw new Error('Required env: MATTER_ID, DOCUMENT_ID');
+if (!DOCUMENT_ID) {
+  throw new Error('Required env: DOCUMENT_ID');
 }
 
 const __filename = fileURLToPath(import.meta.url);
@@ -69,7 +66,7 @@ async function signInAsLawyer(context: BrowserContext): Promise<void> {
 }
 
 async function openDocument(page: Page): Promise<void> {
-  await page.goto(`${BASE_URL}/matters/${MATTER_ID}/documents/${DOCUMENT_ID}`, {
+  await page.goto(`${BASE_URL}/documents/${DOCUMENT_ID}`, {
     waitUntil: 'domcontentloaded',
     timeout: 30_000
   });
@@ -87,6 +84,8 @@ async function openDocument(page: Page): Promise<void> {
   await page.waitForTimeout(800);
 }
 
+type PushResult = { ok: true } | { ok: false; reason: string };
+
 async function dispatchStartTypeConversion(
   page: Page,
   targetTypeKey: string
@@ -95,7 +94,7 @@ async function dispatchStartTypeConversion(
   // require a DOM element to harvest phx-value-* attributes from. We pass
   // the [data-phx-main] element as `el` and `null` as targetCtx so the
   // event hits the root LiveView (not a LiveComponent).
-  const result = await page.evaluate(
+  const result = await page.evaluate<PushResult, { targetTypeKey: string }>(
     ({ targetTypeKey }) => {
       const w = window as unknown as {
         liveSocket?: {
@@ -166,7 +165,7 @@ async function run(): Promise<void> {
 
     // eslint-disable-next-line no-console
     console.log(
-      `Opening /matters/${MATTER_ID}/documents/${DOCUMENT_ID}`
+      `Opening /documents/${DOCUMENT_ID}`
     );
     await openDocument(page);
 

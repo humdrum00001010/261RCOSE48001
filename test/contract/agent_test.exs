@@ -1,10 +1,12 @@
 defmodule Contract.AgentTest do
-  use ExUnit.Case, async: false
+  use Contract.DataCase, async: false
 
   import Mox
 
+  alias Contract.ChatThread
   alias Contract.Command
   alias Contract.Agent
+  alias Contract.Repo
 
   setup :set_mox_from_context
   setup :verify_on_exit!
@@ -56,7 +58,12 @@ defmodule Contract.AgentTest do
         "mode" => "edit",
         "questions" => [],
         "ops" => [
-          %{"op" => "replace_content", "target_type" => "node", "target_id" => "node:3", "args" => %{"text" => "30 days"}}
+          %{
+            "op" => "replace_content",
+            "target_type" => "node",
+            "target_id" => "node:3",
+            "args" => %{"text" => "30 days"}
+          }
         ],
         "marks" => [],
         "message" => "Changed payment deadline to 30 days."
@@ -102,7 +109,13 @@ defmodule Contract.AgentTest do
     end
 
     test "accepts OpenAI Response map with output[].content[].text" do
-      payload = %{"mode" => "grill", "questions" => [], "ops" => [], "marks" => [], "message" => "?"}
+      payload = %{
+        "mode" => "grill",
+        "questions" => [],
+        "ops" => [],
+        "marks" => [],
+        "message" => "?"
+      }
 
       response = %{
         "output" => [
@@ -141,6 +154,13 @@ defmodule Contract.AgentTest do
       assert user_msg.role == "user"
       assert user_msg.content == "hello"
 
+      labels =
+        ctx.tools
+        |> Enum.filter(&(Map.get(&1, :type) == "mcp"))
+        |> Enum.map(&Map.get(&1, :server_label))
+
+      assert labels == Enum.uniq(labels)
+
       [law_tool] = ctx.tools
       assert law_tool.type == "mcp"
       assert law_tool.server_label == "korean-law"
@@ -158,56 +178,36 @@ defmodule Contract.AgentTest do
       assert ctx.previous_response_id == "resp_xyz"
     end
 
-    test "folds a populated Context Reservoir into the agent's input (SPEC.md §10a, §20)" do
-      reservoir = %Contract.Studio.ContextReservoir{
-        brief: %{purpose: "draft NDA", status: :drafting, user_role: "discloser"},
-        shared_fields: [
-          %{field_id: "party_a", label: "Party A", value: "Acme"},
-          %{field_id: "party_b", label: "Party B", value: "Beta"}
-        ],
-        open_questions: [
-          %{question_id: "q1", text: "Mutual or one-way?", asked_by: :agent}
-        ],
-        related_documents: [
-          %{document_id: "d1", label_ko: "초안", label_en: "draft", role: :current_draft}
-        ],
-        evidence: [
-          %{evidence_id: "e1", source: :law_mcp, summary: "민법 §391"}
-        ]
-      }
+    test "loads persisted ChatThread messages before the current user turn" do
+      owner_id = Ecto.UUID.generate()
+
+      thread =
+        Repo.insert!(%ChatThread{
+          owner_id: owner_id,
+          messages: [
+            %{"role" => "user", "content" => "We need a SaaS distribution agreement."},
+            %{"role" => "assistant", "content" => "What territory should it cover?"}
+          ],
+          last_message_at: DateTime.utc_now(:second)
+        })
 
       action = %Command{
         kind: :chat_message,
         actor_type: :user,
-        message: "tighten this",
-        payload: %{"context_reservoir" => reservoir}
+        actor_id: owner_id,
+        chat_thread_id: thread.id,
+        message: "South Korea only."
       }
 
-      assert {:ok, ctx} = Agent.build_context(nil, action)
-      [user_msg] = ctx.input
-      assert user_msg.role == "user"
-      assert user_msg.content =~ "tighten this"
-      assert user_msg.content =~ "## Context Reservoir"
-      assert user_msg.content =~ "Brief:"
-      assert user_msg.content =~ "Open questions:"
-      assert user_msg.content =~ "Mutual or one-way?"
-      assert user_msg.content =~ "Related documents:"
-      assert user_msg.content =~ "Evidence:"
-    end
+      ctx = Contract.Context.for_user(%Contract.Accounts.User{id: owner_id})
 
-    test "empty reservoir leaves the input mostly unchanged — no header noise" do
-      action = %Command{
-        kind: :chat_message,
-        actor_type: :user,
-        message: "hi",
-        payload: %{"context_reservoir" => %Contract.Studio.ContextReservoir{}}
-      }
+      assert {:ok, frame} = Agent.build_context(ctx, action)
 
-      assert {:ok, ctx} = Agent.build_context(nil, action)
-      [user_msg] = ctx.input
-      assert user_msg.content == "hi"
-      refute user_msg.content =~ "Context Reservoir"
-      refute user_msg.content =~ "Brief:"
+      assert [
+               %{role: "user", content: "We need a SaaS distribution agreement."},
+               %{role: "assistant", content: "What territory should it cover?"},
+               %{role: "user", content: "South Korea only."}
+             ] = frame.input
     end
 
     test "no reservoir on action — frame is unchanged" do
@@ -222,57 +222,6 @@ defmodule Contract.AgentTest do
       [user_msg] = ctx.input
       assert user_msg.content == "hello"
       refute user_msg.content =~ "Context Reservoir"
-    end
-  end
-
-  describe "include_context_reservoir/2" do
-    test "appends the summary to a trailing user message" do
-      frame = %{input: [%{role: "user", content: "do thing"}], system: "sys", tools: []}
-      reservoir = %Contract.Studio.ContextReservoir{
-        brief: %{purpose: "NDA"},
-        open_questions: [%{question_id: "q1", text: "mutual?"}]
-      }
-
-      assert {:ok, new_frame} = Agent.include_context_reservoir(frame, reservoir)
-      [%{content: content}] = new_frame.input
-      assert content =~ "do thing"
-      assert content =~ "## Context Reservoir"
-      assert content =~ "Brief:"
-      assert content =~ "mutual?"
-    end
-
-    test "empty reservoir is a no-op (no header)" do
-      frame = %{input: [%{role: "user", content: "ok"}], system: "sys", tools: []}
-      empty = %Contract.Studio.ContextReservoir{}
-
-      assert {:ok, ^frame} = Agent.include_context_reservoir(frame, empty)
-    end
-
-    test "long lists are truncated to N items + '…(+more)' marker" do
-      qs =
-        for i <- 1..20 do
-          %{question_id: "q#{i}", text: "question #{i}"}
-        end
-
-      reservoir = %Contract.Studio.ContextReservoir{open_questions: qs}
-      summary = Agent.summarize_reservoir(reservoir)
-
-      # Header reports the total count
-      assert summary =~ "Open questions:"
-      assert summary =~ "(20)"
-
-      # Only the first N items are rendered verbatim — late ones become "…(+N)".
-      assert summary =~ "question 1"
-      refute summary =~ "question 20"
-      assert summary =~ "…(+"
-    end
-
-    test "summary is bounded to ≤ 4000 chars even for a fat reservoir" do
-      big_brief = for k <- 1..200, into: %{}, do: {"k#{k}", String.duplicate("v", 200)}
-      reservoir = %Contract.Studio.ContextReservoir{brief: big_brief}
-      summary = Agent.summarize_reservoir(reservoir)
-
-      assert byte_size(summary) <= 4000 + String.length("…")
     end
   end
 

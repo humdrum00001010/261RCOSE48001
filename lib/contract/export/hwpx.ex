@@ -554,9 +554,8 @@ defmodule Contract.Export.HWPX do
   # table) we prepend an empty paragraph with the secPr.
   defp render_node_with_secpr(id, nodes, projection) do
     node = Map.fetch!(nodes, id)
-    kind = Map.get(node, :kind, :paragraph)
 
-    case kind do
+    case node_kind(node) do
       k when k in [:paragraph, :heading, :section] ->
         # Replace its <hp:p> with a secPr-bearing one.
         text = collect_text(node, projection)
@@ -576,7 +575,7 @@ defmodule Contract.Export.HWPX do
         ""
 
       {:ok, node} ->
-        render_kind(Map.get(node, :kind, :paragraph), node, nodes, projection)
+        render_kind(node_kind(node), node, nodes, projection)
     end
   end
 
@@ -594,7 +593,7 @@ defmodule Contract.Export.HWPX do
   defp render_kind(:list, node, nodes, projection) do
     # Emit children as bullet-styled paragraphs. If a list_item has no
     # children, its content is the bullet text.
-    Map.get(node, :children, [])
+    node_children(node)
     |> Enum.map(&render_list_item(&1, nodes, projection))
     |> Enum.join()
   end
@@ -606,9 +605,19 @@ defmodule Contract.Export.HWPX do
   end
 
   defp render_kind(:table, node, nodes, projection) do
-    rows = Map.get(node, :attrs, %{}) |> Map.get(:rows) || infer_table_dims(node, nodes).rows
-    cols = Map.get(node, :attrs, %{}) |> Map.get(:cols) || infer_table_dims(node, nodes).cols
-    table_xml(node, nodes, projection, rows, cols)
+    attrs = node_attrs(node)
+
+    case table_rows_matrix(attrs) do
+      nil ->
+        dims = infer_table_dims(node, nodes)
+        rows = attrs |> attr_get(:rows) |> positive_int(dims.rows)
+        cols = attrs |> attr_get(:cols) |> positive_int(dims.cols)
+        table_xml(node, nodes, projection, rows, cols)
+
+      matrix ->
+        {table_node, table_nodes, rows, cols} = matrix_backed_table(node, matrix)
+        table_xml(table_node, table_nodes, projection, rows, cols)
+    end
   end
 
   defp render_kind(:cell, _node, _nodes, _projection) do
@@ -651,10 +660,10 @@ defmodule Contract.Export.HWPX do
   defp infer_table_dims(node, nodes) do
     # Fallback: count immediate :cell children and arrange in a square-ish grid.
     cell_count =
-      Map.get(node, :children, [])
+      node_children(node)
       |> Enum.count(fn cid ->
         case Map.fetch(nodes, cid) do
-          {:ok, c} -> Map.get(c, :kind) == :cell
+          {:ok, c} -> node_kind(c) == :cell
           :error -> false
         end
       end)
@@ -728,6 +737,7 @@ defmodule Contract.Export.HWPX do
       tbl <>
       ~s(<hp:t/>) <>
       ~s(</hp:run>) <>
+      lineseg_array_xml() <>
       ~s(</hp:p>)
   end
 
@@ -738,7 +748,7 @@ defmodule Contract.Export.HWPX do
     {grid, _} =
       Enum.reduce(cell_ids, {%{}, {0, 0}}, fn cid, {grid_acc, cursor} ->
         cell_node = Map.get(nodes, cid)
-        attrs = (cell_node && (Map.get(cell_node, :attrs) || %{})) || %{}
+        attrs = node_attrs(cell_node)
 
         row_span = attrs[:row_span] || attrs["row_span"] || 1
         col_span = attrs[:col_span] || attrs["col_span"] || 1
@@ -793,7 +803,7 @@ defmodule Contract.Export.HWPX do
   end
 
   defp tc_xml(text, cell_node, row_idx, col_idx, width, table_border) do
-    cell_attrs = (cell_node && (Map.get(cell_node, :attrs) || %{})) || %{}
+    cell_attrs = node_attrs(cell_node)
 
     border_fill =
       Map.get(cell_attrs, :border_fill_id) || Map.get(cell_attrs, "border_fill_id") ||
@@ -851,6 +861,7 @@ defmodule Contract.Export.HWPX do
       safe <>
       ~s(</hp:t>) <>
       ~s(</hp:run>) <>
+      lineseg_array_xml() <>
       ~s(</hp:p>)
   end
 
@@ -866,7 +877,20 @@ defmodule Contract.Export.HWPX do
       safe <>
       ~s(</hp:t>) <>
       ~s(</hp:run>) <>
+      lineseg_array_xml() <>
       ~s(</hp:p>)
+  end
+
+  # Default <hp:linesegarray> emitted on every <hp:p>. Hancom Office regenerates
+  # linesegs on open, but emitting a sane default avoids the strict-viewer
+  # "document modified" prompt. Values are HWP units (1/100 mm) and flags
+  # 393216 = "first line" + "needs reflow". textpos="0" anchors at the start of
+  # the paragraph. Fully static — does not introduce non-determinism.
+  defp lineseg_array_xml do
+    ~s(<hp:linesegarray>) <>
+      ~s(<hp:lineseg textpos="0" vertpos="0" vertsize="1000" textheight="1000") <>
+      ~s( baseline="850" spacing="600" horzpos="0" horzsize="42520" flags="393216"/>) <>
+      ~s(</hp:linesegarray>)
   end
 
   defp sec_pr_xml do
@@ -900,14 +924,120 @@ defmodule Contract.Export.HWPX do
 
   # --------------------------- helpers -----------------------------------
 
-  # Pick the (paraShapeID, charShapeID) pair for a node based on kind + level.
-  defp shape_ids_for(%{kind: :heading} = node) do
-    level = node |> Map.get(:attrs, %{}) |> Map.get(:level, 1)
-    level = level |> clamp(1, 6)
-    {@heading_para_base + level - 1, @heading_char_base + level - 1}
+  defp node_kind(%{} = node) do
+    case Map.get(node, :kind) || Map.get(node, ~s(kind)) do
+      kind
+      when kind in [:paragraph, :heading, :list, :list_item, :table, :cell, :section, :field_ref] ->
+        kind
+
+      ~s(paragraph) ->
+        :paragraph
+
+      ~s(heading) ->
+        :heading
+
+      ~s(list) ->
+        :list
+
+      ~s(list_item) ->
+        :list_item
+
+      ~s(table) ->
+        :table
+
+      ~s(cell) ->
+        :cell
+
+      ~s(section) ->
+        :section
+
+      ~s(field_ref) ->
+        :field_ref
+
+      _ ->
+        :paragraph
+    end
   end
 
-  defp shape_ids_for(_), do: {@body_para, @body_char}
+  defp node_kind(_), do: :paragraph
+
+  defp node_attrs(%{} = node), do: Map.get(node, :attrs) || Map.get(node, ~s(attrs)) || %{}
+  defp node_attrs(_), do: %{}
+
+  defp node_children(%{} = node),
+    do: Map.get(node, :children) || Map.get(node, ~s(children)) || []
+
+  defp node_children(_), do: []
+
+  defp node_content(%{} = node), do: Map.get(node, :content) || Map.get(node, ~s(content))
+  defp node_content(_), do: nil
+
+  defp node_id(%{} = node), do: Map.get(node, :id) || Map.get(node, ~s(id))
+
+  defp attr_get(attrs, key) when is_atom(key) and is_map(attrs) do
+    Map.get(attrs, key) || Map.get(attrs, Atom.to_string(key))
+  end
+
+  defp attr_get(_attrs, _key), do: nil
+
+  defp positive_int(value, _default) when is_integer(value) and value > 0, do: value
+  defp positive_int(_value, default), do: default
+
+  defp table_rows_matrix(attrs) do
+    case attr_get(attrs, :rows) do
+      rows when is_list(rows) and rows != [] and is_list(hd(rows)) -> rows
+      _ -> nil
+    end
+  end
+
+  defp matrix_backed_table(node, matrix) do
+    rows = length(matrix)
+    cols = matrix_col_count(matrix) |> max(1)
+    table_id = node_id(node) || ~s(table)
+
+    cells =
+      for {row, row_idx} <- Enum.with_index(matrix),
+          {cell, col_idx} <- Enum.with_index(pad_row(row, cols)) do
+        id = ~s(#{table_id}:cell:#{row_idx}:#{col_idx})
+        {id, %{id: id, kind: :cell, content: to_text(cell)}}
+      end
+
+    cell_ids = Enum.map(cells, fn {id, _cell} -> id end)
+
+    attrs =
+      node_attrs(node) |> Map.drop([:rows, ~s(rows)]) |> Map.merge(%{rows: rows, cols: cols})
+
+    table_node = %{id: table_id, kind: :table, attrs: attrs, children: cell_ids}
+    table_nodes = Map.new([{table_id, table_node} | cells])
+
+    {table_node, table_nodes, rows, cols}
+  end
+
+  defp matrix_col_count(matrix) do
+    matrix
+    |> Enum.map(fn
+      row when is_list(row) -> length(row)
+      _ -> 0
+    end)
+    |> Enum.max(fn -> 0 end)
+  end
+
+  defp pad_row(row, cols) when is_list(row),
+    do: row ++ List.duplicate(nil, max(cols - length(row), 0))
+
+  defp pad_row(_row, cols), do: List.duplicate(nil, cols)
+
+  # Pick the (paraShapeID, charShapeID) pair for a node based on kind + level.
+  defp shape_ids_for(node) do
+    case node_kind(node) do
+      :heading ->
+        level = node |> node_attrs() |> attr_get(:level) |> positive_int(1) |> clamp(1, 6)
+        {@heading_para_base + level - 1, @heading_char_base + level - 1}
+
+      _ ->
+        {@body_para, @body_char}
+    end
+  end
 
   defp clamp(n, lo, hi) when is_integer(n), do: n |> max(lo) |> min(hi)
   defp clamp(_, lo, _), do: lo
@@ -916,16 +1046,15 @@ defmodule Contract.Export.HWPX do
   #   * direct :content if present
   #   * else resolved field text for :field_ref
   #   * else "" (children render themselves separately)
-  defp collect_text(%{kind: :field_ref} = node, projection) do
-    resolve_field_text(node, projection)
-  end
-
-  defp collect_text(node, _projection) do
-    node |> Map.get(:content) |> to_text()
+  defp collect_text(node, projection) do
+    case node_kind(node) do
+      :field_ref -> resolve_field_text(node, projection)
+      _ -> node |> node_content() |> to_text()
+    end
   end
 
   defp resolve_field_text(node, projection) do
-    field_id = node |> Map.get(:attrs, %{}) |> Map.get(:field_id)
+    field_id = node |> node_attrs() |> attr_get(:field_id)
 
     case field_id do
       nil ->

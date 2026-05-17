@@ -121,7 +121,7 @@ defmodule Contract.Workers.ConversionPlanJob do
     deterministic planner marked the following fields as ambiguous
     (:ask_user). For each one, recommend one of the strategies:
       - "copy_once"             (snapshot the source value)
-      - "link_to_matter_field"  (reference a matter-level fact)
+      - "link_to_shared_fact"  (reference a shared fact)
       - "derive"                (computed reference)
       - "reference_only"        (leave value in source, point at it)
       - "ignore"                (drop the field)
@@ -228,7 +228,7 @@ defmodule Contract.Workers.ConversionPlanJob do
 
   defp to_strategy(s) when is_binary(s) do
     try do
-      String.to_existing_atom(s)
+      Conversion.normalize_strategy(s)
     rescue
       ArgumentError -> nil
     end

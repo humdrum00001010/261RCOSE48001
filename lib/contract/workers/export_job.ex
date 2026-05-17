@@ -13,7 +13,7 @@ defmodule Contract.Workers.ExportJob do
 
       %{
         "document_id" => uuid,
-        "format"      => "pdf" | "docx" | "html" | "hwpx" | ...,
+        "format"      => "pdf" | "docx" | "hwpx" | "markdown" | "lawyer_packet",
         "requester_id"=> uuid | nil       # optional
       }
 
@@ -29,24 +29,45 @@ defmodule Contract.Workers.ExportJob do
   use Oban.Worker, queue: :export, max_attempts: 3
 
   alias Contract.Export
-  alias Contract.Export.Renderer
+  alias Contract.Exports
+  alias Contract.Providers
 
   @pubsub Contract.PubSub
+  @supported_formats [:pdf, :docx, :hwpx, :markdown, :lawyer_packet]
 
   @impl Oban.Worker
   def perform(%Oban.Job{args: %{"document_id" => doc_id, "format" => format} = args}) do
     requester_id = Map.get(args, "requester_id")
-    format_atom = parse_format(format)
     export_id = Map.get(args, "export_id") || Ecto.UUID.generate()
-
     topic = "document:#{doc_id}"
 
-    case do_export(doc_id, format_atom, export_id, requester_id) do
-      {:ok, %Export{} = export} ->
-        Phoenix.PubSub.broadcast(@pubsub, topic, {:export_ready, export})
-        :ok
+    with {:ok, format_atom} <- parse_format(format) do
+      broadcast_status(topic, export_id, doc_id, format_atom, :running, 10, nil)
 
+      case do_export(doc_id, format_atom, export_id, requester_id) do
+        {:ok, %Export{} = export} ->
+          broadcast_status(
+            topic,
+            export_id,
+            doc_id,
+            format_atom,
+            :ready,
+            100,
+            export.download_url
+          )
+
+          Phoenix.PubSub.broadcast(@pubsub, topic, {:export_ready, export})
+          :ok
+
+        {:error, reason} = err ->
+          _ = Exports.mark_failed(export_id, reason)
+          broadcast_status(topic, export_id, doc_id, format_atom, :failed, 100, nil)
+          Phoenix.PubSub.broadcast(@pubsub, topic, {:export_failed, export_id, reason})
+          err
+      end
+    else
       {:error, reason} = err ->
+        _ = Exports.mark_failed(export_id, reason)
         Phoenix.PubSub.broadcast(@pubsub, topic, {:export_failed, export_id, reason})
         err
     end
@@ -60,40 +81,60 @@ defmodule Contract.Workers.ExportJob do
   # --------------------------------------------------------------------
 
   defp do_export(doc_id, format, export_id, requester_id) do
-    with {:ok, state} <- Contract.Store.load(doc_id),
-         {:ok, body, content_type} <- Renderer.render(state, format),
+    with {:ok, _export} <- Exports.mark_running(export_id),
+         {:ok, state} <- Contract.Store.load(doc_id),
+         {:ok, body, content_type} <- Providers.render_export(nil, state, format),
          key = "exports/#{export_id}.#{extension(format)}",
          {:ok, _} <- r2_driver().put(key, body, content_type: content_type),
-         {:ok, url} <- r2_driver().presigned_url(key, expires_in: 7 * 24 * 3600) do
-      {:ok,
-       %Export{
-         id: export_id,
-         document_id: doc_id,
-         format: format,
-         key: key,
-         url: url,
-         requester_id: requester_id
-       }}
+         download_url = "/exports/#{export_id}/download",
+         {:ok, export} <-
+           Exports.mark_ready(export_id, %{
+             key: key,
+             download_url: download_url,
+             content_type: content_type,
+             byte_size: byte_size(body)
+           }) do
+      {:ok, %{export | requester_id: requester_id, url: download_url}}
     end
   end
 
-  defp parse_format(fmt) when is_atom(fmt), do: fmt
+  defp parse_format(fmt) when fmt in @supported_formats, do: {:ok, fmt}
+
+  defp parse_format(fmt) when is_atom(fmt), do: {:error, {:unsupported_format, fmt}}
 
   defp parse_format(fmt) when is_binary(fmt) do
-    try do
-      String.to_existing_atom(fmt)
-    rescue
-      ArgumentError -> String.to_atom(fmt)
+    case fmt do
+      "pdf" -> {:ok, :pdf}
+      "docx" -> {:ok, :docx}
+      "hwpx" -> {:ok, :hwpx}
+      "markdown" -> {:ok, :markdown}
+      "md" -> {:ok, :markdown}
+      "lawyer_packet" -> {:ok, :lawyer_packet}
+      _ -> {:error, {:unsupported_format, fmt}}
     end
   end
+
+  defp parse_format(fmt), do: {:error, {:unsupported_format, fmt}}
 
   defp extension(:pdf), do: "pdf"
   defp extension(:docx), do: "docx"
-  defp extension(:html), do: "html"
-  defp extension(:md), do: "md"
   defp extension(:markdown), do: "md"
+  defp extension(:lawyer_packet), do: "md"
   defp extension(:hwpx), do: "hwpx"
-  defp extension(other), do: to_string(other)
+
+  defp broadcast_status(topic, export_id, doc_id, format, status, progress, download_url) do
+    Phoenix.PubSub.broadcast(@pubsub, topic, {
+      :export_status,
+      %{
+        id: export_id,
+        document_id: doc_id,
+        format: format,
+        status: status,
+        progress: progress,
+        download_url: download_url
+      }
+    })
+  end
 
   defp r2_driver do
     Application.get_env(:contract, :io_drivers, [])

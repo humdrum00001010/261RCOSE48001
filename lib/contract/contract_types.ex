@@ -94,7 +94,9 @@ defmodule Contract.ContractTypes do
   """
   @spec get(Contract.Types.ctx(), Contract.Types.contract_type_key()) ::
           Contract.Types.result(TypeSpec.t())
-  def get(_ctx \\ nil, key) when is_binary(key) do
+  def get(key) when is_binary(key), do: get(nil, key)
+
+  def get(_ctx, key) when is_binary(key) do
     case Map.fetch(@types, key) do
       {:ok, spec} -> {:ok, spec}
       :error -> {:error, :not_found}

@@ -30,7 +30,8 @@ defmodule ContractWeb.Live.Studio.Components.Canvas.EmptyTest do
     render_component(Empty,
       id: "canvas",
       studio_state: Keyword.get(opts, :studio_state, no_doc_state()),
-      projection: Keyword.get(opts, :projection, %{nodes: %{}, fields: %{}, marks: %{}, refs: %{}}),
+      projection:
+        Keyword.get(opts, :projection, %{nodes: %{}, fields: %{}, marks: %{}, refs: %{}}),
       current_scope: scope
     )
   end

@@ -104,6 +104,23 @@ defmodule Contract.IO.OpenAITest do
       assert {:ok, _} = OpenAI.one_shot(%{input: "x"}, extra_tools: extra)
     end
 
+    test "deduplicates MCP tools by server_label before posting", %{bypass: bypass} do
+      duplicate_law_tool = OpenAI.law_mcp_tool(oc: "duplicate")
+
+      Bypass.expect_once(bypass, "POST", "/v1/responses", fn conn ->
+        {:ok, body, conn} = Plug.Conn.read_body(conn, length: 50_000_000)
+        decoded = Jason.decode!(body)
+
+        law_tools = Enum.filter(decoded["tools"], &(&1["server_label"] == "korean-law"))
+        assert length(law_tools) == 1
+        assert hd(law_tools)["server_url"] =~ "?oc=openapi"
+
+        Plug.Conn.resp(conn, 200, Jason.encode!(%{"id" => "r", "output_text" => ""}))
+      end)
+
+      assert {:ok, _} = OpenAI.one_shot(%{input: "x", tools: [duplicate_law_tool]})
+    end
+
     test "omits law MCP tool when include_law_mcp?: false", %{bypass: bypass} do
       Bypass.expect_once(bypass, "POST", "/v1/responses", fn conn ->
         {:ok, body, conn} = Plug.Conn.read_body(conn, length: 50_000_000)

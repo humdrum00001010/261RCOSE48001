@@ -6,55 +6,41 @@ if Application.compile_env(:contract, :test_auth, false) do
     scenarios (route gated by `Application.compile_env(:contract, :test_auth)`),
     which delegates here.
 
-    The reset is **idempotent** and tolerates missing tables — Studio Wave
-    3C1 will introduce `matters` and `documents`; until those migrations
-    exist this still works (it just no-ops the corresponding deletes).
-    Persona users created by `Contract.PersonaFactory` are *not* deleted by
-    default — each test mints fresh users with unique emails so they don't
-    collide.
+    The reset is idempotent and removes rows tagged as E2E documents by the
+    test DB seeder. Persona users created by `Contract.PersonaFactory` are not
+    deleted by default — each test mints fresh users with unique emails so they
+    don't collide.
     """
 
     alias Contract.Repo
 
+    @e2e_documents """
+    SELECT id FROM documents WHERE metadata->>'e2e' = 'true'
+    """
+
     @doc """
-    Deletes everything scoped to the `e2e` matter (and its documents,
-    changes, snapshots, revoke_requests). Tolerates missing tables so we
-    can land this controller now and wire in Studio rows later without a
-    cross-cutting migration dance.
+    Deletes rows scoped to documents tagged with E2E metadata, including
+    changes, snapshots, revoke requests, and field lineage rows. This cleanup is
+    document-first and does not depend on legacy Matters.
     """
     @spec reset!() :: :ok
     def reset! do
-      # Wave-4 schema reality:
-      #   * `snapshots` has NO `matter_id` column — it's keyed by document_id
-      #     only. We need to join through documents to find the snapshots
-      #     belonging to e2e matters.
-      #   * `changes`, `revoke_requests`, and `documents` all have `matter_id`.
-
-      safe_query!(
-        "DELETE FROM changes WHERE matter_id IN (SELECT id FROM matters WHERE name = 'e2e')"
-      )
-
       safe_query!("""
-      DELETE FROM snapshots
-       WHERE document_id IN (
-               SELECT id FROM documents
-                WHERE matter_id IN (SELECT id FROM matters WHERE name = 'e2e')
-             )
+      DELETE FROM revoke_requests
+       WHERE document_id IN (#{@e2e_documents})
+          OR target_change_id IN (SELECT id FROM changes WHERE document_id IN (#{@e2e_documents}))
+          OR resolution_change_id IN (SELECT id FROM changes WHERE document_id IN (#{@e2e_documents}))
       """)
 
-      safe_query!(
-        "DELETE FROM revoke_requests WHERE matter_id IN (SELECT id FROM matters WHERE name = 'e2e')"
-      )
+      safe_query!("""
+      DELETE FROM field_lineages
+       WHERE document_id IN (#{@e2e_documents})
+          OR source_document_id IN (#{@e2e_documents})
+      """)
 
-      safe_query!(
-        "DELETE FROM field_lineages WHERE document_id IN (SELECT id FROM documents WHERE matter_id IN (SELECT id FROM matters WHERE name = 'e2e'))"
-      )
-
-      safe_query!(
-        "DELETE FROM documents WHERE matter_id IN (SELECT id FROM matters WHERE name = 'e2e')"
-      )
-
-      safe_query!("DELETE FROM matters WHERE name = 'e2e'")
+      safe_query!("DELETE FROM snapshots WHERE document_id IN (#{@e2e_documents})")
+      safe_query!("DELETE FROM changes WHERE document_id IN (#{@e2e_documents})")
+      safe_query!("DELETE FROM documents WHERE id IN (#{@e2e_documents})")
 
       :ok
     end
@@ -85,7 +71,6 @@ if Application.compile_env(:contract, :test_auth, false) do
         e in Postgrex.Error ->
           case e.postgres do
             %{code: :undefined_table} -> :ok
-            %{code: :undefined_column} -> :ok
             _ -> reraise(e, __STACKTRACE__)
           end
       end

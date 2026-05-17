@@ -151,6 +151,7 @@ defmodule Contract.Agent.RunServer do
     case Agent.decode_action(final_text, run_id: state.run.id, turn_index: state.run.turn_index) do
       {:ok, action} ->
         new_run = %{state.run | status: :completed}
+        _ = Contract.ChatThreads.append_assistant_message(state.ctx, state.action, action.message)
         broadcast(state, {:agent_completed, state.run.id, action})
         {:stop, :normal, %{state | run: new_run}}
 

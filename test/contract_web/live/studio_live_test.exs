@@ -3,10 +3,19 @@ defmodule ContractWeb.StudioLiveTest do
 
   import Phoenix.LiveViewTest
   import Contract.AccountsFixtures
+  import Ecto.Query
+  import Mox
 
+  alias Contract.ChatThread
   alias Contract.Command
+  alias Contract.Repo
+  alias Contract.SourceClaim
+  alias Contract.SourceDocument
   alias Contract.Studio.State
   alias ContractWeb.StudioLive
+
+  setup :set_mox_from_context
+  setup :verify_on_exit!
 
   describe "auth gate" do
     test "redirects anonymous users to /users/log-in", %{conn: conn} do
@@ -17,9 +26,9 @@ defmodule ContractWeb.StudioLiveTest do
       assert %{"error" => "You must log in to access this page."} = flash
     end
 
-    test "redirects when hitting a matter URL while anonymous", %{conn: conn} do
-      matter = Ecto.UUID.generate()
-      assert {:error, {:redirect, %{to: _}}} = live(conn, ~p"/matters/#{matter}/studio")
+    test "redirects when hitting a document URL while anonymous", %{conn: conn} do
+      document_id = Ecto.UUID.generate()
+      assert {:error, {:redirect, %{to: _}}} = live(conn, ~p"/documents/#{document_id}")
     end
   end
 
@@ -29,24 +38,74 @@ defmodule ContractWeb.StudioLiveTest do
     test "renders the studio root and a desktop grid by default", %{conn: conn} do
       {:ok, _lv, html} = live(conn, ~p"/studio")
       assert html =~ ~s(id="studio-root")
-      # Wave Reservoir-B (SPEC.md §10a): left rail is the Context
-      # Reservoir, not the legacy raw document list.
-      assert html =~ ~s(data-role="context-reservoir")
+      assert html =~ ~s(id="studio-document-header")
+      refute html =~ ~s(data-role="context-reservoir")
       assert html =~ ~s(data-stub="chat-rail")
       # canvas-empty since no doc selected
       assert html =~ ~s(data-stub="canvas-empty")
     end
 
-    test "mounts at /matters/:matter_id/studio with the matter assigned via MatterScope", %{
-      conn: conn
+    test "mounts at /documents/:document_id with current_document_id assigned", %{
+      conn: conn,
+      user: user
     } do
-      matter_id = Ecto.UUID.generate()
-      {:ok, lv, _html} = live(conn, ~p"/matters/#{matter_id}/studio")
+      scope = Contract.Context.for_user(user)
+      {:ok, doc} = Contract.Documents.create(scope, %{title: "Mounted"})
+      {:ok, lv, _html} = live(conn, ~p"/documents/#{doc.id}")
 
-      assert :sys.get_state(lv.pid).socket.assigns.current_scope.matter.id == matter_id
+      assert :sys.get_state(lv.pid).socket.assigns.current_document_id == doc.id
     end
 
-    test "MatterScope threads :user_perms from session onto current_scope.perms (lawyer-style) and renders + 새 문서 link",
+    # ---------------------------------------------------------------
+    # Document-pivot (SPEC.md §4, 2026-05-15). The product surface is
+    # now document-first: `/documents/:document_id` is the canonical
+    # URL, `/studio` (no params) lands on the no-document agent prompt.
+    # ---------------------------------------------------------------
+
+    test "mounts at /documents/:document_id and selects the document",
+         %{conn: conn, user: user} do
+      scope = Contract.Context.for_user(user)
+
+      {:ok, doc} =
+        Contract.Documents.create(scope, %{
+          "title" => "doc-pivot-mount-doc",
+          "type_key" => "nda_v1"
+        })
+
+      {:ok, lv, _html} = live(conn, ~p"/documents/#{doc.id}")
+
+      assigns = :sys.get_state(lv.pid).socket.assigns
+      assert assigns.current_document_id == doc.id
+      assert assigns.studio_state.selected_document_id == doc.id
+    end
+
+    test "mounts at /documents/:document_id/review (review subroute) the same way",
+         %{conn: conn, user: user} do
+      scope = Contract.Context.for_user(user)
+
+      {:ok, doc} =
+        Contract.Documents.create(scope, %{
+          "title" => "doc-pivot-review-doc",
+          "type_key" => "nda_v1"
+        })
+
+      {:ok, lv, _html} = live(conn, ~p"/documents/#{doc.id}/review")
+
+      assigns = :sys.get_state(lv.pid).socket.assigns
+      assert assigns.current_document_id == doc.id
+      assert assigns.studio_state.selected_document_id == doc.id
+    end
+
+    test "mounts at /studio (no params) with no document",
+         %{conn: conn} do
+      {:ok, lv, _html} = live(conn, ~p"/studio")
+
+      assigns = :sys.get_state(lv.pid).socket.assigns
+      assert assigns.current_document_id == nil
+      assert assigns.studio_state.selected_document_id == nil
+    end
+
+    test "DocumentScope threads :user_perms from session onto current_scope.perms (lawyer-style) and renders + 새 문서 link",
          %{conn: conn} do
       # Persona sign-in (TestAuthController) writes :user_perms into the
       # session. Simulate that here — the lawyer-shaped perm set must
@@ -79,6 +138,43 @@ defmodule ContractWeb.StudioLiveTest do
       assert html =~ ~s(data-stub="toast-queue")
     end
 
+    test "no-document chat.submit persists a ChatThread message and reloads it", %{
+      conn: conn,
+      user: user
+    } do
+      stub_agent_response("I can help frame the discussion before a draft exists.")
+
+      {:ok, lv, _html} = live(conn, ~p"/studio")
+
+      message = "Let us discuss a distribution agreement before drafting."
+
+      html =
+        lv
+        |> form("#chat-rail-form", %{"message" => message})
+        |> render_submit()
+
+      assert html =~ message
+
+      thread =
+        Repo.one!(
+          from t in ChatThread,
+            where: t.owner_id == ^user.id and is_nil(t.document_id),
+            order_by: [desc: t.inserted_at],
+            limit: 1
+        )
+
+      assert [%{"role" => "user", "content" => ^message, "id" => message_id}] =
+               Enum.take(thread.messages, 1)
+
+      assert is_binary(message_id)
+      assert thread.last_message_at
+
+      {:ok, _reloaded_lv, reloaded_html} = live(conn, ~p"/studio")
+
+      assert reloaded_html =~ message
+      assert reloaded_html =~ ~s(id="chat-msg-#{message_id}")
+    end
+
     # Wave 4 bugfix #6 — Playwright Scenario 6 selector contract.
     # The global Cmd+K palette mounts through Layouts.app's
     # `CommandPalette.mount_if_live/1` wrapper. Studio's rendered HTML
@@ -106,15 +202,14 @@ defmodule ContractWeb.StudioLiveTest do
         |> render_hook("viewport_change", %{"w" => 600})
 
       assert html =~ ~s(data-stub="chat-rail")
-      # The Context Reservoir is the desktop-only left rail; mobile drops
-      # it (chat-first per the spec). See Wave Reservoir-B.
       refute html =~ ~s(data-role="context-reservoir")
     end
 
     test "viewport_change with w >= 1024 stays on desktop", %{conn: conn} do
       {:ok, lv, _html} = live(conn, ~p"/studio")
       html = render_hook(lv, "viewport_change", %{"w" => 1600})
-      assert html =~ ~s(data-role="context-reservoir")
+      assert html =~ ~s(id="studio-document-header")
+      refute html =~ ~s(data-role="context-reservoir")
     end
 
     test "toggle_preview is a no-op on desktop layout (mobile-only button)",
@@ -127,80 +222,169 @@ defmodule ContractWeb.StudioLiveTest do
     end
   end
 
+  # ---------------------------------------------------------------------------
+  # SPEC.md §10 — no-document agent prompt (Wave Document-Pivot Impl D)
+  # ---------------------------------------------------------------------------
+  describe "agent_option_picked (no-document quick-start, SPEC.md §10)" do
+    setup :log_in_a_user
+
+    test "renders the 5-option no-document welcome at /studio (no doc selected)",
+         %{conn: conn} do
+      {:ok, _lv, html} = live(conn, ~p"/studio")
+
+      assert html =~ ~s(data-role="chat-no-doc-welcome")
+      # All 5 chip keys are present.
+      assert html =~ ~s(phx-value-key="upload")
+      assert html =~ ~s(phx-value-key="recent")
+      assert html =~ ~s(phx-value-key="blank")
+      assert html =~ ~s(phx-value-key="draft_from_discussion")
+      assert html =~ ~s(phx-value-key="variant_from_other")
+    end
+
+    test "upload option opens the upload modal", %{conn: conn} do
+      {:ok, lv, _html} = live(conn, ~p"/studio")
+      assert :sys.get_state(lv.pid).socket.assigns.studio_state.upload_panel_open? == false
+
+      _ = render_hook(lv, "agent_option_picked", %{"key" => "upload"})
+
+      assert :sys.get_state(lv.pid).socket.assigns.studio_state.upload_panel_open? == true
+    end
+
+    test "recent option opens the document-picker modal", %{conn: conn} do
+      {:ok, lv, _html} = live(conn, ~p"/studio")
+      assert :sys.get_state(lv.pid).socket.assigns.studio_state.document_picker_open? == false
+
+      _ = render_hook(lv, "agent_option_picked", %{"key" => "recent"})
+
+      assert :sys.get_state(lv.pid).socket.assigns.studio_state.document_picker_open? == true
+    end
+
+    test "draft_from_discussion option flashes a stub info message", %{conn: conn} do
+      {:ok, lv, _html} = live(conn, ~p"/studio")
+
+      html = render_hook(lv, "agent_option_picked", %{"key" => "draft_from_discussion"})
+
+      assert html =~ "논의 모드는 곧 추가됩니다."
+    end
+
+    test "variant_from_other option opens the document-picker with the variant-source flag",
+         %{conn: conn} do
+      {:ok, lv, _html} = live(conn, ~p"/studio")
+
+      _ = render_hook(lv, "agent_option_picked", %{"key" => "variant_from_other"})
+
+      state = :sys.get_state(lv.pid).socket.assigns.studio_state
+      assert state.document_picker_open? == true
+      assert Map.get(state, :variant_source_picker?) == true
+    end
+  end
+
   describe "event_to_command/3 (dispatch funnel)" do
     setup :base_assigns
 
-    test "rename_document → :rename_document Action with document_id from state",
+    test "document.rename → :rename_document Command with document_id from state",
          %{assigns: assigns} do
       doc = Ecto.UUID.generate()
       assigns = put_doc(assigns, doc)
 
       assert {:ok, %Command{kind: :rename_document, document_id: ^doc, actor_type: :user}} =
-               StudioLive.event_to_command("rename_document", %{"title" => "New"}, assigns)
+               StudioLive.event_to_command("document.rename", %{"title" => "New"}, assigns)
     end
 
-    test "set_contract_type → :set_contract_type", %{assigns: assigns} do
+    test "document.type.set → :set_contract_type", %{assigns: assigns} do
       doc = Ecto.UUID.generate()
       assigns = put_doc(assigns, doc)
 
       assert {:ok, %Command{kind: :set_contract_type}} =
-               StudioLive.event_to_command("set_contract_type", %{"type_key" => "nda"}, assigns)
+               StudioLive.event_to_command("document.type.set", %{"type_key" => "nda"}, assigns)
     end
 
-    test "edit_document → :edit_document", %{assigns: assigns} do
+    test "document.metadata.update → :update_metadata", %{assigns: assigns} do
+      doc = Ecto.UUID.generate()
+      assigns = put_doc(assigns, doc)
+
+      assert {:ok,
+              %Command{kind: :update_metadata, document_id: ^doc, payload: %{"notes" => "review"}}} =
+               StudioLive.event_to_command(
+                 "document.metadata.update",
+                 %{"notes" => "review"},
+                 assigns
+               )
+    end
+
+    test "document.edit → :edit_document", %{assigns: assigns} do
       doc = Ecto.UUID.generate()
       assigns = put_doc(assigns, doc)
 
       assert {:ok, %Command{kind: :edit_document}} =
-               StudioLive.event_to_command("edit_document", %{"ops" => []}, assigns)
+               StudioLive.event_to_command("document.edit", %{"ops" => []}, assigns)
     end
 
-    test "send_chat_message → :chat_message (document not required)",
+    test "chat.submit → :chat_message (document not required)",
          %{assigns: assigns} do
       assert {:ok, %Command{kind: :chat_message}} =
-               StudioLive.event_to_command("send_chat_message", %{"message" => "hi"}, assigns)
+               StudioLive.event_to_command("chat.submit", %{"message" => "hi"}, assigns)
     end
 
-    test "revoke_change → :revoke_change", %{assigns: assigns} do
+    test "change.revoke → :revoke_change", %{assigns: assigns} do
       doc = Ecto.UUID.generate()
       assigns = put_doc(assigns, doc)
 
-      assert {:ok, %Command{kind: :revoke_change}} =
-               StudioLive.event_to_command("revoke_change", %{"change_id" => "x"}, assigns)
+      assert {:ok, %Command{kind: :revoke_change, change_id: "x"}} =
+               StudioLive.event_to_command("change.revoke", %{"change_id" => "x"}, assigns)
     end
 
-    test "upload_document → :upload_document (document not required)",
+    test "change.revoke without change_id is rejected", %{assigns: assigns} do
+      doc = Ecto.UUID.generate()
+      assigns = put_doc(assigns, doc)
+
+      assert {:error, {:missing_change_id, :revoke_change}} =
+               StudioLive.event_to_command("change.revoke", %{}, assigns)
+    end
+
+    test "document.upload → :upload_document (document not required)",
          %{assigns: assigns} do
       assert {:ok, %Command{kind: :upload_document}} =
-               StudioLive.event_to_command("upload_document", %{"upload" => %{}}, assigns)
+               StudioLive.event_to_command("document.upload", %{"upload" => %{}}, assigns)
     end
 
-    test "create_variant → :create_converted_variant", %{assigns: assigns} do
+    test "source_claim.unlink → :source_claim_unlink_from_document", %{assigns: assigns} do
+      claim_id = Ecto.UUID.generate()
+
+      assert {:ok, %Command{kind: :source_claim_unlink_from_document, source_claim_id: ^claim_id}} =
+               StudioLive.event_to_command(
+                 "source_claim.unlink",
+                 %{"source_claim_id" => claim_id},
+                 assigns
+               )
+    end
+
+    test "conversion.create_variant → :create_converted_variant", %{assigns: assigns} do
       assert {:ok, %Command{kind: :create_converted_variant}} =
-               StudioLive.event_to_command("create_variant", %{}, assigns)
+               StudioLive.event_to_command("conversion.create_variant", %{}, assigns)
     end
 
-    test "open_document → :open_document", %{assigns: assigns} do
+    test "document.open → :open_document", %{assigns: assigns} do
       doc = Ecto.UUID.generate()
 
       assert {:ok, %Command{kind: :open_document, document_id: ^doc}} =
-               StudioLive.event_to_command("open_document", %{"document_id" => doc}, assigns)
+               StudioLive.event_to_command("document.open", %{"document_id" => doc}, assigns)
     end
 
-    test "duplicate_document → :duplicate_document", %{assigns: assigns} do
+    test "document.duplicate → :duplicate_document", %{assigns: assigns} do
       doc = Ecto.UUID.generate()
       assigns = put_doc(assigns, doc)
 
       assert {:ok, %Command{kind: :duplicate_document}} =
-               StudioLive.event_to_command("duplicate_document", %{}, assigns)
+               StudioLive.event_to_command("document.duplicate", %{}, assigns)
     end
 
-    test "request_export → :request_export", %{assigns: assigns} do
+    test "export.request → :request_export", %{assigns: assigns} do
       doc = Ecto.UUID.generate()
       assigns = put_doc(assigns, doc)
 
       assert {:ok, %Command{kind: :request_export}} =
-               StudioLive.event_to_command("request_export", %{"format" => "pdf"}, assigns)
+               StudioLive.event_to_command("export.request", %{"format" => "pdf"}, assigns)
     end
 
     test "command_palette_picked resolves to the inner kind", %{assigns: assigns} do
@@ -208,6 +392,15 @@ defmodule ContractWeb.StudioLiveTest do
                StudioLive.event_to_command(
                  "command_palette_picked",
                  %{"kind" => "chat_message", "message" => "hi"},
+                 assigns
+               )
+    end
+
+    test "command_palette_picked resolves dotted document.create", %{assigns: assigns} do
+      assert {:ok, %Command{kind: :create_document, payload: %{"title" => "Blank"}}} =
+               StudioLive.event_to_command(
+                 "command_palette_picked",
+                 %{"kind" => "document.create", "title" => "Blank"},
                  assigns
                )
     end
@@ -224,7 +417,7 @@ defmodule ContractWeb.StudioLiveTest do
     test "missing document_id when required is a typed error", %{assigns: assigns} do
       # rename_document requires a doc id; nothing in state and nothing in params
       assert {:error, {:missing_document_id, :rename_document}} =
-               StudioLive.event_to_command("rename_document", %{}, assigns)
+               StudioLive.event_to_command("document.rename", %{}, assigns)
     end
 
     test "local UI events return :local", %{assigns: assigns} do
@@ -259,34 +452,33 @@ defmodule ContractWeb.StudioLiveTest do
     test "start_type_conversion with a real source document builds a plan and flips migration_panel_open?",
          %{conn: conn, user: user} do
       scope = Contract.Context.for_user(user)
-      {:ok, matter} = Contract.Matters.create(scope, %{"name" => "wizard"})
 
       {:ok, doc} =
         Contract.Documents.create(scope, %{
-          "matter_id" => matter.id,
           "title" => "src",
           "type_key" => "nda_v1"
         })
 
       # Give the LV the lawyer-style perms via session.
-      conn = Plug.Conn.put_session(conn, :user_perms, ~w(read write commit revoke export type_change)a)
+      conn =
+        Plug.Conn.put_session(conn, :user_perms, ~w(read write commit revoke export type_change)a)
 
       {:ok, lv, _html} = live(conn, ~p"/studio")
 
       # Seed selected document.
       send_state(lv, %State{
-        matter_id: matter.id,
         selected_document_id: doc.id,
         mode: :editing,
         last_seen_revision: 0
       })
 
       _ =
-        render_hook(lv, "start_type_conversion", %{
+        render_hook(lv, "conversion.start", %{
           "target_type_key" => "service_agreement_v1"
         })
 
       assert assigns(lv).studio_state.migration_panel_open? == true
+
       assert %Contract.Conversion.Plan{target_type_key: "service_agreement_v1"} =
                assigns(lv).migration_plan
     end
@@ -296,7 +488,7 @@ defmodule ContractWeb.StudioLiveTest do
       {:ok, lv, _html} = live(conn, ~p"/studio")
 
       html =
-        render_hook(lv, "start_type_conversion", %{"target_type_key" => "nda_v1"})
+        render_hook(lv, "conversion.start", %{"target_type_key" => "nda_v1"})
 
       assert html =~ "No document selected"
     end
@@ -311,21 +503,22 @@ defmodule ContractWeb.StudioLiveTest do
         last_seen_revision: 0
       })
 
-      html = render_hook(lv, "start_type_conversion", %{"target_type_key" => ""})
+      html = render_hook(lv, "conversion.start", %{"target_type_key" => ""})
       assert html =~ "target type"
     end
 
     test "create_variant without a plan flashes an error", %{conn: conn} do
       {:ok, lv, _html} = live(conn, ~p"/studio")
-      html = render_hook(lv, "create_variant", %{})
+      html = render_hook(lv, "conversion.create_variant", %{})
       assert html =~ "No active conversion plan"
     end
 
     test "set_field_migration_strategy without a plan flashes an error",
          %{conn: conn} do
       {:ok, lv, _html} = live(conn, ~p"/studio")
+
       html =
-        render_hook(lv, "set_field_migration_strategy", %{
+        render_hook(lv, "conversion.field_strategy.set", %{
           "source_field_id" => "party_a",
           "strategy" => "copy_once"
         })
@@ -340,11 +533,9 @@ defmodule ContractWeb.StudioLiveTest do
     test "start_type_conversion renders plan summary with hairline accent (no emerald block)",
          %{conn: conn, user: user} do
       scope = Contract.Context.for_user(user)
-      {:ok, matter} = Contract.Matters.create(scope, %{"name" => "wizard-bug-4"})
 
       {:ok, doc} =
         Contract.Documents.create(scope, %{
-          "matter_id" => matter.id,
           "title" => "src-bug-4",
           "type_key" => "nda_v1"
         })
@@ -359,14 +550,13 @@ defmodule ContractWeb.StudioLiveTest do
       {:ok, lv, _html} = live(conn, ~p"/studio")
 
       send_state(lv, %State{
-        matter_id: matter.id,
         selected_document_id: doc.id,
         mode: :editing,
         last_seen_revision: 0
       })
 
       html =
-        render_hook(lv, "start_type_conversion", %{
+        render_hook(lv, "conversion.start", %{
           "target_type_key" => "service_agreement_v1"
         })
 
@@ -399,11 +589,9 @@ defmodule ContractWeb.StudioLiveTest do
     test "edit_document with Engine-shaped ops payload lands a Change row",
          %{conn: conn, user: user} do
       scope = Contract.Context.for_user(user)
-      {:ok, matter} = Contract.Matters.create(scope, %{"name" => "edit-bug-5"})
 
       {:ok, doc} =
         Contract.Documents.create(scope, %{
-          "matter_id" => matter.id,
           "title" => "edit-bug-5-doc",
           "type_key" => "nda_v1"
         })
@@ -418,7 +606,6 @@ defmodule ContractWeb.StudioLiveTest do
       {:ok, lv, _html} = live(conn, ~p"/studio")
 
       send_state(lv, %State{
-        matter_id: matter.id,
         selected_document_id: doc.id,
         mode: :editing,
         last_seen_revision: 0
@@ -458,11 +645,9 @@ defmodule ContractWeb.StudioLiveTest do
     test "edit_document then revoke_change for the same node lands a revoke Change row",
          %{conn: conn, user: user} do
       scope = Contract.Context.for_user(user)
-      {:ok, matter} = Contract.Matters.create(scope, %{"name" => "revoke-key-74"})
 
       {:ok, doc} =
         Contract.Documents.create(scope, %{
-          "matter_id" => matter.id,
           "title" => "revoke-key-74-doc",
           "type_key" => "nda_v1"
         })
@@ -477,7 +662,6 @@ defmodule ContractWeb.StudioLiveTest do
       {:ok, lv, _html} = live(conn, ~p"/studio")
 
       send_state(lv, %State{
-        matter_id: matter.id,
         selected_document_id: doc.id,
         mode: :editing,
         last_seen_revision: 0
@@ -500,10 +684,11 @@ defmodule ContractWeb.StudioLiveTest do
       {:ok, changes_after_edit} = Contract.Store.changes_since(doc.id, 0)
 
       edit_change =
-        Enum.find(changes_after_edit, fn c -> c.action_kind == "edit_document" end)
+        Enum.find(changes_after_edit, fn c -> c.command_kind == "edit_document" end)
 
-      assert edit_change, "edit_document must produce a Change row " <>
-                            "(got: #{inspect(Enum.map(changes_after_edit, & &1.action_kind))})"
+      assert edit_change,
+             "edit_document must produce a Change row " <>
+               "(got: #{inspect(Enum.map(changes_after_edit, & &1.command_kind))})"
 
       # The LV pushes editor:last-change to the hook as soon as the
       # change_committed PubSub round-trip lands. Drive the protocol
@@ -514,7 +699,7 @@ defmodule ContractWeb.StudioLiveTest do
 
       # 2. Simulate Cmd+Z by firing the same event the hook would push.
       _ =
-        render_hook(lv, "revoke_change", %{
+        render_hook(lv, "change.revoke", %{
           "change_id" => edit_change.id,
           "node_id" => "node-effective-date"
         })
@@ -524,12 +709,12 @@ defmodule ContractWeb.StudioLiveTest do
 
       revoke_change =
         Enum.find(after_undo, fn c ->
-          c.action_kind == "revoke_change"
+          c.command_kind == "revoke_change"
         end)
 
       assert revoke_change,
              "revoke_change event must land a revoke Change row " <>
-               "(got kinds: #{inspect(Enum.map(after_undo, & &1.action_kind))})"
+               "(got kinds: #{inspect(Enum.map(after_undo, & &1.command_kind))})"
 
       # The revoke's explain mark targets the change_id we intended to
       # undo (engine.ex `build_ops_and_marks/:revoke_change`). This is
@@ -560,7 +745,7 @@ defmodule ContractWeb.StudioLiveTest do
 
     test "{:studio_loaded, state} swaps the studio_state assign", %{conn: conn} do
       {:ok, lv, _html} = live(conn, ~p"/studio")
-      new_state = %State{matter_id: "m", mode: :editing, last_seen_revision: 9}
+      new_state = %State{mode: :editing, last_seen_revision: 9}
       send(lv.pid, {:studio_loaded, new_state})
       _ = render(lv)
       assert assigns(lv).studio_state == new_state
@@ -576,8 +761,8 @@ defmodule ContractWeb.StudioLiveTest do
       change = %Contract.Change{
         id: Ecto.UUID.generate(),
         document_id: doc,
-        action_kind: "edit_document",
-        applied_revision: 7
+        command_kind: "edit_document",
+        result_revision: 7
       }
 
       send(lv.pid, {:change_committed, change})
@@ -600,8 +785,8 @@ defmodule ContractWeb.StudioLiveTest do
 
       change = %Contract.Change{
         id: Ecto.UUID.generate(),
-        action_kind: "resolve_revoke",
-        applied_revision: 2
+        command_kind: "resolve_revoke",
+        result_revision: 2
       }
 
       send(lv.pid, {:change_reconciled, change})
@@ -632,6 +817,190 @@ defmodule ContractWeb.StudioLiveTest do
       assert assigns(lv).studio_state.agent_run_id == nil
     end
 
+    test "tool-call protocol messages render structured operation blocks", %{conn: conn} do
+      {:ok, lv, _html} = live(conn, ~p"/studio")
+      run_id = Ecto.UUID.generate()
+      tool_id = Ecto.UUID.generate()
+
+      send(lv.pid, {:tool_call_started, run_id, %{id: tool_id, tool_name: "law.search"}})
+      html = render(lv)
+
+      assert html =~ ~s(id="operation-block-tool-#{run_id}-#{tool_id}")
+      assert html =~ ~s(data-role="operation-block")
+      assert html =~ ~s(data-operation-type="tool_call")
+      assert html =~ ~s(data-operation-status="running")
+      assert html =~ "law.search"
+      refute html =~ "Tool started: law.search"
+
+      send(lv.pid, {:tool_call_completed, run_id, tool_id, %{summary: "Found 2 clauses"}})
+      html = render(lv)
+
+      assert html =~ ~s(id="operation-block-tool-#{run_id}-#{tool_id}")
+      assert html =~ ~s(data-operation-status="completed")
+      assert html =~ "Found 2 clauses"
+    end
+
+    test "uploaded source document renders interpretation and claim operation blocks", %{
+      conn: conn
+    } do
+      old_drivers = Application.get_env(:contract, :io_drivers, [])
+
+      Application.put_env(
+        :contract,
+        :io_drivers,
+        old_drivers
+        |> Keyword.put(:r2, Contract.IO.R2Stub)
+        |> Keyword.put(:upstage, Contract.IO.DeterministicParser)
+      )
+
+      Contract.IO.R2Stub.reset()
+
+      on_exit(fn ->
+        Application.put_env(:contract, :io_drivers, old_drivers)
+        Contract.IO.R2Stub.reset()
+      end)
+
+      tmp =
+        Path.join(
+          System.tmp_dir!(),
+          "studio-source-upload-#{System.unique_integer([:positive])}.txt"
+        )
+
+      File.write!(tmp, "Effective Date: 2026-01-01\nParty A: Acme Corp\n")
+
+      upload = %{
+        path: tmp,
+        client_name: "counterparty.txt",
+        client_type: "text/plain",
+        client_size: File.stat!(tmp).size
+      }
+
+      {:ok, lv, _html} = live(conn, ~p"/studio")
+      html = render_hook(lv, "document.upload", %{"upload" => upload})
+
+      assert html =~ ~s(data-role="source-interpretation-block")
+      assert html =~ ~s(data-role="source-claim-block")
+      assert html =~ "effective_date"
+      assert html =~ "party_a"
+      refute html =~ ~s(data-operation-status="parsing")
+    end
+
+    test "source-document protocol messages render structured operation blocks", %{conn: conn} do
+      {:ok, lv, _html} = live(conn, ~p"/studio")
+      source_id = Ecto.UUID.generate()
+
+      send(lv.pid, {:source_document_uploaded, %{id: source_id, title: "Counterparty draft"}})
+      html = render(lv)
+      assert html =~ ~s(id="operation-block-source-#{source_id}")
+      assert html =~ ~s(data-operation-type="source_interpretation")
+      assert html =~ ~s(data-operation-status="uploaded")
+      assert html =~ "Counterparty draft"
+
+      send(lv.pid, {:source_document_parse_started, source_id})
+      html = render(lv)
+      assert html =~ ~s(data-operation-status="parsing")
+
+      send(lv.pid, {:source_document_parsed, %{id: source_id, title: "Counterparty draft"}})
+      html = render(lv)
+      assert html =~ ~s(data-operation-status="parsed")
+
+      claims = [%{id: "claim-1"}, %{id: "claim-2"}]
+      send(lv.pid, {:source_interpretation_ready, source_id, claims})
+      html = render(lv)
+      assert html =~ ~s(id="operation-block-source-#{source_id}-interpretation")
+      assert html =~ ~s(data-operation-status="ready")
+      assert html =~ "2 claims"
+
+      send(lv.pid, {:source_claim_updated, %{id: "claim-1", status: :confirmed}})
+      html = render(lv)
+      assert html =~ ~s(id="operation-block-source-claim-claim-1")
+      assert html =~ ~s(data-operation-type="source_claim")
+      assert html =~ ~s(data-operation-status="confirmed")
+    end
+
+    test "source claim controls refresh operation status immediately and after reload", %{
+      conn: conn,
+      user: user
+    } do
+      scope = Contract.Context.for_user(user)
+      {:ok, document} = Contract.Documents.create(scope, %{title: "Working draft"})
+      {:ok, source_document, claim} = seed_source_claim(user, document)
+      seed_source_claim_thread(user, document, source_document, claim)
+
+      {:ok, lv, html} = live(conn, ~p"/documents/#{document.id}")
+      assert html =~ ~s(id="operation-block-source-claim-#{claim.id}")
+      assert html =~ ~s(data-operation-status="proposed")
+
+      html =
+        render_hook(lv, "source_claim.confirm", %{
+          "source_claim_id" => claim.id,
+          "source_document_id" => source_document.id
+        })
+
+      assert html =~ ~s(data-operation-status="confirmed")
+
+      html =
+        render_hook(lv, "source_claim.reject", %{
+          "source_claim_id" => claim.id,
+          "source_document_id" => source_document.id,
+          "reason" => "wrong field"
+        })
+
+      assert html =~ ~s(data-operation-status="rejected")
+
+      html =
+        render_hook(lv, "source_claim.link_to_document", %{
+          "source_claim_id" => claim.id,
+          "source_document_id" => source_document.id,
+          "node_id" => "node-effective-date",
+          "field_id" => "effective_date"
+        })
+
+      assert html =~ ~s(data-operation-status="linked")
+
+      html =
+        render_hook(lv, "source_claim.unlink", %{
+          "source_claim_id" => claim.id,
+          "source_document_id" => source_document.id
+        })
+
+      assert html =~ ~s(data-operation-status="unlinked")
+
+      {:ok, _reloaded, reloaded_html} = live(conn, ~p"/documents/#{document.id}")
+      assert reloaded_html =~ ~s(data-operation-status="unlinked")
+    end
+
+    test "evidence and export-started protocol messages render structured operation blocks", %{
+      conn: conn
+    } do
+      {:ok, lv, _html} = live(conn, ~p"/studio")
+      evidence_id = Ecto.UUID.generate()
+      export_id = Ecto.UUID.generate()
+
+      send(lv.pid, {:evidence_created, %{id: evidence_id, summary: "Article 12 citation"}})
+      html = render(lv)
+      assert html =~ ~s(id="operation-block-evidence-#{evidence_id}")
+      assert html =~ ~s(data-operation-type="evidence")
+      assert html =~ ~s(data-operation-status="created")
+      assert html =~ "Article 12 citation"
+
+      send(
+        lv.pid,
+        {:evidence_attached, %{id: evidence_id, summary: "Article 12 citation"}, %{id: "mark-1"}}
+      )
+
+      html = render(lv)
+      assert html =~ ~s(id="operation-block-evidence-#{evidence_id}-attached-mark-1")
+      assert html =~ ~s(data-operation-status="attached")
+
+      send(lv.pid, {:export_started, export_id})
+      html = render(lv)
+      assert html =~ ~s(id="operation-block-export-#{export_id}")
+      assert html =~ ~s(data-operation-type="export_status")
+      assert html =~ ~s(data-operation-status="started")
+      assert html =~ String.slice(export_id, 0, 8)
+    end
+
     test "unknown messages are ignored without crashing", %{conn: conn} do
       {:ok, lv, _html} = live(conn, ~p"/studio")
       send(lv.pid, {:totally_unknown, 1, 2})
@@ -640,12 +1009,48 @@ defmodule ContractWeb.StudioLiveTest do
     end
   end
 
+
   # ---------------------------------------------------------------------------
   # Cmd+K palette → "Set contract type…" → type-picker modal (bug #75).
   # Pushing `command_palette_picked` with `kind=set_contract_type` and no
   # `type_key` must NOT dispatch an Action (it would fail validation) — it
   # must open the type-picker modal on the ModalHost so the user can pick.
   # ---------------------------------------------------------------------------
+  describe "dev/test operation block QA synthesis" do
+    setup :log_in_a_user
+
+    test "authenticated browser hook synthesizes operation blocks that can expand", %{
+      conn: conn
+    } do
+      {:ok, lv, _html} = live(conn, ~p"/studio")
+
+      conn = post(conn, ~p"/test/studio/operation_blocks")
+      assert %{"ok" => true, "operation_ids" => [operation_id | _]} = json_response(conn, 200)
+
+      html = render(lv)
+      assert html =~ ~s(id="operation-block-#{operation_id}")
+      assert html =~ ~s(data-role="operation-block")
+      assert html =~ ~s(id="operation-block-#{operation_id}-toggle")
+      refute html =~ ~s(id="operation-block-#{operation_id}-details")
+
+      html =
+        lv
+        |> element("#operation-block-#{operation_id}-toggle")
+        |> render_click()
+
+      assert html =~ ~s(id="operation-block-#{operation_id}-details")
+      assert html =~ "Synthetic QA operation"
+    end
+
+    test "operation block QA synthesis requires an authenticated session" do
+      conn =
+        Phoenix.ConnTest.build_conn()
+        |> post(~p"/test/studio/operation_blocks")
+
+      assert %{"ok" => false, "error" => "unauthenticated"} = json_response(conn, 401)
+    end
+  end
+
   describe "command_palette_picked → set_contract_type opens the type-picker" do
     setup :log_in_a_user
 
@@ -687,11 +1092,9 @@ defmodule ContractWeb.StudioLiveTest do
     test "with a type_key, dispatches the set_contract_type Action (no modal)",
          %{conn: conn, user: user} do
       scope = Contract.Context.for_user(user)
-      {:ok, matter} = Contract.Matters.create(scope, %{"name" => "palette-type"})
 
       {:ok, doc} =
         Contract.Documents.create(scope, %{
-          "matter_id" => matter.id,
           "title" => "src",
           "type_key" => "nda_v1"
         })
@@ -706,7 +1109,6 @@ defmodule ContractWeb.StudioLiveTest do
       {:ok, lv, _html} = live(conn, ~p"/studio")
 
       send_state(lv, %State{
-        matter_id: matter.id,
         selected_document_id: doc.id,
         mode: :editing,
         last_seen_revision: 0
@@ -749,27 +1151,43 @@ defmodule ContractWeb.StudioLiveTest do
       refute Enum.any?(trail, &(&1.label == "Matter"))
     end
 
-    test "mounting under a matter route (no document) still gives a 2-crumb trail (no matter level)",
-         %{conn: conn} do
-      # Matter URL → MatterScope assigns a stub matter onto current_scope,
-      # but the breadcrumb should still collapse to `Dashboard > Studio`
-      # since no document is loaded.
-      matter_id = Ecto.UUID.generate()
-      {:ok, lv, _html} = live(conn, ~p"/matters/#{matter_id}/studio")
+    test "mounting a document route gives Dashboard > Document breadcrumbs", %{
+      conn: conn,
+      user: user
+    } do
+      scope = Contract.Context.for_user(user)
+      {:ok, doc} = Contract.Documents.create(scope, %{title: "Breadcrumb draft"})
+      {:ok, lv, _html} = live(conn, ~p"/documents/#{doc.id}")
 
       trail = :sys.get_state(lv.pid).socket.assigns.breadcrumbs
 
-      # Exactly 2 crumbs — matter is never its own breadcrumb step.
       assert length(trail) == 2
       assert Enum.at(trail, 0).label == "Dashboard"
-      # The current crumb is "Studio", never the matter stub name.
-      refute Enum.at(trail, 1).label =~ "Matter "
+      assert Enum.at(trail, 1).label == "Breadcrumb draft"
+      refute Enum.any?(trail, &(&1.label == "Matter"))
     end
   end
 
   # ---------------------------------------------------------------------------
   # helpers
   # ---------------------------------------------------------------------------
+
+  defp stub_agent_response(message) do
+    payload =
+      Jason.encode!(%{
+        "mode" => "grill",
+        "questions" => [],
+        "ops" => [],
+        "marks" => [],
+        "message" => message
+      })
+
+    Contract.IO.OpenAIMock
+    |> stub(:stream_chat, fn _params, _opts ->
+      stream = [%{type: "response.output_text.delta", data: %{"delta" => payload}}]
+      {:ok, %{stream: stream, task_pid: self()}}
+    end)
+  end
 
   defp log_in_a_user(%{conn: conn}) do
     user = user_fixture()
@@ -787,6 +1205,63 @@ defmodule ContractWeb.StudioLiveTest do
     %State{} = state = assigns.studio_state
     new_state = %{state | selected_document_id: doc, last_seen_revision: 1, mode: :editing}
     %{assigns | studio_state: new_state}
+  end
+
+  defp seed_source_claim(user, document) do
+    {:ok, source_document} =
+      %SourceDocument{}
+      |> SourceDocument.changeset(%{
+        owner_id: user.id,
+        document_id: document.id,
+        blob_ref_id: Ecto.UUID.generate(),
+        status: "ready"
+      })
+      |> Repo.insert()
+
+    {:ok, claim} =
+      %SourceClaim{}
+      |> SourceClaim.changeset(%{
+        source_document_id: source_document.id,
+        region_id: "region-effective-date",
+        proposed_kind: "effective_date",
+        proposed_value: "2026-01-01",
+        confidence: Decimal.new("0.91")
+      })
+      |> Repo.insert()
+
+    {:ok, source_document, claim}
+  end
+
+  defp seed_source_claim_thread(user, document, source_document, claim) do
+    message = %{
+      "id" => "source-claim-#{claim.id}",
+      "role" => "assistant",
+      "content" => "",
+      "inserted_at" => DateTime.to_iso8601(DateTime.utc_now(:second)),
+      "operation" => %{
+        "id" => "source-claim-#{claim.id}",
+        "type" => "source_claim",
+        "title" => "Effective date",
+        "status" => "proposed",
+        "details" => %{
+          "source_claim_id" => claim.id,
+          "source_document_id" => source_document.id,
+          "proposed_kind" => claim.proposed_kind,
+          "proposed_value" => claim.proposed_value
+        }
+      }
+    }
+
+    %ChatThread{}
+    |> ChatThread.changeset(%{
+      owner_id: user.id,
+      document_id: document.id,
+      title: "Discussion",
+      messages: [message],
+      status: "active",
+      last_message_at: DateTime.utc_now(:second)
+    })
+    |> Repo.insert!()
   end
 
   defp assigns(lv) do

@@ -1,59 +1,87 @@
 defmodule Contract.Export do
   @moduledoc """
-  Minimal export record returned by `Contract.IO.export/4` and by the
-  asynchronous `Contract.Workers.ExportJob` (Wave 4).
+  Persisted export request and delivery record.
 
-  ## Fields
-
-    * `:id` — synthetic UUID for the export.
-    * `:document_id` — source document.
-    * `:format` — `:hwpx | :html | :pdf | :docx | :md`.
-    * `:key` — R2 storage key (e.g. `exports/<uuid>.pdf`).
-    * `:url` — presigned download URL.
-    * `:requester_id` — actor that triggered the export (for PubSub fan-out).
-
-  `:document_id` and `:requester_id` are populated by the async ExportJob
-  path; the synchronous `Contract.IO.R2.export/4` path (carried over from
-  earlier waves) leaves them `nil` because its caller passes them out of
-  band.
+  Export rows are created synchronously when a user requests an export.
+  `Contract.Workers.ExportJob` then renders the artifact, stores it under
+  `key`, and marks the row ready with an authenticated download URL.
   """
+
+  use Ecto.Schema
+  import Ecto.Changeset
+
+  @primary_key {:id, :binary_id, autogenerate: true}
+  @foreign_key_type :binary_id
+
+  @formats [:pdf, :hwpx, :docx, :markdown, :lawyer_packet]
+  @statuses [:queued, :running, :ready, :failed]
+
+  schema "exports" do
+    field :document_id, :binary_id
+    field :requester_id, :binary_id
+
+    field :format, Ecto.Enum, values: @formats
+    field :status, Ecto.Enum, values: @statuses, default: :queued
+    field :progress, :integer, default: 0
+
+    field :key, :string
+    field :download_url, :string
+    field :url, :string, virtual: true
+    field :content_type, :string
+    field :byte_size, :integer
+    field :error, :map, default: %{}
+    field :metadata, :map, default: %{}
+
+    timestamps(type: :utc_datetime)
+  end
 
   @type t :: %__MODULE__{
           id: Ecto.UUID.t() | nil,
           document_id: Ecto.UUID.t() | nil,
           key: String.t() | nil,
+          download_url: String.t() | nil,
           url: String.t() | nil,
           format: atom() | nil,
-          requester_id: Ecto.UUID.t() | nil
+          requester_id: Ecto.UUID.t() | nil,
+          status: atom() | nil,
+          progress: non_neg_integer() | nil,
+          content_type: String.t() | nil,
+          byte_size: non_neg_integer() | nil,
+          error: map() | nil
         }
 
-  defstruct [:id, :document_id, :key, :url, :format, :requester_id]
+  @doc false
+  def changeset(export, attrs) do
+    export
+    |> cast(attrs, [
+      :document_id,
+      :requester_id,
+      :format,
+      :status,
+      :progress,
+      :key,
+      :download_url,
+      :content_type,
+      :byte_size,
+      :error,
+      :metadata
+    ])
+    |> validate_required([:document_id, :format, :status, :progress])
+    |> validate_number(:progress, greater_than_or_equal_to: 0, less_than_or_equal_to: 100)
+  end
 end
 
 defmodule Contract.Export.Renderer do
   @moduledoc """
   Format dispatcher.
 
-  Two entry points:
-
-    * `render/1` — legacy 1-arg shape used by `Contract.IO.R2.export/4`'s
-      default render_fun. Returns the stub body for non-:hwpx formats so
-      the upload path stays exercised by tests that don't hand off a
-      `Runtime.State`.
-
-    * `render/3` — typed entry point: takes a `Contract.Runtime.State`,
-      a format atom, and opts. Dispatches to the matching format module
-      (HWPX / HTML / PDF / DOCX). This is what the async ExportJob path
-      and any caller-with-state-in-hand should use.
+  `render/3` is the typed export path used by the async worker. `render/1`
+  remains as a legacy test/storage helper for callers that only have a
+  document id and format payload.
   """
 
   alias Contract.Runtime.State
 
-  @doc """
-  Legacy 1-arg renderer. Returns `{:ok, body, content_type}` for the
-  stub formats. Kept for callers (notably `Contract.IO.R2.export/4`'s
-  default `:render_fun`) that lack a `%Runtime.State{}` in scope.
-  """
   @spec render(map()) :: {:ok, binary(), String.t()} | {:error, term()}
   def render(%{document_id: id, format: format}) do
     body = "EXPORT-STUB document=#{id} format=#{format}"
@@ -61,10 +89,6 @@ defmodule Contract.Export.Renderer do
     {:ok, body, content_type}
   end
 
-  @doc """
-  Typed entry point: dispatches a `%Contract.Runtime.State{}` to the
-  matching format module.
-  """
   @spec render(State.t(), atom(), keyword()) ::
           {:ok, binary(), String.t()} | {:error, term()}
   def render(state, format, opts \\ [])
@@ -79,6 +103,22 @@ defmodule Contract.Export.Renderer do
   def render(%State{} = state, :html, opts) do
     case Contract.Export.HTML.render(state, opts) do
       {:ok, body} -> {:ok, body, content_type(:html)}
+      {:error, _} = err -> err
+    end
+  end
+
+  def render(%State{} = state, :markdown, opts) do
+    case Contract.Export.Markdown.render(state, opts) do
+      {:ok, body} -> {:ok, body, content_type(:markdown)}
+      {:error, _} = err -> err
+    end
+  end
+
+  def render(%State{} = state, :md, opts), do: render(state, :markdown, opts)
+
+  def render(%State{} = state, :lawyer_packet, opts) do
+    case Contract.Export.LawyerPacket.render(state, opts) do
+      {:ok, body} -> {:ok, body, content_type(:lawyer_packet)}
       {:error, _} = err -> err
     end
   end
@@ -101,7 +141,6 @@ defmodule Contract.Export.Renderer do
     {:error, {:unsupported_format, format}}
   end
 
-  @doc "Content-type for a given export format."
   @spec content_type(atom()) :: String.t()
   def content_type(:pdf), do: "application/pdf"
 
@@ -111,6 +150,7 @@ defmodule Contract.Export.Renderer do
   def content_type(:html), do: "text/html; charset=utf-8"
   def content_type(:md), do: "text/markdown"
   def content_type(:markdown), do: "text/markdown"
+  def content_type(:lawyer_packet), do: "text/markdown"
   def content_type(:hwpx), do: "application/hwp+zip"
   def content_type(_), do: "application/octet-stream"
 end

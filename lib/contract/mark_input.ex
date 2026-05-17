@@ -17,7 +17,10 @@ defmodule Contract.MarkInput do
       values: [:artifact, :document, :node, :field, :change, :op, :evidence, :projection]
 
     field :target_id, :binary_id
-    field :intent, Ecto.Enum, values: [:ask, :explain, :flag, :label, :link]
+
+    field :intent, Ecto.Enum,
+      values: [:ask, :explain, :flag, :label, :link, :source_claim, :source_claim_rejected]
+
     field :text, :string
     field :confidence, Ecto.Enum, values: [:low, :medium, :high, :confirmed]
     field :source, Ecto.Enum, values: [:user, :agent, :lawyer, :slack, :law_mcp, :system]
