@@ -69,9 +69,10 @@ body {
 }
 
 .topbar {
+  position: -webkit-sticky;
   position: sticky;
   top: 0;
-  z-index: 30;
+  z-index: 40;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -79,8 +80,15 @@ body {
   min-height: 60px;
   padding: 0 28px;
   border-bottom: 1px solid var(--cs-line);
-  background: rgba(251, 250, 247, 0.92);
-  backdrop-filter: blur(14px);
+  background: var(--cs-bg);
+  /* Solid bg so it never lets scrolled content bleed through. */
+}
+
+@supports (backdrop-filter: blur(14px)) {
+  .topbar {
+    background: rgba(251, 250, 247, 0.92);
+    backdrop-filter: blur(14px);
+  }
 }
 
 .brand {
