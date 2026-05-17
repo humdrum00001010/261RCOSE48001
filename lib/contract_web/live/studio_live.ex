@@ -1435,7 +1435,11 @@ defmodule ContractWeb.StudioLive do
                   <h1>
                     {document_header_title(@current_document, @projection, @studio_state)}
                   </h1>
-                  <span class="status-dot status-dot--review" aria-hidden="true"></span>
+                  <span
+                    class={["status-dot", document_status_dot_modifier(@current_document)]}
+                    aria-hidden="true"
+                  >
+                  </span>
                   <span>
                     {document_status_label(@current_document)}
                   </span>
@@ -1443,16 +1447,10 @@ defmodule ContractWeb.StudioLive do
                     {dgettext("studio", "저장됨")}
                   </span>
                 </div>
-                <button
-                  type="button"
-                  phx-click="noop"
-                  class="text-button"
-                >
-                  {dgettext("studio", "변경 이력")}
-                </button>
               </header>
 
               <nav
+                :if={open_slots(@projection) != []}
                 class="open-slots"
                 aria-label={dgettext("studio", "수정 가능한 자리")}
               >
@@ -1589,17 +1587,15 @@ defmodule ContractWeb.StudioLive do
 
   defp document_status_label(_), do: dgettext("studio", "초안")
 
+  defp document_status_dot_modifier(%{status: "review"}), do: "status-dot--review"
+  defp document_status_dot_modifier(%{status: "archived"}), do: "status-dot--archived"
+  defp document_status_dot_modifier(_), do: "status-dot--draft"
+
   defp open_slots(%{open_slots: slots}) when is_list(slots) and slots != [] do
     Enum.map(slots, &open_slot/1)
   end
 
-  defp open_slots(_projection) do
-    [
-      %{id: "article-3-amount", label: dgettext("studio", "제3조 금액"), active?: false},
-      %{id: "article-4-return-deadline", label: dgettext("studio", "제4조 반환 기한"), active?: false},
-      %{id: "article-8-special-term-1", label: dgettext("studio", "현재: 제8조 특약 1항"), active?: true}
-    ]
-  end
+  defp open_slots(_projection), do: []
 
   defp open_slot(%{id: id, label: label} = slot) when is_binary(id) and is_binary(label) do
     %{id: id, label: label, active?: Map.get(slot, :active?, false)}
