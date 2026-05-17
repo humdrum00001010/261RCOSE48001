@@ -1,42 +1,29 @@
 defmodule ContractWeb.DashboardLive do
   @moduledoc """
-  Authenticated home for Contract Studio. Document library only — no metric
-  cards, no recent-activity feed, no left sidebar.
+  Authenticated v33 document-library dashboard.
 
-  Per DESIGN.md §4 (v31, 2026-05-17):
-
-    * Top row is a Google-Docs-style title row: `모든 문서` H1 + right-aligned
-      action button (`새 문서` primary).
-    * `새 문서` navigates to `/studio`. Document creation, upload, and
-      recent-document selection live inside Studio's empty-state surface
-      (`Canvas.Empty`) per the 2026-05-17 owner directive.
-    * Documents render as a hairline TABLE (2026-05-17 owner clarification:
-      "table hover means, the per row needs to have effect on user's
-      interaction") — columns are 문서명 / 상태 / 수정일 / overflow menu.
-      Rows are keyboard-focusable links to `/documents/:id` with a 1-step
-      hover bg shift. No `다음 질문`, no agent activity feed.
-    * Tabs: `모든 문서` (active) / `즐겨찾기`.
-    * The contract-upload affordance must NOT live on this surface OR in
-      the global navbar — it lives inside `/studio` (Canvas.Empty +
-      ChatRail no-document chips).
-
-  ## Data sources
-
-    * `Contract.Documents.list_all_for_scope/2` — all owner-scoped
-      non-archived documents, ordered by `updated_at DESC`. The dashboard
-      surfaces the full library, not a "recent N" slice.
+  This surface is intentionally limited to owner-scoped document library work:
+  open documents, create a blank document, or pick an upload file from a small
+  content popover. Analytics, recent activity, sidebars, and table rows do not
+  belong here.
   """
   use ContractWeb, :live_view
 
-  alias Contract.Documents
+  alias Contract.{Command, Documents, Runtime}
 
   @impl true
   def mount(_params, _session, socket) do
     socket =
       socket
       |> assign(:page_title, dgettext("dashboard", "Dashboard"))
-      |> assign(:active_tab, :all)
+      |> assign(:upload_menu_open?, false)
       |> load_documents()
+      |> allow_upload(:contract_file,
+        accept: ~w(.pdf .docx .hwp),
+        max_entries: 1,
+        auto_upload: true,
+        progress: &handle_upload_progress/3
+      )
 
     {:ok, socket}
   end
@@ -47,15 +34,29 @@ defmodule ContractWeb.DashboardLive do
 
   @impl true
   def handle_event("new_document", _params, socket) do
-    {:noreply, push_navigate(socket, to: ~p"/studio")}
+    case create_document(socket.assigns.current_scope, dgettext("dashboard", "새 문서")) do
+      {:ok, doc} ->
+        {:noreply, push_navigate(socket, to: ~p"/studio/#{doc.id}")}
+
+      {:error, _reason} ->
+        {:noreply, put_flash(socket, :error, dgettext("dashboard", "문서 생성에 실패했습니다."))}
+    end
   end
 
-  def handle_event("switch_tab", %{"tab" => tab}, socket) when tab in ~w(all favorites) do
-    {:noreply, assign(socket, :active_tab, String.to_existing_atom(tab))}
+  def handle_event("toggle_upload_menu", _params, socket) do
+    {:noreply, update(socket, :upload_menu_open?, &(!&1))}
+  end
+
+  def handle_event("close_upload_menu", _params, socket) do
+    {:noreply, assign(socket, :upload_menu_open?, false)}
+  end
+
+  def handle_event("contract_upload_validate", _params, socket) do
+    {:noreply, socket}
   end
 
   # ---------------------------------------------------------------------------
-  # Data loading
+  # Data loading and mutations
   # ---------------------------------------------------------------------------
 
   defp load_documents(socket) do
@@ -66,8 +67,7 @@ defmodule ContractWeb.DashboardLive do
   defp list_all_documents(scope) do
     scope
     |> Documents.list_all_for_scope()
-    |> Enum.reject(&(&1.status == :template))
-    |> Enum.reject(&(&1.status == :archived))
+    |> Enum.reject(&(&1.status in [:template, :archived]))
     |> Enum.map(fn d ->
       %{
         document_id: d.id,
@@ -82,6 +82,68 @@ defmodule ContractWeb.DashboardLive do
     Postgrex.Error -> []
   end
 
+  defp create_document(scope, title, metadata \\ %{}) do
+    action = %Command{
+      kind: :create_document,
+      actor_type: :user,
+      actor_id: scope && scope.user && scope.user.id,
+      base_revision: 0,
+      idempotency_key: generate_idempotency_key(),
+      payload: %{"title" => title, "metadata" => metadata}
+    }
+
+    case Runtime.apply(scope, action) do
+      {:ok, %Contract.Change{document_id: document_id}} ->
+        Documents.get(scope, document_id)
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  defp handle_upload_progress(:contract_file, entry, socket) do
+    if entry.done? do
+      uploaded =
+        consume_uploaded_entries(socket, :contract_file, fn _meta, entry ->
+          title = upload_title(entry.client_name)
+
+          result =
+            create_document(socket.assigns.current_scope, title, %{
+              "source_filename" => entry.client_name
+            })
+
+          {:ok, result}
+        end)
+
+      case uploaded do
+        [{:ok, doc}] ->
+          {:noreply, push_navigate(socket, to: ~p"/studio/#{doc.id}")}
+
+        [{:error, _reason}] ->
+          {:noreply, put_flash(socket, :error, dgettext("dashboard", "업로드 문서 생성에 실패했습니다."))}
+
+        _ ->
+          {:noreply, socket}
+      end
+    else
+      {:noreply, socket}
+    end
+  end
+
+  defp upload_title(filename) when is_binary(filename) do
+    filename
+    |> Path.basename()
+    |> Path.rootname()
+    |> case do
+      "" -> dgettext("dashboard", "새 문서")
+      title -> title
+    end
+  end
+
+  defp upload_title(_filename), do: dgettext("dashboard", "새 문서")
+
+  defp generate_idempotency_key, do: "dashboard:" <> Ecto.UUID.generate()
+
   # ---------------------------------------------------------------------------
   # Render
   # ---------------------------------------------------------------------------
@@ -90,77 +152,60 @@ defmodule ContractWeb.DashboardLive do
   def render(assigns) do
     ~H"""
     <Layouts.app flash={@flash} current_scope={@current_scope} variant="default">
-      <main class="dashboard-v31 py-6 sm:py-10">
-        <%!-- ------------------------------------------------------------ --%>
-        <%!-- Title row — H1 + right-aligned primary action.                --%>
-        <%!-- `새 문서` navigates to /studio (the empty-state surface where  --%>
-        <%!-- upload / blank / recent / agent-discussion all live). No      --%>
-        <%!-- modal, no popover, no doc creation on this surface.           --%>
-        <%!-- ------------------------------------------------------------ --%>
-        <header class="dashboard-v31__top">
-          <h1 class="dashboard-v31__title">{dgettext("dashboard", "모든 문서")}</h1>
+      <.app_shell active="대시보드">
+        <main class="dashboard-page py-6 sm:py-10">
+          <section id="dashboard-toolbar" class="dashboard-toolbar">
+            <div class="dashboard-toolbar__copy">
+              <h1>{dgettext("dashboard", "최근 문서")}</h1>
+              <p>{dgettext("dashboard", "계약서를 열거나 기존 계약서를 Studio로 가져옵니다.")}</p>
+            </div>
 
-          <div class="dashboard-v31__actions">
-            <button
-              type="button"
-              phx-click="new_document"
-              class="dashboard-v31__btn dashboard-v31__btn--primary"
-              data-role="dashboard-new-document"
-            >
-              {dgettext("dashboard", "새 문서")}
-            </button>
-          </div>
-        </header>
+            <div id="dashboard-actions" class="dashboard-actions">
+              <button
+                type="button"
+                phx-click="new_document"
+                class="button button--primary"
+                data-role="dashboard-new-document"
+              >
+                {dgettext("dashboard", "새 문서")}
+              </button>
 
-        <%!-- ------------------------------------------------------------ --%>
-        <%!-- Tabs — visual filter only; the active tab governs the grid.  --%>
-        <%!-- ------------------------------------------------------------ --%>
-        <nav class="dashboard-v31__tabs" role="tablist">
-          <button
-            type="button"
-            role="tab"
-            aria-selected={to_string(@active_tab == :all)}
-            phx-click="switch_tab"
-            phx-value-tab="all"
-            class={[
-              "dashboard-v31__tab",
-              @active_tab == :all && "dashboard-v31__tab--active"
-            ]}
+              <div class="upload-action" phx-click-away="close_upload_menu">
+                <button
+                  type="button"
+                  phx-click="toggle_upload_menu"
+                  class="button button--secondary"
+                  data-role="dashboard-upload-trigger"
+                  aria-haspopup="menu"
+                  aria-expanded={to_string(@upload_menu_open?)}
+                >
+                  <img src={~p"/assets/icons/upload.svg"} alt="" class="size-4" />
+                  <span>{dgettext("dashboard", "계약서 업로드")}</span>
+                  <img src={~p"/assets/icons/chevron-down.svg"} alt="" class="size-4" />
+                </button>
+
+                <%= if @upload_menu_open? do %>
+                  <.contract_upload_menu upload={@uploads.contract_file} />
+                <% end %>
+              </div>
+            </div>
+          </section>
+
+          <section
+            id="document-grid"
+            class="document-grid"
+            aria-label={dgettext("dashboard", "문서 목록")}
           >
-            {dgettext("dashboard", "모든 문서")}
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={to_string(@active_tab == :favorites)}
-            phx-click="switch_tab"
-            phx-value-tab="favorites"
-            class={[
-              "dashboard-v31__tab",
-              @active_tab == :favorites && "dashboard-v31__tab--active"
-            ]}
-          >
-            {dgettext("dashboard", "즐겨찾기")}
-          </button>
-        </nav>
-
-        <%!-- ------------------------------------------------------------ --%>
-        <%!-- Document table — hairline rows with per-row hover/focus.      --%>
-        <%!-- 2026-05-17 owner directive: rows, not cards.                   --%>
-        <%!-- ------------------------------------------------------------ --%>
-        <%= cond do %>
-          <% @active_tab == :favorites -> %>
-            <section
-              id="favorites-empty"
-              class="dashboard-v31__empty"
-              data-role="dashboard-favorites-empty"
-            >
-              {dgettext("dashboard", "즐겨찾기한 문서가 아직 없습니다.")}
-            </section>
-          <% true -> %>
-            <.document_table documents={@documents} />
-        <% end %>
-      </main>
+            <%= if @documents == [] do %>
+              <div id="documents-empty" class="document-grid__empty">
+                {dgettext("dashboard", "아직 문서가 없습니다.")}
+              </div>
+            <% else %>
+              <.document_card :for={doc <- @documents} document={doc} />
+            <% end %>
+          </section>
+        </main>
+      </.app_shell>
     </Layouts.app>
     """
   end
@@ -169,81 +214,79 @@ defmodule ContractWeb.DashboardLive do
   # Function components
   # ---------------------------------------------------------------------------
 
-  @doc """
-  Renders the document library as a hairline table. Each row is a
-  keyboard-focusable link to `/documents/:id` with per-row hover and
-  focus states. Empty state renders a single muted row spanning all
-  columns rather than a separate empty card.
-  """
-  attr :documents, :list, required: true
+  attr :upload, :any, required: true
 
-  def document_table(assigns) do
+  def contract_upload_menu(assigns) do
     ~H"""
-    <table id="document-table" class="document-table" data-role="document-table">
-      <thead>
-        <tr>
-          <th scope="col">{dgettext("dashboard", "문서명")}</th>
-          <th scope="col">{dgettext("dashboard", "상태")}</th>
-          <th scope="col">{dgettext("dashboard", "수정일")}</th>
-          <th scope="col" aria-label={dgettext("dashboard", "메뉴")}></th>
-        </tr>
-      </thead>
-      <tbody>
-        <%= if @documents == [] do %>
-          <tr id="documents-empty" data-role="dashboard-documents-empty">
-            <td class="document-table__empty" colspan="4">
-              {dgettext("dashboard", "아직 문서가 없습니다.")}
-            </td>
-          </tr>
-        <% else %>
-          <tr
-            :for={doc <- @documents}
-            class="document-table__row"
-            data-role="document-row"
-            phx-click={JS.navigate(~p"/documents/#{doc.document_id}")}
-            tabindex="0"
-            role="link"
-            phx-hook=".DocRow"
-            id={"document-row-#{doc.document_id}"}
-          >
-            <td class="document-table__title">{doc.title}</td>
-            <td>
-              <span class={["status-dot", "status-dot--#{doc.status}"]}></span>
-              {document_status_label(doc.status)}
-            </td>
-            <td class="document-table__date">{format_date(doc.updated_at)}</td>
-            <td class="document-table__menu-cell">
-              <button
-                type="button"
-                class="document-table__menu"
-                data-role="document-row-menu"
-                aria-label={dgettext("dashboard", "문서 메뉴")}
-                phx-click={JS.dispatch("phx:noop")}
-                onclick="event.stopPropagation()"
-              >⋮</button>
-            </td>
-          </tr>
-        <% end %>
-      </tbody>
-      <script :type={Phoenix.LiveView.ColocatedHook} name=".DocRow">
-        export default {
-          mounted() {
-            this.handler = (e) => {
-              if (e.key === "Enter" || e.key === " ") {
-                e.preventDefault()
-                this.el.click()
-              }
-            }
-            this.el.addEventListener("keydown", this.handler)
-          },
-          destroyed() {
-            if (this.handler) {
-              this.el.removeEventListener("keydown", this.handler)
-            }
-          }
-        }
-      </script>
-    </table>
+    <div
+      id="contract-upload-menu"
+      class="contract-upload-menu"
+      data-role="dashboard-upload-popover"
+    >
+      <div class="contract-upload-menu__row">
+        <img src={~p"/assets/icons/document.svg"} alt="" class="size-5" />
+        <div>
+          <strong>{dgettext("dashboard", "파일에서 가져오기")}</strong>
+          <p>{dgettext("dashboard", "기존 계약서 파일을 Studio로 가져옵니다.")}</p>
+        </div>
+      </div>
+
+      <div class="contract-upload-menu__divider"></div>
+
+      <.form
+        for={%{}}
+        as={:upload}
+        id="dashboard-upload-form"
+        phx-change="contract_upload_validate"
+        class="contract-upload-menu__form"
+      >
+        <label for={@upload.ref} class="contract-upload-menu__picker">
+          <.live_file_input
+            upload={@upload}
+            class="sr-only"
+            data-role="dashboard-upload-input"
+          />
+          <span>{dgettext("dashboard", "PDF, DOCX, HWP 지원")}</span>
+          <span>{dgettext("dashboard", "Studio에서 열립니다.")}</span>
+        </label>
+      </.form>
+    </div>
+    """
+  end
+
+  attr :document, :map, required: true
+
+  def document_card(assigns) do
+    ~H"""
+    <article
+      id={"document-card-#{@document.document_id}"}
+      class="document-card"
+      data-role="document-card"
+    >
+      <.link navigate={~p"/studio/#{@document.document_id}"} class="document-card__open">
+        <div class="document-card__thumb" aria-hidden="true">
+          <img src={~p"/assets/icons/document.svg"} alt="" class="document-card__thumb-icon" />
+        </div>
+
+        <div class="document-card__body">
+          <h2 class="document-card__title">{@document.title}</h2>
+          <div class="document-card__meta">
+            <span class={["status-dot", "status-dot--#{@document.status}"]}></span>
+            <span class="document-card__status">{document_status_label(@document.status)}</span>
+          </div>
+          <time class="document-card__updated">{format_date(@document.updated_at)}</time>
+        </div>
+      </.link>
+
+      <button
+        type="button"
+        class="document-card__menu"
+        data-role="document-card-menu"
+        aria-label={dgettext("dashboard", "문서 메뉴")}
+      >
+        <img src={~p"/assets/icons/more-vertical.svg"} alt="" class="size-5" />
+      </button>
+    </article>
     """
   end
 
