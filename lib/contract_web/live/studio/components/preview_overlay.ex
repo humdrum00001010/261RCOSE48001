@@ -128,7 +128,7 @@ defmodule ContractWeb.Live.Studio.Components.PreviewOverlay do
     ~H"""
     <div
       id={@id}
-      class="preview-overlay fixed inset-0 z-40 flex flex-col"
+      class="preview-overlay fixed inset-0 z-[60] flex flex-col"
       phx-hook=".PreviewOverlay"
       phx-target={@myself}
       role="dialog"
@@ -378,9 +378,13 @@ defmodule ContractWeb.Live.Studio.Components.PreviewOverlay do
     assigns = %{text: node[:content] || "", id: node[:id], ordered?: ordered?}
 
     if ordered? do
-      ~H|<ol class="preview-overlay__ol"><li id={"node-#{@id}"}>{@text}</li></ol>|
+      ~H|<ol class="preview-overlay__ol">
+  <li id={"node-#{@id}"}>{@text}</li>
+</ol>|
     else
-      ~H|<ul class="preview-overlay__ul"><li id={"node-#{@id}"}>{@text}</li></ul>|
+      ~H|<ul class="preview-overlay__ul">
+  <li id={"node-#{@id}"}>{@text}</li>
+</ul>|
     end
   end
 
