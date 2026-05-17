@@ -125,22 +125,6 @@ defmodule Contract.Workers.ConversionPlanJobTest do
       refute_enqueued(worker: ConversionPlanJob)
     end
 
-    test "OpenAI returns malformed JSON → plan stays at original, no broadcast" do
-      plan = build_plan(ambiguous_count: 3)
-      plan_id = stash(plan)
-      :ok = Phoenix.PubSub.subscribe(Contract.PubSub, ConversionPlanJob.topic(plan_id))
-
-      Contract.IO.OpenAIMock
-      |> expect(:one_shot, fn _params, _opts ->
-        {:ok, openai_response_with_text("this is not json {{{")}
-      end)
-
-      assert :ok = perform_job(ConversionPlanJob, %{"plan_id" => plan_id})
-      refute_receive {:plan_refined, _}, 200
-
-      {:ok, after_plan} = PlanCache.get(plan_id)
-      assert Enum.all?(after_plan.field_plans, &(&1.strategy == :ask_user))
-    end
 
     test "5 ambiguous fields, OpenAI refines only 3 → other 2 stay :ask_user" do
       plan = build_plan(ambiguous_count: 5)
@@ -204,7 +188,24 @@ defmodule Contract.Workers.ConversionPlanJobTest do
       assert :ok = perform_job(ConversionPlanJob, %{"plan_id" => "no-such-plan"})
     end
 
-    test "OpenAI driver error → plan untouched, no broadcast" do
+    test "OpenAI driver error / malformed JSON → plan untouched, no broadcast" do
+      # Malformed JSON branch.
+      malformed_plan = build_plan(ambiguous_count: 3)
+      malformed_id = stash(malformed_plan)
+      :ok = Phoenix.PubSub.subscribe(Contract.PubSub, ConversionPlanJob.topic(malformed_id))
+
+      Contract.IO.OpenAIMock
+      |> expect(:one_shot, fn _params, _opts ->
+        {:ok, openai_response_with_text("this is not json {{{")}
+      end)
+
+      assert :ok = perform_job(ConversionPlanJob, %{"plan_id" => malformed_id})
+      refute_receive {:plan_refined, _}, 200
+
+      {:ok, malformed_after} = PlanCache.get(malformed_id)
+      assert Enum.all?(malformed_after.field_plans, &(&1.strategy == :ask_user))
+
+      # Driver error branch.
       plan = build_plan(ambiguous_count: 3)
       plan_id = stash(plan)
       :ok = Phoenix.PubSub.subscribe(Contract.PubSub, ConversionPlanJob.topic(plan_id))

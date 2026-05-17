@@ -42,28 +42,17 @@ defmodule Contract.RuntimeTest do
   end
 
   describe "load/2 and sync_since/3" do
-    test "load enforces document owner ACL before Store.load" do
+    test "load/sync_since enforce owner ACL and return :not_found for missing docs" do
       owner = scope()
       other = scope()
       doc_id = create_owned_doc(owner, title: "Private runtime doc")
 
       assert {:error, :forbidden} = Runtime.load(other, doc_id)
-    end
-
-    test "sync_since enforces document owner ACL before Store.changes_since" do
-      owner = scope()
-      other = scope()
-      doc_id = create_owned_doc(owner, title: "Private runtime changes")
-
       assert {:error, :forbidden} = Runtime.sync_since(other, doc_id, 0)
-    end
 
-    test "load rejects a document id without a persisted owner row" do
-      assert {:error, :not_found} = Runtime.load(@ctx, Ecto.UUID.generate())
-    end
-
-    test "sync_since rejects a document id without a persisted owner row" do
-      assert {:error, :not_found} = Runtime.sync_since(@ctx, Ecto.UUID.generate(), 0)
+      missing = Ecto.UUID.generate()
+      assert {:error, :not_found} = Runtime.load(@ctx, missing)
+      assert {:error, :not_found} = Runtime.sync_since(@ctx, missing, 0)
     end
 
     test "load denies pinned route_ref without user context" do
@@ -98,31 +87,24 @@ defmodule Contract.RuntimeTest do
   end
 
   describe "ensure_session/2" do
-    test "returns {:error, :missing_document_id} for nil" do
+    test "nil → missing_document_id; new doc starts/reuses; held lease → error" do
+      # nil document_id → typed error.
       assert {:error, :missing_document_id} = Runtime.ensure_session(@ctx, nil)
-    end
 
-    test "starts a new session and returns its pid" do
-      doc = Ecto.UUID.generate()
-      assert {:ok, pid} = Runtime.ensure_session(@ctx, doc)
-      assert is_pid(pid)
-      assert Session.whereis(doc) == pid
-      cleanup_session(pid)
-    end
-
-    test "returns the existing pid when called twice for the same doc" do
+      # Fresh start.
       doc = Ecto.UUID.generate()
       assert {:ok, pid1} = Runtime.ensure_session(@ctx, doc)
-      assert {:ok, pid2} = Runtime.ensure_session(@ctx, doc)
-      assert pid1 == pid2
+      assert is_pid(pid1)
+      assert Session.whereis(doc) == pid1
+
+      # Second call returns the same pid (idempotent).
+      assert {:ok, ^pid1} = Runtime.ensure_session(@ctx, doc)
       cleanup_session(pid1)
-    end
 
-    test "returns :held_by_other style error when lease is held externally" do
-      doc = Ecto.UUID.generate()
-      {:ok, _lease} = Lease.acquire(doc, "external-holder")
-
-      assert {:error, _} = Runtime.ensure_session(@ctx, doc)
+      # Lease held externally → error.
+      held_doc = Ecto.UUID.generate()
+      {:ok, _lease} = Lease.acquire(held_doc, "external-holder")
+      assert {:error, _} = Runtime.ensure_session(@ctx, held_doc)
     end
   end
 
@@ -172,23 +154,20 @@ defmodule Contract.RuntimeTest do
   end
 
   describe "apply/2 → :open_document" do
-    test "loads the document's current state" do
+    test "loads state for an existing doc; errors when document_id is missing" do
       doc = Ecto.UUID.generate()
       _ = create_doc(doc)
 
-      action = %Command{
-        kind: :open_document,
-        document_id: doc,
-        actor_type: :user,
-        actor_id: Ecto.UUID.generate()
-      }
+      assert {:ok, %Contract.Runtime.State{document_id: ^doc}} =
+               Runtime.apply(@ctx, %Command{
+                 kind: :open_document,
+                 document_id: doc,
+                 actor_type: :user,
+                 actor_id: Ecto.UUID.generate()
+               })
 
-      assert {:ok, %Contract.Runtime.State{document_id: ^doc}} = Runtime.apply(@ctx, action)
-    end
-
-    test "errors when document_id is missing" do
-      action = %Command{kind: :open_document, actor_type: :user}
-      assert {:error, :missing_document_id} = Runtime.apply(@ctx, action)
+      assert {:error, :missing_document_id} =
+               Runtime.apply(@ctx, %Command{kind: :open_document, actor_type: :user})
     end
   end
 
@@ -202,28 +181,25 @@ defmodule Contract.RuntimeTest do
                Runtime.apply(other, build_session_action(:rename_document, doc_id))
     end
 
-    for kind <- [
-          :rename_document,
-          :update_metadata,
-          :set_contract_type,
-          :edit_document,
-          :add_mark,
-          :update_mark,
-          :archive_document,
-          :restore_document,
-          :agent_change
-        ] do
-      @kind kind
-
-      test "#{kind} routes through Session.commit and produces a Change" do
+    test "every session-routed kind routes through Session.commit and produces a Change" do
+      for kind <- [
+            :rename_document,
+            :update_metadata,
+            :set_contract_type,
+            :edit_document,
+            :add_mark,
+            :update_mark,
+            :archive_document,
+            :restore_document,
+            :agent_change
+          ] do
         doc = Ecto.UUID.generate()
         _ = create_doc(doc)
 
-        action = build_session_action(@kind, doc)
+        action = build_session_action(kind, doc)
+        assert {:ok, %Change{}} = Runtime.apply(@ctx, action), "expected #{kind} to commit"
 
-        assert {:ok, %Change{}} = Runtime.apply(@ctx, action)
-
-        # Session was started by ensure_session.
+        # ensure_session started a Session for the doc.
         assert pid = Session.whereis(doc)
         cleanup_session(pid)
       end
@@ -249,7 +225,7 @@ defmodule Contract.RuntimeTest do
       assert {:error, :forbidden} = Runtime.revoke(other, action)
     end
 
-    test "routes through Session.revoke and returns the new revoke Change" do
+    test "routes through Session.revoke, returns a revoke Change; errors on missing doc_id" do
       doc = Ecto.UUID.generate()
       create_action = build_session_action(:rename_document, doc, idem: "rn-revtest")
 
@@ -270,63 +246,43 @@ defmodule Contract.RuntimeTest do
 
       pid = Session.whereis(doc)
       cleanup_session(pid)
-    end
 
-    test "errors when document_id missing" do
-      action = %Command{
-        kind: :revoke_change,
-        actor_type: :user,
-        actor_id: Ecto.UUID.generate(),
-        change_id: Ecto.UUID.generate()
-      }
-
-      assert {:error, :missing_document_id} = Runtime.revoke(@ctx, action)
+      # Missing document_id → typed error.
+      assert {:error, :missing_document_id} =
+               Runtime.revoke(@ctx, %Command{
+                 kind: :revoke_change,
+                 actor_type: :user,
+                 actor_id: Ecto.UUID.generate(),
+                 change_id: Ecto.UUID.generate()
+               })
     end
   end
 
   describe "apply/2 → conversion kinds (Wave 4 — Contract.Conversion)" do
-    test ":start_type_conversion without document_id is a typed error" do
-      action = %Command{
-        kind: :start_type_conversion,
-        document_id: nil,
-        actor_type: :user,
-        payload: %{"target_type_key" => "nda_v1"}
-      }
+    test "missing-payload errors are typed for every conversion Command kind" do
+      doc_id = Ecto.UUID.generate()
+      base = %Command{actor_type: :user, payload: %{}}
 
-      assert {:error, :missing_document_id} = Runtime.apply(@ctx, action)
-    end
+      assert {:error, :missing_document_id} =
+               Runtime.apply(@ctx, %{
+                 base
+                 | kind: :start_type_conversion,
+                   document_id: nil,
+                   payload: %{"target_type_key" => "nda_v1"}
+               })
 
-    test ":start_type_conversion without target_type_key is a typed error" do
-      action = %Command{
-        kind: :start_type_conversion,
-        document_id: Ecto.UUID.generate(),
-        actor_type: :user,
-        payload: %{}
-      }
+      assert {:error, :missing_target_type_key} =
+               Runtime.apply(@ctx, %{base | kind: :start_type_conversion, document_id: doc_id})
 
-      assert {:error, :missing_target_type_key} = Runtime.apply(@ctx, action)
-    end
+      assert {:error, :missing_plan} =
+               Runtime.apply(@ctx, %{
+                 base
+                 | kind: :set_field_migration_strategy,
+                   document_id: doc_id
+               })
 
-    test ":set_field_migration_strategy without a plan is a typed error" do
-      action = %Command{
-        kind: :set_field_migration_strategy,
-        document_id: Ecto.UUID.generate(),
-        actor_type: :user,
-        payload: %{}
-      }
-
-      assert {:error, :missing_plan} = Runtime.apply(@ctx, action)
-    end
-
-    test ":create_converted_variant without a plan is a typed error" do
-      action = %Command{
-        kind: :create_converted_variant,
-        document_id: Ecto.UUID.generate(),
-        actor_type: :user,
-        payload: %{}
-      }
-
-      assert {:error, :missing_plan} = Runtime.apply(@ctx, action)
+      assert {:error, :missing_plan} =
+               Runtime.apply(@ctx, %{base | kind: :create_converted_variant, document_id: doc_id})
     end
   end
 
@@ -361,11 +317,11 @@ defmodule Contract.RuntimeTest do
       end
     end
 
-    test "rejects html as a product-facing export format" do
+    test "rejects html / unknown formats without leaking new atoms" do
       ctx = scope()
       doc_id = create_owned_doc(ctx, title: "No HTML export doc")
 
-      action = %Command{
+      html_action = %Command{
         kind: :request_export,
         document_id: doc_id,
         actor_type: :user,
@@ -373,24 +329,14 @@ defmodule Contract.RuntimeTest do
         payload: %{"format" => "html"}
       }
 
-      assert {:error, {:unsupported_export_format, "html"}} = Runtime.apply(ctx, action)
-    end
+      assert {:error, {:unsupported_export_format, "html"}} = Runtime.apply(ctx, html_action)
 
-    test "rejects unknown string formats without creating atoms" do
-      ctx = scope()
-      doc_id = create_owned_doc(ctx, title: "Export format doc")
+      # Unknown string format → typed error AND no atom created.
       format = "unknown_export_#{System.unique_integer([:positive])}"
       refute existing_atom?(format)
 
-      action = %Command{
-        kind: :request_export,
-        document_id: doc_id,
-        actor_type: :user,
-        actor_id: ctx.user.id,
-        payload: %{"format" => format}
-      }
-
-      assert {:error, {:unsupported_export_format, ^format}} = Runtime.apply(ctx, action)
+      unknown_action = %{html_action | payload: %{"format" => format}}
+      assert {:error, {:unsupported_export_format, ^format}} = Runtime.apply(ctx, unknown_action)
       refute existing_atom?(format)
     end
   end
@@ -430,8 +376,8 @@ defmodule Contract.RuntimeTest do
   end
 
   describe "session_kinds/0 and helpers" do
-    test "session_kinds includes all SPEC §12 mutation kinds" do
-      kinds = Runtime.session_kinds()
+    test "kind-lists cover SPEC §12 mutation, revoke, and conversion families" do
+      session_kinds = Runtime.session_kinds()
 
       for kind <- [
             :rename_document,
@@ -445,16 +391,11 @@ defmodule Contract.RuntimeTest do
             :duplicate_document,
             :agent_change
           ] do
-        assert kind in kinds
+        assert kind in session_kinds
       end
-    end
 
-    test "revoke_kinds returns both revoke action kinds" do
       assert :revoke_change in Runtime.revoke_kinds()
       assert :resolve_revoke in Runtime.revoke_kinds()
-    end
-
-    test "conversion_kinds covers deferred Wave 4 kinds" do
       assert :start_type_conversion in Runtime.conversion_kinds()
     end
   end

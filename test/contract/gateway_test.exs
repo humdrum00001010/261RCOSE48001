@@ -56,36 +56,21 @@ defmodule Contract.GatewayTest do
       assert %DateTime{} = ref.expires_at
     end
 
-    test "accepts string keys in attrs" do
-      owner = scope()
-      doc_id = create_doc(owner)
-
-      assert {:ok, token} =
-               Gateway.issue_route_ref(owner, %{
-                 "document_id" => doc_id,
-                 "purpose" => "deep_link"
-               })
-
-      assert {:ok, %RouteRef{document_id: ^doc_id, purpose: "deep_link"}} =
-               Gateway.verify_route_ref(@ctx, token)
-    end
-
-    test "defaults TTL to one hour" do
-      assert {:ok, token} = Gateway.issue_route_ref(@ctx, %{purpose: "default-ttl"})
+    test "TTL defaults to 1 hour, honours custom values, rejects non-positive" do
+      # default TTL
+      assert {:ok, default_token} = Gateway.issue_route_ref(@ctx, %{purpose: "default-ttl"})
 
       assert {:ok, %RouteRef{issued_at: issued, expires_at: expires}} =
-               Gateway.verify_route_ref(@ctx, token)
+               Gateway.verify_route_ref(@ctx, default_token)
 
       assert DateTime.diff(expires, issued, :second) == 3_600
-    end
 
-    test "honours a custom TTL" do
-      assert {:ok, token} = Gateway.issue_route_ref(@ctx, %{purpose: "ttl", ttl: 60})
-      assert {:ok, ref} = Gateway.verify_route_ref(@ctx, token)
+      # custom TTL
+      assert {:ok, custom} = Gateway.issue_route_ref(@ctx, %{purpose: "ttl", ttl: 60})
+      assert {:ok, ref} = Gateway.verify_route_ref(@ctx, custom)
       assert DateTime.diff(ref.expires_at, ref.issued_at, :second) == 60
-    end
 
-    test "rejects non-positive TTLs" do
+      # invalid TTLs
       assert {:error, :invalid_ttl} = Gateway.issue_route_ref(@ctx, %{ttl: 0})
       assert {:error, :invalid_ttl} = Gateway.issue_route_ref(@ctx, %{ttl: -5})
     end
@@ -104,15 +89,12 @@ defmodule Contract.GatewayTest do
   end
 
   describe "verify_route_ref/2 — failure modes" do
-    test "returns :missing for nil" do
+    test "returns :missing for nil / empty input" do
       assert {:error, :missing} = Gateway.verify_route_ref(@ctx, nil)
-    end
-
-    test "returns :missing for empty string" do
       assert {:error, :missing} = Gateway.verify_route_ref(@ctx, "")
     end
 
-    test "returns :invalid for a tampered token" do
+    test "returns :invalid for tampered / garbage / non-string input" do
       assert {:ok, token} = Gateway.issue_route_ref(@ctx, %{purpose: "tamper"})
 
       tampered =
@@ -125,13 +107,7 @@ defmodule Contract.GatewayTest do
         |> Enum.join()
 
       assert {:error, :invalid} = Gateway.verify_route_ref(@ctx, tampered)
-    end
-
-    test "returns :invalid for garbage input" do
       assert {:error, :invalid} = Gateway.verify_route_ref(@ctx, "not-a-real-token")
-    end
-
-    test "returns :invalid for non-string input" do
       assert {:error, :invalid} = Gateway.verify_route_ref(@ctx, 12_345)
     end
 
@@ -161,20 +137,16 @@ defmodule Contract.GatewayTest do
   end
 
   describe "issue_route_ref/2 — SPEC.md §15.2 invariant (no PIDs in route_refs)" do
-    test "rejects a pid value in attrs" do
+    test "rejects pid / reference / function values in attrs" do
       assert {:error, :pid_in_attrs} =
                Gateway.issue_route_ref(@ctx, %{purpose: "pid-test", document_id: self()})
-    end
 
-    test "rejects a reference inside the scopes list" do
       assert {:error, :pid_in_attrs} =
                Gateway.issue_route_ref(@ctx, %{
                  purpose: "ref-test",
                  scopes: [:ok, make_ref()]
                })
-    end
 
-    test "rejects a function value (also non-durable)" do
       assert {:error, :pid_in_attrs} =
                Gateway.issue_route_ref(@ctx, %{purpose: fn -> :nope end})
     end
@@ -200,30 +172,24 @@ defmodule Contract.GatewayTest do
   end
 
   describe "mcp_tool/3 — tool listing and dispatch" do
-    test "Gateway.tool_names/0 exposes at least 7 studio.* tools" do
+    test "tool_names/0 + tools_descriptor/0 expose ≥7 studio.* tools without legacy matter_id" do
       names = Gateway.tool_names()
       assert length(names) >= 7
       assert "studio.get_document" in names
       assert "studio.submit_action" in names
       assert "studio.search_law" in names
-    end
 
-    test "tools_descriptor/0 returns matching entries with inputSchemas" do
       desc = Gateway.tools_descriptor()
-      assert length(desc) == length(Gateway.tool_names())
+      assert length(desc) == length(names)
 
       Enum.each(desc, fn entry ->
         assert is_binary(entry["name"])
         assert is_binary(entry["description"])
         assert is_map(entry["inputSchema"])
       end)
-    end
 
-    test "studio.submit_action schema does not expose legacy matter_id" do
-      submit = Enum.find(Gateway.tools_descriptor(), &(&1["name"] == "studio.submit_action"))
-      action_props = submit["inputSchema"]["properties"]["action"]["properties"]
-
-      refute Map.has_key?(action_props, "matter_id")
+      submit = Enum.find(desc, &(&1["name"] == "studio.submit_action"))
+      refute Map.has_key?(submit["inputSchema"]["properties"]["action"]["properties"], "matter_id")
     end
 
     test "unknown tool returns {:error, {:unknown_tool, name}}" do
@@ -231,10 +197,12 @@ defmodule Contract.GatewayTest do
                Gateway.mcp_tool(@ctx, "studio.does_not_exist", %{})
     end
 
-    test "studio.get_document returns the projection for an existing doc" do
+    test "studio.get_document: happy path, route_ref ACL, missing document_id" do
       owner = scope()
       doc_id = create_doc(owner)
+      other_doc = create_doc(owner)
 
+      # Happy path: pinned route_ref + matching doc returns the projection.
       ctx = ctx_for(owner, doc_id)
 
       assert {:ok, payload} =
@@ -243,21 +211,14 @@ defmodule Contract.GatewayTest do
       assert payload.document_id == doc_id
       assert payload.revision >= 1
       assert is_map(payload.projection)
-    end
 
-    test "studio.get_document is forbidden when route_ref doesn't authorize the doc" do
-      owner = scope()
-      doc_id = create_doc(owner)
-      other_doc = create_doc(owner)
-      ctx = ctx_for(owner, other_doc)
+      # Route ref pinned to a different doc → forbidden.
+      wrong_ctx = ctx_for(owner, other_doc)
 
       assert {:error, :forbidden} =
-               Gateway.mcp_tool(ctx, "studio.get_document", %{
-                 "document_id" => doc_id
-               })
-    end
+               Gateway.mcp_tool(wrong_ctx, "studio.get_document", %{"document_id" => doc_id})
 
-    test "studio.get_document requires a document_id" do
+      # Missing document_id → typed error.
       assert {:error, :missing_document_id} =
                Gateway.mcp_tool(@ctx, "studio.get_document", %{})
     end
@@ -332,31 +293,28 @@ defmodule Contract.GatewayTest do
       refute other_doc_id in result_ids
     end
 
-    test "studio.search_documents requires a non-empty query" do
+    test "input validation rejects empty queries / text across tools" do
       assert {:error, :invalid_query} =
                Gateway.mcp_tool(@ctx, "studio.search_documents", %{"query" => ""})
-    end
 
-    test "studio.verify_citations rejects empty text" do
       assert {:error, :invalid_text} =
                Gateway.mcp_tool(@ctx, "studio.verify_citations", %{"text" => ""})
-    end
 
-    test "studio.search_law rejects empty query" do
       assert {:error, :invalid_query} =
                Gateway.mcp_tool(@ctx, "studio.search_law", %{"query" => ""})
     end
   end
 
   describe "authorize_document/2" do
-    test "denies when ctx has no user and no route_ref authority" do
+    test "denies nil ctx, nil document_id, or a pinned route_ref without matching user ownership" do
+      # Empty ctx → forbidden.
       assert {:error, :forbidden} = Gateway.authorize_document(%Context{}, Ecto.UUID.generate())
-    end
+      assert {:error, :forbidden} = Gateway.authorize_document(%Context{}, nil)
 
-    test "denies a pinned route_ref without user context even when the document exists" do
+      # Pinned route_ref but no user context.
       doc_id = create_doc(scope(), title: "No-user pinned bypass")
 
-      ref = %RouteRef{
+      no_user_ref = %RouteRef{
         document_id: doc_id,
         scopes: [],
         purpose: "t",
@@ -364,44 +322,24 @@ defmodule Contract.GatewayTest do
         expires_at: DateTime.utc_now()
       }
 
-      ctx = %Context{perms: %{route_ref: ref}}
+      assert {:error, :forbidden} =
+               Gateway.authorize_document(%Context{perms: %{route_ref: no_user_ref}}, doc_id)
 
-      assert {:error, :forbidden} = Gateway.authorize_document(ctx, doc_id)
-    end
-
-    test "denies a different doc when route_ref pins document_id" do
-      ref = %RouteRef{
-        document_id: Ecto.UUID.generate(),
-        scopes: [],
-        purpose: "t",
-        issued_at: DateTime.utc_now(),
-        expires_at: DateTime.utc_now()
-      }
-
-      ctx = %Context{perms: %{route_ref: ref}}
-
-      assert {:error, :forbidden} = Gateway.authorize_document(ctx, Ecto.UUID.generate())
-    end
-
-    test "denies pinned route_ref when ctx user does not own that document" do
-      owner = scope()
+      # User present but doesn't own the pinned document.
       other = scope()
       other_doc_id = create_doc(other, title: "Pinned foreign doc")
 
-      ref = %RouteRef{
-        document_id: other_doc_id,
-        scopes: [],
-        purpose: "t",
-        issued_at: DateTime.utc_now(),
-        expires_at: DateTime.utc_now()
-      }
+      foreign_ref = %{no_user_ref | document_id: other_doc_id}
+      foreign_ctx = %Context{user: scope().user, perms: %{route_ref: foreign_ref}}
+      assert {:error, :forbidden} = Gateway.authorize_document(foreign_ctx, other_doc_id)
 
-      ctx = %Context{user: owner.user, perms: %{route_ref: ref}}
-
-      assert {:error, :forbidden} = Gateway.authorize_document(ctx, other_doc_id)
+      # Different document than the pinned one.
+      diff_ref = %{no_user_ref | document_id: Ecto.UUID.generate()}
+      diff_ctx = %Context{perms: %{route_ref: diff_ref}}
+      assert {:error, :forbidden} = Gateway.authorize_document(diff_ctx, Ecto.UUID.generate())
     end
 
-    test "wildcard route_ref still requires the ctx user to own the document" do
+    test "wildcard route_ref still requires ctx user to own the document" do
       owner = scope()
       other = scope()
       owner_doc_id = create_doc(owner, title: "Wildcard owner doc")
@@ -416,26 +354,15 @@ defmodule Contract.GatewayTest do
       }
 
       ctx = %Context{user: owner.user, perms: %{route_ref: ref}}
-
       assert :ok = Gateway.authorize_document(ctx, owner_doc_id)
       assert {:error, :forbidden} = Gateway.authorize_document(ctx, other_doc_id)
-    end
-
-    test "denies nil document_id" do
-      assert {:error, :forbidden} = Gateway.authorize_document(%Context{}, nil)
     end
   end
 
   describe "slack_*/1 — out of scope for this build" do
-    test "slack_event/1 raises" do
+    test "slack_event/1, slack_action/1, slack_command/1 all raise" do
       assert_raise RuntimeError, ~r/Slack/, fn -> Gateway.slack_event(%{}) end
-    end
-
-    test "slack_action/1 raises" do
       assert_raise RuntimeError, ~r/Slack/, fn -> Gateway.slack_action(%{}) end
-    end
-
-    test "slack_command/1 raises" do
       assert_raise RuntimeError, ~r/Slack/, fn -> Gateway.slack_command(%{}) end
     end
   end

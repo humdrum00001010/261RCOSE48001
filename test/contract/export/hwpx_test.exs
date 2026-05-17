@@ -76,31 +76,16 @@ defmodule Contract.Export.HWPXTest do
   # 1. Empty projection round-trip
   # --------------------------------------------------------------------------
 
-  test "render/2 returns {:ok, binary} for an empty projection" do
-    assert {:ok, bin} = HWPX.render(empty_state())
-    assert is_binary(bin)
-    assert byte_size(bin) > 0
-  end
+  test "render/2 accepts struct + bare projection, output is a ZIP with hwp+zip mimetype" do
+    # Struct + bare-projection forms produce byte-identical output.
+    assert {:ok, struct_bin} = HWPX.render(empty_state())
+    assert {:ok, proj_bin} = HWPX.render(State.empty_projection())
+    assert struct_bin == proj_bin
+    assert is_binary(struct_bin) and byte_size(struct_bin) > 0
 
-  test "render/2 accepts a bare projection map (not just a State struct)" do
-    assert {:ok, bin1} = HWPX.render(State.empty_projection())
-    assert {:ok, bin2} = HWPX.render(empty_state())
-    # Both should be byte-identical (same projection content).
-    assert bin1 == bin2
-  end
-
-  # --------------------------------------------------------------------------
-  # 2. ZIP magic + mimetype
-  # --------------------------------------------------------------------------
-
-  test "output starts with ZIP magic bytes (PK)" do
-    {:ok, bin} = HWPX.render(empty_state())
-    assert <<"PK", _::binary>> = bin
-  end
-
-  test "mimetype entry decodes to application/hwp+zip" do
-    {:ok, bin} = HWPX.render(empty_state())
-    assert "application/hwp+zip" == unzip_body(bin, "mimetype")
+    # ZIP magic + mimetype entry decodes to application/hwp+zip.
+    assert <<"PK", _::binary>> = struct_bin
+    assert "application/hwp+zip" == unzip_body(struct_bin, "mimetype")
   end
 
   # --------------------------------------------------------------------------
@@ -195,30 +180,25 @@ defmodule Contract.Export.HWPXTest do
   # 7. Heading at level=1 uses heading paraShape
   # --------------------------------------------------------------------------
 
-  test "heading at level=1 uses the heading paraShapeIDRef" do
-    nodes = [
-      %{id: "h", kind: :heading, content: "TITLE", attrs: %{level: 1}}
-    ]
+  test "heading levels map onto the right paraPrIDRef + charPrIDRef pair" do
+    # Heading level N → paraShape id (heading_para_base + N - 1), charShape id N.
+    for {level, para_id, char_id, label} <- [
+          {1, "2", "1", "TITLE"},
+          {6, "7", "6", "Level Six"}
+        ] do
+      nodes = [%{id: "h", kind: :heading, content: label, attrs: %{level: level}}]
+      state = state_with_nodes(nodes)
+      {:ok, bin} = HWPX.render(state)
+      section = unzip_body(bin, "Contents/section0.xml")
 
-    state = state_with_nodes(nodes)
-    {:ok, bin} = HWPX.render(state)
-    section = unzip_body(bin, "Contents/section0.xml")
+      assert section =~ ~s(paraPrIDRef="#{para_id}"),
+             "expected paraPrIDRef=#{para_id} for level=#{level}"
 
-    # Heading level 1 → paraShape id 2 (heading_para_base + 0), charShape id 1.
-    assert section =~ ~s(paraPrIDRef="2")
-    assert section =~ ~s(charPrIDRef="1")
-    assert section =~ "TITLE"
-  end
+      assert section =~ ~s(charPrIDRef="#{char_id}"),
+             "expected charPrIDRef=#{char_id} for level=#{level}"
 
-  test "heading at level=6 uses paraShape 7 and charShape 6" do
-    nodes = [%{id: "h", kind: :heading, content: "Level Six", attrs: %{level: 6}}]
-    state = state_with_nodes(nodes)
-    {:ok, bin} = HWPX.render(state)
-    section = unzip_body(bin, "Contents/section0.xml")
-
-    assert section =~ ~s(paraPrIDRef="7")
-    assert section =~ ~s(charPrIDRef="6")
-    assert section =~ "Level Six"
+      assert section =~ label
+    end
   end
 
   # --------------------------------------------------------------------------
@@ -579,28 +559,18 @@ defmodule Contract.Export.HWPXTest do
   end
 
   # --------------------------------------------------------------------------
-  # 17. Renderer dispatch (smoke)
+  # 17/18. Renderer dispatch — :hwpx routes here; unknown atoms typed-error.
   # --------------------------------------------------------------------------
 
-  test "Contract.Export.Renderer.render/3 dispatches :hwpx to HWPX writer" do
+  test "Renderer.render/3 dispatches :hwpx and rejects unknown formats" do
     state = empty_state()
 
-    assert {:ok, bin, content_type} =
-             Contract.Export.Renderer.render(state, :hwpx, [])
-
-    assert content_type == "application/hwp+zip"
+    assert {:ok, bin, "application/hwp+zip"} = Contract.Export.Renderer.render(state, :hwpx, [])
     assert <<"PK", _::binary>> = bin
-  end
 
-  # --------------------------------------------------------------------------
-  # 18. Unsupported format returns {:error, _}
-  # --------------------------------------------------------------------------
-
-  test "Renderer.render/3 returns {:error, ...} for unsupported formats" do
-    # Wave 4 routes :pdf to Contract.Export.PDF; the unsupported-format
-    # branch now only fires for genuinely unknown atoms.
+    # :pdf routes elsewhere; only genuinely unknown atoms trip the typed error.
     assert {:error, {:unsupported_format, :totally_made_up}} =
-             Contract.Export.Renderer.render(empty_state(), :totally_made_up, [])
+             Contract.Export.Renderer.render(state, :totally_made_up, [])
   end
 
   # --------------------------------------------------------------------------

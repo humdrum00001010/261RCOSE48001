@@ -56,48 +56,39 @@ defmodule ContractWeb.Components.BreadcrumbsTest do
       assert length(Regex.scan(~r/<li/, html)) == 3
     end
 
-    test "long labels are visually truncated, but the full label is in title=" do
+    test "long labels truncate visually but preserve full label in title=, threshold label intact" do
       long_label = String.duplicate("x", 80)
-      trail = [%{label: long_label, navigate: nil, current?: true}]
-      html = render_component(&Breadcrumbs.breadcrumbs/1, trail: trail)
+      long_trail = [%{label: long_label, navigate: nil, current?: true}]
+      long_html = render_component(&Breadcrumbs.breadcrumbs/1, trail: long_trail)
 
-      # Full label preserved as title=
-      assert html =~ ~s(title="#{long_label}")
-      # Display is shorter than the input
-      refute html =~ ~s(>#{long_label}<)
-      # Ellipsis sentinel present (rendered as the &hellip; entity in HEEx)
-      assert html =~ "&hellip;" or html =~ "…"
-    end
+      # Full label preserved as title=; display is shorter; ellipsis sentinel present.
+      assert long_html =~ ~s(title="#{long_label}")
+      refute long_html =~ ~s(>#{long_label}<)
+      assert long_html =~ "&hellip;" or long_html =~ "…"
 
-    test "labels at the threshold are NOT truncated" do
-      label_40 = String.duplicate("a", 40)
-      trail = [%{label: label_40, navigate: nil, current?: true}]
-      html = render_component(&Breadcrumbs.breadcrumbs/1, trail: trail)
-
-      # Display contains the full label (rendered around whitespace)
-      assert html =~ label_40
-      refute html =~ "&hellip;"
-      refute html =~ "…"
-    end
-
-    test "trail input is not mutated by rendering (truncation is display-only)" do
-      long_label = String.duplicate("y", 60)
-      trail = [%{label: long_label, navigate: nil, current?: true}]
-      _ = render_component(&Breadcrumbs.breadcrumbs/1, trail: trail)
-
-      [crumb] = trail
+      # Input map not mutated (truncation is display-only).
+      [crumb] = long_trail
       assert crumb.label == long_label
-      assert String.length(crumb.label) == 60
+
+      # Labels at the threshold are NOT truncated.
+      label_40 = String.duplicate("a", 40)
+
+      short_html =
+        render_component(&Breadcrumbs.breadcrumbs/1,
+          trail: [%{label: label_40, navigate: nil, current?: true}]
+        )
+
+      assert short_html =~ label_40
+      refute short_html =~ "&hellip;"
+      refute short_html =~ "…"
     end
   end
 
   describe "build/2 — trail construction" do
-    test "returns [] for an unauthenticated scope (nil)" do
+    test "returns [] for unauthenticated / user-less / unknown-page scopes" do
       assert Breadcrumbs.build(nil, page: :dashboard) == []
-    end
-
-    test "returns [] for a scope without a user" do
       assert Breadcrumbs.build(%{user: nil}, page: :dashboard) == []
+      assert Breadcrumbs.build(scope(), page: :mystery) == []
     end
 
     test "dashboard: single current Dashboard crumb" do
@@ -105,72 +96,45 @@ defmodule ContractWeb.Components.BreadcrumbsTest do
                [%{label: "Dashboard", navigate: nil, current?: true}]
     end
 
-    test "settings: three crumbs ending with the page label" do
-      result = Breadcrumbs.build(scope(), page: :settings, settings_label: "Email & password")
+    test "settings: 3 crumbs with custom page label, default label = 'Account'" do
+      custom = Breadcrumbs.build(scope(), page: :settings, settings_label: "Email & password")
 
-      assert result == [
+      assert custom == [
                %{label: "Dashboard", navigate: "/dashboard", current?: false},
                %{label: "Settings", navigate: "/users/settings", current?: false},
                %{label: "Email & password", navigate: nil, current?: true}
              ]
+
+      assert List.last(Breadcrumbs.build(scope(), page: :settings)) ==
+               %{label: "Account", navigate: nil, current?: true}
     end
 
-    test "settings: default page label is 'Account'" do
-      result = Breadcrumbs.build(scope(), page: :settings)
-
-      assert List.last(result) == %{label: "Account", navigate: nil, current?: true}
-    end
-
-    test "studio with matter, no doc: matter level is dropped — 2-crumb fallback to Studio" do
-      # Document-pivot (SPEC.md 2026-05-15): Matter is internal context,
-      # NEVER its own breadcrumb step. Without a document, the trail
-      # collapses to `Dashboard > Studio` regardless of the matter arg.
-      matter = %{id: "m_42", name: "Acme/NewCo merger"}
-
-      assert Breadcrumbs.build(scope(), page: :studio, matter: matter) ==
-               [
-                 %{label: "Dashboard", navigate: "/dashboard", current?: false},
-                 %{label: "Studio", navigate: nil, current?: true}
-               ]
-    end
-
-    test "studio with matter + document: 2 crumbs (Dashboard > Document); matter level is dropped" do
-      # Document-pivot: even when both matter and document are supplied,
-      # the trail is `Dashboard > Document.title` — the matter level is
-      # never rendered.
+    # Document-pivot (SPEC.md 2026-05-15): Matter is internal context.
+    # Studio trail collapses to 2 crumbs — Dashboard > (Document.title | Studio).
+    test "studio: matter is always dropped; trail is Dashboard > (Document | Studio)" do
       matter = %{id: "m_42", name: "Acme/NewCo merger"}
       document = %{id: "d_1", title: "Term Sheet v3"}
 
+      dashboard_crumb = %{label: "Dashboard", navigate: "/dashboard", current?: false}
+
+      # With matter + document → document name wins.
       assert Breadcrumbs.build(scope(), page: :studio, matter: matter, document: document) ==
-               [
-                 %{label: "Dashboard", navigate: "/dashboard", current?: false},
-                 %{label: "Term Sheet v3", navigate: nil, current?: true}
-               ]
-    end
+               [dashboard_crumb, %{label: "Term Sheet v3", navigate: nil, current?: true}]
 
-    test "studio without a matter falls back to a Studio current crumb" do
+      # With matter only → "Studio" fallback.
+      assert Breadcrumbs.build(scope(), page: :studio, matter: matter) ==
+               [dashboard_crumb, %{label: "Studio", navigate: nil, current?: true}]
+
+      # No matter, no document → "Studio" fallback.
       assert Breadcrumbs.build(scope(), page: :studio) ==
-               [
-                 %{label: "Dashboard", navigate: "/dashboard", current?: false},
-                 %{label: "Studio", navigate: nil, current?: true}
-               ]
-    end
+               [dashboard_crumb, %{label: "Studio", navigate: nil, current?: true}]
 
-    test "studio with document only (no matter): 2 crumbs ending in document title" do
-      # Document-pivot: the common case after auto-Matter creation is
-      # that no real workspace name reaches the breadcrumb. The trail
-      # is the 2-level `Dashboard > Document.title`.
-      document = %{id: "d_1", title: "Untitled draft"}
-
-      assert Breadcrumbs.build(scope(), page: :studio, document: document) ==
-               [
-                 %{label: "Dashboard", navigate: "/dashboard", current?: false},
-                 %{label: "Untitled draft", navigate: nil, current?: true}
-               ]
-    end
-
-    test "unknown :page returns []" do
-      assert Breadcrumbs.build(scope(), page: :mystery) == []
+      # Document only (no matter) → document name.
+      assert Breadcrumbs.build(scope(),
+               page: :studio,
+               document: %{id: "d_1", title: "Untitled draft"}
+             ) ==
+               [dashboard_crumb, %{label: "Untitled draft", navigate: nil, current?: true}]
     end
   end
 end

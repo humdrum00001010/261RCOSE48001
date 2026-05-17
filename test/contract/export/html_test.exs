@@ -70,18 +70,14 @@ defmodule Contract.Export.HTMLTest do
   # 3. Determinism
   # --------------------------------------------------------------------------
 
-  test "same projection → byte-identical output" do
+  test "render is deterministic: same projection (state + raw map) yields byte-identical output" do
     state = empty_state()
-    assert {:ok, a} = HTML.render(state)
-    assert {:ok, b} = HTML.render(state)
-    assert a == b
-  end
-
-  test "same projection across two struct/map shapes → byte-identical output" do
-    state = empty_state()
-    {:ok, from_state} = HTML.render(state)
+    {:ok, a} = HTML.render(state)
+    {:ok, b} = HTML.render(state)
     {:ok, from_proj} = HTML.render(state.projection)
-    assert from_state == from_proj
+
+    assert a == b
+    assert a == from_proj
   end
 
   # --------------------------------------------------------------------------
@@ -120,7 +116,7 @@ defmodule Contract.Export.HTMLTest do
   # 6. Headings render with correct level
   # --------------------------------------------------------------------------
 
-  test "heading nodes render with the right <hN> tag" do
+  test "heading nodes render <hN> for levels 1..6 and clamp out-of-range levels to <h6>" do
     nodes =
       for level <- 1..6 do
         %{id: "h#{level}", kind: :heading, content: "Heading #{level}", attrs: %{level: level}}
@@ -131,14 +127,12 @@ defmodule Contract.Export.HTMLTest do
     for level <- 1..6 do
       assert html =~ "<h#{level}>Heading #{level}</h#{level}>"
     end
-  end
 
-  test "heading level out of range clamps to [1, 6]" do
-    state =
-      state_with_nodes([%{id: "h", kind: :heading, content: "X", attrs: %{level: 99}}])
+    # Out-of-range clamps to <h6>.
+    {:ok, clamped} =
+      HTML.render(state_with_nodes([%{id: "h", kind: :heading, content: "X", attrs: %{level: 99}}]))
 
-    {:ok, html} = HTML.render(state)
-    assert html =~ "<h6>X</h6>"
+    assert clamped =~ "<h6>X</h6>"
   end
 
   # --------------------------------------------------------------------------

@@ -78,61 +78,68 @@ defmodule Contract.AgentTest do
       assert action.idempotency_key == "agent:RUN:1"
     end
 
-    test "handles malformed JSON gracefully" do
+    test "decode_action error / accepted shapes (JSON, OpenAI response variants)" do
+      # Error shapes.
       assert {:error, {:decode_failed, _}} = Agent.decode_action("not-json", run_id: "RUN")
-    end
 
-    test "handles JSON that isn't an object" do
       assert {:error, {:decode_failed, :not_an_object}} =
                Agent.decode_action(Jason.encode!([1, 2, 3]), run_id: "RUN")
-    end
-
-    test "missing mode returns {:error, _}" do
-      payload = %{"questions" => [], "ops" => [], "marks" => []}
 
       assert {:error, {:decode_failed, :missing_mode}} =
-               Agent.decode_action(Jason.encode!(payload), run_id: "RUN")
-    end
+               Agent.decode_action(
+                 Jason.encode!(%{"questions" => [], "ops" => [], "marks" => []}),
+                 run_id: "RUN"
+               )
 
-    test "strips ```json code fence" do
-      payload = %{"mode" => "edit", "ops" => [], "marks" => [], "message" => "ok"}
-      wrapped = "```json\n" <> Jason.encode!(payload) <> "\n```"
+      assert {:error, {:decode_failed, _}} = Agent.decode_action(123, run_id: "R")
 
-      assert {:ok, %Command{kind: :agent_change}} = Agent.decode_action(wrapped, run_id: "R")
-    end
+      # Accepted: code-fenced JSON.
+      fenced =
+        "```json\n" <>
+          Jason.encode!(%{"mode" => "edit", "ops" => [], "marks" => [], "message" => "ok"}) <>
+          "\n```"
 
-    test "accepts OpenAI Response map with output_text" do
-      payload = %{"mode" => "edit", "ops" => [], "marks" => [], "message" => "ok"}
-      response = %{"output_text" => Jason.encode!(payload)}
+      assert {:ok, %Command{kind: :agent_change}} = Agent.decode_action(fenced, run_id: "R")
 
-      assert {:ok, %Command{}} = Agent.decode_action(response, run_id: "R", turn_index: 2)
-    end
+      # Accepted: OpenAI Response map output_text.
+      assert {:ok, %Command{}} =
+               Agent.decode_action(
+                 %{
+                   "output_text" =>
+                     Jason.encode!(%{
+                       "mode" => "edit",
+                       "ops" => [],
+                       "marks" => [],
+                       "message" => "ok"
+                     })
+                 },
+                 run_id: "R",
+                 turn_index: 2
+               )
 
-    test "accepts OpenAI Response map with output[].content[].text" do
-      payload = %{
-        "mode" => "grill",
-        "questions" => [],
-        "ops" => [],
-        "marks" => [],
-        "message" => "?"
-      }
-
+      # Accepted: OpenAI Response map output[].content[].text.
       response = %{
         "output" => [
           %{
             "type" => "message",
             "content" => [
-              %{"type" => "output_text", "text" => Jason.encode!(payload)}
+              %{
+                "type" => "output_text",
+                "text" =>
+                  Jason.encode!(%{
+                    "mode" => "grill",
+                    "questions" => [],
+                    "ops" => [],
+                    "marks" => [],
+                    "message" => "?"
+                  })
+              }
             ]
           }
         ]
       }
 
       assert {:ok, %Command{kind: :agent_change}} = Agent.decode_action(response, run_id: "R")
-    end
-
-    test "rejects non-string non-map shape" do
-      assert {:error, {:decode_failed, _}} = Agent.decode_action(123, run_id: "R")
     end
   end
 
@@ -404,11 +411,8 @@ defmodule Contract.AgentTest do
       assert {:ok, %{status: :cancelled}} = Agent.cancel(nil, run.id)
     end
 
-    test "observe_change/2 is a no-op when no run exists" do
+    test "observe_change/2 and observe_revoke/2 are no-ops when no run exists" do
       assert :ok = Agent.observe_change("nonexistent-run-id", %Contract.Change{id: "c"})
-    end
-
-    test "observe_revoke/2 is a no-op when no run exists" do
       assert :ok = Agent.observe_revoke("nonexistent-run-id", %Contract.Change{id: "c"})
     end
   end

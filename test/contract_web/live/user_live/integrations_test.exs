@@ -29,7 +29,8 @@ defmodule ContractWeb.UserLive.IntegrationsTest do
   describe "authenticated, NOT connected" do
     setup :register_and_log_in_user
 
-    test "renders the 'Slack 연결' CTA + 'not connected' badge", %{conn: conn} do
+    test "renders 'Slack 연결' CTA with link to /auth/slack/start; hides disconnect",
+         %{conn: conn} do
       {:ok, _lv, html} = live(conn, ~p"/settings/integrations")
 
       assert html =~ ~s(id="integrations-page")
@@ -37,38 +38,27 @@ defmodule ContractWeb.UserLive.IntegrationsTest do
       assert html =~ ~s(id="slack-connect-button")
       assert html =~ "Slack 연결"
       assert html =~ "연결 안 됨"
-      refute html =~ ~s(id="slack-disconnect-button")
-    end
-
-    test "the connect button links to /auth/slack/start", %{conn: conn} do
-      {:ok, _lv, html} = live(conn, ~p"/settings/integrations")
       assert html =~ ~s(href="/auth/slack/start")
+      refute html =~ ~s(id="slack-disconnect-button")
     end
   end
 
   describe "authenticated, connected" do
     setup [:register_and_log_in_user, :insert_slack_token]
 
-    test "renders 'Slack 연결 해제' + connected badge + team id", %{conn: conn} do
+    test "renders disconnect form + connected badge + team id + scopes summary",
+         %{conn: conn} do
       {:ok, _lv, html} = live(conn, ~p"/settings/integrations")
 
       assert html =~ ~s(id="slack-disconnect-button")
       assert html =~ "Slack 연결 해제"
       assert html =~ "T01TEAM"
       assert html =~ "연결됨"
-      refute html =~ ~s(id="slack-connect-button")
-    end
-
-    test "renders the scopes summary", %{conn: conn} do
-      {:ok, _lv, html} = live(conn, ~p"/settings/integrations")
       assert html =~ "search:read.public"
       assert html =~ "channels:history"
-    end
-
-    test "disconnect form posts to /auth/slack/disconnect", %{conn: conn} do
-      {:ok, _lv, html} = live(conn, ~p"/settings/integrations")
       assert html =~ ~s(action="/auth/slack/disconnect")
       assert html =~ ~s(method="post")
+      refute html =~ ~s(id="slack-connect-button")
     end
   end
 

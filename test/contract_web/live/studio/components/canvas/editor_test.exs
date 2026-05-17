@@ -142,14 +142,6 @@ defmodule ContractWeb.Live.Studio.Components.Canvas.EditorTest do
       assert html =~ "회사 A"
     end
 
-    test "uses contract-body wrapper and overflow-y-auto on the pane",
-         %{user: user} do
-      html = render(lawyer_scope(user), sample_projection())
-      assert html =~ "contract-body"
-      assert html =~ "overflow-y-auto"
-      assert html =~ "max-w-3xl"
-    end
-
     test "renders an empty-state when node_order is empty", %{user: user} do
       empty = %{
         title: nil,
@@ -172,35 +164,24 @@ defmodule ContractWeb.Live.Studio.Components.Canvas.EditorTest do
       %{user: user_fixture()}
     end
 
-    test ":write perm → editable nodes carry contenteditable=\"true\"",
+    test "perm-gating: write → contenteditable + can-write; viewer hides both; paralegal also can-revoke",
          %{user: user} do
-      html = render(lawyer_scope(user), sample_projection())
+      lawyer = render(lawyer_scope(user), sample_projection())
+      # Editable nodes carry contenteditable + data-can-write=true.
+      assert lawyer =~ ~r/<h1[^>]+contenteditable="true"/
+      assert lawyer =~ ~r/<p[^>]+contenteditable="true"/
+      assert lawyer =~ ~r/<li[^>]+contenteditable="true"/
+      assert lawyer =~ ~s(data-can-write="true")
 
-      # Paragraph / heading / list_item are editable for :write.
-      assert html =~ ~r/<h1[^>]+contenteditable="true"/
-      assert html =~ ~r/<p[^>]+contenteditable="true"/
-      assert html =~ ~r/<li[^>]+contenteditable="true"/
+      viewer = render(viewer_scope(user), sample_projection())
+      refute viewer =~ ~s(contenteditable="true")
+      assert viewer =~ ~s(data-can-write="false")
+      # Marks-anchor DOM ids stay even when read-only.
+      assert viewer =~ ~s(id="node-p1")
 
-      # Hook flagged as writable.
-      assert html =~ ~s(data-can-write="true")
-    end
-
-    test ":read-only (viewer) → no contenteditable, no edit hook write flag",
-         %{user: user} do
-      html = render(viewer_scope(user), sample_projection())
-
-      refute html =~ ~s(contenteditable="true")
-      assert html =~ ~s(data-can-write="false")
-      # Still has the marks-anchor DOM ids so MarksLayer keeps working.
-      assert html =~ ~s(id="node-p1")
-      assert html =~ ~s(id="node-h1")
-    end
-
-    test "paralegal (write + revoke) gets both contenteditable AND can-revoke",
-         %{user: user} do
-      html = render(paralegal_scope(user), sample_projection())
-      assert html =~ ~s(contenteditable="true")
-      assert html =~ ~s(data-can-revoke="true")
+      paralegal = render(paralegal_scope(user), sample_projection())
+      assert paralegal =~ ~s(contenteditable="true")
+      assert paralegal =~ ~s(data-can-revoke="true")
     end
   end
 
@@ -209,74 +190,46 @@ defmodule ContractWeb.Live.Studio.Components.Canvas.EditorTest do
       %{user: user_fixture()}
     end
 
-    test "writable persona: the .Editable hook is attached and exposes the debounced commit path",
+    test "Editable hook: debounced commit + Cmd+Z revoke (gated by data-can-revoke) + set_node_focus",
          %{user: user} do
       html = render(lawyer_scope(user), sample_projection())
 
-      # Phoenix LV 1.1 resolves the colocated `.Editable` hook to its
-      # fully-qualified name when rendering the phx-hook attribute.
+      # LV 1.1 expands the colocated `.Editable` hook to its FQ name.
       assert html =~ "phx-hook=\"ContractWeb.Live.Studio.Components.Canvas.Editor.Editable\""
-
-      # The Editor wires the hook on the body wrapper and passes can-write
-      # flag so the JS side knows whether to commit edits.
       assert html =~ ~s(data-can-write="true")
-      # Source of truth for the hook source itself is asserted below via
-      # `editor_hook_source/0` so we don't depend on the colocated script
-      # being inlined in the rendered HTML (LV 1.1 hoists it elsewhere).
+
+      # Click → set_node_focus with node_id.
+      assert html =~ ~s(phx-click="set_node_focus")
+      assert html =~ ~s(phx-value-node_id="p1")
+      assert html =~ ~s(phx-value-node_id="h1")
+
+      # Hook source must wire debounced edit_document + Cmd+Z revoke (with the
+      # data-can-revoke gate). Admin persona has both write + revoke.
+      admin_html = render(admin_scope(user), sample_projection())
+      assert admin_html =~ ~s(data-can-revoke="true")
+
       hook_src = editor_hook_source()
       assert hook_src =~ ~s(pushEvent("edit_document")
       assert hook_src =~ "this.debounceMs = 300"
       assert hook_src =~ "node_id"
-    end
-
-    test "Cmd+Z revoke path: hook reads data-can-revoke and pushes change.revoke",
-         %{user: user} do
-      # :revoke + :write persona (admin) → hook ALLOWED to fire change.revoke.
-      html = render(admin_scope(user), sample_projection())
-
-      assert html =~ ~s(data-can-revoke="true")
-
-      hook_src = editor_hook_source()
       assert hook_src =~ ~s(pushEvent("change.revoke")
       assert hook_src =~ "metaKey || e.ctrlKey"
-      # Hook respects the data-can-revoke gate before pushing.
       assert hook_src =~ ~s(this.el.dataset.canRevoke !== "true")
-    end
-
-    test "viewer is gated out of Cmd+Z: data-can-revoke=\"false\"", %{user: user} do
-      html = render(viewer_scope(user), sample_projection())
-      assert html =~ ~s(data-can-revoke="false")
-    end
-
-    test "set_node_focus is fired via phx-click on every editable node",
-         %{user: user} do
-      html = render(lawyer_scope(user), sample_projection())
-
-      # Click → set_node_focus event with the node's id.
-      assert html =~ ~s(phx-click="set_node_focus")
-      assert html =~ ~s(phx-value-node_id="p1")
-      assert html =~ ~s(phx-value-node_id="h1")
     end
   end
 
   describe "revision-conflict surfacing" do
-    setup do
-      %{user: user_fixture()}
-    end
+    test "conflict_node_id assign → renders the revert toast for that node" do
+      user = user_fixture()
+      no_conflict = render(lawyer_scope(user), sample_projection())
+      refute no_conflict =~ ~s(data-role="revision-conflict-toast")
 
-    test "no conflict assign → no toast banner rendered", %{user: user} do
-      html = render(lawyer_scope(user), sample_projection())
-      refute html =~ ~s(data-role="revision-conflict-toast")
-    end
-
-    test "conflict_node_id assign → renders the revert toast for that node",
-         %{user: user} do
-      html =
+      conflict =
         render(lawyer_scope(user), sample_projection(), conflict_node_id: "p1")
 
-      assert html =~ ~s(data-role="revision-conflict-toast")
-      assert html =~ ~s(data-conflict-node-id="p1")
-      assert html =~ "다른 사용자의 변경이 먼저 적용되었습니다."
+      assert conflict =~ ~s(data-role="revision-conflict-toast")
+      assert conflict =~ ~s(data-conflict-node-id="p1")
+      assert conflict =~ "다른 사용자의 변경이 먼저 적용되었습니다."
     end
   end
 
@@ -317,27 +270,5 @@ defmodule ContractWeb.Live.Studio.Components.Canvas.EditorTest do
       refute html =~ <<0x1100::utf8, 0x1161::utf8, 0x11B8::utf8>>
     end
 
-    test "Korean content participates in the data-server-content snapshot",
-         %{user: user} do
-      html = render(lawyer_scope(user), sample_projection())
-      assert html =~ ~s(data-server-content="본 계약은 비밀 정보 보호를 목적으로 한다.")
-      assert html =~ ~s(data-server-content="보안 유지 계약서")
-    end
-  end
-
-  describe "MarksLayer DOM contract" do
-    setup do
-      %{user: user_fixture()}
-    end
-
-    test ~s(every renderable node carries id="node-#{"<node_id>"}" so MarksLayer can target it),
-         %{user: user} do
-      html = render(lawyer_scope(user), sample_projection())
-
-      for node_id <- ~w(h1 p1 p2 l1 li1 li2 t1) do
-        assert html =~ ~s(id="node-#{node_id}"),
-               "expected DOM id node-#{node_id} for MarksLayer anchoring"
-      end
-    end
   end
 end

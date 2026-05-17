@@ -22,62 +22,45 @@ defmodule Contract.CommandTest do
       assert Ecto.Changeset.get_field(cs, :actor_type) == :agent
     end
 
-    test "rejects idempotency_key shorter than 6 chars" do
-      cs =
-        Command.changeset(%Command{}, %{
-          kind: :create_document,
-          idempotency_key: "abc"
-        })
+    test "idempotency_key must be 6..128 chars" do
+      short =
+        Command.changeset(%Command{}, %{kind: :create_document, idempotency_key: "abc"})
 
-      refute cs.valid?
-      assert List.keyfind(cs.errors, :idempotency_key, 0)
-    end
-
-    test "rejects idempotency_key longer than 128 chars" do
-      cs =
+      long =
         Command.changeset(%Command{}, %{
           kind: :create_document,
           idempotency_key: String.duplicate("x", 129)
         })
 
-      refute cs.valid?
+      ok =
+        Command.changeset(%Command{}, %{kind: :create_document, idempotency_key: "abc-123-xyz"})
+
+      refute short.valid?
+      assert List.keyfind(short.errors, :idempotency_key, 0)
+      refute long.valid?
+      assert ok.valid?
     end
 
-    test "accepts a well-formed idempotency_key" do
-      cs =
-        Command.changeset(%Command{}, %{
-          kind: :create_document,
-          idempotency_key: "abc-123-xyz"
-        })
+    test "every document-scoped kind requires :document_id and accepts it when supplied" do
+      doc_id = "11111111-1111-1111-1111-111111111111"
 
-      assert cs.valid?
-    end
+      for kind <- [
+            :edit_document,
+            :rename_document,
+            :update_metadata,
+            :set_contract_type,
+            :add_mark,
+            :update_mark,
+            :revoke_change,
+            :resolve_revoke,
+            :request_export
+          ] do
+        missing = Command.changeset(%Command{}, %{kind: kind})
+        refute missing.valid?, "expected #{kind} to require :document_id"
+        assert List.keyfind(missing.errors, :document_id, 0)
 
-    for kind <- [
-          :edit_document,
-          :rename_document,
-          :update_metadata,
-          :set_contract_type,
-          :add_mark,
-          :update_mark,
-          :revoke_change,
-          :resolve_revoke,
-          :request_export
-        ] do
-      test "#{kind} requires :document_id" do
-        cs = Command.changeset(%Command{}, %{kind: unquote(kind)})
-        refute cs.valid?
-        assert List.keyfind(cs.errors, :document_id, 0)
-      end
-
-      test "#{kind} passes when :document_id is supplied" do
-        cs =
-          Command.changeset(%Command{}, %{
-            kind: unquote(kind),
-            document_id: "11111111-1111-1111-1111-111111111111"
-          })
-
-        assert cs.valid?
+        present = Command.changeset(%Command{}, %{kind: kind, document_id: doc_id})
+        assert present.valid?, "expected #{kind} to be valid with :document_id"
       end
     end
 

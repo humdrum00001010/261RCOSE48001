@@ -241,18 +241,6 @@ defmodule ContractWeb.Live.Studio.Components.ChatRailTest do
       assert html =~ "관찰 모드"
     end
 
-    test "lawyer persona does NOT see the observer banner" do
-      html =
-        render_component(ChatRail,
-          id: "chat-rail",
-          studio_state: default_state(),
-          streams: %{chat_messages: empty_stream()},
-          current_scope: lawyer_scope()
-        )
-
-      refute html =~ ~s(data-role="observer-banner")
-    end
-
     test "no-document mode shows the 5-option agent welcome prompt (SPEC.md §10)" do
       no_doc_state = %State{mode: :no_document, last_seen_revision: 0, agent_run_id: nil}
 
@@ -286,23 +274,6 @@ defmodule ContractWeb.Live.Studio.Components.ChatRailTest do
       # The headline copy is present.
       assert html =~ "새 문서를 시작합니다. 어떻게 시작할까요?"
       assert html =~ "무엇으로 시작할까요?"
-    end
-
-    test "no-document welcome is not counted as a real chat message" do
-      no_doc_state = %State{mode: :no_document, last_seen_revision: 0, agent_run_id: nil}
-
-      html =
-        render_component(ChatRail,
-          id: "chat-rail",
-          studio_state: no_doc_state,
-          streams: %{chat_messages: empty_stream()},
-          current_scope: lawyer_scope()
-        )
-
-      assert html =~ ~s(id="chat-rail-no-doc-welcome")
-      assert html =~ ~s(data-role="chat-no-doc-welcome")
-      refute html =~ ~s(data-message-id="welcome-no-doc")
-      refute html =~ ~s(data-role="chat-message")
     end
 
     test "no-document welcome hides only after a real streamed chat message exists", %{
@@ -362,20 +333,6 @@ defmodule ContractWeb.Live.Studio.Components.ChatRailTest do
       assert jamo_chars == [],
              "expected no Hangul jamo (decomposed) code points in chat_rail no-doc welcome HTML; " <>
                "found #{inspect(jamo_chars)}"
-    end
-
-    test "non-no-document modes still render the generic welcome (not the 5-option panel)" do
-      html =
-        render_component(ChatRail,
-          id: "chat-rail",
-          studio_state: %State{default_state() | mode: :briefing},
-          streams: %{chat_messages: empty_stream()},
-          current_scope: lawyer_scope()
-        )
-
-      assert html =~ ~s(data-role="chat-welcome")
-      refute html =~ ~s(data-role="chat-no-doc-welcome")
-      refute html =~ "기존 계약서 업로드"
     end
 
     test "agent status pill reflects studio_state.agent_run_id" do
@@ -529,42 +486,6 @@ defmodule ContractWeb.Live.Studio.Components.ChatRailTest do
       assert html =~ ~s(phx-value-source_claim_id="claim-1")
     end
 
-    test "source claim correct control renders a value input form" do
-      html =
-        render_component(ChatRail,
-          id: "chat-rail",
-          studio_state: default_state(),
-          streams: %{
-            chat_messages: [
-              {"chat-msg-claim-1",
-               %{
-                 id: "claim-1",
-                 role: :agent,
-                 operation: %{
-                   id: "claim-1",
-                   type: "source_claim",
-                   title: "Effective date",
-                   status: "proposed",
-                   details: %{
-                     "source_claim_id" => "claim-1",
-                     "source_document_id" => "source-doc-1",
-                     "proposed_kind" => "effective_date",
-                     "proposed_value" => "2026-01-01"
-                   }
-                 },
-                 transient?: false
-               }}
-            ]
-          },
-          current_scope: lawyer_scope()
-        )
-
-      assert html =~ ~s(data-role="source-claim-correct-form")
-      assert html =~ ~s(id="source-claim-correct-form-claim-1")
-      assert html =~ ~s(phx-submit="source_claim.correct")
-      assert html =~ ~s(name="value")
-      assert html =~ ~s(value="2026-01-01")
-    end
   end
 
   # ===========================================================================

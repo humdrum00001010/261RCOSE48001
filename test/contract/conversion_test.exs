@@ -70,30 +70,23 @@ defmodule Contract.ConversionTest do
       assert Enum.all?(plan.field_plans, &(&1.strategy == :ask_user))
     end
 
-    test "unknown target type → :not_found" do
+    test "rejects unknown target / missing :type_change perm / nil-perms scope" do
       s = scope()
       {_m, d} = build_source_doc(s)
       assert {:error, :not_found} = Conversion.plan(s, d.id, "nonsense_v1", [])
-    end
 
-    test "scope without :type_change perm → :forbidden" do
-      s = scope(perms: [:read])
-      {_m, d} = build_source_doc(s)
+      read_only = scope(perms: [:read])
+      {_m, ro_doc} = build_source_doc(read_only)
+      assert {:error, :forbidden} = Conversion.plan(read_only, ro_doc.id, "service_agreement_v1", [])
 
-      assert {:error, :forbidden} =
-               Conversion.plan(s, d.id, "service_agreement_v1", [])
-    end
-
-    test "scope without any perms → :forbidden" do
-      s = %Context{
+      nil_perms = %Context{
         user: %Contract.Accounts.User{id: Ecto.UUID.generate(), email: "u@x"},
         tenant: Ecto.UUID.generate(),
         perms: nil
       }
 
-      # No matter visible at all; even before perm check this is the dominant error.
       assert {:error, :forbidden} =
-               Conversion.plan(s, Ecto.UUID.generate(), "service_agreement_v1", [])
+               Conversion.plan(nil_perms, Ecto.UUID.generate(), "service_agreement_v1", [])
     end
   end
 
@@ -116,11 +109,10 @@ defmodule Contract.ConversionTest do
   end
 
   describe "set_field_strategy/4" do
-    test "valid strategy is accepted" do
+    test "accepts valid strategies (atom + string), rejects unknown" do
       s = scope()
       {_m, d} = build_source_doc(s, "nda_v1")
       {:ok, plan} = Conversion.plan(s, d.id, "service_agreement_v1", [])
-
       [first | _] = plan.field_plans
 
       assert {:ok, %Plan{field_plans: new_plans}} =
@@ -128,37 +120,22 @@ defmodule Contract.ConversionTest do
 
       assert Enum.find(new_plans, &(&1.source_field_id == first.source_field_id)).strategy ==
                :copy_once
-    end
 
-    test "invalid strategy is rejected" do
-      s = scope()
-      {_m, d} = build_source_doc(s, "nda_v1")
-      {:ok, plan} = Conversion.plan(s, d.id, "service_agreement_v1", [])
-      [first | _] = plan.field_plans
-
-      assert {:error, :invalid_strategy} =
-               Conversion.set_field_strategy(s, plan, first.source_field_id, :bogus)
-    end
-
-    test "accepts strategy as a string" do
-      s = scope()
-      {_m, d} = build_source_doc(s, "nda_v1")
-      {:ok, plan} = Conversion.plan(s, d.id, "service_agreement_v1", [])
-      [first | _] = plan.field_plans
-
+      # String form accepted.
       assert {:ok, %Plan{}} =
                Conversion.set_field_strategy(s, plan, first.source_field_id, "ignore")
+
+      # Unknown atom rejected.
+      assert {:error, :invalid_strategy} =
+               Conversion.set_field_strategy(s, plan, first.source_field_id, :bogus)
     end
   end
 
   describe "create_variant/2" do
-    test "produces a new Document with parent + new type_key + a Change" do
+    test "produces new Document with parent + new type_key + Change + variant_of_change_id" do
       s = scope()
       {_m, source} = build_source_doc(s, "nda_v1")
       {:ok, plan} = Conversion.plan(s, source.id, "service_agreement_v1", [])
-
-      # The default plan from nda→service_agreement is fully compatible
-      # (link/copy strategies), so no :ask_user lingers.
 
       assert {:ok, {%Document{} = new_doc, %Contract.Change{} = change}} =
                Conversion.create_variant(s, plan)
@@ -168,27 +145,15 @@ defmodule Contract.ConversionTest do
       assert new_doc.owner_id == source.owner_id
       assert change.command_kind == "create_converted_variant"
       assert change.document_id == new_doc.id
+
+      # The new document stamps variant_of_change_id with the originating
+      # Change so the audit lineage stays append-only.
+      assert new_doc.variant_of_change_id == change.id
+      # The Change exposes an inverse list so Engine can round-trip it.
+      assert is_list(change.inverse)
     end
 
-    test "records lineage rows for non-ignored / non-ask_user strategies" do
-      s = scope()
-      {_m, source} = build_source_doc(s, "nda_v1")
-      {:ok, plan} = Conversion.plan(s, source.id, "service_agreement_v1", [])
-
-      # Count how many field plans are eligible for lineage (everything
-      # that's not :ignore / :ask_user already).
-      eligible_count =
-        plan.field_plans
-        |> Enum.reject(&(&1.strategy in [:ignore, :ask_user]))
-        |> length()
-
-      {:ok, {new_doc, _change}} = Conversion.create_variant(s, plan)
-      lineage = Documents.list_lineage(s, new_doc.id)
-      assert length(lineage) == eligible_count
-      assert eligible_count > 0
-    end
-
-    test "forcing a field to :ignore drops one lineage row" do
+    test "lineage rows track non-ignored/non-ask_user strategies and drop on per-field force" do
       s = scope()
       {_m, source} = build_source_doc(s, "nda_v1")
       {:ok, %Plan{} = plan} = Conversion.plan(s, source.id, "service_agreement_v1", [])
@@ -196,42 +161,40 @@ defmodule Contract.ConversionTest do
       eligible =
         Enum.filter(plan.field_plans, &(&1.strategy not in [:ignore, :ask_user]))
 
-      assert length(eligible) >= 1
+      eligible_count = length(eligible)
+      assert eligible_count > 0
+
+      # Baseline: lineage row count == eligible count.
+      {:ok, {new_doc, _change}} = Conversion.create_variant(s, plan)
+      assert length(Documents.list_lineage(s, new_doc.id)) == eligible_count
+
+      # Force one eligible field to :ignore → lineage drops by 1.
       [first_eligible | _] = eligible
 
-      new_plans =
-        Enum.map(plan.field_plans, fn %FieldPlan{} = fp ->
-          if fp.source_field_id == first_eligible.source_field_id,
-            do: %FieldPlan{fp | strategy: :ignore},
-            else: fp
-        end)
-
-      plan = %Plan{plan | field_plans: new_plans}
-      {:ok, {new_doc, _change}} = Conversion.create_variant(s, plan)
-
-      lineage = Documents.list_lineage(s, new_doc.id)
-      assert length(lineage) == length(eligible) - 1
-
-      refute Enum.any?(lineage, &(&1.source_field_id == first_eligible.source_field_id))
-    end
-
-    test "ignore + ask_user strategies don't insert lineage rows" do
-      s = scope()
-      {_m, source} = build_source_doc(s, "nda_v1")
-      {:ok, %Plan{} = plan} = Conversion.plan(s, source.id, "service_agreement_v1", [])
-
-      # Force every field to :ignore.
-      plan = %Plan{
+      forced_one_plan = %Plan{
         plan
         | field_plans:
             Enum.map(plan.field_plans, fn %FieldPlan{} = fp ->
-              %FieldPlan{fp | strategy: :ignore}
+              if fp.source_field_id == first_eligible.source_field_id,
+                do: %FieldPlan{fp | strategy: :ignore},
+                else: fp
             end)
       }
 
-      {:ok, {new_doc, _change}} = Conversion.create_variant(s, plan)
+      {:ok, {forced_doc, _}} = Conversion.create_variant(s, forced_one_plan)
+      forced_lineage = Documents.list_lineage(s, forced_doc.id)
+      assert length(forced_lineage) == eligible_count - 1
+      refute Enum.any?(forced_lineage, &(&1.source_field_id == first_eligible.source_field_id))
 
-      assert [] = Documents.list_lineage(s, new_doc.id)
+      # Force every field to :ignore → no lineage rows.
+      all_ignored = %Plan{
+        plan
+        | field_plans:
+            Enum.map(plan.field_plans, &%FieldPlan{&1 | strategy: :ignore})
+      }
+
+      {:ok, {empty_doc, _}} = Conversion.create_variant(s, all_ignored)
+      assert [] = Documents.list_lineage(s, empty_doc.id)
     end
 
     test "remaining :ask_user fields block create_variant" do
@@ -241,15 +204,6 @@ defmodule Contract.ConversionTest do
 
       # Incompatible types → every field defaults to :ask_user.
       assert {:error, :unresolved_ask_user_fields} = Conversion.create_variant(s, plan)
-    end
-
-    test "stamps variant_of_change_id on the new document" do
-      s = scope()
-      {_m, source} = build_source_doc(s, "nda_v1")
-      {:ok, plan} = Conversion.plan(s, source.id, "service_agreement_v1", [])
-
-      {:ok, {new_doc, change}} = Conversion.create_variant(s, plan)
-      assert new_doc.variant_of_change_id == change.id
     end
 
     test "scope without :type_change perm → :forbidden" do
@@ -266,15 +220,6 @@ defmodule Contract.ConversionTest do
       assert {:error, :forbidden} = Conversion.create_variant(s, plan)
     end
 
-    test "the resulting Change has inverse for round-trip via Engine.inverse" do
-      s = scope()
-      {_m, source} = build_source_doc(s, "nda_v1")
-      {:ok, plan} = Conversion.plan(s, source.id, "service_agreement_v1", [])
-
-      {:ok, {_new_doc, change}} = Conversion.create_variant(s, plan)
-      # The Engine builds inverse for :create_converted_variant.
-      assert is_list(change.inverse)
-    end
   end
 
   describe "allowed_strategies/0" do

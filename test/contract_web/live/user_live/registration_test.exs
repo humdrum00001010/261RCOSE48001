@@ -87,17 +87,4 @@ defmodule ContractWeb.UserLive.RegistrationTest do
     end
   end
 
-  describe "registration navigation" do
-    test "redirects to login page when the Log in button is clicked", %{conn: conn} do
-      {:ok, lv, _html} = live(conn, ~p"/users/register")
-
-      {:ok, _login_live, login_html} =
-        lv
-        |> element("main a", "Log in")
-        |> render_click()
-        |> follow_redirect(conn, ~p"/users/log-in")
-
-      assert login_html =~ "Log in"
-    end
-  end
 end

@@ -77,17 +77,12 @@ defmodule Contract.SessionTest do
   end
 
   describe "start_link/1" do
-    test "starts and registers under document_id" do
+    test "starts, registers under document_id, and acquires a lease" do
       doc = Ecto.UUID.generate()
       {pid, ^doc} = start_session!(document_id: doc)
 
       assert is_pid(pid)
       assert Session.whereis(doc) == pid
-    end
-
-    test "init acquires a lease for the document" do
-      doc = Ecto.UUID.generate()
-      {_pid, ^doc} = start_session!(document_id: doc)
       assert %Lease.Record{document_id: ^doc} = Lease.get(doc)
     end
 
@@ -335,24 +330,23 @@ defmodule Contract.SessionTest do
   end
 
   describe "shutdown_if_stale/1" do
-    test "stops the session when idle past the threshold" do
-      doc = Ecto.UUID.generate()
-      {pid, ^doc} = start_session!(document_id: doc, idle_after_ms: 0)
-      ref = Process.monitor(pid)
-      # Wait a few ms so that elapsed_ms > 0.
+    test "stops idle sessions past the threshold; recent heartbeat keeps it alive" do
+      # Stale: idle_after_ms=0 → immediately stops.
+      stale_doc = Ecto.UUID.generate()
+      {stale_pid, ^stale_doc} = start_session!(document_id: stale_doc, idle_after_ms: 0)
+      ref = Process.monitor(stale_pid)
       Process.sleep(20)
-      :ok = Session.shutdown_if_stale(pid)
-      assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 1_000
-    end
+      :ok = Session.shutdown_if_stale(stale_pid)
+      assert_receive {:DOWN, ^ref, :process, ^stale_pid, :normal}, 1_000
 
-    test "stays alive when there has been recent heartbeat activity" do
-      doc = Ecto.UUID.generate()
-      {pid, ^doc} = start_session!(document_id: doc, idle_after_ms: 60_000)
-      :ok = Session.heartbeat(pid)
+      # Active: recent heartbeat keeps the session alive.
+      live_doc = Ecto.UUID.generate()
+      {live_pid, ^live_doc} = start_session!(document_id: live_doc, idle_after_ms: 60_000)
+      :ok = Session.heartbeat(live_pid)
       Process.sleep(20)
-      :ok = Session.shutdown_if_stale(pid)
+      :ok = Session.shutdown_if_stale(live_pid)
       Process.sleep(20)
-      assert Process.alive?(pid)
+      assert Process.alive?(live_pid)
     end
   end
 

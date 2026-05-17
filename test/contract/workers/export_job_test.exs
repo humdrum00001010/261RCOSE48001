@@ -137,16 +137,7 @@ defmodule Contract.Workers.ExportJobTest do
       assert_receive {:export_failed, _export_id, _reason}, 1_000
     end
 
-    test "unsupported format surfaces as a renderer error and failed broadcast" do
-      {doc_id, _requester_id, _scope} = seed_document()
-      :ok = Phoenix.PubSub.subscribe(Contract.PubSub, "document:#{doc_id}")
-
-      args = %{"document_id" => doc_id, "format" => "wat", "requester_id" => nil}
-      assert {:error, _} = perform_job(ExportJob, args)
-      assert_receive {:export_failed, _, {:unsupported_format, "wat"}}, 1_000
-    end
-
-    test "unsupported string format does not create an atom" do
+    test "unsupported formats surface as a renderer error without creating atoms" do
       {doc_id, _requester_id, _scope} = seed_document()
       :ok = Phoenix.PubSub.subscribe(Contract.PubSub, "document:#{doc_id}")
 

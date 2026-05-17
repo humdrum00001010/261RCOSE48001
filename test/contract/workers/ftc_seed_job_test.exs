@@ -123,7 +123,8 @@ defmodule Contract.Workers.FtcSeedJobTest do
   end
 
   describe "perform/1 — idempotency" do
-    test "running twice does not duplicate the template Document", %{bypass: bypass} do
+    test "running twice does not duplicate the Document and skips the Upstage call",
+         %{bypass: bypass} do
       Bypass.expect(bypass, "GET", "/franchise.hwp", fn conn ->
         conn
         |> Plug.Conn.put_resp_content_type("application/x-hwp")
@@ -133,9 +134,12 @@ defmodule Contract.Workers.FtcSeedJobTest do
       stub_upstage_response()
       assert :ok = perform_job(FtcSeedJob, job_args(bypass))
 
+      # Second run: fresh UpstageStub state to verify it is NOT touched.
+      UpstageStub.reset()
       stub_upstage_response()
       assert :ok = perform_job(FtcSeedJob, job_args(bypass))
 
+      # Idempotency: single Document row, second run skipped the Upstage driver.
       matter = Repo.get_by!(Matter, name: FtcSeedJob.templates_matter_name())
 
       assert 1 =
@@ -146,22 +150,6 @@ defmodule Contract.Workers.FtcSeedJobTest do
                  :count,
                  :id
                )
-    end
-
-    test "the second run does NOT call the Upstage driver", %{bypass: bypass} do
-      Bypass.expect(bypass, "GET", "/franchise.hwp", fn conn ->
-        conn
-        |> Plug.Conn.put_resp_content_type("application/x-hwp")
-        |> Plug.Conn.resp(200, "HWPBYTES")
-      end)
-
-      stub_upstage_response()
-      assert :ok = perform_job(FtcSeedJob, job_args(bypass))
-
-      UpstageStub.reset()
-      stub_upstage_response()
-
-      assert :ok = perform_job(FtcSeedJob, job_args(bypass))
 
       assert UpstageStub.calls() == []
     end

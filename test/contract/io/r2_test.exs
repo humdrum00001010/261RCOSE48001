@@ -90,16 +90,14 @@ defmodule Contract.IO.R2Test do
   end
 
   describe "presigned_url/2" do
-    test "returns a signed URL containing the key + auth params" do
-      assert {:ok, url} = R2.presigned_url("exports/abc.pdf")
-      assert is_binary(url)
-      assert url =~ "/test-bucket/exports/abc.pdf"
-      assert url =~ "X-Amz-Signature="
-    end
+    test "returns a signed URL with auth params and honours :expires_in" do
+      assert {:ok, default_url} = R2.presigned_url("exports/abc.pdf")
+      assert is_binary(default_url)
+      assert default_url =~ "/test-bucket/exports/abc.pdf"
+      assert default_url =~ "X-Amz-Signature="
 
-    test "honors :expires_in opt by including X-Amz-Expires" do
-      assert {:ok, url} = R2.presigned_url("k", expires_in: 60)
-      assert url =~ "X-Amz-Expires=60"
+      assert {:ok, custom} = R2.presigned_url("k", expires_in: 60)
+      assert custom =~ "X-Amz-Expires=60"
     end
   end
 

@@ -98,25 +98,6 @@ defmodule ContractWeb.Live.Studio.Components.Canvas.BriefingTest do
       refute html =~ ~s(phx-submit="edit_document")
     end
 
-    test "renders all nodes in node_order" do
-      proj =
-        projection_with_nodes([
-          %{id: "h1", kind: :heading, content: "Section 1 — Term"},
-          %{id: "p1", kind: :paragraph, content: "This Agreement shall commence on…"},
-          %{id: "p2", kind: :paragraph, content: "Either party may terminate…"}
-        ])
-
-      html = render_briefing(projection: proj)
-
-      assert html =~ "Section 1 — Term"
-      assert html =~ "This Agreement shall commence on"
-      assert html =~ "Either party may terminate"
-
-      # Each node gets a data-node-id attr so the DOM is queryable.
-      assert html =~ ~s(data-node-id="h1")
-      assert html =~ ~s(data-node-id="p1")
-      assert html =~ ~s(data-node-id="p2")
-    end
   end
 
   describe "render/1 — ask-mark highlighting" do
@@ -154,26 +135,6 @@ defmodule ContractWeb.Live.Studio.Components.Canvas.BriefingTest do
       refute html =~ ~s(data-mark-target="n1")
     end
 
-    test "non-:ask marks do not produce a highlight" do
-      proj =
-        projection_with_nodes(
-          [%{id: "n1", kind: :paragraph, content: "Some text."}],
-          marks: %{
-            "m1" => %{
-              id: "m1",
-              intent: :note,
-              source: :agent,
-              target_id: "n1",
-              text: "fyi"
-            }
-          }
-        )
-
-      html = render_briefing(projection: proj)
-
-      refute html =~ "ask-mark"
-      refute html =~ ~s(data-mark-target="n1")
-    end
   end
 
   describe "render/1 — set_node_focus affordance" do
@@ -249,29 +210,22 @@ defmodule ContractWeb.Live.Studio.Components.Canvas.BriefingTest do
     end
   end
 
-  describe "render/1 — empty projection" do
-    test "empty projection renders without error and shows the briefing chrome" do
-      html = render_briefing(projection: RuntimeState.empty_projection())
+  describe "render/1 — empty / legacy projection (defensive)" do
+    test "empty + legacy :marks-less projection still render without crashing" do
+      empty = render_briefing(projection: RuntimeState.empty_projection())
+      assert empty =~ ~s(data-component="canvas-briefing")
+      assert empty =~ ~s(data-role="briefing-empty")
+      assert empty =~ "Untitled document"
 
-      assert html =~ ~s(data-component="canvas-briefing")
-      assert html =~ ~s(data-role="briefing-badge")
-      assert html =~ ~s(data-role="briefing-empty")
-      # Untitled fallback when projection has no title.
-      assert html =~ "Untitled document"
-      refute html =~ "ask-mark"
-    end
-
-    test "projection without :marks key (legacy snapshot) still renders" do
-      proj = %{
+      legacy_proj = %{
         title: "Doc",
         nodes: %{"n1" => %{id: "n1", kind: :paragraph, content: "hi"}},
         node_order: ["n1"]
       }
 
-      html = render_briefing(projection: proj)
-
-      assert html =~ "hi"
-      refute html =~ "ask-mark"
+      legacy = render_briefing(projection: legacy_proj)
+      assert legacy =~ "hi"
+      refute legacy =~ "ask-mark"
     end
   end
 

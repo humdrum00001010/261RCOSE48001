@@ -26,16 +26,14 @@ defmodule Contract.Runtime.StateTest do
   # ----------------------------------------------------------------------------
 
   describe "IR-richness: table + cell attrs" do
-    test "table_attr_keys/0 lists the canonical HWPX-grade keys" do
-      keys = State.table_attr_keys()
+    test "table/cell attr_keys advertise the canonical HWPX-grade fields" do
+      table_keys = State.table_attr_keys()
 
       for k <- [:column_widths, :border_fill_id, :header_row_count, :footer_row_count] do
-        assert k in keys, "expected #{inspect(k)} in table_attr_keys/0"
+        assert k in table_keys
       end
-    end
 
-    test "cell_attr_keys/0 lists span + border + vertical_alignment + padding_* keys" do
-      keys = State.cell_attr_keys()
+      cell_keys = State.cell_attr_keys()
 
       for k <- [
             :row_span,
@@ -47,17 +45,15 @@ defmodule Contract.Runtime.StateTest do
             :padding_bottom,
             :padding_left
           ] do
-        assert k in keys, "expected #{inspect(k)} in cell_attr_keys/0"
+        assert k in cell_keys
       end
     end
 
-    test "a :table node round-trips with rich attrs through the projection" do
-      table_id = "tbl-1"
-
+    test "table + cell nodes round-trip through projection with their rich attrs" do
       table = %{
-        id: table_id,
+        id: "tbl-1",
         kind: :table,
-        children: ["c1", "c2", "c3"],
+        children: ["c1"],
         attrs: %{
           column_widths: [3000, 4000, 5000],
           border_fill_id: "5",
@@ -66,25 +62,8 @@ defmodule Contract.Runtime.StateTest do
         }
       }
 
-      proj =
-        State.empty_projection()
-        |> Map.put(:nodes, %{table_id => table})
-        |> Map.put(:node_order, [table_id])
-
-      state = %State{document_id: "d", revision: 0, projection: proj}
-
-      stored = state.projection.nodes[table_id]
-      assert stored.attrs.column_widths == [3000, 4000, 5000]
-      assert stored.attrs.border_fill_id == "5"
-      assert stored.attrs.header_row_count == 1
-      assert stored.attrs.footer_row_count == 0
-    end
-
-    test "a :cell node carries span + padding + border_fill_id + vertical_alignment" do
-      cell_id = "c1"
-
       cell = %{
-        id: cell_id,
+        id: "c1",
         kind: :cell,
         attrs: %{
           row_span: 2,
@@ -98,22 +77,31 @@ defmodule Contract.Runtime.StateTest do
         }
       }
 
-      proj = State.empty_projection() |> Map.put(:nodes, %{cell_id => cell})
+      proj =
+        State.empty_projection()
+        |> Map.put(:nodes, %{"tbl-1" => table, "c1" => cell})
+        |> Map.put(:node_order, ["tbl-1"])
+
       state = %State{document_id: "d", revision: 0, projection: proj}
 
-      a = state.projection.nodes[cell_id].attrs
-      assert a.row_span == 2
-      assert a.col_span == 3
-      assert a.border_fill_id == "7"
-      assert a.vertical_alignment == :center
-      assert a.padding_top == 100
-      assert a.padding_right == 200
-      assert a.padding_bottom == 300
-      assert a.padding_left == 400
+      tbl_attrs = state.projection.nodes["tbl-1"].attrs
+      assert tbl_attrs.column_widths == [3000, 4000, 5000]
+      assert tbl_attrs.border_fill_id == "5"
+      assert tbl_attrs.header_row_count == 1
+      assert tbl_attrs.footer_row_count == 0
+
+      cell_attrs = state.projection.nodes["c1"].attrs
+      assert cell_attrs.row_span == 2
+      assert cell_attrs.col_span == 3
+      assert cell_attrs.border_fill_id == "7"
+      assert cell_attrs.vertical_alignment == :center
+      assert cell_attrs.padding_top == 100
+      assert cell_attrs.padding_right == 200
+      assert cell_attrs.padding_bottom == 300
+      assert cell_attrs.padding_left == 400
     end
 
-    test "absent rich attrs are simply missing — projection shape is unchanged" do
-      # Additive guarantee: a table with no rich attrs still parses and stores.
+    test "absent rich attrs are simply missing — projection shape is additive" do
       table = %{id: "t", kind: :table, children: [], attrs: %{rows: 1, cols: 1}}
       proj = State.empty_projection() |> Map.put(:nodes, %{"t" => table})
       state = %State{document_id: "d", revision: 0, projection: proj}

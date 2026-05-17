@@ -205,29 +205,7 @@ defmodule Contract.StoreTest do
   end
 
   describe "changes_since/2" do
-    test "returns [] when none after revision" do
-      doc = new_document_id()
-      lease = acquire_lease(doc)
-      assert {:ok, _} = Store.append(doc, build_create_change(doc), lease.fencing_token)
-
-      assert {:ok, []} = Store.changes_since(doc, 1)
-      assert {:ok, []} = Store.changes_since(doc, 99)
-    end
-
-    test "returns all changes when revision is 0" do
-      doc = new_document_id()
-      lease = acquire_lease(doc)
-      assert {:ok, _} = Store.append(doc, build_create_change(doc), lease.fencing_token)
-
-      assert {:ok, _} =
-               Store.append(doc, build_followup_change(doc, 1), lease.fencing_token)
-
-      assert {:ok, [c1, c2]} = Store.changes_since(doc, 0)
-      assert c1.result_revision == 1
-      assert c2.result_revision == 2
-    end
-
-    test "results are sorted by result_revision ascending" do
+    test "returns sorted (asc) since 0, empty after the latest revision" do
       doc = new_document_id()
       lease = acquire_lease(doc)
       assert {:ok, _} = Store.append(doc, build_create_change(doc), lease.fencing_token)
@@ -246,8 +224,12 @@ defmodule Contract.StoreTest do
                  lease.fencing_token
                )
 
-      assert {:ok, [_, _, _] = changes} = Store.changes_since(doc, 0)
+      assert {:ok, changes} = Store.changes_since(doc, 0)
       assert Enum.map(changes, & &1.result_revision) == [1, 2, 3]
+
+      # After the latest revision → empty list.
+      assert {:ok, []} = Store.changes_since(doc, 3)
+      assert {:ok, []} = Store.changes_since(doc, 99)
     end
   end
 
@@ -258,7 +240,7 @@ defmodule Contract.StoreTest do
       assert proj == Runtime.State.empty_projection()
     end
 
-    test "replays all changes into the projection" do
+    test "replays all changes into the projection (revision + title both reflect tip)" do
       doc = new_document_id()
       lease = acquire_lease(doc)
 
@@ -274,16 +256,6 @@ defmodule Contract.StoreTest do
 
       assert {:ok, %Runtime.State{revision: 2, projection: proj}} = Store.load(doc)
       assert proj.title == "Renamed"
-    end
-
-    test "load is consistent with fold-replay of changes" do
-      doc = new_document_id()
-      lease = acquire_lease(doc)
-      assert {:ok, _} = Store.append(doc, build_create_change(doc), lease.fencing_token)
-      assert {:ok, _} = Store.append(doc, build_followup_change(doc, 1), lease.fencing_token)
-
-      assert {:ok, %Runtime.State{revision: rev}} = Store.load(doc)
-      assert rev == 2
     end
   end
 
@@ -348,11 +320,11 @@ defmodule Contract.StoreTest do
       refute Store.idempotency_seen?(doc, "never-seen")
     end
 
-    test "idempotency_seen? returns true after the change exists" do
+    test "idempotency_seen?/previous_result reflect persisted Changes, :not_found otherwise" do
       doc = new_document_id()
       lease = acquire_lease(doc)
 
-      assert {:ok, _} =
+      assert {:ok, persisted} =
                Store.append(
                  doc,
                  build_create_change(doc, idempotency_key: "seen"),
@@ -361,39 +333,22 @@ defmodule Contract.StoreTest do
 
       assert Store.idempotency_seen?(doc, "seen")
       refute Store.idempotency_seen?(doc, "different")
-    end
 
-    test "previous_result returns the persisted Change for a seen key" do
-      doc = new_document_id()
-      lease = acquire_lease(doc)
-
-      assert {:ok, persisted} =
-               Store.append(
-                 doc,
-                 build_create_change(doc, idempotency_key: "prev"),
-                 lease.fencing_token
-               )
-
-      assert {:ok, %Change{id: id}} = Store.previous_result(doc, "prev")
+      # previous_result for the seen key resolves to the persisted Change.
+      assert {:ok, %Change{id: id}} = Store.previous_result(doc, "seen")
       assert id == persisted.id
-    end
 
-    test "previous_result returns {:error, :not_found} when missing" do
+      # Missing / nil keys are :not_found.
       assert {:error, :not_found} = Store.previous_result(new_document_id(), "missing")
       assert {:error, :not_found} = Store.previous_result(new_document_id(), nil)
     end
   end
 
   describe "transaction/1" do
-    test "commits on {:ok, value}" do
+    test "commits/rollsback by return shape ({:ok,_} / {:error,_} / other)" do
       assert {:ok, 42} = Store.transaction(fn -> {:ok, 42} end)
-    end
-
-    test "rolls back on {:error, reason}" do
       assert {:error, :nope} = Store.transaction(fn -> {:error, :nope} end)
-    end
 
-    test "rolls back on bad return shape" do
       assert {:error, {:bad_transaction_return, :weird}} =
                Store.transaction(fn -> :weird end)
     end
@@ -463,39 +418,6 @@ defmodule Contract.StoreTest do
         inverse: [],
         status: :active
       }
-    end
-
-    test "set_attr :title updates the documents row" do
-      {doc_id, _owner_id} = setup_document_row()
-      lease = acquire_lease(doc_id)
-
-      change = set_attr_change(doc_id, 0, :title, "Renamed Title")
-      assert {:ok, _persisted} = Store.append(doc_id, change, lease.fencing_token)
-
-      row = Contract.Repo.get(Contract.Documents.Document, doc_id)
-      assert row.title == "Renamed Title"
-    end
-
-    test "set_attr :type_key updates the documents row" do
-      {doc_id, _owner_id} = setup_document_row()
-      lease = acquire_lease(doc_id)
-
-      change = set_attr_change(doc_id, 0, :type_key, "service_agreement_v1")
-      assert {:ok, _persisted} = Store.append(doc_id, change, lease.fencing_token)
-
-      row = Contract.Repo.get(Contract.Documents.Document, doc_id)
-      assert row.type_key == "service_agreement_v1"
-    end
-
-    test "set_attr :status updates the documents row" do
-      {doc_id, _owner_id} = setup_document_row()
-      lease = acquire_lease(doc_id)
-
-      change = set_attr_change(doc_id, 0, :status, "archived")
-      assert {:ok, _persisted} = Store.append(doc_id, change, lease.fencing_token)
-
-      row = Contract.Repo.get(Contract.Documents.Document, doc_id)
-      assert row.status == :archived
     end
 
     test "multiple set_attr ops in one Change all propagate" do

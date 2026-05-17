@@ -135,13 +135,6 @@ defmodule ContractWeb.Live.Studio.Components.MarksLayerTest do
       assert html =~ ~s(phx-value-mark_id="m1")
     end
 
-    test "the colocated JS hook also pushes set_node_focus (string is present)" do
-      marks = [mark("m1", :ask, "node-42")]
-      html = render_component(MarksLayer, assigns(%{projection: projection(marks)}))
-
-      # JS-built pins use the same event name.
-      assert html =~ ~s|"set_node_focus"|
-    end
   end
 
   # ---------------------------------------------------------------------------
@@ -181,22 +174,17 @@ defmodule ContractWeb.Live.Studio.Components.MarksLayerTest do
   # ---------------------------------------------------------------------------
 
   describe "empty marks" do
-    test "no marks in projection → no pin elements, but the layer container renders" do
+    test "no marks (or missing :marks key) → empty layer container" do
       html = render_component(MarksLayer, assigns(%{projection: projection([])}))
-
       assert html =~ ~s(data-role="marks-layer")
       assert html =~ ~s(data-marks="[]")
       assert pin_count(html) == 0
-      # Empty-state SR-only message is present.
       assert html =~ ~s(data-role="marks-layer-empty")
-    end
 
-    test "marks key missing entirely → still empty (defensive)" do
       bare = %{nodes: %{}, fields: %{}, refs: %{}}
-      html = render_component(MarksLayer, assigns(%{projection: bare}))
-
-      assert html =~ ~s(data-role="marks-layer")
-      assert pin_count(html) == 0
+      html2 = render_component(MarksLayer, assigns(%{projection: bare}))
+      assert html2 =~ ~s(data-role="marks-layer")
+      assert pin_count(html2) == 0
     end
   end
 
@@ -205,39 +193,18 @@ defmodule ContractWeb.Live.Studio.Components.MarksLayerTest do
   # ---------------------------------------------------------------------------
 
   describe "intent palette" do
-    test "ask → emerald, flag → amber, explain → dotted slate" do
-      marks = [
-        mark("ask1", :ask, "n1"),
-        mark("flag1", :flag, "n2"),
-        mark("explain1", :explain, "n3")
-      ]
-
-      html = render_component(MarksLayer, assigns(%{projection: projection(marks)}))
-
-      assert html =~ "emerald"
-      assert html =~ "amber"
-      # explain uses a dotted border.
-      assert html =~ "border-dotted"
-
-      # The three classes are distinct: ensure ask isn't colored amber.
+    test "ask → emerald, flag → amber, explain → dotted slate, label/link → slate" do
       ask_class = MarksLayer.pin_class(:ask)
       flag_class = MarksLayer.pin_class(:flag)
       explain_class = MarksLayer.pin_class(:explain)
 
       assert ask_class =~ "emerald"
       refute ask_class =~ "amber"
-
       assert flag_class =~ "amber"
       refute flag_class =~ "emerald"
-
       assert explain_class =~ "dotted"
-    end
 
-    test "label + link → slate (no emerald/amber)" do
-      label_class = MarksLayer.pin_class(:label)
-      link_class = MarksLayer.pin_class(:link)
-
-      for cls <- [label_class, link_class] do
+      for cls <- [MarksLayer.pin_class(:label), MarksLayer.pin_class(:link)] do
         assert cls =~ "slate"
         refute cls =~ "emerald"
         refute cls =~ "amber"

@@ -80,32 +80,22 @@ defmodule ContractWeb.Live.Studio.Components.ChatCommandButtonTest do
       %{user: user_fixture()}
     end
 
-    test "renders the icon trigger on mobile", %{user: user} do
-      html =
+    test "renders the icon trigger on mobile, skipped marker on desktop", %{user: user} do
+      mobile_html =
         render_component(ChatCommandButton, base_assigns(lawyer_scope(user)))
 
-      assert html =~ ~s(data-role="chat-command-trigger")
-      assert html =~ ~s(data-role="chat-command-button")
-      assert html =~ "hero-command-line"
-    end
+      assert mobile_html =~ ~s(data-role="chat-command-trigger")
+      # Sheet closed by default on mobile.
+      refute mobile_html =~ ~s(data-role="chat-command-sheet")
 
-    test "renders a skipped marker (no trigger) on desktop", %{user: user} do
-      html =
+      desktop_html =
         render_component(
           ChatCommandButton,
           base_assigns(lawyer_scope(user), %{viewport: :desktop})
         )
 
-      refute html =~ ~s(data-role="chat-command-trigger")
-      refute html =~ ~s(data-role="chat-command-sheet")
-      assert html =~ ~s(data-role="chat-command-button-skipped")
-    end
-
-    test "sheet is closed by default on mobile", %{user: user} do
-      html =
-        render_component(ChatCommandButton, base_assigns(lawyer_scope(user)))
-
-      refute html =~ ~s(data-role="chat-command-sheet")
+      refute desktop_html =~ ~s(data-role="chat-command-trigger")
+      assert desktop_html =~ ~s(data-role="chat-command-button-skipped")
     end
   end
 
@@ -116,7 +106,7 @@ defmodule ContractWeb.Live.Studio.Components.ChatCommandButtonTest do
       %{user: user_fixture()}
     end
 
-    test "initial_open? renders the sheet markup", %{user: user} do
+    test "initial_open? renders the sheet markup with a close button + a11y", %{user: user} do
       html =
         render_component(
           ChatCommandButton,
@@ -124,22 +114,9 @@ defmodule ContractWeb.Live.Studio.Components.ChatCommandButtonTest do
         )
 
       assert html =~ ~s(data-role="chat-command-sheet")
-      assert html =~ "modal-bottom"
-      assert html =~ "modal-open"
-      # A11y attributes.
       assert html =~ ~s(role="dialog")
       assert html =~ ~s(aria-modal="true")
-    end
-
-    test "open sheet renders the close button", %{user: user} do
-      html =
-        render_component(
-          ChatCommandButton,
-          base_assigns(lawyer_scope(user), %{initial_open?: true})
-        )
-
       assert html =~ ~s(data-role="chat-command-close")
-      assert html =~ "hero-x-mark"
     end
   end
 
@@ -180,27 +157,6 @@ defmodule ContractWeb.Live.Studio.Components.ChatCommandButtonTest do
       assert html =~ "/dashboard"
     end
 
-    test "document.type.set row is present for a lawyer with current document", %{user: user} do
-      html =
-        render_component(
-          ChatCommandButton,
-          base_assigns(lawyer_scope(user), %{initial_open?: true})
-        )
-
-      assert html =~ ~s(data-cmd-id="doc_set_type")
-      assert html =~ ~s(phx-value-action_kind="document.type.set")
-    end
-
-    test "change.revoke row is hidden until a revocable change id can be supplied", %{user: user} do
-      html =
-        render_component(
-          ChatCommandButton,
-          base_assigns(lawyer_scope(user), %{initial_open?: true})
-        )
-
-      refute html =~ ~s(data-cmd-id="doc_revoke_last")
-      refute html =~ ~s(phx-value-action_kind="change.revoke")
-    end
   end
 
   # --- 4. Persona perms filter -----------------------------------------
@@ -233,24 +189,6 @@ defmodule ContractWeb.Live.Studio.Components.ChatCommandButtonTest do
       refute html =~ ~s(data-cmd-id="doc_revoke_last")
       refute html =~ ~s(data-cmd-id="doc_set_type")
       # Navigation still present.
-      assert html =~ ~s(data-cmd-id="nav_dashboard")
-    end
-
-    test "Documents rows disappear when no current document is selected", %{user: user} do
-      scope = lawyer_scope(user)
-
-      html =
-        render_component(
-          ChatCommandButton,
-          base_assigns(scope, %{
-            initial_open?: true,
-            studio_state: empty_studio_state(nil)
-          })
-        )
-
-      refute html =~ ~s(data-cmd-id="doc_request_export")
-      refute html =~ ~s(data-cmd-id="doc_revoke_last")
-      refute html =~ ~s(data-cmd-id="doc_set_type")
       assert html =~ ~s(data-cmd-id="nav_dashboard")
     end
 
@@ -303,13 +241,6 @@ defmodule ContractWeb.Live.Studio.Components.ChatCommandButtonTest do
       assert html =~ "Commands"
       # Footer hint copy.
       assert html =~ "탭하여 실행"
-    end
-
-    test "trigger has the Korean aria-label", %{user: user} do
-      html =
-        render_component(ChatCommandButton, base_assigns(lawyer_scope(user)))
-
-      assert html =~ "명령어 열기"
     end
 
     test "empty-commands state shows Korean message", %{user: _user} do

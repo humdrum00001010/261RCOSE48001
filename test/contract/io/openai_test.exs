@@ -30,26 +30,20 @@ defmodule Contract.IO.OpenAITest do
   end
 
   describe "law_mcp_tool/1" do
-    test "builds the canonical Korean Law MCP tool entry" do
-      tool = OpenAI.law_mcp_tool()
-      assert tool.type == "mcp"
-      assert tool.server_label == "korean-law"
-      assert tool.require_approval == "never"
-      assert tool.server_url =~ "?oc=openapi"
-    end
+    test "builds the canonical Korean Law MCP entry with :oc override" do
+      default = OpenAI.law_mcp_tool()
+      assert default.type == "mcp"
+      assert default.server_label == "korean-law"
+      assert default.require_approval == "never"
+      assert default.server_url =~ "?oc=openapi"
 
-    test "honors :oc opt override" do
-      tool = OpenAI.law_mcp_tool(oc: "custom-oc")
-      assert tool.server_url =~ "?oc=custom-oc"
+      assert OpenAI.law_mcp_tool(oc: "custom-oc").server_url =~ "?oc=custom-oc"
     end
   end
 
   describe "slack_mcp_tool/1 (Wave 6)" do
-    test "returns nil when no Contract.Context is passed" do
+    test "returns nil for non-Context input (nil or arbitrary)" do
       assert OpenAI.slack_mcp_tool(nil) == nil
-    end
-
-    test "returns nil for a non-Context value (defensive)" do
       assert OpenAI.slack_mcp_tool(:not_a_scope) == nil
     end
   end

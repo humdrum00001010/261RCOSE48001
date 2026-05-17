@@ -70,54 +70,25 @@ defmodule ContractWeb.SlackOAuthControllerTest do
   describe "GET /auth/slack/callback" do
     setup :register_and_log_in_user
 
-    test "with valid state stores the token + redirects to /settings/integrations",
-         %{conn: conn, user: user} do
-      # Walk the start phase so the session has a real CSRF state, then
-      # short-circuit the actual code-for-token exchange by writing the
-      # token row directly. The callback handler should still 200 / redirect.
-      conn_after_start = get(conn, ~p"/auth/slack/start")
-      state = get_session(conn_after_start, :slack_oauth_state)
-      assert is_binary(state)
-
-      # Pre-seed the row as if Slack had completed the exchange. The real
-      # Slack.complete_oauth/3 call inside the controller WILL hit the
-      # network — to avoid that we override the SLACK_USER_TOKEN_URL to
-      # an unreachable port and let the controller surface the failure...
-      # OR: just assert the CSRF path by checking the 200/redirect on a
-      # stubbed code via the Slack module directly.
-      #
-      # Strategy: persist a row using a stub, then assert the controller's
-      # state validation. We exercise the happy-redirect path by stubbing
-      # the OAuth call through the application env (see below).
-      _ = conn_after_start
-
-      # For the controller integration we assert the bad-state branch
-      # (which exercises the CSRF gate) and exercise the success branch
-      # via the context module test. This keeps the controller test
-      # network-free.
-      assert user.id
-    end
-
-    test "with mismatched state returns 403", %{conn: conn} do
+    test "CSRF state gate: mismatched returns 'invalid oauth state', missing returns 'missing'",
+         %{conn: conn} do
       conn1 = get(conn, ~p"/auth/slack/start")
       state = get_session(conn1, :slack_oauth_state)
       assert is_binary(state)
 
-      conn2 =
+      mismatch =
         conn1
         |> recycle()
         |> Plug.Test.init_test_session(%{slack_oauth_state: state})
         |> get(~p"/auth/slack/callback?code=somecode&state=WRONG")
 
-      assert response(conn2, 403) =~ "invalid oauth state"
-    end
+      assert response(mismatch, 403) =~ "invalid oauth state"
 
-    test "with missing session state returns 403", %{conn: conn} do
-      conn2 =
+      missing =
         conn
         |> get(~p"/auth/slack/callback?code=somecode&state=anything")
 
-      assert response(conn2, 403) =~ "missing oauth state"
+      assert response(missing, 403) =~ "missing oauth state"
     end
 
     test "with error param redirects to /settings/integrations with a flash",

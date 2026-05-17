@@ -59,33 +59,24 @@ defmodule ContractWeb.UserLive.SettingsTest do
       assert Accounts.get_user_by_email(user.email)
     end
 
-    test "renders errors with invalid data (phx-change)", %{conn: conn} do
+    test "renders email validation errors on phx-change (invalid format) + phx-submit (unchanged)",
+         %{conn: conn, user: user} do
       {:ok, lv, _html} = live(conn, ~p"/users/settings")
 
-      result =
+      change_result =
         lv
         |> element("#email_form")
-        |> render_change(%{
-          "action" => "update_email",
-          "user" => %{"email" => "with spaces"}
-        })
+        |> render_change(%{"action" => "update_email", "user" => %{"email" => "with spaces"}})
 
-      assert result =~ "Change Email"
-      assert result =~ "must have the @ sign and no spaces"
-    end
+      assert change_result =~ "Change Email"
+      assert change_result =~ "must have the @ sign and no spaces"
 
-    test "renders errors with invalid data (phx-submit)", %{conn: conn, user: user} do
-      {:ok, lv, _html} = live(conn, ~p"/users/settings")
-
-      result =
+      submit_result =
         lv
-        |> form("#email_form", %{
-          "user" => %{"email" => user.email}
-        })
+        |> form("#email_form", %{"user" => %{"email" => user.email}})
         |> render_submit()
 
-      assert result =~ "Change Email"
-      assert result =~ "did not change"
+      assert submit_result =~ "did not change"
     end
   end
 
@@ -123,40 +114,19 @@ defmodule ContractWeb.UserLive.SettingsTest do
       assert Accounts.get_user_by_email_and_password(user.email, new_password)
     end
 
-    test "renders errors with invalid data (phx-change)", %{conn: conn} do
+    test "renders password validation errors on both phx-change and phx-submit",
+         %{conn: conn} do
       {:ok, lv, _html} = live(conn, ~p"/users/settings")
+      bad = %{"user" => %{"password" => "too short", "password_confirmation" => "does not match"}}
 
-      result =
-        lv
-        |> element("#password_form")
-        |> render_change(%{
-          "user" => %{
-            "password" => "too short",
-            "password_confirmation" => "does not match"
-          }
-        })
-
-      assert result =~ "Save Password"
-      assert result =~ "should be at least 12 character(s)"
-      assert result =~ "does not match password"
-    end
-
-    test "renders errors with invalid data (phx-submit)", %{conn: conn} do
-      {:ok, lv, _html} = live(conn, ~p"/users/settings")
-
-      result =
-        lv
-        |> form("#password_form", %{
-          "user" => %{
-            "password" => "too short",
-            "password_confirmation" => "does not match"
-          }
-        })
-        |> render_submit()
-
-      assert result =~ "Save Password"
-      assert result =~ "should be at least 12 character(s)"
-      assert result =~ "does not match password"
+      for result <- [
+            lv |> element("#password_form") |> render_change(bad),
+            lv |> form("#password_form", bad) |> render_submit()
+          ] do
+        assert result =~ "Save Password"
+        assert result =~ "should be at least 12 character(s)"
+        assert result =~ "does not match password"
+      end
     end
   end
 

@@ -46,32 +46,25 @@ defmodule Contract.MattersTest do
   end
 
   describe "list_for_scope/1" do
-    test "returns active matters in the scope's tenant" do
-      s = scope()
-      {:ok, m1} = Matters.create(s, %{"name" => "A"})
-      {:ok, m2} = Matters.create(s, %{"name" => "B"})
-
-      ids = s |> Matters.list_for_scope() |> Enum.map(& &1.id)
-      assert m1.id in ids
-      assert m2.id in ids
-    end
-
-    test "filters out archived matters" do
-      s = scope()
-      {:ok, m} = Matters.create(s, %{"name" => "to_archive"})
-      {:ok, _} = Matters.archive(s, m.id)
-
-      ids = s |> Matters.list_for_scope() |> Enum.map(& &1.id)
-      refute m.id in ids
-    end
-
-    test "scopes by tenant — cross-tenant matters invisible" do
+    test "returns owner's active matters, filters archived + cross-tenant" do
       a = scope()
       b = scope()
-      {:ok, ma} = Matters.create(a, %{"name" => "A's"})
 
-      ids_b = b |> Matters.list_for_scope() |> Enum.map(& &1.id)
-      refute ma.id in ids_b
+      {:ok, m1} = Matters.create(a, %{"name" => "A"})
+      {:ok, m2} = Matters.create(a, %{"name" => "B"})
+      {:ok, archived} = Matters.create(a, %{"name" => "to_archive"})
+      {:ok, _} = Matters.archive(a, archived.id)
+      {:ok, foreign} = Matters.create(b, %{"name" => "B's"})
+
+      a_ids = a |> Matters.list_for_scope() |> Enum.map(& &1.id)
+
+      # Active matters visible.
+      assert m1.id in a_ids
+      assert m2.id in a_ids
+      # Archived filtered out.
+      refute archived.id in a_ids
+      # Cross-tenant matters invisible.
+      refute foreign.id in a_ids
     end
 
     # SPEC.md Document-primary pivot (2026-05-15): matters with
@@ -133,28 +126,23 @@ defmodule Contract.MattersTest do
   end
 
   describe "get/2" do
-    test "fetches a matter the scope can see" do
-      s = scope()
-      {:ok, m} = Matters.create(s, %{"name" => "g"})
-
-      assert {:ok, %Matter{id: id}} = Matters.get(s, m.id)
-      assert id == m.id
-    end
-
-    test "returns :not_found for unknown id" do
-      assert {:error, :not_found} = Matters.get(scope(), Ecto.UUID.generate())
-    end
-
-    test "scope mismatch returns :forbidden" do
+    test "fetches owned matter; rejects unknown id, malformed uuid, and cross-tenant" do
       a = scope()
       b = scope()
-      {:ok, m} = Matters.create(a, %{"name" => "x"})
+      {:ok, m} = Matters.create(a, %{"name" => "g"})
 
+      # Owner can fetch.
+      assert {:ok, %Matter{id: id}} = Matters.get(a, m.id)
+      assert id == m.id
+
+      # Unknown id → :not_found.
+      assert {:error, :not_found} = Matters.get(a, Ecto.UUID.generate())
+
+      # Malformed uuid → :not_found.
+      assert {:error, :not_found} = Matters.get(a, "not-a-uuid")
+
+      # Cross-tenant → :forbidden.
       assert {:error, :forbidden} = Matters.get(b, m.id)
-    end
-
-    test "malformed uuid returns :not_found" do
-      assert {:error, :not_found} = Matters.get(scope(), "not-a-uuid")
     end
   end
 

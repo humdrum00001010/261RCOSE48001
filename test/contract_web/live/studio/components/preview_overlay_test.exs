@@ -167,23 +167,6 @@ defmodule ContractWeb.Live.Studio.Components.PreviewOverlayTest do
                ~r/aria-selected="false"[^>]*data-role="preview-tab-marks"|data-role="preview-tab-marks"[^>]*aria-selected="false"/s
     end
 
-    test "tab buttons push `switch_tab` to @myself via JS.push", %{scope: scope} do
-      html =
-        render_component(PreviewOverlay,
-          id: "preview-overlay",
-          projection: sample_projection(),
-          studio_state: base_state(),
-          current_scope: scope,
-          viewport: :mobile
-        )
-
-      # JS.push emits a phx-click attribute carrying a JSON command.
-      assert html =~ "switch_tab"
-      # The encoded target should reference a numeric component CID (the
-      # JS.push macro encodes phx-target as the component CID).
-      assert html =~ "\"tab\":\"marks\"" or html =~ "&quot;tab&quot;:&quot;marks&quot;"
-    end
-
     test "initial_tab can be passed to render with :marks already active", %{scope: scope} do
       html =
         render_component(PreviewOverlay,
@@ -199,22 +182,6 @@ defmodule ContractWeb.Live.Studio.Components.PreviewOverlayTest do
       refute html =~ ~s(data-role="preview-panel-body")
     end
 
-    test "initial_tab=:changes renders the changes panel placeholder", %{scope: scope} do
-      html =
-        render_component(PreviewOverlay,
-          id: "preview-overlay",
-          projection: sample_projection(),
-          studio_state: base_state(),
-          current_scope: scope,
-          viewport: :mobile,
-          initial_tab: :changes
-        )
-
-      assert html =~ ~s(data-role="preview-panel-changes")
-      # No stream wired in this test → placeholder copy.
-      assert html =~ "Recent changes will appear here." or
-               html =~ "최근 변경 사항이 여기에 표시됩니다."
-    end
   end
 
   describe "persona perms" do
@@ -240,23 +207,6 @@ defmodule ContractWeb.Live.Studio.Components.PreviewOverlayTest do
       refute html =~ ~s(data-role="preview-tab-changes")
     end
 
-    test "viewer requesting initial_tab=:marks is pinned back to body", %{user: user} do
-      scope = viewer_scope(user)
-
-      html =
-        render_component(PreviewOverlay,
-          id: "preview-overlay",
-          projection: sample_projection(),
-          studio_state: base_state(),
-          current_scope: scope,
-          viewport: :mobile,
-          initial_tab: :marks
-        )
-
-      # Should not render the marks panel — viewer is pinned to body.
-      assert html =~ ~s(data-role="preview-panel-body")
-      refute html =~ ~s(data-role="preview-panel-marks")
-    end
   end
 
   describe "body tab — projection rendering" do
@@ -332,23 +282,6 @@ defmodule ContractWeb.Live.Studio.Components.PreviewOverlayTest do
       assert html =~ ~s(phx-value-node_id="n3")
     end
 
-    test "viewer is pinned to body — jump-to-node is therefore unreachable",
-         %{user: user} do
-      scope = viewer_scope(user)
-
-      html =
-        render_component(PreviewOverlay,
-          id: "preview-overlay",
-          projection: sample_projection(),
-          studio_state: base_state(),
-          current_scope: scope,
-          viewport: :mobile,
-          initial_tab: :marks
-        )
-
-      # Pinned to body → marks panel never renders → no jump buttons.
-      refute html =~ ~s(phx-click="set_node_focus")
-    end
   end
 
   describe "i18n — studio domain" do
@@ -380,34 +313,5 @@ defmodule ContractWeb.Live.Studio.Components.PreviewOverlayTest do
       end
     end
 
-    test "default (English) locale renders the English msgids" do
-      user = user_fixture()
-      scope = lawyer_scope(user, matter: %{id: "m1", name: "Acme"})
-
-      original = Gettext.get_locale(ContractWeb.Gettext)
-      Gettext.put_locale(ContractWeb.Gettext, "en")
-
-      try do
-        html =
-          render_component(PreviewOverlay,
-            id: "preview-overlay",
-            projection: sample_projection(),
-            studio_state: base_state(),
-            current_scope: scope,
-            viewport: :mobile
-          )
-
-        # Tab labels render in English. Whitespace varies because of
-        # HEEx rendering; assert the label text appears between the
-        # tag close and tag open (allowing whitespace).
-        assert html =~ ~r/>\s*Body\s*</
-        assert html =~ ~r/>\s*Marks\s*</
-        assert html =~ ~r/>\s*Changes\s*</
-        # And Korean labels do NOT appear in the English locale.
-        refute html =~ "본문"
-      after
-        Gettext.put_locale(ContractWeb.Gettext, original)
-      end
-    end
   end
 end

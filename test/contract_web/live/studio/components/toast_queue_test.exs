@@ -34,69 +34,45 @@ defmodule ContractWeb.Live.Studio.Components.ToastQueueTest do
   end
 
   describe "level-specific rendering" do
-    test ":info toast renders with the success left-border + info icon" do
-      toast = %{
-        id: "t-info-1",
-        level: :info,
-        title: "Hello",
-        body: "An informational note.",
-        link: nil
-      }
+    test ":info / :warning / :error toasts render the right border + icon + level data-attr" do
+      cases = [
+        {%{level: :info, title: "Hello", body: "An informational note.", id: "t-info-1"},
+         ["border-l-success", "hero-information-circle-mini", ~s(data-toast-level="info"),
+          "Hello", "An informational note."]},
+        {%{level: :warning, title: "Heads up", body: nil, id: "t-w-1"},
+         ["border-l-warning", "hero-exclamation-triangle-mini", "Heads up"]},
+        {%{level: :error, title: "Boom", body: "Stack: …", id: "t-e-1"},
+         ["border-l-error", "hero-exclamation-circle-mini", ~s(data-toast-level="error"),
+          "Boom", "Stack: …"]}
+      ]
 
-      html =
+      for {toast_attrs, expected_substrings} <- cases do
+        toast = Map.merge(%{link: nil}, toast_attrs)
+
+        html =
+          render_component(ToastQueue,
+            id: "tq",
+            streams: %{toasts: []},
+            toasts: [toast]
+          )
+
+        assert html =~ ~s(role="alert")
+
+        for substring <- expected_substrings do
+          assert html =~ substring, "expected #{toast_attrs.level} toast HTML to contain #{substring}"
+        end
+      end
+
+      # :info toast also wires the colocated auto-dismiss hook.
+      info_html =
         render_component(ToastQueue,
           id: "tq",
           streams: %{toasts: []},
-          toasts: [toast]
+          toasts: [%{id: "i", level: :info, title: "x", body: nil, link: nil}]
         )
 
-      assert html =~ ~s(role="alert")
-      assert html =~ ~s(data-toast-level="info")
-      assert html =~ "border-l-success"
-      assert html =~ "hero-information-circle-mini"
-      assert html =~ "Hello"
-      assert html =~ "An informational note."
-      # Auto-dismiss is driven by the JS hook; the hook is mounted on the
-      # row so its data-toast-level attribute is what gates the timer.
-      # The `.Toast` colocated hook expands to the LV-namespaced form.
-      assert html =~ "phx-hook=\""
-      assert html =~ "ToastQueue.Toast"
-    end
-
-    test ":warning toast renders with the warning left-border + triangle icon" do
-      toast = %{id: "t-w-1", level: :warning, title: "Heads up", body: nil, link: nil}
-
-      html =
-        render_component(ToastQueue,
-          id: "tq",
-          streams: %{toasts: []},
-          toasts: [toast]
-        )
-
-      assert html =~ "border-l-warning"
-      assert html =~ "hero-exclamation-triangle-mini"
-      assert html =~ "Heads up"
-    end
-
-    test ":error toast renders with the error left-border, no auto-dismiss data flag" do
-      toast = %{id: "t-e-1", level: :error, title: "Boom", body: "Stack: …", link: nil}
-
-      html =
-        render_component(ToastQueue,
-          id: "tq",
-          streams: %{toasts: []},
-          toasts: [toast]
-        )
-
-      assert html =~ "border-l-error"
-      assert html =~ "hero-exclamation-circle-mini"
-      assert html =~ ~s(data-toast-level="error")
-      # The colocated hook only schedules dismissal for `:info`; the
-      # `data-toast-level` attribute carries the signal. We assert the
-      # error row is present and its level is "error" — the hook then
-      # short-circuits in JS (`if (level !== "info") return`).
-      assert html =~ "Boom"
-      assert html =~ "Stack: …"
+      assert info_html =~ "phx-hook=\""
+      assert info_html =~ "ToastQueue.Toast"
     end
   end
 
@@ -184,8 +160,8 @@ defmodule ContractWeb.Live.Studio.Components.ToastQueueTest do
       refute html =~ <<0xE3, 0x85, 0x87>>
     end
 
-    test "viewport=mobile positions the queue along the bottom with center alignment" do
-      html =
+    test "viewport positioning: mobile centers at bottom, desktop pins bottom-right" do
+      mobile =
         render_component(ToastQueue,
           id: "tq",
           streams: %{toasts: []},
@@ -193,23 +169,21 @@ defmodule ContractWeb.Live.Studio.Components.ToastQueueTest do
           toasts: []
         )
 
-      assert html =~ ~s(data-viewport="mobile")
-      assert html =~ "bottom-20"
-      assert html =~ "items-center"
-    end
+      assert mobile =~ ~s(data-viewport="mobile")
+      assert mobile =~ "bottom-20"
+      assert mobile =~ "items-center"
 
-    test "viewport=desktop pins the queue to the bottom-right" do
-      html =
+      desktop =
         render_component(ToastQueue,
           id: "tq",
           streams: %{toasts: []},
           toasts: []
         )
 
-      assert html =~ ~s(data-viewport="desktop")
-      assert html =~ "bottom-4"
-      assert html =~ "right-4"
-      assert html =~ "items-end"
+      assert desktop =~ ~s(data-viewport="desktop")
+      assert desktop =~ "bottom-4"
+      assert desktop =~ "right-4"
+      assert desktop =~ "items-end"
     end
   end
 

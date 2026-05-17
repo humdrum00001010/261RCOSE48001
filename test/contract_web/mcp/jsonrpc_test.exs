@@ -4,38 +4,19 @@ defmodule ContractWeb.MCP.JSONRPCTest do
   alias ContractWeb.MCP.JSONRPC
 
   describe "standard error codes" do
-    test "parse_error_code is -32700" do
+    test "JSON-RPC 2.0 constants match spec, error_code/1 maps atoms" do
       assert JSONRPC.parse_error_code() == -32_700
-    end
-
-    test "invalid_request_code is -32600" do
       assert JSONRPC.invalid_request_code() == -32_600
-    end
-
-    test "method_not_found_code is -32601" do
       assert JSONRPC.method_not_found_code() == -32_601
-    end
-
-    test "invalid_params_code is -32602" do
       assert JSONRPC.invalid_params_code() == -32_602
-    end
-
-    test "internal_error_code is -32603" do
       assert JSONRPC.internal_error_code() == -32_603
-    end
-
-    test "unauthorized_code is -32000 (application-defined)" do
       assert JSONRPC.unauthorized_code() == -32_000
-    end
 
-    test "error_code/1 maps atom names to codes" do
       assert JSONRPC.error_code(:parse_error) == -32_700
       assert JSONRPC.error_code(:method_not_found) == -32_601
       assert JSONRPC.error_code(:unauthorized) == -32_000
       assert JSONRPC.error_code(:forbidden) == -32_001
-    end
-
-    test "error_code/1 falls back to internal_error for unknown atoms" do
+      # Unknown atom falls back to internal_error.
       assert JSONRPC.error_code(:totally_made_up) == -32_603
     end
   end
@@ -69,20 +50,10 @@ defmodule ContractWeb.MCP.JSONRPCTest do
       assert req.params == %{}
     end
 
-    test "rejects a payload missing method" do
+    test "rejects payloads missing required fields, nil, or non-map" do
       assert {:error, {-32_600, _}} = JSONRPC.parse(%{"jsonrpc" => "2.0", "id" => 1})
-    end
-
-    test "rejects a payload missing jsonrpc version" do
-      assert {:error, {-32_600, _}} =
-               JSONRPC.parse(%{"id" => 1, "method" => "tools/list"})
-    end
-
-    test "rejects a nil payload" do
+      assert {:error, {-32_600, _}} = JSONRPC.parse(%{"id" => 1, "method" => "tools/list"})
       assert {:error, {-32_600, _}} = JSONRPC.parse(nil)
-    end
-
-    test "rejects a non-map payload" do
       assert {:error, {-32_600, _}} = JSONRPC.parse("not a map")
     end
   end
@@ -138,41 +109,24 @@ defmodule ContractWeb.MCP.JSONRPCTest do
   end
 
   describe "from_gateway_error/2" do
-    test "maps :unknown_tool to method_not_found" do
-      env = JSONRPC.from_gateway_error(1, {:unknown_tool, "foo.bar"})
-      assert env["error"]["code"] == -32_601
-      assert env["error"]["message"] =~ "foo.bar"
-    end
+    test "maps gateway errors to the right JSON-RPC code, with data when applicable" do
+      assert JSONRPC.from_gateway_error(1, {:unknown_tool, "foo.bar"})["error"]["code"] == -32_601
 
-    test "maps :forbidden to -32001" do
-      env = JSONRPC.from_gateway_error(1, :forbidden)
-      assert env["error"]["code"] == -32_001
-    end
+      assert JSONRPC.from_gateway_error(1, {:unknown_tool, "foo.bar"})["error"]["message"] =~
+               "foo.bar"
 
-    test "maps :unauthorized to -32000" do
-      env = JSONRPC.from_gateway_error(1, :unauthorized)
-      assert env["error"]["code"] == -32_000
-    end
-
-    test "maps :missing_document_id to invalid_params" do
-      env = JSONRPC.from_gateway_error(1, :missing_document_id)
-      assert env["error"]["code"] == -32_602
-    end
-
-    test "maps :invalid_query and :invalid_text to invalid_params" do
+      assert JSONRPC.from_gateway_error(1, :forbidden)["error"]["code"] == -32_001
+      assert JSONRPC.from_gateway_error(1, :unauthorized)["error"]["code"] == -32_000
+      assert JSONRPC.from_gateway_error(1, :missing_document_id)["error"]["code"] == -32_602
       assert JSONRPC.from_gateway_error(1, :invalid_query)["error"]["code"] == -32_602
       assert JSONRPC.from_gateway_error(1, :invalid_text)["error"]["code"] == -32_602
-    end
 
-    test "maps {:invalid_action, errors} to invalid_params with data" do
-      env = JSONRPC.from_gateway_error(1, {:invalid_action, %{kind: ["can't be blank"]}})
-      assert env["error"]["code"] == -32_602
-      assert env["error"]["data"] == %{kind: ["can't be blank"]}
-    end
+      action_env = JSONRPC.from_gateway_error(1, {:invalid_action, %{kind: ["can't be blank"]}})
+      assert action_env["error"]["code"] == -32_602
+      assert action_env["error"]["data"] == %{kind: ["can't be blank"]}
 
-    test "maps anything else to tool_failure -32002" do
-      env = JSONRPC.from_gateway_error(1, :wat)
-      assert env["error"]["code"] == -32_002
+      # Unknown errors fall back to tool_failure -32002.
+      assert JSONRPC.from_gateway_error(1, :wat)["error"]["code"] == -32_002
     end
   end
 end

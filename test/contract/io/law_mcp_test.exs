@@ -78,15 +78,13 @@ defmodule Contract.IO.LawMCPTest do
                LawMCP.call("nope", %{})
     end
 
-    test "returns {:error, {:law_mcp_http, status, body}} on non-200", %{bypass: bypass} do
+    test "surfaces typed errors for non-200 / transport failure", %{bypass: bypass} do
       Bypass.expect_once(bypass, "POST", "/mcp", fn conn ->
         Plug.Conn.resp(conn, 502, "boom")
       end)
 
       assert {:error, {:law_mcp_http, 502, _}} = LawMCP.call("x", %{})
-    end
 
-    test "returns {:error, {:law_mcp_transport, _}} on transport failure", %{bypass: bypass} do
       Bypass.down(bypass)
       assert {:error, {:law_mcp_transport, _}} = LawMCP.call("x", %{})
     end

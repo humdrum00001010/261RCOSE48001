@@ -62,7 +62,7 @@ defmodule Contract.Integrations.SlackTest do
       assert "search:read.public" in scopes
     end
 
-    test "includes write scopes when write?: true", %{scope: scope} do
+    test "write?: true adds write scopes; CSRF state is fresh per call", %{scope: scope} do
       {:ok, %{authorize_url: url, scopes: scopes}} =
         Slack.start_oauth(scope, "https://app.example/auth/slack/callback", write?: true)
 
@@ -72,11 +72,9 @@ defmodule Contract.Integrations.SlackTest do
       assert params["user_scope"] =~ "chat:write"
       assert params["user_scope"] =~ "reactions:write"
       assert params["user_scope"] =~ "search:read.public"
-
       assert "chat:write" in scopes
-    end
 
-    test "generates a new CSRF state on each call", %{scope: scope} do
+      # CSRF state is a fresh nonce on every call.
       {:ok, %{state: s1}} = Slack.start_oauth(scope, "https://x/cb")
       {:ok, %{state: s2}} = Slack.start_oauth(scope, "https://x/cb")
       refute s1 == s2
@@ -175,29 +173,23 @@ defmodule Contract.Integrations.SlackTest do
       assert {:ok, "xoxp-refreshed"} = Slack.token_for(scope)
     end
 
-    test "surfaces {:error, {:slack_error, ...}} when Slack returns ok=false", %{scope: scope} do
-      payload = %{"ok" => false, "error" => "invalid_code"}
-
+    test "surfaces typed errors for Slack ok=false / malformed payloads", %{scope: scope} do
       assert {:error, {:slack_error, "invalid_code"}} =
                Slack.complete_oauth(scope, "bad-code", "https://x/cb",
-                 req_opts: req_stub_returning(payload)
+                 req_opts: req_stub_returning(%{"ok" => false, "error" => "invalid_code"})
                )
-    end
-
-    test "surfaces {:error, {:malformed_response, _}} when payload missing access_token", %{
-      scope: scope
-    } do
-      payload = %{"ok" => true, "team" => %{"id" => "T01"}}
 
       assert {:error, {:malformed_response, _}} =
                Slack.complete_oauth(scope, "code", "https://x/cb",
-                 req_opts: req_stub_returning(payload)
+                 req_opts: req_stub_returning(%{"ok" => true, "team" => %{"id" => "T01"}})
                )
     end
   end
 
   describe "connection_info/1" do
-    test "returns the row when connected", %{scope: scope} do
+    test "returns the row when connected, :not_connected otherwise", %{scope: scope} do
+      assert {:error, :not_connected} = Slack.connection_info(scope)
+
       payload = %{
         "ok" => true,
         "authed_user" => %{"id" => "U01", "access_token" => "xoxp-x", "scope" => "users:read"},
@@ -209,10 +201,6 @@ defmodule Contract.Integrations.SlackTest do
 
       assert {:ok, %SlackToken{slack_team_id: "T01", scopes: ["users:read"]}} =
                Slack.connection_info(scope)
-    end
-
-    test "{:error, :not_connected} otherwise", %{scope: scope} do
-      assert {:error, :not_connected} = Slack.connection_info(scope)
     end
   end
 

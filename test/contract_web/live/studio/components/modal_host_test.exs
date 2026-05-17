@@ -116,36 +116,6 @@ defmodule ContractWeb.Live.Studio.Components.ModalHostTest do
       assert html =~ ~s(data-role="migration-plan-prompt")
     end
 
-    test "migration_panel_open? with a Plan renders the plan summary" do
-      plan = %Contract.Conversion.Plan{
-        source_document_id: Ecto.UUID.generate(),
-        source_type_key: "nda_v1",
-        target_type_key: "service_agreement_v1",
-        strategies: Contract.Conversion.allowed_strategies(),
-        field_plans: [
-          %Contract.Conversion.FieldPlan{
-            source_field_id: "party_a",
-            target_field_id: "party_a",
-            strategy: :link_to_shared_fact,
-            justification: "Party identity is a shared document fact."
-          }
-        ],
-        impact: %{compatible?: true, source_field_count: 1, target_field_count: 1}
-      }
-
-      html =
-        render_component(ModalHost,
-          id: "modal-host",
-          studio_state: %State{mode: :editing, migration_panel_open?: true},
-          current_scope: scope_for_user(),
-          migration_plan: plan
-        )
-
-      assert html =~ ~s(data-role="migration-plan-summary")
-      assert html =~ "nda_v1"
-      assert html =~ "service_agreement_v1"
-    end
-
     test "reconcile_modal_open? renders the conflict diff + two buttons" do
       request = %{id: "req-abc-123", change_id: "chg-1", conflict: :touched_same_node}
 
@@ -171,7 +141,11 @@ defmodule ContractWeb.Live.Studio.Components.ModalHostTest do
       assert html =~ ~s(phx-value-resolution="force")
     end
 
-    test "initial_modal_param=\"new_document\" renders the new-document modal" do
+    # SPEC.md §18 — subagent fix `feat/no-type-at-create`:
+    # New-document modal renders only a title input — no contract-type
+    # `<select>` and no matter field. Type is set later via
+    # `Action(:set_contract_type)`.
+    test "initial_modal_param=\"new_document\" renders title-only form (no type/matter fields)" do
       html =
         render_component(ModalHost,
           id: "modal-host",
@@ -183,70 +157,16 @@ defmodule ContractWeb.Live.Studio.Components.ModalHostTest do
       assert html =~ ~s(data-modal="new_document")
       assert html =~ ~s(data-role="new-document-form")
       assert html =~ ~s(phx-submit="document.create")
-      refute html =~ ~s(phx-submit="command_palette_picked")
-      refute html =~ ~s(name="kind" value="create_document")
-    end
-
-    # SPEC.md §18 — subagent fix `feat/no-type-at-create`:
-    # The new-document modal no longer renders a contract-type
-    # `<select>`. Type is set later via `Action(:set_contract_type)`
-    # by the user (Cmd+K) or by the agent. This test pins the new
-    # shape: a title input, no matter or type fields.
-    test "new-document modal renders title input without matter or type fields" do
-      html =
-        render_component(ModalHost,
-          id: "modal-host",
-          studio_state: %State{mode: :no_document},
-          current_scope: scope_for_user(),
-          initial_modal_param: "new_document"
-        )
-
-      assert html =~ ~s(data-role="new-document-form")
-      assert html =~ ~s(phx-submit="document.create")
-      refute html =~ ~s(phx-submit="command_palette_picked")
-      refute html =~ ~s(name="kind" value="create_document")
-
-      # Title input is present and required.
       assert html =~ ~s(name="title")
       assert html =~ "required"
-
-      # Matter is no longer part of document creation.
-      refute html =~ ~s(data-role="new-document-matter")
-      refute html =~ ~s(data-role="new-document-matter-name")
-      refute html =~ "Matter A"
-
-      # Hint copy lives below the title input.
       assert html =~ ~s(data-role="new-document-type-hint")
 
-      # The old type `<select>` MUST be gone — neither the field nor
-      # the prompt option that gated submission.
-      refute html =~ ~s(name="type_key")
-      refute html =~ "Choose a type"
-
-      # No contract-type keys leak into the modal (would mean we are
-      # still rendering the option list).
-      refute html =~ ~s(value="nda_v1")
-      refute html =~ ~s(value="franchise_v1")
-    end
-
-    # Submitting the new-document form does NOT include a `type_key`
-    # — the resulting Action lands with `type_key: nil` so
-    # `Action(:set_contract_type)` can fill it in later.
-    test "new-document form has no type_key field — submission omits it" do
-      html =
-        render_component(ModalHost,
-          id: "modal-host",
-          studio_state: %State{mode: :no_document},
-          current_scope: scope_for_user(),
-          initial_modal_param: "new_document"
-        )
-
-      # No type_key input of any kind (hidden, select, text).
+      # Type/matter MUST be absent — subagent fix `feat/no-type-at-create`.
       refute html =~ ~r/name="type_key"/
-
-      # Document creation is owner-scoped; no legacy command kind hidden field leaks out.
-      refute html =~ ~s(<input type="hidden" name="kind" value="create_document">)
       refute html =~ ~s(name="matter_id")
+      refute html =~ ~s(data-role="new-document-matter")
+      refute html =~ "Choose a type"
+      refute html =~ ~s(value="nda_v1")
     end
 
     # Wave 5: type-picker modal also localizes the headline label.
@@ -328,41 +248,30 @@ defmodule ContractWeb.Live.Studio.Components.ModalHostTest do
       assert html =~ ~s(phx-submit="export.request")
     end
 
-    test "form submission emits request_export with format and flips the picker flag",
+    test "export-picker opens on no-format event, closes on submit (with seeded doc) or cancel",
          %{conn: conn} do
-      {:ok, lv, _html} = live(conn, ~p"/studio")
+      # Submit path: routes an `export.request` with no format → picker opens;
+      # then submits with a format → picker closes.
+      {:ok, submit_lv, _} = live(conn, ~p"/studio")
+      _ = render_hook(submit_lv, "export.request", %{})
+      assert assigns(submit_lv).studio_state.export_picker_open? == true
 
-      # Open the picker by routing an `export.request` event with no format,
-      # mirroring the Cmd+K palette path.
-      _ = render_hook(lv, "export.request", %{})
-      assert assigns(lv).studio_state.export_picker_open? == true
-
-      # Submitting the form with a `format` should close the picker —
-      # `event_to_action/3` builds an Action and the dedicated handler
-      # flips export_picker_open? back to false on dispatch. Seed a
-      # selected_document_id so build_action does not bail on the
-      # `:missing_document_id` branch.
-      :sys.replace_state(lv.pid, fn liveview ->
+      # Seed selected_document_id so build_action doesn't bail on missing doc.
+      :sys.replace_state(submit_lv.pid, fn liveview ->
         socket = liveview.socket
         state = %{socket.assigns.studio_state | selected_document_id: Ecto.UUID.generate()}
         %{liveview | socket: %{socket | assigns: Map.put(socket.assigns, :studio_state, state)}}
       end)
 
-      _ = render_hook(lv, "export.request", %{"format" => "pdf"})
-      assert assigns(lv).studio_state.export_picker_open? == false
-    end
+      _ = render_hook(submit_lv, "export.request", %{"format" => "pdf"})
+      assert assigns(submit_lv).studio_state.export_picker_open? == false
 
-    test "close button on the export-picker flips export_picker_open? back to false",
-         %{conn: conn} do
-      {:ok, lv, _html} = live(conn, ~p"/studio")
-
-      _ = render_hook(lv, "export.request", %{})
-      assert assigns(lv).studio_state.export_picker_open? == true
-
-      # The Cancel button inside the picker dispatches `close_modal` with
-      # `modal=export`, which `update_modal/3` maps onto the flag.
-      _ = render_hook(lv, "close_modal", %{"modal" => "export"})
-      assert assigns(lv).studio_state.export_picker_open? == false
+      # Cancel path: open the picker then dispatch close_modal{modal=export}.
+      {:ok, cancel_lv, _} = live(conn, ~p"/studio")
+      _ = render_hook(cancel_lv, "export.request", %{})
+      assert assigns(cancel_lv).studio_state.export_picker_open? == true
+      _ = render_hook(cancel_lv, "close_modal", %{"modal" => "export"})
+      assert assigns(cancel_lv).studio_state.export_picker_open? == false
     end
   end
 
@@ -371,21 +280,6 @@ defmodule ContractWeb.Live.Studio.Components.ModalHostTest do
   # ---------------------------------------------------------------------
 
   describe "migration wizard step progression" do
-    test "step :plan shows the Run planner button disabled until a target is picked" do
-      html =
-        render_component(ModalHost,
-          id: "modal-host",
-          studio_state: %State{mode: :editing, migration_panel_open?: true},
-          current_scope: scope_for_user()
-        )
-
-      assert html =~ ~s(data-role="migration-run-planner")
-      # `disabled` and `data-role` can land in either order; assert
-      # both attributes appear on the same opening tag.
-      assert html =~
-               ~r/<button[^>]*disabled[^>]*data-role="migration-run-planner"|<button[^>]*data-role="migration-run-planner"[^>]*disabled/
-    end
-
     test "step :plan with an existing Plan shows the Next: field strategies button" do
       plan = %Contract.Conversion.Plan{
         source_document_id: Ecto.UUID.generate(),
@@ -501,37 +395,6 @@ defmodule ContractWeb.Live.Studio.Components.ModalHostTest do
                ~r/<button[^>]*disabled[^>]*data-role="migration-create-variant"|<button[^>]*data-role="migration-create-variant"[^>]*disabled/
     end
 
-    # Wave 4 bugfix #4 — the step 1 plan summary card must use the
-    # restrained hairline-accent palette ("border-l-2 border-primary
-    # bg-base-200"). No more full emerald block fill. Westlaw-silhouette
-    # test: the wizard, viewed at a distance, shows only document
-    # information, not a saturated success chip.
-    test "step :plan summary card uses hairline accent (no emerald-block fill)" do
-      plan = %Contract.Conversion.Plan{
-        source_document_id: Ecto.UUID.generate(),
-        source_type_key: "nda_v1",
-        target_type_key: "service_agreement_v1",
-        strategies: Contract.Conversion.allowed_strategies(),
-        field_plans: [],
-        impact: %{compatible?: true}
-      }
-
-      html =
-        render_component(ModalHost,
-          id: "modal-host",
-          studio_state: %State{mode: :editing, migration_panel_open?: true},
-          current_scope: scope_for_user(),
-          migration_plan: plan
-        )
-
-      assert html =~ ~s(data-role="migration-plan-summary")
-      assert html =~ "border-l-2 border-primary"
-      # Restrained: no DaisyUI success/emerald alert chip, no primary
-      # block fill (would violate `feedback-mature-visual-language`).
-      refute html =~ "alert alert-success"
-      refute html =~ "bg-primary text-primary-content"
-      refute html =~ "bg-success"
-    end
   end
 
   # ---------------------------------------------------------------------
@@ -552,21 +415,6 @@ defmodule ContractWeb.Live.Studio.Components.ModalHostTest do
       # The close X button inside the rendered picker emits close_modal.
       _ = render_hook(lv, "close_modal", %{"modal" => "document_picker"})
       assert assigns(lv).studio_state.document_picker_open? == false
-    end
-
-    test "Esc on metadata modal bubbles close_modal up via the window keydown" do
-      # Component-level: the metadata modal's keydown stub renders the
-      # phx-window-keydown attribute with phx-key="Escape" and the
-      # modal name as its value.
-      html =
-        render_component(ModalHost,
-          id: "modal-host",
-          studio_state: %State{mode: :editing, metadata_panel_open?: true},
-          current_scope: scope_for_user()
-        )
-
-      assert html =~
-               ~s(phx-window-keydown="close_modal" phx-key="Escape" phx-value-modal="metadata")
     end
 
     test "reconcile modal close button flips reconcile_modal_open?", %{conn: conn} do

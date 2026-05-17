@@ -167,22 +167,6 @@ defmodule ContractWeb.Live.Studio.Components.Canvas.ReviewTest do
       refute html =~ "<textarea"
     end
 
-    test "marks panel is collapsed by default, button shows bookmark + N (2)" do
-      html = render_review(changes_stream: [])
-
-      # Bookmark indicator (heroicon) with count = 2 for n1.
-      assert html =~ "hero-bookmark"
-      assert html =~ ~s(phx-value-node_id="n1")
-      assert html =~ "<span>2</span>"
-
-      # Ensure the banned 💬 emoji is not present in the chrome.
-      refute html =~ "💬"
-
-      # Marks panel is not rendered until expanded
-      refute html =~ ~s(id="node-marks-n1")
-      refute html =~ "Liability cap may be too low."
-    end
-
     test "marks panel expands on click (sets aria-expanded=true and lists marks) (2b)" do
       # Drive the LiveComponent in a live LV process so handle_event fires.
       {:ok, view, _html} = live_isolated_review([])

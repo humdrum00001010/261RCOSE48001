@@ -39,63 +39,53 @@ defmodule ContractWeb.MCP.MCPPlugTest do
   end
 
   describe "auth — bearer enforcement" do
-    test "returns 401 when no Authorization header is present", %{conn: conn} do
+    test "rejects requests with no / malformed / unrecognized bearer (all 401 -32000)",
+         %{conn: conn} do
       body = jsonrpc_body(1, "initialize", %{})
 
-      resp =
+      # No Authorization header.
+      no_auth =
         conn
         |> put_req_header("content-type", "application/json")
         |> post("/mcp", body)
 
-      assert resp.status == 401
-      assert {:ok, env} = Jason.decode(resp.resp_body)
+      assert no_auth.status == 401
+      assert {:ok, env} = Jason.decode(no_auth.resp_body)
       assert env["error"]["code"] == -32_000
-    end
 
-    test "returns 401 for a malformed Authorization header", %{conn: conn} do
-      body = jsonrpc_body(1, "initialize", %{})
-
-      resp =
+      # Malformed header.
+      malformed =
         conn
         |> put_req_header("authorization", "NotBearer x")
         |> put_req_header("content-type", "application/json")
         |> post("/mcp", body)
 
-      assert resp.status == 401
-    end
+      assert malformed.status == 401
 
-    test "returns 401 for an unrecognized bearer", %{conn: conn} do
-      body = jsonrpc_body(1, "initialize", %{})
-
-      resp =
+      # Unrecognized bearer.
+      unknown =
         conn
         |> put_req_header("authorization", "Bearer not-a-valid-token")
         |> put_req_header("content-type", "application/json")
         |> post("/mcp", body)
 
-      assert resp.status == 401
+      assert unknown.status == 401
     end
 
-    test "accepts a valid route_ref bearer", %{conn: conn} do
-      {:ok, token} = Gateway.issue_route_ref(@ctx, %{purpose: "test"})
+    test "accepts both route_ref and user-api-token bearers", %{conn: conn} do
+      {:ok, route_token} = Gateway.issue_route_ref(@ctx, %{purpose: "test"})
 
-      resp = jsonrpc_call(conn, token, 1, "initialize", %{})
-
-      assert resp.status == 200
-      assert {:ok, env} = Jason.decode(resp.resp_body)
+      route_resp = jsonrpc_call(conn, route_token, 1, "initialize", %{})
+      assert route_resp.status == 200
+      assert {:ok, env} = Jason.decode(route_resp.resp_body)
       assert env["jsonrpc"] == "2.0"
       assert env["id"] == 1
       assert env["result"]["serverInfo"]["name"] == "contract-studio"
-    end
 
-    test "accepts a user-api-token bearer (Phoenix.Token api_token salt)", %{conn: conn} do
-      user_id = Ecto.UUID.generate()
+      api_token =
+        Phoenix.Token.sign(ContractWeb.Endpoint, "api_token", %{user_id: Ecto.UUID.generate()})
 
-      token =
-        Phoenix.Token.sign(ContractWeb.Endpoint, "api_token", %{user_id: user_id})
-
-      resp = jsonrpc_call(conn, token, 1, "initialize", %{})
-      assert resp.status == 200
+      assert jsonrpc_call(conn, api_token, 1, "initialize", %{}).status == 200
     end
   end
 
@@ -115,9 +105,9 @@ defmodule ContractWeb.MCP.MCPPlugTest do
   end
 
   describe "method: tools/list" do
-    test "returns at least 7 studio.* tools", %{conn: conn} do
+    test "returns ≥7 studio.* tools each with name/description/inputSchema",
+         %{conn: conn} do
       {:ok, token} = Gateway.issue_route_ref(@ctx, %{purpose: "list"})
-
       resp = jsonrpc_call(conn, token, 1, "tools/list", %{})
       assert resp.status == 200
       {:ok, env} = Jason.decode(resp.resp_body)
@@ -127,21 +117,14 @@ defmodule ContractWeb.MCP.MCPPlugTest do
       assert length(tools) >= 7
 
       names = Enum.map(tools, & &1["name"])
-      assert "studio.get_document" in names
-      assert "studio.submit_action" in names
-      assert "studio.search_documents" in names
-      assert "studio.get_change_history" in names
-      assert "studio.list_marks" in names
-      assert "studio.search_law" in names
-      assert "studio.verify_citations" in names
-    end
 
-    test "each tool entry has an inputSchema", %{conn: conn} do
-      {:ok, token} = Gateway.issue_route_ref(@ctx, %{purpose: "list-schema"})
-      resp = jsonrpc_call(conn, token, 1, "tools/list", %{})
-      {:ok, env} = Jason.decode(resp.resp_body)
+      for name <- ~w(studio.get_document studio.submit_action studio.search_documents
+                     studio.get_change_history studio.list_marks studio.search_law
+                     studio.verify_citations) do
+        assert name in names
+      end
 
-      Enum.each(env["result"]["tools"], fn t ->
+      Enum.each(tools, fn t ->
         assert is_binary(t["name"])
         assert is_binary(t["description"])
         assert is_map(t["inputSchema"])
@@ -280,36 +263,37 @@ defmodule ContractWeb.MCP.MCPPlugTest do
       assert resp.status == 401
     end
 
-    test "forbidden when a pinned route_ref has no user context", %{conn: conn} do
-      doc_id = create_doc()
-      {:ok, token} = Gateway.issue_route_ref(@ctx, %{purpose: "get", document_id: doc_id})
-
-      resp =
-        jsonrpc_call(conn, token, 1, "tools/call", %{
-          "name" => "studio.get_document",
-          "arguments" => %{"document_id" => doc_id}
-        })
-
-      assert resp.status == 200
-      {:ok, env} = Jason.decode(resp.resp_body)
-      assert env["error"]["code"] == -32_001
-    end
-
-    test "forbidden when route_ref pins a different document", %{conn: conn} do
+    test "forbidden (-32001) for pinned route_ref without user context or wrong doc",
+         %{conn: conn} do
       doc_id = create_doc()
       other = create_doc(title: "Other pinned doc")
 
-      {:ok, token} = Gateway.issue_route_ref(@ctx, %{purpose: "wrong", document_id: other})
+      # Pinned ref with no user context.
+      {:ok, no_user_token} =
+        Gateway.issue_route_ref(@ctx, %{purpose: "get", document_id: doc_id})
 
-      resp =
-        jsonrpc_call(conn, token, 1, "tools/call", %{
+      no_user_resp =
+        jsonrpc_call(conn, no_user_token, 1, "tools/call", %{
           "name" => "studio.get_document",
           "arguments" => %{"document_id" => doc_id}
         })
 
-      assert resp.status == 200
-      {:ok, env} = Jason.decode(resp.resp_body)
-      assert env["error"]["code"] == -32_001
+      assert no_user_resp.status == 200
+      {:ok, env1} = Jason.decode(no_user_resp.resp_body)
+      assert env1["error"]["code"] == -32_001
+
+      # Pinned ref for a different doc.
+      {:ok, wrong_doc_token} =
+        Gateway.issue_route_ref(@ctx, %{purpose: "wrong", document_id: other})
+
+      wrong_doc_resp =
+        jsonrpc_call(conn, wrong_doc_token, 1, "tools/call", %{
+          "name" => "studio.get_document",
+          "arguments" => %{"document_id" => doc_id}
+        })
+
+      {:ok, env2} = Jason.decode(wrong_doc_resp.resp_body)
+      assert env2["error"]["code"] == -32_001
     end
 
     test "returns -32602 when document_id is missing", %{conn: conn} do
@@ -410,7 +394,6 @@ defmodule ContractWeb.MCP.MCPPlugTest do
           "arguments" => %{"document_id" => doc_id}
         })
 
-      assert resp.status == 200
       {:ok, env} = Jason.decode(resp.resp_body)
       [%{"text" => text}] = env["result"]["content"]
       {:ok, payload} = Jason.decode(text)
@@ -420,61 +403,50 @@ defmodule ContractWeb.MCP.MCPPlugTest do
   end
 
   describe "error handling" do
-    test "returns -32601 for an unknown tool", %{conn: conn} do
-      {:ok, token} = Gateway.issue_route_ref(@ctx, %{purpose: "unk"})
+    test "maps unknown-tool / unknown-method / parse / invalid-request / missing-name to codes",
+         %{conn: conn} do
+      {:ok, token} = Gateway.issue_route_ref(@ctx, %{purpose: "err"})
 
-      resp =
+      # -32601 unknown tool.
+      unk_tool =
         jsonrpc_call(conn, token, 1, "tools/call", %{
           "name" => "studio.does_not_exist",
           "arguments" => %{}
         })
 
-      assert resp.status == 200
-      {:ok, env} = Jason.decode(resp.resp_body)
-      assert env["error"]["code"] == -32_601
-    end
+      {:ok, env1} = Jason.decode(unk_tool.resp_body)
+      assert env1["error"]["code"] == -32_601
 
-    test "returns -32601 for an unknown JSON-RPC method", %{conn: conn} do
-      {:ok, token} = Gateway.issue_route_ref(@ctx, %{purpose: "unk-method"})
+      # -32601 unknown JSON-RPC method.
+      {:ok, env2} = Jason.decode(jsonrpc_call(conn, token, 1, "wat/wat", %{}).resp_body)
+      assert env2["error"]["code"] == -32_601
 
-      resp = jsonrpc_call(conn, token, 1, "wat/wat", %{})
-      {:ok, env} = Jason.decode(resp.resp_body)
-      assert env["error"]["code"] == -32_601
-    end
-
-    test "returns -32700 for malformed JSON", %{conn: conn} do
-      {:ok, token} = Gateway.issue_route_ref(@ctx, %{purpose: "parse"})
-
-      resp =
+      # -32700 malformed JSON.
+      parse_resp =
         conn
         |> put_req_header("authorization", "Bearer #{token}")
         |> put_req_header("content-type", "application/json")
         |> post("/mcp", "{not valid")
 
-      assert resp.status == 200
-      {:ok, env} = Jason.decode(resp.resp_body)
-      assert env["error"]["code"] == -32_700
-    end
+      {:ok, env3} = Jason.decode(parse_resp.resp_body)
+      assert env3["error"]["code"] == -32_700
 
-    test "returns -32600 for a JSON body missing method", %{conn: conn} do
-      {:ok, token} = Gateway.issue_route_ref(@ctx, %{purpose: "inv"})
-
-      resp =
+      # -32600 body missing method.
+      inv_resp =
         conn
         |> put_req_header("authorization", "Bearer #{token}")
         |> put_req_header("content-type", "application/json")
         |> post("/mcp", ~s({"jsonrpc":"2.0","id":1}))
 
-      {:ok, env} = Jason.decode(resp.resp_body)
-      assert env["error"]["code"] == -32_600
-    end
+      {:ok, env4} = Jason.decode(inv_resp.resp_body)
+      assert env4["error"]["code"] == -32_600
 
-    test "returns -32602 when tools/call is missing the tool name", %{conn: conn} do
-      {:ok, token} = Gateway.issue_route_ref(@ctx, %{purpose: "noname"})
+      # -32602 tools/call missing name.
+      noname =
+        jsonrpc_call(conn, token, 1, "tools/call", %{"arguments" => %{}})
 
-      resp = jsonrpc_call(conn, token, 1, "tools/call", %{"arguments" => %{}})
-      {:ok, env} = Jason.decode(resp.resp_body)
-      assert env["error"]["code"] == -32_602
+      {:ok, env5} = Jason.decode(noname.resp_body)
+      assert env5["error"]["code"] == -32_602
     end
   end
 
@@ -528,19 +500,10 @@ defmodule ContractWeb.MCP.MCPPlugTest do
   end
 
   describe "Slack ingress remains 501 (out of scope for this build)" do
-    test "/slack/events returns 501", %{conn: conn} do
-      resp = post(conn, "/slack/events", %{})
-      assert resp.status == 501
-    end
-
-    test "/slack/actions returns 501", %{conn: conn} do
-      resp = post(conn, "/slack/actions", %{})
-      assert resp.status == 501
-    end
-
-    test "/slack/commands returns 501", %{conn: conn} do
-      resp = post(conn, "/slack/commands", %{})
-      assert resp.status == 501
+    test "/slack/{events,actions,commands} all return 501", %{conn: conn} do
+      for path <- ~w(/slack/events /slack/actions /slack/commands) do
+        assert post(conn, path, %{}).status == 501
+      end
     end
   end
 

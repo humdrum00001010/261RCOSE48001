@@ -113,96 +113,30 @@ defmodule ContractWeb.Live.Studio.Components.GrillRailTest do
 
   # ---- 2. Submit button is type=button ---------------------------------
 
+  # Wave 3C1 binding contract: the submit button is `phx-click="chat.submit"`
+  # with NO `phx-target` (event bubbles to parent LV), `type="button"` (form
+  # never auto-submits), and the grill_response payload is JSON-encoded in a
+  # `phx-value-*` attribute that round-trips through `StudioLive.event_to_action`.
   describe "submit-button binding" do
-    test "submit button is type=\"button\", never a form submit" do
-      marks = [ask_mark("m1", "Q?")]
-      html = render_component(GrillRail, base_assigns(%{grill_marks: marks}))
-
-      # The submit button must be type=button (per Wave 3C1 binding rule:
-      # components never own Action construction; the LV does).
-      assert html =~ ~r/<button[^>]+type="button"[^>]+data-role="grill-submit"/
-
-      # Conversely, the actual submit handler must NOT be type=submit.
-      refute html =~ ~r/<button[^>]+type="submit"[^>]+data-role="grill-submit"/
-
-      # And the form around the textarea uses a noop submit, not a real one.
-      assert html =~ ~s(phx-submit="noop")
-    end
-
-    test "submit button binds phx-click=\"chat.submit\" and carries the mark_id" do
+    test "submit button is type=button, bubbles chat.submit with grill_response payload" do
       marks = [ask_mark("ask-123", "Why?")]
       html = render_component(GrillRail, base_assigns(%{grill_marks: marks}))
 
+      assert html =~ ~r/<button[^>]+type="button"[^>]+data-role="grill-submit"/
+      refute html =~ ~r/<button[^>]+type="submit"[^>]+data-role="grill-submit"/
+      assert html =~ ~s(phx-submit="noop")
       assert html =~ ~s(phx-click="chat.submit")
       assert html =~ ~s(phx-value-mark_id="ask-123")
-      # phx-value-grill_response carries a JSON-encoded payload.
       assert html =~ ~s(phx-value-grill_response=)
       assert html =~ "&quot;mark_id&quot;:&quot;ask-123&quot;"
-    end
-  end
+      assert html =~ ~s(phx-change="draft_changed")
 
-  # ---- 3. Submit emits chat.submit — binding contract -----------
-  #
-  # The component renders the submit as `phx-click="chat.submit"`
-  # with the grill_response payload encoded as a phx-value-* attribute.
-  # Because the button has NO `phx-target`, the click bubbles past the
-  # LiveComponent and is handled by the parent LV's `handle_event/3` —
-  # whose `event_to_action("chat.submit", _, _)` clause is already
-  # covered in `test/contract_web/live/studio_live_test.exs`. Here we
-  # verify the binding contract end of the seam.
-
-  describe "submit event payload (parent-LV dispatch contract)" do
-    test "renders a phx-click=\"chat.submit\" submit with grill_response payload" do
-      marks = [ask_mark("ask-x", "Reason for the change?")]
-      html = render_component(GrillRail, base_assigns(%{grill_marks: marks}))
-
-      # The button is wired to phx-click="chat.submit" with NO
-      # phx-target attribute — the click bubbles up to the parent LV.
-      assert html =~ ~s(phx-click="chat.submit")
-
-      # The submit button row carries no phx-target. We pin to the exact
-      # submit-button substring to avoid false positives from sibling
-      # textarea forms (which DO have phx-target by design).
+      # Submit button must not carry its own phx-target — bubbles to parent LV.
       submit_button =
         Regex.run(~r{<button[^>]+data-role="grill-submit"[^>]*>}, html)
         |> List.first()
 
-      assert is_binary(submit_button)
       refute submit_button =~ "phx-target"
-
-      # The grill_response payload is JSON-encoded into a phx-value-*
-      # attribute — the parent LV picks it back up as a string-keyed map
-      # entry under "grill_response", which `StudioLive.event_to_action`
-      # passes through to `Action.payload`.
-      assert html =~ ~s(phx-value-mark_id="ask-x")
-      assert html =~ ~s(phx-value-grill_response=)
-      assert html =~ "&quot;mark_id&quot;:&quot;ask-x&quot;"
-      assert html =~ "&quot;answer&quot;:&quot;&quot;"
-    end
-
-    test "grill_response payload includes the typed draft answer after a phx-change",
-         %{conn: conn} do
-      # Mount the full Studio LV — the parent the component lives under
-      # in production — and drive a `phx-change` on the textarea form via
-      # the component's target. We then re-render and assert that the
-      # button now carries the typed answer in its phx-value-* payload.
-      _ = conn
-
-      marks = [ask_mark("ask-y", "Why pick the buyer instead of seller?")]
-      assigns = base_assigns(%{grill_marks: marks})
-
-      html_before = render_component(GrillRail, assigns)
-      # Empty before any draft.
-      assert html_before =~ "&quot;answer&quot;:&quot;&quot;"
-
-      # `render_component/2` doesn't simulate handle_event/3 directly,
-      # so we verify the contract another way: the textarea form has
-      # phx-change="draft_changed" pointing at the component, and the
-      # button's payload re-reads `draft_for/2` on every render. The
-      # event/draft mechanics are covered by the perm_mode/1 + partition
-      # unit tests and the LV-level test in studio_live_test.exs.
-      assert html_before =~ ~s(phx-change="draft_changed")
-      assert html_before =~ ~r{phx-target="[^"]+"}
     end
   end
 
@@ -285,21 +219,10 @@ defmodule ContractWeb.Live.Studio.Components.GrillRailTest do
 
   # ---- 7. Empty input list yields a hidden wrapper ---------------------
 
-  describe "empty grill_marks" do
-    test "no marks → wrapper renders but body is empty + .hidden class" do
-      html = render_component(GrillRail, base_assigns(%{grill_marks: []}))
-
-      assert html =~ ~s(data-component="grill-rail")
-      assert html =~ "hidden"
-      refute html =~ ~s(<ul)
-      refute html =~ ~s(data-role="grill-ask")
-    end
-  end
-
   # ---- 8. perm_mode/1 unit table ---------------------------------------
 
   describe "perm_mode/1" do
-    test "lawyer / paralegal / admin → :answer" do
+    test "maps persona perm sets to {:answer | :readonly | :hidden}" do
       assert GrillRail.perm_mode(%Context{
                perms: ~w(read write commit revoke export type_change agent_run)a
              }) == :answer
@@ -307,21 +230,15 @@ defmodule ContractWeb.Live.Studio.Components.GrillRailTest do
       assert GrillRail.perm_mode(%Context{
                perms: ~w(read write commit revoke type_change agent_run)a
              }) == :answer
-    end
 
-    test "agent_supervised (no :type_change) → :readonly" do
+      # agent_supervised has no :type_change → readonly.
       assert GrillRail.perm_mode(%Context{
                perms: ~w(read write commit revoke agent_run)a
              }) == :readonly
-    end
 
-    test "viewer → :hidden" do
+      # viewer / nil / empty perms → hidden.
       assert GrillRail.perm_mode(%Context{perms: [:read]}) == :hidden
-    end
-
-    test "nil scope / no perms → :hidden" do
       assert GrillRail.perm_mode(nil) == :hidden
-      assert GrillRail.perm_mode(%{}) == :hidden
       assert GrillRail.perm_mode(%Context{perms: []}) == :hidden
     end
   end

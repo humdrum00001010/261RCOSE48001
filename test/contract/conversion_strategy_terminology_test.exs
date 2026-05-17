@@ -45,61 +45,55 @@ defmodule Contract.ConversionStrategyTerminologyTest do
     doc
   end
 
-  test "document identity facts use shared fact strategy terminology" do
+  # Wave 4 terminology migration: `:link_to_matter_field` was renamed
+  # to `:link_to_shared_fact`. We accept the legacy strategy on input
+  # paths (set_field_strategy/4, lineage rows) but normalize-on-write to
+  # the new atom. This test pins all three input surfaces in one shot.
+  test "legacy :link_to_matter_field maps to :link_to_shared_fact across input surfaces" do
     scope = scope()
     doc = source_doc(scope)
+    {:ok, %Plan{} = plan} = Conversion.plan(scope, doc.id, "service_agreement_v1", [])
 
-    assert {:ok, %Plan{} = plan} = Conversion.plan(scope, doc.id, "service_agreement_v1", [])
-
+    # 1. Allowed strategies list rejects the legacy name.
     assert :link_to_shared_fact in Conversion.allowed_strategies()
     refute :link_to_matter_field in Conversion.allowed_strategies()
 
+    # 2. Plans built by Conversion.plan/4 use the new strategy with
+    #    justification text that mentions "shared fact".
     shared_fact_plans = Enum.filter(plan.field_plans, &(&1.strategy == :link_to_shared_fact))
     assert shared_fact_plans != []
 
-    assert Enum.all?(shared_fact_plans, fn plan ->
-             String.contains?(plan.justification, "shared fact")
+    assert Enum.all?(shared_fact_plans, fn p ->
+             String.contains?(p.justification, "shared fact")
            end)
-  end
 
-  test "legacy matter field strategy input maps to shared fact strategy" do
-    scope = scope()
-    doc = source_doc(scope)
-    {:ok, plan} = Conversion.plan(scope, doc.id, "service_agreement_v1", [])
+    # 3. set_field_strategy/4 with the legacy atom normalizes to the new one.
     [first | _] = plan.field_plans
 
     assert {:ok, %Plan{field_plans: field_plans}} =
-             Conversion.set_field_strategy(
-               scope,
-               plan,
-               first.source_field_id,
-               :link_to_matter_field
-             )
+             Conversion.set_field_strategy(scope, plan, first.source_field_id, :link_to_matter_field)
 
     assert Enum.find(field_plans, &(&1.source_field_id == first.source_field_id)).strategy ==
              :link_to_shared_fact
-  end
 
-  test "legacy matter field lineage strategy persists as shared fact" do
-    scope = scope()
-    source = source_doc(scope)
-    {:ok, %Plan{} = plan} = Conversion.plan(scope, source.id, "service_agreement_v1", [])
-    [first | _] = Enum.reject(plan.field_plans, &(&1.strategy in [:ignore, :ask_user]))
+    # 4. create_variant/2 persists lineage with the new atom even when
+    #    the in-memory FieldPlan carries the legacy value.
+    [first_eligible | _] = Enum.reject(plan.field_plans, &(&1.strategy in [:ignore, :ask_user]))
 
-    plan = %Plan{
+    legacy_plan = %Plan{
       plan
       | field_plans:
           Enum.map(plan.field_plans, fn %FieldPlan{} = fp ->
-            if fp.source_field_id == first.source_field_id,
+            if fp.source_field_id == first_eligible.source_field_id,
               do: %FieldPlan{fp | strategy: :link_to_matter_field},
               else: fp
           end)
     }
 
-    {:ok, {new_doc, _change}} = Conversion.create_variant(scope, plan)
+    {:ok, {new_doc, _change}} = Conversion.create_variant(scope, legacy_plan)
 
     assert Enum.any?(Documents.list_lineage(scope, new_doc.id), fn lineage ->
-             lineage.source_field_id == first.source_field_id and
+             lineage.source_field_id == first_eligible.source_field_id and
                lineage.strategy == :link_to_shared_fact
            end)
   end

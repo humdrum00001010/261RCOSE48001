@@ -4,13 +4,10 @@ defmodule Contract.ChangeTest do
   alias Contract.{Change, Context}
 
   describe "Matter cleanup" do
-    test "Context no longer carries a matter assign" do
+    test "Context drops :matter; Types drops legacy matter_id/artifact_id aliases" do
       refute :matter in Map.keys(%Context{})
-    end
 
-    test "Types no longer publishes Matter or legacy artifact aliases" do
       source = File.read!("lib/contract/types.ex")
-
       refute source =~ "@type matter_id"
       refute source =~ "@type artifact_id"
     end

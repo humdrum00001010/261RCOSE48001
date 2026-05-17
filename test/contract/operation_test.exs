@@ -29,13 +29,9 @@ defmodule Contract.OperationTest do
     end
   end
 
-  test "rejects an unknown op kind" do
-    cs = Operation.changeset(%Operation{}, %{op: :rewrite_everything, target_type: :node})
-    refute cs.valid?
-  end
+  test "rejects unknown op kind / unknown target_type" do
+    refute Operation.changeset(%Operation{}, %{op: :rewrite_everything, target_type: :node}).valid?
 
-  test "rejects an unknown target_type" do
-    cs = Operation.changeset(%Operation{}, %{op: :create_node, target_type: :clause})
-    refute cs.valid?
+    refute Operation.changeset(%Operation{}, %{op: :create_node, target_type: :clause}).valid?
   end
 end

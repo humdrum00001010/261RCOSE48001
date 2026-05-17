@@ -40,19 +40,16 @@ defmodule Contract.Export.RendererTest do
              Renderer.render(empty_state(), :unknown)
   end
 
-  test "render/3 :pdf surfaces chromium-missing error in the default test env" do
-    # Force a path that won't resolve so we don't actually shell out.
-    assert {:error, reason} =
+  test "render/3 :pdf / :docx surface missing-binary errors when the tool isn't on PATH" do
+    assert {:error, pdf_reason} =
              Renderer.render(empty_state(), :pdf, chromium_path: "/nonexistent/chromium-9d12b4f6")
 
-    assert match?(:chromium_not_found, reason) or match?({:chromium_missing, _}, reason)
-  end
+    assert match?(:chromium_not_found, pdf_reason) or match?({:chromium_missing, _}, pdf_reason)
 
-  test "render/3 :docx surfaces pandoc-missing error in the default test env" do
-    assert {:error, reason} =
+    assert {:error, docx_reason} =
              Renderer.render(empty_state(), :docx, pandoc_path: "/nonexistent/pandoc-9d12b4f6")
 
-    assert match?(:pandoc_not_found, reason) or match?({:pandoc_missing, _}, reason)
+    assert match?(:pandoc_not_found, docx_reason) or match?({:pandoc_missing, _}, docx_reason)
   end
 
   # ---- content_type/1 -----------------------------------------------------

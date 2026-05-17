@@ -112,14 +112,10 @@ defmodule ContractWeb.PageControllerTest do
       assert css =~ ~r/\.dashboard-v31__grid[^}]*\}\s*@media \(min-width: 640px\)/su
     end
 
-    test "upload menu is viewport-anchored on mobile (no overflow)", %{app_css: css} do
-      # Mobile default: position: fixed with left/right gutters (NOT a
-      # 380px-wide popover anchored under the button — which overflows
-      # the left edge of a 390-wide viewport).
-      assert css =~ ~r/\.upload-menu-v31\s*\{[^}]*position:\s*fixed/u
-      # Tablet+ switches to button-anchored absolute positioning.
-      assert css =~
-               ~r/@media \(min-width: 640px\)\s*\{\s*\.upload-menu-v31\s*\{[^}]*position:\s*absolute[^}]*width:\s*380px/u
+    test "upload menu CSS namespace removed — upload moved to Studio empty state", %{app_css: css} do
+      # Per 2026-05-17 owner directive, upload moved out of dashboard.
+      # The .upload-menu-v31 namespace should be gone.
+      refute css =~ ~r/\.upload-menu-v31\s*\{/u
     end
 
     test "hero typography uses clamp() so it scales across viewports", %{app_css: css} do

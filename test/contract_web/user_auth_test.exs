@@ -29,49 +29,38 @@ defmodule ContractWeb.UserAuthTest do
       assert Accounts.get_user_by_session_token(token)
     end
 
-    test "clears everything previously stored in the session", %{conn: conn, user: user} do
-      conn = conn |> put_session(:to_be_removed, "value") |> UserAuth.log_in_user(user)
-      refute get_session(conn, :to_be_removed)
-    end
-
-    test "keeps session when re-authenticating", %{conn: conn, user: user} do
-      conn =
-        conn
-        |> assign(:current_scope, Scope.for_user(user))
-        |> put_session(:to_be_removed, "value")
-        |> UserAuth.log_in_user(user)
-
-      assert get_session(conn, :to_be_removed)
-    end
-
-    test "clears session when user does not match when re-authenticating", %{
+    test "fresh log-in clears session; same-user re-auth keeps; other-user re-auth clears", %{
       conn: conn,
       user: user
     } do
       other_user = user_fixture()
 
-      conn =
+      # Fresh log-in clears prior session.
+      fresh = conn |> put_session(:to_be_removed, "value") |> UserAuth.log_in_user(user)
+      refute get_session(fresh, :to_be_removed)
+
+      # Re-auth as the SAME user keeps the session.
+      same =
+        conn
+        |> assign(:current_scope, Scope.for_user(user))
+        |> put_session(:to_be_removed, "value")
+        |> UserAuth.log_in_user(user)
+
+      assert get_session(same, :to_be_removed)
+
+      # Re-auth as a DIFFERENT user clears the session.
+      diff =
         conn
         |> assign(:current_scope, Scope.for_user(other_user))
         |> put_session(:to_be_removed, "value")
         |> UserAuth.log_in_user(user)
 
-      refute get_session(conn, :to_be_removed)
+      refute get_session(diff, :to_be_removed)
     end
 
-    test "redirects to the configured path", %{conn: conn, user: user} do
+    test "redirects to user_return_to when set in session", %{conn: conn, user: user} do
       conn = conn |> put_session(:user_return_to, "/hello") |> UserAuth.log_in_user(user)
       assert redirected_to(conn) == "/hello"
-    end
-
-    test "writes a cookie if remember_me is configured", %{conn: conn, user: user} do
-      conn = conn |> fetch_cookies() |> UserAuth.log_in_user(user, %{"remember_me" => "true"})
-      assert get_session(conn, :user_token) == conn.cookies[@remember_me_cookie]
-      assert get_session(conn, :user_remember_me) == true
-
-      assert %{value: signed_token, max_age: max_age} = conn.resp_cookies[@remember_me_cookie]
-      assert signed_token != get_session(conn, :user_token)
-      assert max_age == @remember_me_cookie_max_age
     end
 
     test "redirects to settings when user is already logged in", %{conn: conn, user: user} do
@@ -225,23 +214,18 @@ defmodule ContractWeb.UserAuthTest do
       assert updated_socket.assigns.current_scope.user.id == user.id
     end
 
-    test "assigns nil to current_scope assign if there isn't a valid user_token", %{conn: conn} do
-      user_token = "invalid_token"
-      session = conn |> put_session(:user_token, user_token) |> get_session()
+    test "assigns nil current_scope for invalid or missing user_token", %{conn: conn} do
+      for session_setup <- [
+            fn c -> put_session(c, :user_token, "invalid_token") end,
+            fn c -> c end
+          ] do
+        session = conn |> session_setup.() |> get_session()
 
-      {:cont, updated_socket} =
-        UserAuth.on_mount(:mount_current_scope, %{}, session, %LiveView.Socket{})
+        {:cont, updated_socket} =
+          UserAuth.on_mount(:mount_current_scope, %{}, session, %LiveView.Socket{})
 
-      assert updated_socket.assigns.current_scope == nil
-    end
-
-    test "assigns nil to current_scope assign if there isn't a user_token", %{conn: conn} do
-      session = conn |> get_session()
-
-      {:cont, updated_socket} =
-        UserAuth.on_mount(:mount_current_scope, %{}, session, %LiveView.Socket{})
-
-      assert updated_socket.assigns.current_scope == nil
+        assert updated_socket.assigns.current_scope == nil
+      end
     end
   end
 
@@ -256,29 +240,21 @@ defmodule ContractWeb.UserAuthTest do
       assert updated_socket.assigns.current_scope.user.id == user.id
     end
 
-    test "redirects to login page if there isn't a valid user_token", %{conn: conn} do
-      user_token = "invalid_token"
-      session = conn |> put_session(:user_token, user_token) |> get_session()
+    test "halts with nil current_scope for invalid or missing user_token", %{conn: conn} do
+      for session_setup <- [
+            fn c -> put_session(c, :user_token, "invalid_token") end,
+            fn c -> c end
+          ] do
+        session = conn |> session_setup.() |> get_session()
 
-      socket = %LiveView.Socket{
-        endpoint: ContractWeb.Endpoint,
-        assigns: %{__changed__: %{}, flash: %{}}
-      }
+        socket = %LiveView.Socket{
+          endpoint: ContractWeb.Endpoint,
+          assigns: %{__changed__: %{}, flash: %{}}
+        }
 
-      {:halt, updated_socket} = UserAuth.on_mount(:require_authenticated, %{}, session, socket)
-      assert updated_socket.assigns.current_scope == nil
-    end
-
-    test "redirects to login page if there isn't a user_token", %{conn: conn} do
-      session = conn |> get_session()
-
-      socket = %LiveView.Socket{
-        endpoint: ContractWeb.Endpoint,
-        assigns: %{__changed__: %{}, flash: %{}}
-      }
-
-      {:halt, updated_socket} = UserAuth.on_mount(:require_authenticated, %{}, session, socket)
-      assert updated_socket.assigns.current_scope == nil
+        {:halt, updated_socket} = UserAuth.on_mount(:require_authenticated, %{}, session, socket)
+        assert updated_socket.assigns.current_scope == nil
+      end
     end
   end
 

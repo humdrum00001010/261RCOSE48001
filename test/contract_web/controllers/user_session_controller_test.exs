@@ -136,59 +136,38 @@ defmodule ContractWeb.UserSessionControllerTest do
     # otherwise Studio writes/revokes/exports/conversions stay disabled.
     # See `Contract.PersonaFactory.spec(:lawyer)` for the canonical set.
 
-    test "password log-in seeds :user_perms with :write and :revoke", %{conn: conn, user: user} do
-      user = set_password(user)
+    test "password and magic-link log-in seed :user_perms and Studio LV picks them up",
+         %{conn: conn, user: user} do
+      pw_user = set_password(user)
 
-      conn =
+      pw_conn =
         post(conn, ~p"/users/log-in", %{
-          "user" => %{"email" => user.email, "password" => valid_user_password()}
+          "user" => %{"email" => pw_user.email, "password" => valid_user_password()}
         })
 
-      perms = get_session(conn, :user_perms)
+      perms = get_session(pw_conn, :user_perms)
       assert is_list(perms)
-      assert :write in perms
-      assert :revoke in perms
-      # Sanity: standard production set
+      # Standard production lawyer set.
       assert :read in perms
+      assert :write in perms
       assert :commit in perms
+      assert :revoke in perms
       assert :export in perms
       assert :type_change in perms
-    end
 
-    test "magic-link log-in seeds :user_perms too", %{conn: conn, user: user} do
-      {token, _hashed_token} = generate_user_magic_link_token(user)
+      # Studio LV's DocumentScope must thread :user_perms onto current_scope.perms.
+      assert get_session(pw_conn, :user_token)
+      {:ok, lv, _html} = live(pw_conn, ~p"/studio")
+      lv_perms = :sys.get_state(lv.pid).socket.assigns.current_scope.perms
+      assert :write in lv_perms
+      assert :revoke in lv_perms
 
-      conn =
-        post(conn, ~p"/users/log-in", %{
-          "user" => %{"token" => token}
-        })
-
-      perms = get_session(conn, :user_perms)
-      assert is_list(perms)
-      assert :write in perms
-      assert :revoke in perms
-    end
-
-    test "after log-in, Studio LV's current_scope.perms is populated", %{
-      conn: conn,
-      user: user
-    } do
-      user = set_password(user)
-
-      conn =
-        post(conn, ~p"/users/log-in", %{
-          "user" => %{"email" => user.email, "password" => valid_user_password()}
-        })
-
-      # Drive the same conn through the Studio LV and inspect the
-      # mounted scope. This is the load-bearing assertion: the bugfix
-      # is moot unless DocumentScope sees `:user_perms` in the session.
-      assert get_session(conn, :user_token)
-      {:ok, lv, _html} = live(conn, ~p"/studio")
-      perms = :sys.get_state(lv.pid).socket.assigns.current_scope.perms
-      assert is_list(perms)
-      assert :write in perms
-      assert :revoke in perms
+      # Magic-link path seeds perms identically.
+      {token, _} = generate_user_magic_link_token(user)
+      ml_conn = post(conn, ~p"/users/log-in", %{"user" => %{"token" => token}})
+      ml_perms = get_session(ml_conn, :user_perms)
+      assert :write in ml_perms
+      assert :revoke in ml_perms
     end
   end
 

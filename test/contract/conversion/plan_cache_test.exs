@@ -22,22 +22,16 @@ defmodule Contract.Conversion.PlanCacheTest do
     }
   end
 
-  describe "put/2 + get/1 round-trip" do
-    test "stores and retrieves a plan" do
+  describe "PlanCache lifecycle (put/get/update/overwrite)" do
+    test "round-trips, applies updates atomically, and overwrites on re-put" do
       plan = build_plan()
-      key = "plan-fixture-#{System.unique_integer([:positive])}"
+      key = "plan-#{System.unique_integer([:positive])}"
 
+      # round-trip
       assert :ok = PlanCache.put(key, plan)
       assert {:ok, ^plan} = PlanCache.get(key)
-    end
-  end
 
-  describe "update/2" do
-    test "applies the function atomically and returns :ok" do
-      plan = build_plan()
-      key = "plan-update-#{System.unique_integer([:positive])}"
-      assert :ok = PlanCache.put(key, plan)
-
+      # update applies atomically
       assert :ok =
                PlanCache.update(key, fn %Plan{} = cached ->
                  [%FieldPlan{} = fp] = cached.field_plans
@@ -46,30 +40,17 @@ defmodule Contract.Conversion.PlanCacheTest do
 
       assert {:ok, updated} = PlanCache.get(key)
       assert [%FieldPlan{strategy: :copy_once}] = updated.field_plans
-    end
 
-    test "returns {:error, :not_found} for an unknown plan_id" do
-      assert {:error, :not_found} =
-               PlanCache.update("nope-#{System.unique_integer([:positive])}", & &1)
-    end
-  end
-
-  describe "get/1 on unknown plan_id" do
-    test "returns {:error, :not_found}" do
-      assert {:error, :not_found} =
-               PlanCache.get("ghost-#{System.unique_integer([:positive])}")
-    end
-  end
-
-  describe "put/2 overwrites prior values" do
-    test "second put replaces the first" do
-      key = "plan-overwrite-#{System.unique_integer([:positive])}"
-      first = build_plan(target: "service_agreement_v1")
-      second = build_plan(target: "supply_v1")
-
-      assert :ok = PlanCache.put(key, first)
-      assert :ok = PlanCache.put(key, second)
+      # second put overwrites
+      replacement = build_plan(target: "supply_v1")
+      assert :ok = PlanCache.put(key, replacement)
       assert {:ok, %Plan{target_type_key: "supply_v1"}} = PlanCache.get(key)
+    end
+
+    test "missing keys return {:error, :not_found} on get/update" do
+      ghost = "ghost-#{System.unique_integer([:positive])}"
+      assert {:error, :not_found} = PlanCache.get(ghost)
+      assert {:error, :not_found} = PlanCache.update(ghost, & &1)
     end
   end
 end

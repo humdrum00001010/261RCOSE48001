@@ -6,63 +6,40 @@ defmodule Contract.ContractTypesTest do
   alias Contract.ContractTypes.TypeSpec
 
   describe "list/2" do
-    test "returns one spec per shipped TOML file" do
+    test "ships ≥5 specs (incl. 5 canonical keys), sorted by key, all %TypeSpec{}" do
       assert {:ok, specs} = ContractTypes.list()
 
       assert length(specs) == length(ContractTypes.__toml_paths__())
       assert length(specs) >= 5
-
       assert Enum.all?(specs, &match?(%TypeSpec{}, &1))
-    end
 
-    test "ships the five canonical keys the dashboard depends on" do
-      {:ok, specs} = ContractTypes.list()
-      keys = specs |> Enum.map(& &1.key) |> MapSet.new()
+      keys = specs |> Enum.map(& &1.key)
+      key_set = MapSet.new(keys)
+      assert keys == Enum.sort(keys)
 
       for expected <- ~w(nda_v1 franchise_v1 service_agreement_v1 employment_v1 supply_v1) do
-        assert expected in keys, "missing canonical type #{expected}"
+        assert expected in key_set, "missing canonical type #{expected}"
       end
+
+      # Accepts a ctx as first positional argument (SPEC §18 shape).
+      assert {:ok, _} = ContractTypes.list(%{user_id: "u-123"})
     end
 
-    test "is sorted by key for stable rendering" do
-      {:ok, specs} = ContractTypes.list()
-      keys = Enum.map(specs, & &1.key)
-      assert keys == Enum.sort(keys)
-    end
-
-    test ":family option filters by a single family atom" do
+    test ":family filter accepts an atom or list of atoms; :source filters by publisher" do
       assert {:ok, employment} = ContractTypes.list(nil, family: :employment)
       assert length(employment) >= 1
       assert Enum.all?(employment, &(&1.family == :employment))
-    end
 
-    test ":family option accepts a list of atoms" do
       assert {:ok, pair} = ContractTypes.list(nil, family: [:nda, :employment])
-
-      families =
-        pair
-        |> Enum.map(& &1.family)
-        |> Enum.uniq()
-        |> Enum.sort()
-
+      families = pair |> Enum.map(& &1.family) |> Enum.uniq() |> Enum.sort()
       assert families == [:employment, :nda]
-    end
 
-    test ":source option filters by source publisher" do
       assert {:ok, ftc} = ContractTypes.list(nil, source: :ftc)
       assert Enum.all?(ftc, &(&1.source == :ftc))
-      # We ship at least the FTC franchise spec.
       assert length(ftc) >= 1
-    end
 
-    test "unknown family yields an empty list" do
+      # Unknown family yields an empty list.
       assert ContractTypes.list(nil, family: :nonexistent_family) == {:ok, []}
-    end
-
-    test "accepts a ctx as the first positional argument (SPEC §18 shape)" do
-      ctx = %{user_id: "u-123"}
-      assert {:ok, specs} = ContractTypes.list(ctx)
-      assert is_list(specs)
     end
   end
 
@@ -79,19 +56,16 @@ defmodule Contract.ContractTypesTest do
   end
 
   describe "compatible?/2" do
-    test "is true when both directions list each other (and we ship at least one such pair)" do
+    test "true only when both directions list each other; false for one-way / unknown keys" do
       # service_agreement_v1 <-> nda_v1 are seeded as mutually compatible.
       assert ContractTypes.compatible?("service_agreement_v1", "nda_v1")
       assert ContractTypes.compatible?("nda_v1", "service_agreement_v1")
-    end
 
-    test "is false for a one-way edge" do
       # employment_v1 has compatible_with = [], so nothing should pair with it.
       refute ContractTypes.compatible?("employment_v1", "nda_v1")
       refute ContractTypes.compatible?("nda_v1", "employment_v1")
-    end
 
-    test "is false when either key is unknown" do
+      # Unknown keys return false in either position.
       refute ContractTypes.compatible?("nda_v1", "ghost_key")
       refute ContractTypes.compatible?("ghost_key", "nda_v1")
       refute ContractTypes.compatible?("ghost_a", "ghost_b")
@@ -99,8 +73,11 @@ defmodule Contract.ContractTypesTest do
   end
 
   describe "loaded spec invariants" do
-    test "every shipped spec has the required fields populated" do
-      for spec <- ContractTypes.all() do
+    test "shipped specs are well-formed: fields populated, unique ids, valid compatible_with" do
+      specs = ContractTypes.all()
+      keys = specs |> Enum.map(& &1.key) |> MapSet.new()
+
+      for spec <- specs do
         assert is_binary(spec.key) and spec.key != ""
         assert is_atom(spec.family)
         assert is_binary(spec.name_en) and spec.name_en != ""
@@ -108,32 +85,23 @@ defmodule Contract.ContractTypesTest do
         assert is_atom(spec.source)
         assert is_list(spec.recommended_fields)
         assert is_list(spec.compatible_with)
-      end
-    end
 
-    test "every recommended_field has id/label_en/kind" do
-      for spec <- ContractTypes.all(),
-          field <- spec.recommended_fields do
-        assert is_binary(field.id) and field.id != ""
-        assert is_binary(field.label_en) and field.label_en != ""
-        assert field.kind in [:text, :number, :date, :party, :money]
-      end
-    end
+        # Every recommended_field has well-formed shape.
+        for field <- spec.recommended_fields do
+          assert is_binary(field.id) and field.id != ""
+          assert is_binary(field.label_en) and field.label_en != ""
+          assert field.kind in [:text, :number, :date, :party, :money]
+        end
 
-    test "field ids are unique within a spec" do
-      for spec <- ContractTypes.all() do
+        # Field ids are unique within a spec.
         ids = Enum.map(spec.recommended_fields, & &1.id)
         assert ids == Enum.uniq(ids), "duplicate field id in #{spec.key}"
-      end
-    end
 
-    test "compatible_with only references shipped keys" do
-      keys = ContractTypes.all() |> Enum.map(& &1.key) |> MapSet.new()
-
-      for spec <- ContractTypes.all(),
-          partner <- spec.compatible_with do
-        assert partner in keys,
-               "#{spec.key}.compatible_with references unknown key #{partner}"
+        # compatible_with only references shipped keys.
+        for partner <- spec.compatible_with do
+          assert partner in keys,
+                 "#{spec.key}.compatible_with references unknown key #{partner}"
+        end
       end
     end
   end
@@ -188,32 +156,24 @@ defmodule Contract.ContractTypesTest do
       :ok
     end
 
-    test "in :ko locale returns name_ko for a TypeSpec" do
-      Gettext.put_locale(ContractWeb.Gettext, "ko")
-      {:ok, spec} = ContractTypes.get(nil, "nda_v1")
-      assert spec.name_ko != nil and spec.name_ko != ""
-      assert ContractTypes.display_name(spec) == spec.name_ko
-    end
+    test "returns the locale-appropriate name and falls back when empty" do
+      {:ok, nda} = ContractTypes.get(nil, "nda_v1")
+      {:ok, franchise} = ContractTypes.get(nil, "franchise_v1")
 
-    test "in :en locale returns name_en for a TypeSpec" do
-      Gettext.put_locale(ContractWeb.Gettext, "en")
-      {:ok, spec} = ContractTypes.get(nil, "nda_v1")
-      assert ContractTypes.display_name(spec) == spec.name_en
-    end
-
-    test "accepts a string key and returns the localized name" do
+      # :ko locale → name_ko (struct + string-key form).
       Gettext.put_locale(ContractWeb.Gettext, "ko")
-      {:ok, spec} = ContractTypes.get(nil, "franchise_v1")
-      assert ContractTypes.display_name("franchise_v1") == spec.name_ko
-    end
-
-    test "string-key form falls back to the key itself when unknown" do
-      Gettext.put_locale(ContractWeb.Gettext, "ko")
+      assert nda.name_ko != nil and nda.name_ko != ""
+      assert ContractTypes.display_name(nda) == nda.name_ko
+      assert ContractTypes.display_name("franchise_v1") == franchise.name_ko
+      # Unknown string keys round-trip the key itself.
       assert ContractTypes.display_name("nonexistent_v999") == "nonexistent_v999"
-    end
 
-    test "falls back to name_en when name_ko is empty in :ko locale" do
-      spec = %TypeSpec{
+      # :en locale → name_en.
+      Gettext.put_locale(ContractWeb.Gettext, "en")
+      assert ContractTypes.display_name(nda) == nda.name_en
+
+      # Fallback when the localized name is empty.
+      empty_ko = %TypeSpec{
         key: "x",
         family: :nda,
         name_en: "Fallback EN",
@@ -223,28 +183,9 @@ defmodule Contract.ContractTypesTest do
       }
 
       Gettext.put_locale(ContractWeb.Gettext, "ko")
-      assert ContractTypes.display_name(spec) == "Fallback EN"
-    end
+      assert ContractTypes.display_name(empty_ko) == "Fallback EN"
 
-    # SPEC.md §18: documents can be created untyped (type_key: nil) and
-    # only get a key once the user (Cmd+K) or the agent fills one in
-    # via `Action(:set_contract_type)`. The UI must still parse at a
-    # glance, so `display_name/1` of nil returns a locale-aware
-    # placeholder — "유형 미지정" in :ko, "Untyped" in :en.
-    test "display_name(nil) returns 유형 미지정 under :ko locale" do
-      Gettext.put_locale(ContractWeb.Gettext, "ko")
-      assert ContractTypes.display_name(nil) == "유형 미지정"
-    end
-
-    test "display_name(nil) returns Untyped under :en locale" do
-      Gettext.put_locale(ContractWeb.Gettext, "en")
-      assert ContractTypes.display_name(nil) == "Untyped"
-    end
-
-    test "falls back to name_ko when name_en is empty in :en locale" do
-      # Defensive — `name_en` is @enforce_keys so this is a synthetic
-      # struct, but the helper should still survive an empty string.
-      spec = %TypeSpec{
+      empty_en = %TypeSpec{
         key: "x",
         family: :nda,
         name_en: "",
@@ -254,12 +195,26 @@ defmodule Contract.ContractTypesTest do
       }
 
       Gettext.put_locale(ContractWeb.Gettext, "en")
-      assert ContractTypes.display_name(spec) == "한글 폴백"
+      assert ContractTypes.display_name(empty_en) == "한글 폴백"
+    end
+
+    # SPEC.md §18: documents can be created untyped (type_key: nil) and
+    # only get a key once the user (Cmd+K) or the agent fills one in
+    # via `Action(:set_contract_type)`. The UI must still parse at a
+    # glance, so `display_name/1` of nil returns a locale-aware
+    # placeholder — "유형 미지정" in :ko, "Untyped" in :en.
+    test "display_name(nil) returns locale-aware untyped placeholder" do
+      Gettext.put_locale(ContractWeb.Gettext, "ko")
+      assert ContractTypes.display_name(nil) == "유형 미지정"
+
+      Gettext.put_locale(ContractWeb.Gettext, "en")
+      assert ContractTypes.display_name(nil) == "Untyped"
     end
   end
 
   describe "TypeSpec.from_toml/2" do
-    test "raises on missing required field" do
+    test "raises on missing fields and unknown values, stringifies numeric version" do
+      # Missing required field.
       assert_raise ArgumentError, ~r/missing required field "key"/, fn ->
         TypeSpec.from_toml(%{
           "family" => "nda",
@@ -268,76 +223,44 @@ defmodule Contract.ContractTypesTest do
           "source" => "custom"
         })
       end
-    end
 
-    test "raises on unknown family" do
-      data = %{
+      base = fn -> %{
         "key" => "x",
-        "family" => "lawful_evil",
         "name_en" => "X",
-        "version" => "1",
-        "source" => "custom"
-      }
+        "version" => "1"
+      } end
 
       assert_raise ArgumentError, ~r/unknown family/, fn ->
-        TypeSpec.from_toml(data)
+        TypeSpec.from_toml(Map.merge(base.(), %{"family" => "lawful_evil", "source" => "custom"}))
       end
-    end
-
-    test "raises on unknown source" do
-      data = %{
-        "key" => "x",
-        "family" => "nda",
-        "name_en" => "X",
-        "version" => "1",
-        "source" => "moonbase"
-      }
 
       assert_raise ArgumentError, ~r/unknown source/, fn ->
-        TypeSpec.from_toml(data)
+        TypeSpec.from_toml(Map.merge(base.(), %{"family" => "nda", "source" => "moonbase"}))
       end
-    end
-
-    test "raises on unknown field kind" do
-      data = %{
-        "key" => "x",
-        "family" => "nda",
-        "name_en" => "X",
-        "version" => "1",
-        "source" => "custom",
-        "recommended_fields" => [
-          %{"id" => "f", "label_en" => "F", "kind" => "blob"}
-        ]
-      }
 
       assert_raise ArgumentError, ~r/unknown field kind/, fn ->
-        TypeSpec.from_toml(data)
+        TypeSpec.from_toml(
+          Map.merge(base.(), %{
+            "family" => "nda",
+            "source" => "custom",
+            "recommended_fields" => [%{"id" => "f", "label_en" => "F", "kind" => "blob"}]
+          })
+        )
       end
-    end
 
-    test "accepts numeric version and stringifies it" do
-      data = %{
-        "key" => "x",
-        "family" => "nda",
-        "name_en" => "X",
-        "version" => 1.0,
-        "source" => "custom"
-      }
-
-      assert %TypeSpec{version: "1.0"} = TypeSpec.from_toml(data)
-    end
-
-    test "defaults recommended_fields and compatible_with to []" do
-      data = %{
-        "key" => "x",
-        "family" => "nda",
-        "name_en" => "X",
-        "version" => "1",
-        "source" => "custom"
-      }
-
-      assert %TypeSpec{recommended_fields: [], compatible_with: []} =
-               TypeSpec.from_toml(data)
+      # Numeric version stringifies + recommended_fields/compatible_with default [].
+      assert %TypeSpec{
+               version: "1.0",
+               recommended_fields: [],
+               compatible_with: []
+             } =
+               TypeSpec.from_toml(%{
+                 "key" => "x",
+                 "family" => "nda",
+                 "name_en" => "X",
+                 "version" => 1.0,
+                 "source" => "custom"
+               })
     end
   end
 end

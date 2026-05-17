@@ -86,42 +86,26 @@ defmodule Contract.IO.UpstageTest do
   end
 
   describe "normalize_elements/1" do
-    test "maps paragraph category to :paragraph kind" do
-      elements = [%{"id" => 0, "category" => "paragraph", "content" => %{"text" => "hi"}}]
-      [node] = Upstage.normalize_elements(elements)
-      assert node["kind"] == :paragraph
-      assert node["content"]["text"] == "hi"
-      assert node["id"] == "node:0"
-    end
+    test "maps every Upstage category onto the right node kind (with paragraph fallback)" do
+      cases =
+        [{"paragraph", :paragraph}, {"list", :list}, {"list_item", :list_item},
+         {"table", :table}, {"figure", :figure}, {"obscure-thing", :paragraph}] ++
+          for(level <- 1..6, do: {"heading#{level}", :heading})
 
-    test "maps heading1 through heading6 to :heading" do
-      for level <- 1..6 do
-        elements = [
-          %{"id" => level, "category" => "heading#{level}", "content" => %{"text" => "x"}}
-        ]
-
-        [node] = Upstage.normalize_elements(elements)
-        assert node["kind"] == :heading
-      end
-    end
-
-    test "maps list/list_item/table/figure categories" do
-      for {cat, kind} <- [
-            {"list", :list},
-            {"list_item", :list_item},
-            {"table", :table},
-            {"figure", :figure}
-          ] do
-        elements = [%{"id" => 1, "category" => cat, "content" => %{"text" => "x"}}]
+      for {cat, kind} <- cases do
+        elements = [%{"id" => 0, "category" => cat, "content" => %{"text" => "x"}}]
         [node] = Upstage.normalize_elements(elements)
         assert node["kind"] == kind, "expected #{cat} -> #{kind}, got #{inspect(node["kind"])}"
       end
-    end
 
-    test "falls back to :paragraph for unknown categories" do
-      elements = [%{"id" => 9, "category" => "obscure-thing", "content" => %{"text" => "x"}}]
-      [node] = Upstage.normalize_elements(elements)
-      assert node["kind"] == :paragraph
+      # Stable id derivation + content passthrough.
+      [single] =
+        Upstage.normalize_elements([
+          %{"id" => 0, "category" => "paragraph", "content" => %{"text" => "hi"}}
+        ])
+
+      assert single["id"] == "node:0"
+      assert single["content"]["text"] == "hi"
     end
 
     test "preserves page + coordinates + original category in attrs" do
@@ -285,20 +269,15 @@ defmodule Contract.IO.UpstageTest do
       assert w3 > w1
     end
 
-    test "tables without bbox info still produce a valid node (no column_widths key)" do
-      elements = [%{"id" => 2, "category" => "table", "content" => %{"text" => "x"}}]
-      [node] = Upstage.normalize_elements(elements)
-      assert node["kind"] == :table
-      refute Map.has_key?(node["attrs"], "column_widths")
-    end
+    test "no column_widths key on tables without bbox info / non-table elements" do
+      no_bbox_table = [%{"id" => 2, "category" => "table", "content" => %{"text" => "x"}}]
+      [t] = Upstage.normalize_elements(no_bbox_table)
+      assert t["kind"] == :table
+      refute Map.has_key?(t["attrs"], "column_widths")
 
-    test "non-table elements never gain a column_widths attr" do
-      elements = [
-        %{"id" => 3, "category" => "paragraph", "content" => %{"text" => "ok"}}
-      ]
-
-      [node] = Upstage.normalize_elements(elements)
-      refute Map.has_key?(node["attrs"], "column_widths")
+      paragraph = [%{"id" => 3, "category" => "paragraph", "content" => %{"text" => "ok"}}]
+      [p] = Upstage.normalize_elements(paragraph)
+      refute Map.has_key?(p["attrs"], "column_widths")
     end
   end
 
