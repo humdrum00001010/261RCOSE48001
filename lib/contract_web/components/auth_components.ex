@@ -39,7 +39,7 @@ defmodule ContractWeb.AuthComponents do
         <div class="space-y-2">
           <Brand.wordmark size="lg" />
           <p class="text-xs text-base-content/50 tracking-wide uppercase">
-            {dgettext("auth", "Legal-document studio for Korean lawyers")}
+            {dgettext("auth", "Contract studio for small-business operators")}
           </p>
         </div>
 

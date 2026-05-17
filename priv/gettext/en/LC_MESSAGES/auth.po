@@ -31,11 +31,6 @@ msgstr ""
 msgid "Bilingual workspace, English-first."
 msgstr ""
 
-#: lib/contract_web/live/user_live/registration.ex:14
-#, elixir-autogen, elixir-format
-msgid "Closed beta for Korean lawyers."
-msgstr ""
-
 #: lib/contract_web/live/user_live/confirmation.ex:57
 #, elixir-autogen, elixir-format
 msgid "Confirm and log in only this time"
@@ -96,11 +91,6 @@ msgstr ""
 #: lib/contract_web/live/user_live/confirmation.ex:86
 #, elixir-autogen, elixir-format
 msgid "Keep me logged in on this device"
-msgstr ""
-
-#: lib/contract_web/components/auth_components.ex:42
-#, elixir-autogen, elixir-format
-msgid "Legal-document studio for Korean lawyers"
 msgstr ""
 
 #: lib/contract_web/live/user_live/login.ex:63
@@ -185,11 +175,6 @@ msgstr ""
 #: lib/contract_web/live/user_live/registration.ex:41
 #, elixir-autogen, elixir-format
 msgid "Register for an account"
-msgstr ""
-
-#: lib/contract_web/live/user_live/registration.ex:17
-#, elixir-autogen, elixir-format
-msgid "Registration is by invitation. We're working closely with a small group of solo lawyers and in-house counsel to shape the agent's questions, the type system, and the citation tooling."
 msgstr ""
 
 #: lib/contract_web/live/user_live/login.ex:54
@@ -280,4 +265,19 @@ msgstr ""
 #: lib/contract_web/live/user_live/login.ex:16
 #, elixir-autogen, elixir-format, fuzzy
 msgid "Pick up where you left off. The agent's pending questions, your workspace timeline, and every uncommitted edit are right where you parked them."
+msgstr ""
+
+#: lib/contract_web/live/user_live/registration.ex:14
+#, elixir-autogen, elixir-format
+msgid "Closed beta."
+msgstr ""
+
+#: lib/contract_web/components/auth_components.ex:42
+#, elixir-autogen, elixir-format
+msgid "Contract studio for small-business operators"
+msgstr ""
+
+#: lib/contract_web/live/user_live/registration.ex:17
+#, elixir-autogen, elixir-format, fuzzy
+msgid "Registration is by invitation. We're working closely with a small group of operating teams to shape the agent's questions, the type system, and the citation tooling."
 msgstr ""

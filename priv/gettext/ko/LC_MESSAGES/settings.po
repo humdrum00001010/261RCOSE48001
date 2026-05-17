@@ -19,13 +19,14 @@ msgid "A link to confirm your email change has been sent to the new address."
 msgstr "이메일 변경 확인 링크를 새 주소로 발송했습니다."
 
 #: lib/contract_web/live/user_live/api_tokens.ex:46
-#: lib/contract_web/live/user_live/api_tokens.ex:98
+#: lib/contract_web/live/user_live/api_tokens.ex:97
 #: lib/contract_web/live/user_live/settings_hub.ex:66
 #: lib/contract_web/live/user_live/settings_hub.ex:145
 #, elixir-autogen, elixir-format
 msgid "API tokens"
 msgstr "API 토큰"
 
+#: lib/contract_web/live/user_live/api_tokens.ex:208
 #: lib/contract_web/live/user_live/settings.ex:14
 #: lib/contract_web/live/user_live/settings_hub.ex:60
 #: lib/contract_web/live/user_live/settings_hub.ex:139
@@ -39,7 +40,7 @@ msgstr "계정"
 msgid "Appearance"
 msgstr "테마"
 
-#: lib/contract_web/live/user_live/api_tokens.ex:229
+#: lib/contract_web/live/user_live/api_tokens.ex:224
 #, elixir-autogen, elixir-format
 msgid "Cancel"
 msgstr "취소"
@@ -54,12 +55,12 @@ msgstr "이메일 변경"
 msgid "Changing..."
 msgstr "변경 중..."
 
-#: lib/contract_web/live/user_live/api_tokens.ex:183
+#: lib/contract_web/live/user_live/api_tokens.ex:185
 #, elixir-autogen, elixir-format
 msgid "Close"
 msgstr "닫기"
 
-#: lib/contract_web/live/user_live/api_tokens.ex:241
+#: lib/contract_web/live/user_live/api_tokens.ex:236
 #, elixir-autogen, elixir-format
 msgid "Close modal"
 msgstr "모달 닫기"
@@ -99,32 +100,32 @@ msgstr "이메일이 변경되었습니다."
 msgid "Email support"
 msgstr "고객 지원 메일"
 
-#: lib/contract_web/live/user_live/api_tokens.ex:142
+#: lib/contract_web/live/user_live/api_tokens.ex:144
 #, elixir-autogen, elixir-format
 msgid "Expires %{at}"
 msgstr "만료 %{at}"
 
-#: lib/contract_web/live/user_live/api_tokens.ex:232
+#: lib/contract_web/live/user_live/api_tokens.ex:227
 #, elixir-autogen, elixir-format
 msgid "Generate"
 msgstr "발급"
 
-#: lib/contract_web/live/user_live/api_tokens.ex:170
+#: lib/contract_web/live/user_live/api_tokens.ex:172
 #, elixir-autogen, elixir-format
 msgid "Generate API token"
 msgstr "API 토큰 발급"
 
-#: lib/contract_web/live/user_live/api_tokens.ex:116
+#: lib/contract_web/live/user_live/api_tokens.ex:115
 #, elixir-autogen, elixir-format
 msgid "Generate a token to authenticate MCP requests from external clients."
 msgstr "외부 클라이언트의 MCP 요청을 인증하려면 토큰을 발급하세요."
 
-#: lib/contract_web/live/user_live/api_tokens.ex:127
+#: lib/contract_web/live/user_live/api_tokens.ex:126
 #, elixir-autogen, elixir-format
 msgid "Generate token"
 msgstr "토큰 발급"
 
-#: lib/contract_web/live/user_live/api_tokens.ex:77
+#: lib/contract_web/live/user_live/api_tokens.ex:76
 #, elixir-autogen, elixir-format
 msgid "Generated: <hidden> — persistence ships in a later wave."
 msgstr "발급 완료: <비공개> — 저장 기능은 추후 웨이브에서 제공됩니다."
@@ -149,7 +150,7 @@ msgstr "도움이 필요하신가요?"
 msgid "New password"
 msgstr "새 비밀번호"
 
-#: lib/contract_web/live/user_live/api_tokens.ex:114
+#: lib/contract_web/live/user_live/api_tokens.ex:113
 #, elixir-autogen, elixir-format
 msgid "No API tokens yet"
 msgstr "아직 발급된 토큰이 없습니다"
@@ -174,17 +175,17 @@ msgstr "비밀번호"
 msgid "Pick a category on the left, or jump in below."
 msgstr "왼쪽에서 카테고리를 선택하거나, 아래에서 바로 시작하세요."
 
-#: lib/contract_web/live/user_live/api_tokens.ex:200
+#: lib/contract_web/live/user_live/api_tokens.ex:202
 #, elixir-autogen, elixir-format
 msgid "Purpose"
 msgstr "용도"
 
-#: lib/contract_web/live/user_live/api_tokens.ex:151
+#: lib/contract_web/live/user_live/api_tokens.ex:153
 #, elixir-autogen, elixir-format
 msgid "Revoke"
 msgstr "폐기"
 
-#: lib/contract_web/live/user_live/api_tokens.ex:101
+#: lib/contract_web/live/user_live/api_tokens.ex:100
 #, elixir-autogen, elixir-format
 msgid "Route-ref tokens grant access to Contract Studio's MCP endpoint. Tokens are signed; revoke any time by deleting."
 msgstr "Route-ref 토큰은 Contract Studio의 MCP 엔드포인트 접근 권한을 부여합니다. 토큰은 서명되어 있으며, 언제든 삭제하여 폐기할 수 있습니다."
@@ -199,7 +200,7 @@ msgstr "비밀번호 저장"
 msgid "Saving..."
 msgstr "저장 중..."
 
-#: lib/contract_web/live/user_live/api_tokens.ex:173
+#: lib/contract_web/live/user_live/api_tokens.ex:175
 #, elixir-autogen, elixir-format
 msgid "Scoped MCP route-ref. Stored signed; copy the token once after creation."
 msgstr "범위가 지정된 MCP route-ref. 서명되어 저장되며, 발급 직후 한 번만 복사할 수 있습니다."
@@ -217,7 +218,7 @@ msgstr "설정"
 msgid "Settings navigation"
 msgstr "설정 메뉴"
 
-#: lib/contract_web/live/user_live/api_tokens.ex:95
+#: lib/contract_web/live/user_live/api_tokens.ex:94
 #, elixir-autogen, elixir-format
 msgid "Settings · API tokens"
 msgstr "설정 · API 토큰"
@@ -233,22 +234,22 @@ msgstr "로그인 계정"
 msgid "Soon"
 msgstr "준비 중"
 
-#: lib/contract_web/live/user_live/api_tokens.ex:220
+#: lib/contract_web/live/user_live/api_tokens.ex:215
 #, elixir-autogen, elixir-format
 msgid "TTL (hours)"
 msgstr "유효 기간 (시간)"
 
 #: lib/contract_web/live/user_live/settings_hub.ex:84
 #, elixir-autogen, elixir-format
-msgid "Team-scoped defaults. Coming soon."
-msgstr "팀 단위 기본값. 준비 중입니다."
+msgid "Document defaults. Coming soon."
+msgstr ""
 
 #: lib/contract_web/live/user_live/settings_hub.ex:79
 #, elixir-autogen, elixir-format
 msgid "Theme & density. Coming soon."
 msgstr "테마와 밀도. 준비 중입니다."
 
-#: lib/contract_web/live/user_live/api_tokens.ex:84
+#: lib/contract_web/live/user_live/api_tokens.ex:83
 #, elixir-autogen, elixir-format
 msgid "Token revoked."
 msgstr "토큰이 폐기되었습니다."
@@ -258,7 +259,6 @@ msgstr "토큰이 폐기되었습니다."
 msgid "Used for login, magic links, and audit-log attribution."
 msgstr "로그인, 매직 링크, 감사 로그 식별에 사용됩니다."
 
-#: lib/contract_web/live/user_live/api_tokens.ex:209
 #: lib/contract_web/live/user_live/settings_hub.ex:83
 #: lib/contract_web/live/user_live/settings_hub.ex:161
 #, elixir-autogen, elixir-format
@@ -270,12 +270,12 @@ msgstr "문서"
 msgid "Your account"
 msgstr "내 계정"
 
-#: lib/contract_web/live/user_live/api_tokens.ex:243
+#: lib/contract_web/live/user_live/api_tokens.ex:238
 #, elixir-autogen, elixir-format
 msgid "close"
 msgstr "닫기"
 
-#: lib/contract_web/live/user_live/api_tokens.ex:201
+#: lib/contract_web/live/user_live/api_tokens.ex:203
 #, elixir-autogen, elixir-format
 msgid "e.g. mcp-cli, slack-bridge"
 msgstr "예: mcp-cli, slack-bridge"
@@ -286,11 +286,6 @@ msgstr "예: mcp-cli, slack-bridge"
 #, elixir-autogen, elixir-format
 msgid "Integrations"
 msgstr ""
-
-#: lib/contract_web/live/user_live/api_tokens.ex:211
-#, elixir-autogen, elixir-format
-msgid "No workspaces yet — token will be account-scoped"
-msgstr "아직 워크스페이스가 없습니다 — 토큰은 계정 단위로 발급됩니다"
 
 #: lib/contract_web/live/user_live/integrations.ex:56
 #, elixir-autogen, elixir-format, fuzzy
@@ -350,4 +345,9 @@ msgstr ""
 #: lib/contract_web/live/user_live/integrations.ex:96
 #, elixir-autogen, elixir-format
 msgid "팀"
+msgstr ""
+
+#: lib/contract_web/live/user_live/api_tokens.ex:206
+#, elixir-autogen, elixir-format
+msgid "Scope"
 msgstr ""

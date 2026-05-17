@@ -11,12 +11,12 @@ defmodule ContractWeb.UserLive.Registration do
       <.auth_split>
         <:aside>
           <h2 class="text-2xl font-semibold tracking-tight leading-snug">
-            {dgettext("auth", "Closed beta for Korean lawyers.")}
+            {dgettext("auth", "Closed beta.")}
           </h2>
           <p class="text-base-content/70 mt-3 leading-relaxed">
             {dgettext(
               "auth",
-              "Registration is by invitation. We're working closely with a small group of solo lawyers and in-house counsel to shape the agent's questions, the type system, and the citation tooling."
+              "Registration is by invitation. We're working closely with a small group of operating teams to shape the agent's questions, the type system, and the citation tooling."
             )}
           </p>
           <ul class="text-sm text-base-content/60 space-y-2 mt-6">

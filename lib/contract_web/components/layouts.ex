@@ -299,7 +299,7 @@ defmodule ContractWeb.Layouts do
           <p class="text-base-content/60 leading-relaxed">
             {dgettext(
               "layouts",
-              "A legal-document studio for Korean lawyers. Built to be precise, auditable, and quiet."
+              "A contract studio for small-business operators. Built to be precise, auditable, and quiet."
             )}
           </p>
         </div>

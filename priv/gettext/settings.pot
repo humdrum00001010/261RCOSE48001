@@ -17,13 +17,14 @@ msgid "A link to confirm your email change has been sent to the new address."
 msgstr ""
 
 #: lib/contract_web/live/user_live/api_tokens.ex:46
-#: lib/contract_web/live/user_live/api_tokens.ex:98
+#: lib/contract_web/live/user_live/api_tokens.ex:97
 #: lib/contract_web/live/user_live/settings_hub.ex:66
 #: lib/contract_web/live/user_live/settings_hub.ex:145
 #, elixir-autogen, elixir-format
 msgid "API tokens"
 msgstr ""
 
+#: lib/contract_web/live/user_live/api_tokens.ex:208
 #: lib/contract_web/live/user_live/settings.ex:14
 #: lib/contract_web/live/user_live/settings_hub.ex:60
 #: lib/contract_web/live/user_live/settings_hub.ex:139
@@ -37,7 +38,7 @@ msgstr ""
 msgid "Appearance"
 msgstr ""
 
-#: lib/contract_web/live/user_live/api_tokens.ex:229
+#: lib/contract_web/live/user_live/api_tokens.ex:224
 #, elixir-autogen, elixir-format
 msgid "Cancel"
 msgstr ""
@@ -52,12 +53,12 @@ msgstr ""
 msgid "Changing..."
 msgstr ""
 
-#: lib/contract_web/live/user_live/api_tokens.ex:183
+#: lib/contract_web/live/user_live/api_tokens.ex:185
 #, elixir-autogen, elixir-format
 msgid "Close"
 msgstr ""
 
-#: lib/contract_web/live/user_live/api_tokens.ex:241
+#: lib/contract_web/live/user_live/api_tokens.ex:236
 #, elixir-autogen, elixir-format
 msgid "Close modal"
 msgstr ""
@@ -97,32 +98,32 @@ msgstr ""
 msgid "Email support"
 msgstr ""
 
-#: lib/contract_web/live/user_live/api_tokens.ex:142
+#: lib/contract_web/live/user_live/api_tokens.ex:144
 #, elixir-autogen, elixir-format
 msgid "Expires %{at}"
 msgstr ""
 
-#: lib/contract_web/live/user_live/api_tokens.ex:232
+#: lib/contract_web/live/user_live/api_tokens.ex:227
 #, elixir-autogen, elixir-format
 msgid "Generate"
 msgstr ""
 
-#: lib/contract_web/live/user_live/api_tokens.ex:170
+#: lib/contract_web/live/user_live/api_tokens.ex:172
 #, elixir-autogen, elixir-format
 msgid "Generate API token"
 msgstr ""
 
-#: lib/contract_web/live/user_live/api_tokens.ex:116
+#: lib/contract_web/live/user_live/api_tokens.ex:115
 #, elixir-autogen, elixir-format
 msgid "Generate a token to authenticate MCP requests from external clients."
 msgstr ""
 
-#: lib/contract_web/live/user_live/api_tokens.ex:127
+#: lib/contract_web/live/user_live/api_tokens.ex:126
 #, elixir-autogen, elixir-format
 msgid "Generate token"
 msgstr ""
 
-#: lib/contract_web/live/user_live/api_tokens.ex:77
+#: lib/contract_web/live/user_live/api_tokens.ex:76
 #, elixir-autogen, elixir-format
 msgid "Generated: <hidden> — persistence ships in a later wave."
 msgstr ""
@@ -147,7 +148,7 @@ msgstr ""
 msgid "New password"
 msgstr ""
 
-#: lib/contract_web/live/user_live/api_tokens.ex:114
+#: lib/contract_web/live/user_live/api_tokens.ex:113
 #, elixir-autogen, elixir-format
 msgid "No API tokens yet"
 msgstr ""
@@ -172,17 +173,17 @@ msgstr ""
 msgid "Pick a category on the left, or jump in below."
 msgstr ""
 
-#: lib/contract_web/live/user_live/api_tokens.ex:200
+#: lib/contract_web/live/user_live/api_tokens.ex:202
 #, elixir-autogen, elixir-format
 msgid "Purpose"
 msgstr ""
 
-#: lib/contract_web/live/user_live/api_tokens.ex:151
+#: lib/contract_web/live/user_live/api_tokens.ex:153
 #, elixir-autogen, elixir-format
 msgid "Revoke"
 msgstr ""
 
-#: lib/contract_web/live/user_live/api_tokens.ex:101
+#: lib/contract_web/live/user_live/api_tokens.ex:100
 #, elixir-autogen, elixir-format
 msgid "Route-ref tokens grant access to Contract Studio's MCP endpoint. Tokens are signed; revoke any time by deleting."
 msgstr ""
@@ -197,7 +198,7 @@ msgstr ""
 msgid "Saving..."
 msgstr ""
 
-#: lib/contract_web/live/user_live/api_tokens.ex:173
+#: lib/contract_web/live/user_live/api_tokens.ex:175
 #, elixir-autogen, elixir-format
 msgid "Scoped MCP route-ref. Stored signed; copy the token once after creation."
 msgstr ""
@@ -215,7 +216,7 @@ msgstr ""
 msgid "Settings navigation"
 msgstr ""
 
-#: lib/contract_web/live/user_live/api_tokens.ex:95
+#: lib/contract_web/live/user_live/api_tokens.ex:94
 #, elixir-autogen, elixir-format
 msgid "Settings · API tokens"
 msgstr ""
@@ -231,7 +232,7 @@ msgstr ""
 msgid "Soon"
 msgstr ""
 
-#: lib/contract_web/live/user_live/api_tokens.ex:220
+#: lib/contract_web/live/user_live/api_tokens.ex:215
 #, elixir-autogen, elixir-format
 msgid "TTL (hours)"
 msgstr ""
@@ -246,7 +247,7 @@ msgstr ""
 msgid "Theme & density. Coming soon."
 msgstr ""
 
-#: lib/contract_web/live/user_live/api_tokens.ex:84
+#: lib/contract_web/live/user_live/api_tokens.ex:83
 #, elixir-autogen, elixir-format
 msgid "Token revoked."
 msgstr ""
@@ -256,7 +257,6 @@ msgstr ""
 msgid "Used for login, magic links, and audit-log attribution."
 msgstr ""
 
-#: lib/contract_web/live/user_live/api_tokens.ex:209
 #: lib/contract_web/live/user_live/settings_hub.ex:83
 #: lib/contract_web/live/user_live/settings_hub.ex:161
 #, elixir-autogen, elixir-format
@@ -268,12 +268,12 @@ msgstr ""
 msgid "Your account"
 msgstr ""
 
-#: lib/contract_web/live/user_live/api_tokens.ex:243
+#: lib/contract_web/live/user_live/api_tokens.ex:238
 #, elixir-autogen, elixir-format
 msgid "close"
 msgstr ""
 
-#: lib/contract_web/live/user_live/api_tokens.ex:201
+#: lib/contract_web/live/user_live/api_tokens.ex:203
 #, elixir-autogen, elixir-format
 msgid "e.g. mcp-cli, slack-bridge"
 msgstr ""
@@ -283,11 +283,6 @@ msgstr ""
 #: lib/contract_web/live/user_live/settings_hub.ex:151
 #, elixir-autogen, elixir-format
 msgid "Integrations"
-msgstr ""
-
-#: lib/contract_web/live/user_live/api_tokens.ex:211
-#, elixir-autogen, elixir-format
-msgid "No workspaces yet — token will be account-scoped"
 msgstr ""
 
 #: lib/contract_web/live/user_live/integrations.ex:56
@@ -348,4 +343,9 @@ msgstr ""
 #: lib/contract_web/live/user_live/integrations.ex:96
 #, elixir-autogen, elixir-format
 msgid "팀"
+msgstr ""
+
+#: lib/contract_web/live/user_live/api_tokens.ex:206
+#, elixir-autogen, elixir-format
+msgid "Scope"
 msgstr ""
