@@ -161,4 +161,540 @@
 /* Make LiveView wrapper divs transparent for layout */
 [data-phx-session], [data-phx-teleported-src] { display: contents }
 
+/* ---------------------------------------------------------------------------
+   Dashboard v31 — DESIGN.md §4
+   Google-Docs-style document library. Document grid only — no metric cards,
+   no activity feed, no sidebar. Upload is a popover anchored under the
+   secondary action button, never a modal.
+   --------------------------------------------------------------------------- */
+
+.dashboard-v31 {
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+  color: var(--cs-ink);
+}
+
+.dashboard-v31__top {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+@media (min-width: 768px) {
+  .dashboard-v31__top {
+    flex-direction: row;
+    align-items: flex-end;
+    justify-content: space-between;
+  }
+}
+
+.dashboard-v31__title {
+  font-size: 28px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--cs-ink);
+  margin: 0;
+}
+
+.dashboard-v31__actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.dashboard-v31__btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 40px;
+  padding: 0 16px;
+  border-radius: var(--cs-radius-sm);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: background-color 80ms ease-out, border-color 80ms ease-out;
+}
+
+.dashboard-v31__btn--primary {
+  background: var(--cs-green);
+  color: #fff;
+}
+
+.dashboard-v31__btn--primary:hover {
+  background: var(--cs-green-2);
+}
+
+.dashboard-v31__btn--secondary {
+  background: var(--cs-surface);
+  color: var(--cs-ink);
+  border-color: var(--cs-line-strong);
+}
+
+.dashboard-v31__btn--secondary:hover {
+  background: var(--cs-surface-soft);
+}
+
+.dashboard-v31__caret {
+  font-size: 12px;
+  margin-left: 2px;
+  color: var(--cs-muted);
+}
+
+.dashboard-v31__upload-wrap {
+  position: relative;
+}
+
+.dashboard-v31__tabs {
+  display: flex;
+  gap: 24px;
+  border-bottom: 1px solid var(--cs-line);
+  padding: 0;
+}
+
+.dashboard-v31__tab {
+  position: relative;
+  padding: 8px 0;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--cs-muted);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+
+.dashboard-v31__tab--active {
+  color: var(--cs-ink);
+  font-weight: 600;
+}
+
+.dashboard-v31__tab--active::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 2px;
+  background: var(--cs-green);
+}
+
+.dashboard-v31__grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 24px;
+}
+
+@media (min-width: 640px) {
+  .dashboard-v31__grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 1024px) {
+  .dashboard-v31__grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+.dashboard-v31__empty {
+  border: 1px dashed var(--cs-line-strong);
+  border-radius: var(--cs-radius-md);
+  padding: 56px 24px;
+  text-align: center;
+  color: var(--cs-muted);
+  font-size: 14px;
+  background: var(--cs-surface);
+}
+
+/* Document card -------------------------------------------------------- */
+
+.document-card-v31 {
+  border: 1px solid var(--cs-line);
+  background: var(--cs-surface);
+  border-radius: var(--cs-radius-md);
+  overflow: hidden;
+  transition: box-shadow 100ms ease-out, border-color 100ms ease-out;
+}
+
+.document-card-v31:hover {
+  border-color: var(--cs-line-strong);
+  box-shadow: var(--cs-shadow-card);
+}
+
+.document-card-v31__link {
+  display: block;
+  color: inherit;
+  text-decoration: none;
+}
+
+.document-card-v31__preview {
+  position: relative;
+  aspect-ratio: 3 / 2;
+  background: var(--cs-surface-soft);
+  border-bottom: 1px solid var(--cs-line);
+}
+
+.document-card-v31__menu {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  background: transparent;
+  color: var(--cs-muted);
+  font-size: 18px;
+  cursor: pointer;
+  border-radius: var(--cs-radius-sm);
+}
+
+.document-card-v31__menu:hover {
+  background: rgba(17, 24, 39, 0.06);
+  color: var(--cs-ink);
+}
+
+.document-card-v31__body {
+  padding: 14px 16px 16px;
+}
+
+.document-card-v31__title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--cs-ink);
+  margin: 0 0 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.document-card-v31__status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--cs-muted);
+  margin: 0 0 4px;
+}
+
+.document-card-v31__date {
+  font-size: 12px;
+  color: var(--cs-muted);
+  margin: 0;
+}
+
+/* Status dots --------------------------------------------------------- */
+
+.status-dot-v31 {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--cs-muted);
+  flex-shrink: 0;
+}
+
+.status-dot-v31--draft { background: var(--cs-muted); }
+.status-dot-v31--importing { background: var(--cs-blue); }
+.status-dot-v31--editing { background: var(--cs-green-2); }
+.status-dot-v31--reviewing { background: var(--cs-amber); }
+.status-dot-v31--export_ready { background: var(--cs-green); }
+.status-dot-v31--archived { background: var(--cs-line-strong); }
+
+/* Upload popover ------------------------------------------------------- */
+
+.upload-menu-v31 {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  width: 380px;
+  background: var(--cs-surface);
+  border: 1px solid var(--cs-line);
+  border-radius: var(--cs-radius-md);
+  box-shadow: var(--cs-shadow-popover);
+  z-index: 30;
+}
+
+.upload-menu-v31::before {
+  content: "";
+  position: absolute;
+  top: -7px;
+  right: 90px;
+  width: 12px;
+  height: 12px;
+  background: var(--cs-surface);
+  border-top: 1px solid var(--cs-line);
+  border-left: 1px solid var(--cs-line);
+  transform: rotate(45deg);
+}
+
+.upload-menu-v31__header {
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--cs-line);
+  font-size: 13px;
+  color: var(--cs-ink);
+}
+
+.upload-menu-v31__body {
+  padding: 16px;
+}
+
+.upload-menu-v31__lead {
+  font-size: 14px;
+  color: var(--cs-ink);
+  margin: 0 0 10px;
+}
+
+.upload-menu-v31__caption {
+  font-size: 12px;
+  color: var(--cs-muted);
+  margin: 0 0 14px;
+}
+
+.upload-menu-v31__form {
+  margin: 0;
+}
+
+.upload-menu-v31__dropzone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 22px 12px;
+  border: 1px dashed var(--cs-line-strong);
+  border-radius: var(--cs-radius-sm);
+  background: var(--cs-surface-soft);
+  cursor: pointer;
+  text-align: center;
+}
+
+.upload-menu-v31__dropzone:hover {
+  border-color: var(--cs-green-2);
+}
+
+.upload-menu-v31__dropzone-text {
+  font-size: 13px;
+  color: var(--cs-ink);
+}
+
+.upload-menu-v31__dropzone-hint {
+  font-size: 11px;
+  color: var(--cs-muted);
+}
+
+.upload-menu-v31__entries {
+  list-style: none;
+  padding: 0;
+  margin: 12px 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.upload-menu-v31__entry {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--cs-ink);
+}
+
+.upload-menu-v31__entry-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.upload-menu-v31__entry-progress {
+  color: var(--cs-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.upload-menu-v31__entry-cancel {
+  border: 0;
+  background: transparent;
+  color: var(--cs-muted);
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ----------------------------------------------------------------------
+   Landing v31 — DESIGN.md §3.
+
+   Quiet legal-tool surface. Three-block right column + restrained
+   typography on left. All colors/radii pull from the --cs-* tokens in
+   tokens.css. No shadow-xl, no rounded-2xl, no playful motion. Hero
+   and right system stack split at lg:; on mobile the blocks stack
+   below the copy.
+   ---------------------------------------------------------------------- */
+.landing-v31 {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 64px 24px 96px;
+  color: var(--cs-ink);
+}
+
+.landing-v31__hero {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 48px;
+  align-items: start;
+}
+
+@media (min-width: 1024px) {
+  .landing-v31__hero {
+    grid-template-columns: minmax(0, 7fr) minmax(0, 6fr);
+    gap: 80px;
+  }
+}
+
+.landing-v31__eyebrow {
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--cs-muted);
+  margin: 0 0 24px;
+}
+
+.landing-v31__headline {
+  font-family: var(--font-serif);
+  font-size: clamp(32px, 4.6vw, 48px);
+  font-weight: 500;
+  line-height: 1.18;
+  letter-spacing: -0.01em;
+  color: var(--cs-ink);
+  margin: 0 0 28px;
+  word-break: keep-all;
+}
+
+.landing-v31__lead {
+  font-size: 16px;
+  line-height: 1.7;
+  color: var(--cs-muted);
+  margin: 0 0 36px;
+  max-width: 36em;
+  word-break: keep-all;
+}
+
+.landing-v31__cta-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 24px;
+  margin: 0;
+}
+
+.landing-v31__cta-primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 44px;
+  padding: 0 22px;
+  border: 1px solid var(--cs-green);
+  background: var(--cs-green);
+  color: #ffffff;
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  border-radius: var(--cs-radius-sm);
+  text-decoration: none;
+  transition: background-color 120ms ease, border-color 120ms ease;
+}
+
+.landing-v31__cta-primary:hover,
+.landing-v31__cta-primary:focus {
+  background: var(--cs-green-2);
+  border-color: var(--cs-green-2);
+}
+
+.landing-v31__cta-secondary {
+  display: inline-flex;
+  align-items: center;
+  height: 44px;
+  font-size: 14px;
+  color: var(--cs-ink);
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+  transition: border-color 120ms ease;
+}
+
+.landing-v31__cta-secondary:hover,
+.landing-v31__cta-secondary:focus {
+  border-bottom-color: var(--cs-line-strong);
+}
+
+.landing-v31__system {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.landing-v31__block {
+  background: var(--cs-surface);
+  border: 1px solid var(--cs-line);
+  border-radius: var(--cs-radius-md);
+  padding: 24px 28px 26px;
+}
+
+.landing-v31__block-eyebrow {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.22em;
+  color: var(--cs-muted);
+  margin: 0 0 10px;
+}
+
+.landing-v31__block-title {
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--cs-ink);
+  margin: 0;
+  word-break: keep-all;
+}
+
+.landing-v31__block-rule {
+  border: 0;
+  border-top: 1px solid var(--cs-line);
+  margin: 16px 0;
+}
+
+.landing-v31__block-caption {
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--cs-muted);
+  margin: 0;
+  word-break: keep-all;
+}
+
+.landing-v31__footnote {
+  margin-top: 64px;
+  padding-top: 20px;
+  border-top: 1px solid var(--cs-line);
+  font-size: 12px;
+  color: var(--cs-muted);
+}
+
+.landing-v31__footnote p {
+  margin: 0;
+}
+
 /* This file is for your main application CSS */

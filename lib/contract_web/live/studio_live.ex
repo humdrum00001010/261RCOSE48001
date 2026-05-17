@@ -96,9 +96,10 @@ defmodule ContractWeb.StudioLive do
   def mount(params, _session, socket) do
     scope = socket.assigns.current_scope
 
-    case Studio.load(scope, params) do
+    case Studio.open(scope, params) do
       {:ok, {studio_state, projection}} ->
-        _ = Studio.subscribe(scope, studio_state)
+        _ = Studio.subscribe(scope, studio_state.selected_document_id)
+        _ = Studio.subscribe_agent(scope, studio_state.agent_run_id)
         _ = maybe_subscribe_test_operation_blocks(scope)
 
         # v0.5 W-CR: Context Reservoir is removed; keep the helper call so
@@ -555,7 +556,7 @@ defmodule ContractWeb.StudioLive do
   The ONE place that takes a typed Command and submits it through the
   product façade.
 
-    1. Calls `Studio.submit/3`.
+    1. Calls `Studio.command/2`.
     2. On success: re-assigns updated state, may flash an info toast.
     3. On `{:error, _}`: flashes the error string, leaves state untouched.
 
@@ -566,11 +567,11 @@ defmodule ContractWeb.StudioLive do
     scope = socket.assigns.current_scope
     state = socket.assigns.studio_state
 
-    case Studio.submit_result(scope, state, action) do
+    case Studio.command_result(scope, state, action) do
       {:ok, %Contract.Studio.State{} = new_state, result} ->
         # If a new agent run was registered, subscribe to its topic.
         if new_state.agent_run_id && new_state.agent_run_id != state.agent_run_id do
-          _ = Studio.subscribe(scope, new_state)
+          _ = Studio.subscribe_agent(scope, new_state.agent_run_id)
         end
 
         socket
@@ -1185,16 +1186,24 @@ defmodule ContractWeb.StudioLive do
 
   def handle_protocol_message({:session_recovered, document_id, revision}, socket)
       when is_binary(document_id) do
+    state = socket.assigns.studio_state
+    from_rev = state.last_seen_revision || 0
+
     socket =
       case Studio.sync(
              socket.assigns.current_scope,
-             socket.assigns.studio_state,
-             socket.assigns.studio_state.last_seen_revision || 0
+             state.selected_document_id,
+             from_rev
            ) do
-        {:ok, {new_state, _changes}} ->
+        {:ok, changes} ->
+          new_rev =
+            changes
+            |> Enum.map(& &1.result_revision)
+            |> Enum.max(fn -> from_rev end)
+
           assign(socket, :studio_state, %{
-            new_state
-            | last_seen_revision: revision || new_state.last_seen_revision
+            state
+            | last_seen_revision: revision || new_rev
           })
 
         {:error, _} ->

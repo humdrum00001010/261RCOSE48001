@@ -13,14 +13,9 @@ defmodule ContractWeb.DashboardLiveDocumentFirstTest do
   } do
     {:ok, lv, _html} = live(conn, ~p"/dashboard")
 
-    lv |> element("button", "New Document") |> render_click()
-
-    lv
-    |> form(~s(form[data-role="new-document-form"]), %{title: "Document-first draft"})
-    |> render_submit()
+    lv |> element(~s(button[data-role="dashboard-new-document"])) |> render_click()
 
     [doc] = Documents.list_recent_for_scope(scope, 5)
-    assert doc.title == "Document-first draft"
     assert doc.owner_id == scope.user.id
     assert doc.type_key == nil
     assert_redirect(lv, ~p"/documents/#{doc.id}")

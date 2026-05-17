@@ -32,7 +32,7 @@ defmodule ContractWeb.Live.Studio.Components.Canvas.Editor do
 
   ## Conflict handling
 
-  On `:revision_conflict` from `Studio.submit/3`, the LV's `dispatch/2`
+  On `:revision_conflict` from `Studio.command/2`, the LV's `dispatch/2`
   surfaces a flash error. The hook listens for the `phx:editor-revert`
   custom event (dispatched by future shell work) to reset DOM text for the
   affected node. For tests, the component also accepts an optional
@@ -261,7 +261,7 @@ defmodule ContractWeb.Live.Studio.Components.Canvas.Editor do
             // JS side (the dispatcher expected a richer payload).
             // Send the Engine-shaped operation directly; the parent
             // LV's event_to_action funnel keeps payload as-is and
-            // passes it to Studio.submit/3 → Engine.compile/2.
+            // passes it to Studio.command/2 → Engine.compile/2.
             this.pushEvent("edit_document", {
               ops: [{
                 op: "replace_content",

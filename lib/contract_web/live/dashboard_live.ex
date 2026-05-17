@@ -1,137 +1,157 @@
 defmodule ContractWeb.DashboardLive do
   @moduledoc """
-  Authenticated home for Contract Studio. Shows a greeting, a Resume link
-  to the most-recent document, recent documents, and an activity feed.
+  Authenticated home for Contract Studio. Document library only — no metric
+  cards, no recent-activity feed, no left sidebar.
 
-  Per the 2026-05-15 product directives:
+  Per DESIGN.md §4 (v31, 2026-05-17):
 
-    * "a lawyer is not a programmer" — the dashboard no longer counts
-      things; the old stat row (active matters / documents / open
-      agent runs) was removed.
-    * Document-pivot — Matter is an internal context container, not a
-      user-facing object. The Matters dashboard section is dropped
-      entirely; the user-facing label policy is "Workspace" or hidden,
-      and we chose hidden here. Existing matter rows are still listed
-      visibility-wise through `Contract.Matters.list_for_scope/1` for
-      the New-Document fallback path.
+    * Top row is a Google-Docs-style title row: `최근 문서` H1 + right-aligned
+      action buttons (`새 문서` primary + `계약서 업로드 ⌄` secondary).
+    * `계약서 업로드` opens a popover anchored under the trigger — NOT a modal.
+    * Card information is: thumbnail / title / status dot + label / 수정일 /
+      overflow menu. No `다음 질문`, no agent activity feed.
+    * Tabs: `모든 문서` (active) / `즐겨찾기`.
+    * `계약서 업로드` must NOT live in the global navbar.
 
   ## Data sources
 
     * `Contract.Documents.list_recent_for_scope/2` — recent owner-scoped
-      documents. The head of this list drives the "Resume" affordance in
-      the greeting area.
-    * `Contract.ContractTypes.list/2` — compile-time TOML-backed type
-      registry, drives the "New Document" modal.
-    * `Contract.Repo.all/1` on a small `changes` query — flattened into
-      an activity feed.
+      documents.
+    * `Contract.SourceDocuments.create_from_upload/3` — wiring target for the
+      upload popover (see `consume_uploaded_entries/3` event handler).
   """
   use ContractWeb, :live_view
 
-  import Ecto.Query, only: [from: 2]
-
-  alias Contract.Change
-  alias Contract.ContractTypes
   alias Contract.Documents
-  alias Contract.Documents.Document
-  alias Contract.Repo
+
+  @recent_documents_limit 20
 
   @impl true
   def mount(_params, _session, socket) do
-    {:ok, contract_types} = ContractTypes.list(socket.assigns.current_scope)
-
     socket =
       socket
       |> assign(:page_title, dgettext("dashboard", "Dashboard"))
-      |> assign(:show_new_doc_modal, false)
-      |> assign(:contract_types, contract_types)
-      |> load_data()
+      |> assign(:upload_menu_open?, false)
+      |> assign(:active_tab, :all)
+      |> allow_upload(:contract_file,
+        accept: ~w(.pdf .docx .hwp .hwpx),
+        max_entries: 1,
+        max_file_size: 50_000_000,
+        auto_upload: true
+      )
+      |> load_documents()
 
     {:ok, socket}
   end
 
+  # ---------------------------------------------------------------------------
+  # Events
+  # ---------------------------------------------------------------------------
+
   @impl true
-  def handle_event("open_new_document", _params, socket) do
-    {:noreply, assign(socket, :show_new_doc_modal, true)}
+  def handle_event("toggle_upload_menu", _params, socket) do
+    {:noreply, update(socket, :upload_menu_open?, &(!&1))}
   end
 
-  def handle_event("close_new_document", _params, socket) do
-    {:noreply, assign(socket, :show_new_doc_modal, false)}
+  def handle_event("close_upload_menu", _params, socket) do
+    {:noreply, assign(socket, :upload_menu_open?, false)}
   end
 
-  # Per SPEC.md §18 a document is created untyped (`type_key: nil`); the
-  # type is set later via `Command(:set_contract_type)` by the user or agent.
-  # v0.5 removes Matter from the product model, so creation is owner-scoped
-  # through `Documents.create/2` and navigation is `/documents/:document_id`.
-  def handle_event("create_new_document", %{"title" => title}, socket)
-      when is_binary(title) do
+  def handle_event("new_document", _params, socket) do
     scope = socket.assigns.current_scope
 
-    case Documents.create(scope, %{"title" => title}) do
+    # SPEC.md §18: documents are created untyped — the contract type is set
+    # afterwards by the user (Cmd+K) or the agent. The dashboard's "new"
+    # action gives the doc a default title so we never block the lawyer on
+    # naming. The title can be edited later in Studio.
+    case Documents.create(scope, %{"title" => default_new_title()}) do
       {:ok, doc} ->
-        {:noreply,
-         socket
-         |> assign(:show_new_doc_modal, false)
-         |> load_data()
-         |> put_flash(
-           :info,
-           dgettext(
-             "dashboard",
-             "New document created. Pick a contract type with Cmd+K, or let the agent suggest one."
-           )
-         )
-         |> push_navigate(to: ~p"/documents/#{doc.id}")}
+        {:noreply, push_navigate(socket, to: ~p"/documents/#{doc.id}")}
 
       {:error, _reason} ->
         {:noreply,
-         socket
-         |> put_flash(
+         put_flash(
+           socket,
            :error,
            dgettext("dashboard", "Could not create the document.")
          )}
     end
   end
 
-  defp load_data(socket) do
-    recent_documents = list_recent_documents(socket.assigns.current_scope)
-    ftc_templates = list_ftc_templates()
-    activity = list_activity(socket.assigns.current_scope)
-
-    socket
-    |> assign(:recent_documents, recent_documents)
-    |> assign(:resume_document, most_recent_document(recent_documents))
-    |> assign(:ftc_templates, ftc_templates)
-    |> assign(:activity, activity)
+  def handle_event("validate_upload", _params, socket) do
+    {:noreply, socket}
   end
 
-  # `list_recent_for_scope/2` returns documents newest-first, so the head
-  # of the list (if any) is the lawyer's "resume" target. We guard
-  # against `:template` documents (FTC seeds in the special system matter)
-  # so the Resume link never points the user back into a template.
-  defp most_recent_document([]), do: nil
+  # auto_upload: the LiveView upload framework calls this when the file has
+  # been streamed up. We consume the entry, hand it to the source-document
+  # pipeline, then navigate the lawyer into Studio for the resulting doc.
+  def handle_event("save_upload", _params, socket) do
+    scope = socket.assigns.current_scope
 
-  defp most_recent_document([%{status: :template} | rest]),
-    do: most_recent_document(rest)
+    uploaded =
+      consume_uploaded_entries(socket, :contract_file, fn %{path: path}, entry ->
+        # TODO(post-merge): wire to a single SourceDocuments.import_contract/3
+        # helper that creates the Document + SourceDocument in one transaction.
+        # For now we mint an untyped Document (so the lawyer always lands on a
+        # real doc) and stash the upload metadata on it; the actual blob /
+        # parsing pipeline can be hooked up next.
+        attrs = %{
+          "title" => entry.client_name || default_new_title(),
+          "metadata" => %{
+            "import_source" => "dashboard_upload",
+            "upload_filename" => entry.client_name,
+            "upload_size" => entry.client_size,
+            "upload_mime" => entry.client_type,
+            "upload_path_hint" => Path.basename(path)
+          }
+        }
 
-  defp most_recent_document([doc | _]), do: doc
+        case Documents.create(scope, attrs) do
+          {:ok, doc} -> {:ok, doc}
+          {:error, reason} -> {:postpone, {:error, reason}}
+        end
+      end)
 
-  # FTC templates still need a v0.5 source-document backed model. Until that
-  # lands, keep the dashboard document-first and omit the legacy Matter query.
-  defp list_ftc_templates, do: []
+    case uploaded do
+      [%{id: doc_id}] ->
+        {:noreply,
+         socket
+         |> assign(:upload_menu_open?, false)
+         |> push_navigate(to: ~p"/documents/#{doc_id}")}
 
-  # Single source of truth for the dashboard's recent-documents row cap.
-  defp recent_documents_limit, do: 20
+      _ ->
+        {:noreply, socket}
+    end
+  end
+
+  def handle_event("cancel_upload", %{"ref" => ref}, socket) do
+    {:noreply, cancel_upload(socket, :contract_file, ref)}
+  end
+
+  def handle_event("switch_tab", %{"tab" => tab}, socket) when tab in ~w(all favorites) do
+    {:noreply, assign(socket, :active_tab, String.to_existing_atom(tab))}
+  end
+
+  # ---------------------------------------------------------------------------
+  # Data loading
+  # ---------------------------------------------------------------------------
+
+  defp load_documents(socket) do
+    docs = list_recent_documents(socket.assigns.current_scope)
+    assign(socket, :documents, docs)
+  end
 
   defp list_recent_documents(scope) do
     scope
-    |> Documents.list_recent_for_scope(limit: recent_documents_limit())
+    |> Documents.list_recent_for_scope(limit: @recent_documents_limit)
+    |> Enum.reject(&(&1.status == :template))
     |> Enum.map(fn d ->
       %{
         document_id: d.id,
         title: d.title,
         type_key: d.type_key,
         status: d.status,
-        last_revision: d.latest_revision,
-        last_activity_at: d.updated_at
+        updated_at: d.updated_at
       }
     end)
   rescue
@@ -139,464 +159,246 @@ defmodule ContractWeb.DashboardLive do
     Postgrex.Error -> []
   end
 
-  # Last 10 changes for documents owned by the current scope. Keep the
-  # rendered activity rows raw, but gate them through documents.owner_id so
-  # another user's document activity never appears on this dashboard.
-  defp list_activity(%{user: %{id: user_id}}) do
-    from(c in Change,
-      join: d in Document,
-      on: d.id == c.document_id,
-      where: d.owner_id == ^user_id,
-      order_by: [desc: c.inserted_at],
-      limit: 10,
-      select: %{
-        actor_type: c.actor_type,
-        actor_id: c.actor_id,
-        action_kind: c.command_kind,
-        document_id: c.document_id,
-        applied_revision: c.result_revision,
-        message: c.message,
-        inserted_at: c.inserted_at
-      }
-    )
-    |> Repo.all()
-  rescue
-    DBConnection.ConnectionError -> []
-    Postgrex.Error -> []
-  end
+  defp default_new_title, do: dgettext("dashboard", "제목 없는 문서")
 
-  defp list_activity(_scope), do: []
+  # ---------------------------------------------------------------------------
+  # Render
+  # ---------------------------------------------------------------------------
 
   @impl true
   def render(assigns) do
     ~H"""
     <Layouts.app flash={@flash} current_scope={@current_scope} variant="default">
-      <div class="py-10 space-y-10">
-        <%!-- ---------------------------------------------------------- --%>
-        <%!-- Welcome + primary action                                    --%>
-        <%!-- ---------------------------------------------------------- --%>
-        <header class="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4">
-          <div>
-            <p class="text-xs font-medium tracking-wide uppercase text-base-content/50">
-              {today_label()}
-            </p>
-            <h1 class="text-3xl font-semibold tracking-tight">
-              {dgettext("dashboard", "Good day,")}
-              <span class="text-primary">{persona_first_name(@current_scope)}</span>.
-            </h1>
-            <p class="text-base-content/60 mt-1">
-              {dgettext("dashboard", "Pick up where you left off, or start a new document.")}
-            </p>
-          </div>
-          <div class="flex flex-wrap gap-2">
+      <main class="dashboard-v31 py-10">
+        <%!-- ------------------------------------------------------------ --%>
+        <%!-- Title row — H1 + right-aligned action buttons                --%>
+        <%!-- The popover lives inside the secondary button's wrapper so   --%>
+        <%!-- click-away closes it. NOT a modal.                            --%>
+        <%!-- ------------------------------------------------------------ --%>
+        <header class="dashboard-v31__top">
+          <h1 class="dashboard-v31__title">{dgettext("dashboard", "최근 문서")}</h1>
+
+          <div class="dashboard-v31__actions">
             <button
               type="button"
-              phx-click="open_new_document"
-              class="btn btn-primary flex-1 sm:flex-none"
+              phx-click="new_document"
+              class="dashboard-v31__btn dashboard-v31__btn--primary"
+              data-role="dashboard-new-document"
             >
-              <.icon name="hero-document-plus" class="size-4" /> {dgettext(
-                "dashboard",
-                "New Document"
-              )}
+              {dgettext("dashboard", "새 문서")}
             </button>
-            <.link navigate={~p"/studio"} class="btn btn-ghost flex-1 sm:flex-none">
-              {dgettext("dashboard", "Open Studio")} <span aria-hidden="true">→</span>
-            </.link>
+
+            <div class="dashboard-v31__upload-wrap" phx-click-away="close_upload_menu">
+              <button
+                type="button"
+                phx-click="toggle_upload_menu"
+                class="dashboard-v31__btn dashboard-v31__btn--secondary"
+                aria-haspopup="true"
+                aria-expanded={to_string(@upload_menu_open?)}
+                data-role="dashboard-upload-trigger"
+              >
+                {dgettext("dashboard", "계약서 업로드")}
+                <span aria-hidden="true" class="dashboard-v31__caret">⌄</span>
+              </button>
+
+              <.contract_upload_menu :if={@upload_menu_open?} upload={@uploads.contract_file} />
+            </div>
           </div>
         </header>
 
-        <%!-- ---------------------------------------------------------- --%>
-        <%!-- Resume affordance                                           --%>
-        <%!--                                                              --%>
-        <%!-- Replaces the old stat row (active matters / documents /     --%>
-        <%!-- open agent runs). A lawyer doesn't care about counts —      --%>
-        <%!-- they care about getting back to the document they were      --%>
-        <%!-- working on. When there's no recent document the slot is     --%>
-        <%!-- not rendered at all; the Documents section's empty state    --%>
-        <%!-- already covers that case.                                   --%>
-        <%!-- ---------------------------------------------------------- --%>
-        <section
-          :if={@resume_document}
-          id="dashboard-resume"
-          class="rounded-box border border-base-200 bg-base-100 px-5 py-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2"
-        >
-          <div class="min-w-0">
-            <p class="text-xs font-medium tracking-wide uppercase text-base-content/50">
-              {dgettext("dashboard", "Resume your most recent document")}
-            </p>
-            <.link
-              navigate={~p"/documents/#{@resume_document.document_id}"}
-              class="text-base font-medium hover:underline truncate block mt-1"
-              data-role="dashboard-resume-link"
-            >
-              {@resume_document.title}
-            </.link>
-          </div>
-          <.link
-            navigate={~p"/documents/#{@resume_document.document_id}"}
-            class="text-sm text-base-content/60 hover:text-base-content shrink-0"
+        <%!-- ------------------------------------------------------------ --%>
+        <%!-- Tabs — visual filter only; the active tab governs the grid.  --%>
+        <%!-- ------------------------------------------------------------ --%>
+        <nav class="dashboard-v31__tabs" role="tablist">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={to_string(@active_tab == :all)}
+            phx-click="switch_tab"
+            phx-value-tab="all"
+            class={[
+              "dashboard-v31__tab",
+              @active_tab == :all && "dashboard-v31__tab--active"
+            ]}
           >
-            {dgettext("dashboard", "Open")} <span aria-hidden="true">→</span>
-          </.link>
-        </section>
+            {dgettext("dashboard", "모든 문서")}
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={to_string(@active_tab == :favorites)}
+            phx-click="switch_tab"
+            phx-value-tab="favorites"
+            class={[
+              "dashboard-v31__tab",
+              @active_tab == :favorites && "dashboard-v31__tab--active"
+            ]}
+          >
+            {dgettext("dashboard", "즐겨찾기")}
+          </button>
+        </nav>
 
-        <%!-- ---------------------------------------------------------- --%>
-        <%!-- Matters section dropped per SPEC.md Document-pivot           --%>
-        <%!-- (Workspace label or hidden — chose hidden).                  --%>
-        <%!-- ---------------------------------------------------------- --%>
-
-        <%!-- ---------------------------------------------------------- --%>
-        <%!-- Recent documents                                            --%>
-        <%!-- ---------------------------------------------------------- --%>
-        <section id="recent-documents">
-          <header class="flex items-end justify-between mb-4">
-            <h2 class="text-lg font-semibold tracking-tight">
-              {dgettext("dashboard", "Recent documents")}
-            </h2>
-          </header>
-
-          <%= if @recent_documents == [] do %>
-            <div
+        <%!-- ------------------------------------------------------------ --%>
+        <%!-- Document grid — 3 / 2 / 1 columns by viewport.                --%>
+        <%!-- ------------------------------------------------------------ --%>
+        <%= cond do %>
+          <% @active_tab == :favorites -> %>
+            <section
+              id="favorites-empty"
+              class="dashboard-v31__empty"
+              data-role="dashboard-favorites-empty"
+            >
+              {dgettext("dashboard", "즐겨찾기한 문서가 아직 없습니다.")}
+            </section>
+          <% @documents == [] -> %>
+            <section
               id="documents-empty"
-              class="rounded-box border border-dashed border-base-300 p-8 text-center bg-base-200/30 text-sm text-base-content/60"
+              class="dashboard-v31__empty"
+              data-role="dashboard-documents-empty"
             >
               {dgettext(
                 "dashboard",
-                "No documents yet. Drag a PDF in, or start from a contract type."
+                "아직 문서가 없습니다. ‘새 문서’로 시작하거나 ‘계약서 업로드’로 가져오세요."
               )}
-            </div>
-          <% else %>
-            <div class="overflow-x-auto rounded-box border border-base-200 bg-base-100">
-              <table id="documents-list" class="table table-sm">
-                <thead class="text-xs uppercase tracking-wide text-base-content/60">
-                  <tr class="border-b border-base-200">
-                    <th class="font-medium">{dgettext("dashboard", "Title")}</th>
-                    <th class="font-medium">{dgettext("dashboard", "Type")}</th>
-                    <th class="hidden sm:table-cell font-medium">
-                      {dgettext("dashboard", "Status")}
-                    </th>
-                    <th class="font-medium text-right">
-                      {dgettext("dashboard", "Last revision")}
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr
-                    :for={doc <- @recent_documents}
-                    class="border-b border-base-200 last:border-b-0 hover:bg-base-200/30"
-                  >
-                    <td class="min-w-0">
-                      <.link
-                        navigate={~p"/documents/#{doc.document_id}"}
-                        class="font-medium hover:underline"
-                      >
-                        {doc.title}
-                      </.link>
-                    </td>
-                    <td>
-                      <span class="badge badge-ghost badge-sm" title={doc.type_key}>
-                        {Contract.ContractTypes.display_name(doc.type_key)}
-                      </span>
-                    </td>
-                    <td class="hidden sm:table-cell">
-                      <span class={[
-                        "badge badge-sm",
-                        document_status_badge_class(doc.status)
-                      ]}>
-                        {document_status_label(doc.status)}
-                      </span>
-                    </td>
-                    <td class="text-right text-xs text-base-content/60 tabular-nums">
-                      {dgettext("dashboard", "rev %{n}", n: doc.last_revision)} · {format_timestamp(
-                        doc.last_activity_at
-                      )}
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-            <p
-              :if={length(@recent_documents) >= recent_documents_limit()}
-              data-role="recent-documents-footer"
-              class="mt-2 text-xs text-base-content/50 text-right"
-            >
-              {dgettext("dashboard", "최근 %{n}개 표시 중", n: recent_documents_limit())}
-            </p>
-          <% end %>
-        </section>
-
-        <%!-- ---------------------------------------------------------- --%>
-        <%!-- FTC standard contracts (Wave 5)                             --%>
-        <%!-- ---------------------------------------------------------- --%>
-        <section :if={@ftc_templates != []} id="ftc-templates">
-          <header class="flex items-end justify-between mb-4">
-            <h2 class="text-lg font-semibold tracking-tight">
-              {dgettext("dashboard", "FTC standard contracts")}
-            </h2>
-            <span class="text-xs text-base-content/50">
-              {dgettext("dashboard", "%{count} templates", count: length(@ftc_templates))}
-            </span>
-          </header>
-
-          <ul
-            id="ftc-templates-list"
-            class="rounded-box border border-base-200 md:divide-y md:divide-base-200 bg-base-100 space-y-2 md:space-y-0 p-2 md:p-0"
-          >
-            <li
-              :for={tpl <- @ftc_templates}
-              class="rounded-box md:rounded-none border border-base-200 md:border-0 bg-base-100 px-4 py-3 flex flex-col md:flex-row md:items-center gap-2 md:gap-4 hover:bg-base-200/30"
-            >
-              <div class="flex items-center gap-3 min-w-0 md:flex-1">
-                <.icon name="hero-document-duplicate" class="size-4 text-primary/70 shrink-0" />
-                <.link
-                  navigate={~p"/documents/#{tpl.document_id}"}
-                  class="text-sm font-medium hover:underline truncate block"
-                >
-                  {tpl.title}
-                </.link>
-              </div>
-              <div class="flex items-center justify-between md:justify-end gap-2 md:gap-4 pl-7 md:pl-0">
-                <span class="badge badge-primary badge-sm" title={tpl.type_key}>
-                  {Contract.ContractTypes.display_name(tpl.type_key)}
-                </span>
-                <span class="text-xs text-base-content/50 md:w-32 md:text-right">
-                  {dgettext("dashboard", "FTC template")}
-                </span>
-              </div>
-            </li>
-          </ul>
-        </section>
-
-        <%!-- ---------------------------------------------------------- --%>
-        <%!-- Recent activity                                             --%>
-        <%!-- ---------------------------------------------------------- --%>
-        <section id="recent-activity" class="w-full lg:max-w-2xl">
-          <header class="flex items-end justify-between mb-4">
-            <h2 class="text-lg font-semibold tracking-tight">
-              {dgettext("dashboard", "Recent activity")}
-            </h2>
-          </header>
-
-          <%= if @activity == [] do %>
-            <div
-              id="activity-empty"
-              class="rounded-box border border-dashed border-base-300 p-8 text-center bg-base-200/30 text-sm text-base-content/60"
-            >
-              {dgettext(
-                "dashboard",
-                "The activity feed will populate as you and the agent make changes."
-              )}
-            </div>
-          <% else %>
-            <ol id="activity-feed" class="space-y-3">
-              <li :for={event <- @activity} class="flex gap-3">
-                <div class="shrink-0 mt-0.5">
-                  <span class={[
-                    "inline-flex h-6 w-6 items-center justify-center rounded-full text-[0.6rem] font-semibold",
-                    actor_class(event.actor_type)
-                  ]}>
-                    {actor_initial(event.actor_type)}
-                  </span>
-                </div>
-                <div class="flex-1 min-w-0">
-                  <p class="text-sm">
-                    <span class="font-medium">{actor_label(event.actor_type)}</span>
-                    <span class="text-base-content/70">{action_kind_label(event.action_kind)}</span>
-                    <span class="text-base-content/50 font-mono text-xs">
-                      doc/{String.slice(event.document_id || "", 0, 6)} · {dgettext(
-                        "dashboard",
-                        "rev %{n}",
-                        n: event.applied_revision
-                      )}
-                    </span>
-                  </p>
-                  <p :if={event.message} class="text-xs text-base-content/60 truncate mt-0.5">
-                    {event.message}
-                  </p>
-                  <p class="text-xs text-base-content/40 mt-0.5">
-                    {format_timestamp(event.inserted_at)}
-                  </p>
-                </div>
-              </li>
-            </ol>
-          <% end %>
-        </section>
-      </div>
-
-      <%!-- ------------------------------------------------------------- --%>
-      <%!-- New Document modal — title-only per SPEC.md §18                --%>
-      <%!--                                                                 --%>
-      <%!-- The type picker is gone. Contract type is a key set AFTER       --%>
-      <%!-- creation via `Action(:set_contract_type)` — by the user via     --%>
-      <%!-- Cmd+K or by the agent once it understands the document          --%>
-      <%!-- context. The modal collects only what we cannot infer:          --%>
-      <%!-- a title.                                                        --%>
-      <%!-- ------------------------------------------------------------- --%>
-      <div
-        :if={@show_new_doc_modal}
-        id="new-document-modal"
-        class="modal modal-open"
-        phx-window-keydown="close_new_document"
-        phx-key="escape"
-      >
-        <div class="modal-box max-w-md">
-          <div class="flex items-start justify-between gap-4">
-            <div>
-              <h3 class="font-semibold text-lg tracking-tight">
-                {dgettext("dashboard", "New document")}
-              </h3>
-              <p class="text-sm text-base-content/60">
-                {dgettext(
-                  "dashboard",
-                  "Give it a title. The contract type is set later."
-                )}
-              </p>
-            </div>
-            <button
-              type="button"
-              phx-click="close_new_document"
-              class="btn btn-sm btn-ghost btn-square"
-              aria-label={dgettext("dashboard", "Close")}
-            >
-              <.icon name="hero-x-mark" class="size-4" />
-            </button>
-          </div>
-
-          <.form
-            for={%{}}
-            as={:new_document}
-            phx-submit="create_new_document"
-            class="mt-5 space-y-3"
-            data-role="new-document-form"
-          >
-            <.input
-              type="text"
-              name="title"
-              value=""
-              label={dgettext("dashboard", "Title")}
-              required
-            />
-
-            <p class="text-xs text-base-content/60" data-role="new-document-type-hint">
-              {dgettext("dashboard", "Type is set later by you or the agent.")}
-            </p>
-
-            <div class="flex justify-end gap-2 pt-2">
-              <button
-                type="button"
-                class="btn btn-ghost btn-sm"
-                phx-click="close_new_document"
-              >
-                {dgettext("dashboard", "Cancel")}
-              </button>
-              <button type="submit" class="btn btn-primary btn-sm">
-                {dgettext("dashboard", "Create")}
-              </button>
-            </div>
-          </.form>
-        </div>
-        <button
-          type="button"
-          phx-click="close_new_document"
-          class="modal-backdrop"
-          aria-label={dgettext("dashboard", "Close modal")}
-        >
-          {dgettext("dashboard", "close")}
-        </button>
-      </div>
+            </section>
+          <% true -> %>
+            <section id="document-grid" class="dashboard-v31__grid">
+              <.document_card :for={doc <- @documents} document={doc} />
+            </section>
+        <% end %>
+      </main>
     </Layouts.app>
     """
   end
 
   # ---------------------------------------------------------------------------
-  # Small render helpers
+  # Function components
   # ---------------------------------------------------------------------------
 
-  defp persona_first_name(%{user: %{email: email}}) when is_binary(email) do
-    email |> String.split("@") |> List.first()
+  @doc """
+  Renders a single document card.
+
+  Card contains: thumbnail block (gray rectangle if no preview), title,
+  status dot + label, modification date, overflow menu. No `다음 질문`,
+  no agent-decided body content — DESIGN.md §4 + §7 prohibition.
+  """
+  attr :document, :map, required: true
+
+  def document_card(assigns) do
+    ~H"""
+    <article class="document-card-v31" data-role="document-card">
+      <.link
+        navigate={~p"/documents/#{@document.document_id}"}
+        class="document-card-v31__link"
+      >
+        <div class="document-card-v31__preview">
+          <button
+            type="button"
+            class="document-card-v31__menu"
+            aria-label={dgettext("dashboard", "문서 메뉴")}
+            phx-click={JS.dispatch("phx:noop")}
+            onclick="event.preventDefault(); event.stopPropagation();"
+          >
+            ⋮
+          </button>
+        </div>
+        <div class="document-card-v31__body">
+          <h2 class="document-card-v31__title">{@document.title}</h2>
+          <p class="document-card-v31__status">
+            <span class={["status-dot-v31", "status-dot-v31--#{@document.status}"]}></span>
+            <span>{document_status_label(@document.status)}</span>
+          </p>
+          <p class="document-card-v31__date">
+            {dgettext("dashboard", "수정일")} {format_date(@document.updated_at)}
+          </p>
+        </div>
+      </.link>
+    </article>
+    """
   end
 
-  defp persona_first_name(_), do: "there"
+  @doc """
+  Renders the contract-upload popover anchored under the secondary action
+  button. Per DESIGN.md §4 it is a popover, not a modal.
+  """
+  attr :upload, :any, required: true
 
-  defp today_label do
-    Calendar.strftime(DateTime.utc_now(), "%A, %d %B %Y")
+  def contract_upload_menu(assigns) do
+    ~H"""
+    <div
+      class="upload-menu-v31"
+      role="dialog"
+      aria-label={dgettext("dashboard", "계약서 업로드")}
+      data-role="upload-menu"
+    >
+      <header class="upload-menu-v31__header">
+        <strong>{dgettext("dashboard", "파일에서 가져오기")}</strong>
+      </header>
+      <div class="upload-menu-v31__body">
+        <p class="upload-menu-v31__lead">
+          {dgettext("dashboard", "기존 계약서 파일을 StudioLive로 가져옵니다.")}
+        </p>
+        <p class="upload-menu-v31__caption">
+          {dgettext(
+            "dashboard",
+            "PDF, DOCX, HWP 지원 · StudioLive에서 열립니다."
+          )}
+        </p>
+
+        <form
+          id="contract-upload-form"
+          phx-change="validate_upload"
+          phx-submit="save_upload"
+          class="upload-menu-v31__form"
+        >
+          <label class="upload-menu-v31__dropzone" for={@upload.ref}>
+            <.live_file_input upload={@upload} class="sr-only" />
+            <span class="upload-menu-v31__dropzone-text">
+              {dgettext("dashboard", "파일을 선택하거나 끌어다 놓으세요")}
+            </span>
+            <span class="upload-menu-v31__dropzone-hint">
+              {dgettext("dashboard", "PDF · DOCX · HWP")}
+            </span>
+          </label>
+
+          <ul :if={@upload.entries != []} class="upload-menu-v31__entries">
+            <li :for={entry <- @upload.entries} class="upload-menu-v31__entry">
+              <span class="upload-menu-v31__entry-name">{entry.client_name}</span>
+              <span class="upload-menu-v31__entry-progress">{entry.progress}%</span>
+              <button
+                type="button"
+                phx-click="cancel_upload"
+                phx-value-ref={entry.ref}
+                class="upload-menu-v31__entry-cancel"
+                aria-label={dgettext("dashboard", "업로드 취소")}
+              >
+                ✕
+              </button>
+            </li>
+          </ul>
+        </form>
+      </div>
+    </div>
+    """
   end
-
-  defp format_timestamp(nil), do: "—"
-
-  defp format_timestamp(%NaiveDateTime{} = t),
-    do: t |> DateTime.from_naive!("Etc/UTC") |> format_timestamp()
-
-  defp format_timestamp(%DateTime{} = t) do
-    diff = DateTime.diff(DateTime.utc_now(), t, :second)
-
-    cond do
-      diff < 60 -> "just now"
-      diff < 3600 -> "#{div(diff, 60)}m ago"
-      diff < 86_400 -> "#{div(diff, 3600)}h ago"
-      diff < 604_800 -> "#{div(diff, 86_400)}d ago"
-      true -> Calendar.strftime(t, "%d %b")
-    end
-  end
-
-  defp actor_class(:user), do: "bg-primary/15 text-primary"
-  defp actor_class(:agent), do: "bg-secondary/15 text-secondary"
-  defp actor_class(:lawyer), do: "bg-primary/15 text-primary"
-  defp actor_class(:slack), do: "bg-accent/20 text-accent-content"
-  defp actor_class(_), do: "bg-base-200 text-base-content/60"
-
-  defp actor_initial(:user), do: "U"
-  defp actor_initial(:agent), do: "AI"
-  defp actor_initial(:lawyer), do: "L"
-  defp actor_initial(:slack), do: "S"
-  defp actor_initial(_), do: "·"
-
-  defp actor_label(:user), do: "You"
-  defp actor_label(:agent), do: "Agent"
-  defp actor_label(:lawyer), do: "Lawyer"
-  defp actor_label(:slack), do: "Slack"
-  defp actor_label(:system), do: "System"
-  defp actor_label(other), do: to_string(other)
-
-  # Activity-feed action labels (#93). Pulls Korean strings from the
-  # dashboard gettext domain so the feed reads as Korean copy ("문서 편집")
-  # under :ko locale and as the English msgid ("edited document") under
-  # :en. The schema stores `action_kind` as a string (see
-  # `Contract.Change` — `field :action_kind, :string`), but we accept
-  # atoms too so this stays useful for hand-built test payloads.
-  defp action_kind_label(kind) when is_atom(kind) and not is_nil(kind),
-    do: kind |> Atom.to_string() |> action_kind_label()
-
-  defp action_kind_label("edit_document"), do: dgettext("dashboard", "edited document")
-  defp action_kind_label("set_contract_type"), do: dgettext("dashboard", "set type")
-  defp action_kind_label("rename_document"), do: dgettext("dashboard", "renamed")
-  defp action_kind_label("update_metadata"), do: dgettext("dashboard", "updated metadata")
-  defp action_kind_label("add_mark"), do: dgettext("dashboard", "added mark")
-  defp action_kind_label("update_mark"), do: dgettext("dashboard", "updated mark")
-  defp action_kind_label("revoke_change"), do: dgettext("dashboard", "revoked change")
-  defp action_kind_label("resolve_revoke"), do: dgettext("dashboard", "resolved revoke")
-  defp action_kind_label("create_document"), do: dgettext("dashboard", "created document")
-  defp action_kind_label("archive_document"), do: dgettext("dashboard", "archived")
-  defp action_kind_label("restore_document"), do: dgettext("dashboard", "restored")
-  defp action_kind_label("duplicate_document"), do: dgettext("dashboard", "duplicated")
-  defp action_kind_label("create_converted_variant"), do: dgettext("dashboard", "created variant")
-  defp action_kind_label("request_export"), do: dgettext("dashboard", "requested export")
-  defp action_kind_label("upload_document"), do: dgettext("dashboard", "uploaded")
-  defp action_kind_label("agent_change"), do: dgettext("dashboard", "agent edit")
-  defp action_kind_label("chat_message"), do: dgettext("dashboard", "chat")
-  defp action_kind_label(other), do: to_string(other)
 
   # ---------------------------------------------------------------------------
-  # Status badges (Wave 4.6: dashboard tables)
+  # Render helpers
   # ---------------------------------------------------------------------------
 
-  defp document_status_label(:active), do: dgettext("dashboard", "Active")
-  defp document_status_label(:archived), do: dgettext("dashboard", "Archived")
-  defp document_status_label(:template), do: dgettext("dashboard", "Template")
+  defp document_status_label(:draft), do: dgettext("dashboard", "초안")
+  defp document_status_label(:importing), do: dgettext("dashboard", "가져오는 중")
+  defp document_status_label(:editing), do: dgettext("dashboard", "진행 중")
+  defp document_status_label(:reviewing), do: dgettext("dashboard", "검토 대기")
+  defp document_status_label(:export_ready), do: dgettext("dashboard", "완료")
+  defp document_status_label(:archived), do: dgettext("dashboard", "보관")
   defp document_status_label(other), do: to_string(other)
 
-  defp document_status_badge_class(:active), do: "badge-ghost"
-  defp document_status_badge_class(:archived), do: "badge-ghost opacity-60"
-  defp document_status_badge_class(:template), do: "badge-ghost"
-  defp document_status_badge_class(_), do: "badge-ghost"
+  defp format_date(nil), do: "—"
+
+  defp format_date(%NaiveDateTime{} = t),
+    do: t |> DateTime.from_naive!("Etc/UTC") |> format_date()
+
+  defp format_date(%DateTime{} = t), do: Calendar.strftime(t, "%Y.%m.%d")
+  defp format_date(%Date{} = d), do: Calendar.strftime(d, "%Y.%m.%d")
 end

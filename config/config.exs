@@ -151,7 +151,12 @@ config :phoenix, :json_library, Jason
 # "event-stream"]` filter can negotiate `text/event-stream` requests. See
 # SPEC.md §21.
 config :mime, :types, %{
-  "text/event-stream" => ["event-stream"]
+  "text/event-stream" => ["event-stream"],
+  # DESIGN.md §4 — DashboardLive accepts HWP / HWPX uploads. The MIME
+  # registry needs these extensions before `allow_upload(accept: ~w(.hwp
+  # .hwpx))` can validate them.
+  "application/x-hwp" => ["hwp"],
+  "application/vnd.hancom.hwpx" => ["hwpx"]
 }
 
 # Import environment specific config. This must remain at the bottom
