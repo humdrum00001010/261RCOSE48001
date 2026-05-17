@@ -47,3 +47,7 @@ npm-debug.log
 /landing-*.png
 /dashboard-*.png
 /studio-*.png
+
+# Per-user agent harness state — local-only, contains scheduling/session data.
+/.claude/
+/.codex/
