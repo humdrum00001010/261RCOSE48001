@@ -235,13 +235,21 @@ defmodule ContractWeb.StudioLiveTest do
     # header carries the 문서 toggle, so the floating preview FAB is dropped
     # to avoid duplicate affordances.
     # -------------------------------------------------------------------------
-    test "desktop viewport renders Layouts.app chrome (navbar + breadcrumbs)",
+    test "desktop viewport renders v33 app_shell topbar (single navbar)",
          %{conn: conn} do
       {:ok, _lv, html} = live(conn, ~p"/studio")
 
-      # Top navbar lives inside Layouts.app — sticky header at top.
-      assert html =~ "backdrop-blur sticky top-0 z-30"
-      # Studio document header (Document / title / Dashboard link) is present.
+      assert html =~ ~s(class="app-shell")
+      assert html =~ ~s(class="topbar")
+      assert html =~ "Contract Studio"
+      assert html =~ ~s(href="/dashboard")
+      assert html =~ "대시보드"
+      assert html =~ "스튜디오"
+      # v33 SPEC §6: 새 문서 / 계약서 업로드 are dashboard content actions, not topbar.
+      refute html =~ ~r/<header[^>]*class="[^"]*topbar[^"]*"[^>]*>.*계약서 업로드.*<\/header>/su
+      refute html =~ ~r/<header[^>]*class="[^"]*topbar[^"]*"[^>]*>.*새 문서.*<\/header>/su
+
+      # Studio document header (Document / title / 변경 이력) is present.
       assert html =~ ~s(id="studio-document-header")
       # Desktop root has the calc-based height (not fixed inset-0).
       assert html =~ ~s(data-viewport="desktop")
@@ -281,7 +289,7 @@ defmodule ContractWeb.StudioLiveTest do
       assert html =~ ~s(phx-click="toggle_preview")
     end
 
-    test "rotating mobile → desktop restores Layouts.app chrome",
+    test "rotating mobile → desktop restores v33 app_shell topbar",
          %{conn: conn} do
       {:ok, lv, _html} = live(conn, ~p"/studio")
       _ = render_hook(lv, "viewport_change", %{"w" => 600})
@@ -289,7 +297,7 @@ defmodule ContractWeb.StudioLiveTest do
 
       assert html =~ ~s(data-viewport="desktop")
       assert html =~ ~s(id="studio-document-header")
-      assert html =~ "backdrop-blur sticky top-0 z-30"
+      assert html =~ ~s(class="topbar")
       refute html =~ ~s(fixed inset-0)
     end
   end
@@ -889,7 +897,7 @@ defmodule ContractWeb.StudioLiveTest do
       assert assigns(lv).studio_state.agent_run_id == nil
     end
 
-    test "tool-call protocol messages render structured operation blocks", %{conn: conn} do
+    test "tool-call protocol messages render compact trace rows", %{conn: conn} do
       {:ok, lv, _html} = live(conn, ~p"/studio")
       run_id = Ecto.UUID.generate()
       tool_id = Ecto.UUID.generate()
@@ -897,18 +905,18 @@ defmodule ContractWeb.StudioLiveTest do
       send(lv.pid, {:tool_call_started, run_id, %{id: tool_id, tool_name: "law.search"}})
       html = render(lv)
 
-      assert html =~ ~s(id="operation-block-tool-#{run_id}-#{tool_id}")
-      assert html =~ ~s(data-role="operation-block")
-      assert html =~ ~s(data-operation-type="tool_call")
-      assert html =~ ~s(data-operation-status="running")
-      assert html =~ "law.search"
+      assert html =~ ~s(id="tool-trace-tool-#{run_id}-#{tool_id}")
+      assert html =~ ~s(data-role="tool-trace")
+      assert html =~ ~s(data-status="running")
+      assert html =~ "답변을 수정 범위에 연결함"
+      refute html =~ "law.search"
       refute html =~ "Tool started: law.search"
 
       send(lv.pid, {:tool_call_completed, run_id, tool_id, %{summary: "Found 2 clauses"}})
       html = render(lv)
 
-      assert html =~ ~s(id="operation-block-tool-#{run_id}-#{tool_id}")
-      assert html =~ ~s(data-operation-status="completed")
+      assert html =~ ~s(id="tool-trace-tool-#{run_id}-#{tool_id}")
+      assert html =~ ~s(data-status="completed")
       assert html =~ "Found 2 clauses"
     end
 
@@ -1081,7 +1089,6 @@ defmodule ContractWeb.StudioLiveTest do
     end
   end
 
-
   # ---------------------------------------------------------------------------
   # Cmd+K palette → "Set contract type…" → type-picker modal (bug #75).
   # Pushing `command_palette_picked` with `kind=set_contract_type` and no
@@ -1091,7 +1098,7 @@ defmodule ContractWeb.StudioLiveTest do
   describe "dev/test operation block QA synthesis" do
     setup :log_in_a_user
 
-    test "authenticated browser hook synthesizes operation blocks that can expand", %{
+    test "authenticated browser hook synthesizes compact trace rows that can expand", %{
       conn: conn
     } do
       {:ok, lv, _html} = live(conn, ~p"/studio")
@@ -1100,17 +1107,16 @@ defmodule ContractWeb.StudioLiveTest do
       assert %{"ok" => true, "operation_ids" => [operation_id | _]} = json_response(conn, 200)
 
       html = render(lv)
-      assert html =~ ~s(id="operation-block-#{operation_id}")
-      assert html =~ ~s(data-role="operation-block")
-      assert html =~ ~s(id="operation-block-#{operation_id}-toggle")
-      refute html =~ ~s(id="operation-block-#{operation_id}-details")
+      assert html =~ ~s(id="tool-trace-#{operation_id}")
+      assert html =~ ~s(data-role="tool-trace")
+      refute html =~ ~s(id="tool-trace-#{operation_id}-details")
 
       html =
         lv
-        |> element("#operation-block-#{operation_id}-toggle")
+        |> element("#tool-trace-#{operation_id}")
         |> render_click()
 
-      assert html =~ ~s(id="operation-block-#{operation_id}-details")
+      assert html =~ ~s(id="tool-trace-#{operation_id}-details")
       assert html =~ "Synthetic QA operation"
     end
 

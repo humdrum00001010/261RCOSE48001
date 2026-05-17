@@ -151,9 +151,8 @@ defmodule ContractWeb.DashboardLive do
   @impl true
   def render(assigns) do
     ~H"""
-    <Layouts.app flash={@flash} current_scope={@current_scope} variant="default">
-      <.app_shell active="대시보드">
-        <main class="dashboard-page py-6 sm:py-10">
+    <.app_shell active="대시보드">
+      <main class="dashboard-page py-6 sm:py-10">
           <section id="dashboard-toolbar" class="dashboard-toolbar">
             <div class="dashboard-toolbar__copy">
               <h1>{dgettext("dashboard", "최근 문서")}</h1>
@@ -205,8 +204,8 @@ defmodule ContractWeb.DashboardLive do
             <% end %>
           </section>
         </main>
-      </.app_shell>
-    </Layouts.app>
+    </.app_shell>
+    <Layouts.flash_group flash={@flash} />
     """
   end
 

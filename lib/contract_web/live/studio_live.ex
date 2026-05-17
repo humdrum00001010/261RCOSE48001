@@ -1418,21 +1418,13 @@ defmodule ContractWeb.StudioLive do
 
       <Layouts.flash_group flash={@flash} />
     <% else %>
-      <Layouts.app
-        flash={@flash}
-        current_scope={@current_scope}
-        variant="split"
-        breadcrumbs={@breadcrumbs}
-        page_title={@page_title}
-        current_document_id={@studio_state.selected_document_id || assigns[:current_document_id]}
-      >
-        <.app_shell active="스튜디오">
-          <main
-            id="studio-root"
-            phx-hook=".Viewport"
-            data-viewport="desktop"
-            class="studio-live flex h-[calc(100vh-4rem)] min-h-[480px]"
-          >
+      <.app_shell active="스튜디오">
+        <main
+          id="studio-root"
+          phx-hook=".Viewport"
+          data-viewport="desktop"
+          class="studio-live flex h-[calc(100vh-60px)] min-h-[480px]"
+        >
             <%!-- Desktop: document canvas + right chat rail. No permanent Context Reservoir. --%>
             <section class="studio-document flex min-w-0 flex-1 flex-col bg-base-100">
               <header
@@ -1546,9 +1538,13 @@ defmodule ContractWeb.StudioLive do
               streams={%{toasts: @streams.toasts}}
               viewport={@viewport}
             />
-          </main>
-        </.app_shell>
-      </Layouts.app>
+        </main>
+      </.app_shell>
+      <CommandPalette.mount_if_live
+        current_scope={@current_scope}
+        current_document_id={@studio_state.selected_document_id || assigns[:current_document_id]}
+      />
+      <Layouts.flash_group flash={@flash} />
     <% end %>
     """
   end
