@@ -90,6 +90,7 @@ defmodule ContractWeb.StudioLive do
   alias Contract.Command
   alias Contract.Studio
   alias ContractWeb.Components.Breadcrumbs
+  alias ContractWeb.Components.CommandPalette
   alias ContractWeb.Live.Studio.Components
 
   @impl true
@@ -1326,18 +1327,21 @@ defmodule ContractWeb.StudioLive do
   @impl true
   def render(assigns) do
     ~H"""
-    <Layouts.app
-      flash={@flash}
-      current_scope={@current_scope}
-      variant="split"
-      breadcrumbs={@breadcrumbs}
-      page_title={@page_title}
-      current_document_id={@studio_state.selected_document_id || assigns[:current_document_id]}
-    >
+    <%= if @viewport == :mobile do %>
+      <%!--
+      Mobile: full-bleed chat surface. Owner directive 2026-05-17:
+      "The chat should fill the whole screen in mobile, not being
+      part of a page." We bypass Layouts.app entirely so there is no
+      top navbar (h-14), no breadcrumbs, no footer, no page padding.
+      The chat rail IS the page. The chat rail's own header carries
+      the 문서 toggle, so no floating preview FAB.
+      --%>
       <div
         id="studio-root"
         phx-hook=".Viewport"
-        class="flex flex-col h-[calc(100vh-4rem)] min-h-[480px]"
+        data-viewport="mobile"
+        class="fixed inset-0 z-50 flex flex-col bg-base-100"
+        style="height: 100dvh; padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px);"
       >
         <script :type={Phoenix.LiveView.ColocatedHook} name=".Viewport">
           export default {
@@ -1360,113 +1364,35 @@ defmodule ContractWeb.StudioLive do
           }
         </script>
 
-        <header
-          id="studio-document-header"
-          class="border-b border-base-200 bg-base-100 px-5 py-3 flex items-center justify-between gap-4"
-        >
-          <div class="min-w-0">
-            <p class="text-xs font-medium uppercase tracking-wide text-base-content/50">
-              {dgettext("studio", "Document")}
-            </p>
-            <h1 class="truncate text-base font-semibold tracking-tight">
-              {document_header_title(@projection, @studio_state)}
-            </h1>
-          </div>
-          <.link
-            :if={@viewport != :mobile}
-            navigate={~p"/dashboard"}
-            class="btn btn-sm btn-ghost shrink-0"
-          >
-            <.icon name="hero-arrow-left" class="size-4" />
-            {dgettext("studio", "Dashboard")}
-          </.link>
-        </header>
+        <.live_component
+          module={Components.ChatRail}
+          id="chat-rail-mobile"
+          studio_state={@studio_state}
+          streams={%{chat_messages: @streams.chat_messages}}
+          current_scope={@current_scope}
+          layout={:mobile_full}
+          grill_marks={@grill_marks}
+          grill_active?={@grill_active?}
+        />
 
-        <%!-- Desktop: document canvas + right chat rail. No permanent Context Reservoir. --%>
-        <div
-          :if={@viewport == :desktop}
-          class="grid grid-cols-[minmax(0,1fr)_360px] flex-1 min-h-0 gap-0"
-        >
-          <div class="relative min-h-0">
-            <.live_component
-              :if={@studio_state.mode == :reviewing}
-              module={Components.Canvas.Review}
-              id="canvas"
-              studio_state={@studio_state}
-              projection={@projection}
-              current_scope={@current_scope}
-              changes_stream={@streams.changes}
-            />
-            <.live_component
-              :if={@studio_state.mode != :reviewing}
-              module={canvas_module(@studio_state.mode)}
-              id="canvas"
-              studio_state={@studio_state}
-              projection={@projection}
-              current_scope={@current_scope}
-              document_upload={@uploads.document_upload}
-            />
-            <.live_component
-              module={Components.MarksLayer}
-              id="marks-layer"
-              projection={@projection}
-              studio_state={@studio_state}
-              viewport={@viewport}
-            />
-          </div>
-          <.live_component
-            module={Components.ChatRail}
-            id="chat-rail"
-            studio_state={@studio_state}
-            streams={%{chat_messages: @streams.chat_messages}}
-            current_scope={@current_scope}
-            grill_marks={@grill_marks}
-            grill_active?={@grill_active?}
-          />
-        </div>
+        <.live_component
+          module={Components.ChatCommandButton}
+          id="chat-command-button"
+          current_scope={@current_scope}
+          studio_state={@studio_state}
+          viewport={@viewport}
+        />
 
-        <%!-- Mobile: chat-first --%>
-        <div :if={@viewport == :mobile} class="flex flex-col flex-1 min-h-0">
-          <.live_component
-            module={Components.ChatRail}
-            id="chat-rail-mobile"
-            studio_state={@studio_state}
-            streams={%{chat_messages: @streams.chat_messages}}
-            current_scope={@current_scope}
-            layout={:mobile_full}
-            grill_marks={@grill_marks}
-            grill_active?={@grill_active?}
-          />
-
-          <.live_component
-            module={Components.ChatCommandButton}
-            id="chat-command-button"
-            current_scope={@current_scope}
-            studio_state={@studio_state}
-            viewport={@viewport}
-          />
-
-          <button
-            type="button"
-            phx-click="toggle_preview"
-            class="fixed bottom-6 right-6 btn btn-primary btn-circle z-30"
-            style="padding-bottom: env(safe-area-inset-bottom, 0px);"
-            aria-label="Toggle document preview"
-          >
-            <.icon name="hero-document-text" class="size-6" />
-          </button>
-
-          <.live_component
-            :if={@preview_modal_open?}
-            module={Components.PreviewOverlay}
-            id="preview-overlay"
-            projection={@projection}
-            studio_state={@studio_state}
-            current_scope={@current_scope}
-            viewport={@viewport}
-            streams={%{changes: @streams.changes}}
-          />
-        </div>
+        <.live_component
+          :if={@preview_modal_open?}
+          module={Components.PreviewOverlay}
+          id="preview-overlay"
+          projection={@projection}
+          studio_state={@studio_state}
+          current_scope={@current_scope}
+          viewport={@viewport}
+          streams={%{changes: @streams.changes}}
+        />
 
         <.live_component
           module={Components.ModalHost}
@@ -1490,8 +1416,133 @@ defmodule ContractWeb.StudioLive do
           streams={%{toasts: @streams.toasts}}
           viewport={@viewport}
         />
+
+        <CommandPalette.mount_if_live
+          current_scope={@current_scope}
+          current_document_id={@studio_state.selected_document_id || assigns[:current_document_id]}
+        />
       </div>
-    </Layouts.app>
+
+      <Layouts.flash_group flash={@flash} />
+    <% else %>
+      <Layouts.app
+        flash={@flash}
+        current_scope={@current_scope}
+        variant="split"
+        breadcrumbs={@breadcrumbs}
+        page_title={@page_title}
+        current_document_id={@studio_state.selected_document_id || assigns[:current_document_id]}
+      >
+        <div
+          id="studio-root"
+          phx-hook=".Viewport"
+          data-viewport="desktop"
+          class="flex flex-col h-[calc(100vh-4rem)] min-h-[480px]"
+        >
+          <script :type={Phoenix.LiveView.ColocatedHook} name=".Viewport">
+            export default {
+              mounted() {
+                this.push_viewport = () => {
+                  const w = window.innerWidth || document.documentElement.clientWidth
+                  this.pushEventTo(this.el, "viewport_change", {w: w})
+                }
+                this.push_viewport()
+                this.handler = () => {
+                  if (this.t) clearTimeout(this.t)
+                  this.t = setTimeout(this.push_viewport, 120)
+                }
+                window.addEventListener("resize", this.handler)
+              },
+              destroyed() {
+                window.removeEventListener("resize", this.handler)
+                if (this.t) clearTimeout(this.t)
+              }
+            }
+          </script>
+
+          <header
+            id="studio-document-header"
+            class="border-b border-base-200 bg-base-100 px-5 py-3 flex items-center justify-between gap-4"
+          >
+            <div class="min-w-0">
+              <p class="text-xs font-medium uppercase tracking-wide text-base-content/50">
+                {dgettext("studio", "Document")}
+              </p>
+              <h1 class="truncate text-base font-semibold tracking-tight">
+                {document_header_title(@projection, @studio_state)}
+              </h1>
+            </div>
+            <.link navigate={~p"/dashboard"} class="btn btn-sm btn-ghost shrink-0">
+              <.icon name="hero-arrow-left" class="size-4" />
+              {dgettext("studio", "Dashboard")}
+            </.link>
+          </header>
+
+          <%!-- Desktop: document canvas + right chat rail. No permanent Context Reservoir. --%>
+          <div class="grid grid-cols-[minmax(0,1fr)_360px] flex-1 min-h-0 gap-0">
+            <div class="relative min-h-0">
+              <.live_component
+                :if={@studio_state.mode == :reviewing}
+                module={Components.Canvas.Review}
+                id="canvas"
+                studio_state={@studio_state}
+                projection={@projection}
+                current_scope={@current_scope}
+                changes_stream={@streams.changes}
+              />
+              <.live_component
+                :if={@studio_state.mode != :reviewing}
+                module={canvas_module(@studio_state.mode)}
+                id="canvas"
+                studio_state={@studio_state}
+                projection={@projection}
+                current_scope={@current_scope}
+                document_upload={@uploads.document_upload}
+              />
+              <.live_component
+                module={Components.MarksLayer}
+                id="marks-layer"
+                projection={@projection}
+                studio_state={@studio_state}
+                viewport={@viewport}
+              />
+            </div>
+            <.live_component
+              module={Components.ChatRail}
+              id="chat-rail"
+              studio_state={@studio_state}
+              streams={%{chat_messages: @streams.chat_messages}}
+              current_scope={@current_scope}
+              grill_marks={@grill_marks}
+              grill_active?={@grill_active?}
+            />
+          </div>
+
+          <.live_component
+            module={Components.ModalHost}
+            id="modal-host"
+            studio_state={@studio_state}
+            current_scope={@current_scope}
+            projection={@projection}
+            reconcile_modal_open?={@reconcile_modal_open?}
+            reconcile_request={@reconcile_request}
+            migration_plan={@migration_plan}
+            migration_plan_refined?={assigns[:migration_plan_refined?] || false}
+            migration_target={assigns[:migration_target]}
+            field_strategies={assigns[:field_strategies]}
+            document_upload={@uploads.document_upload}
+            documents={Contract.Studio.list_documents(@current_scope)}
+          />
+
+          <.live_component
+            module={Components.ToastQueue}
+            id="toast-queue"
+            streams={%{toasts: @streams.toasts}}
+            viewport={@viewport}
+          />
+        </div>
+      </Layouts.app>
+    <% end %>
     """
   end
 

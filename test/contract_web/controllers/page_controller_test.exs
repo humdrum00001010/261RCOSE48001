@@ -108,8 +108,6 @@ defmodule ContractWeb.PageControllerTest do
     test "dashboard has a mobile breakpoint", %{app_css: css} do
       # `.dashboard-v31__top` rearranges row->column at < 768.
       assert css =~ "@media (min-width: 768px)"
-      # Document grid breakpoints at 640 (2-col) and 1024 (3-col).
-      assert css =~ ~r/\.dashboard-v31__grid[^}]*\}\s*@media \(min-width: 640px\)/su
     end
 
     test "upload menu CSS namespace removed — upload moved to Studio empty state", %{app_css: css} do

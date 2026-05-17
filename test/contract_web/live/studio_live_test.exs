@@ -225,6 +225,73 @@ defmodule ContractWeb.StudioLiveTest do
       _ = render_hook(lv, "toggle_preview", %{})
       assert :sys.get_state(lv.pid).socket.assigns.preview_modal_open? == true
     end
+
+    # -------------------------------------------------------------------------
+    # Owner directive 2026-05-17 — Studio LV is full-bleed on mobile.
+    # "The chat should fill the whole screen in mobile, not being part of a
+    # page." When @viewport == :mobile, Layouts.app's chrome (top navbar,
+    # breadcrumbs, footer) must NOT render; #studio-root becomes a fixed
+    # inset-0 surface with 100dvh + safe-area insets. The chat rail's own
+    # header carries the 문서 toggle, so the floating preview FAB is dropped
+    # to avoid duplicate affordances.
+    # -------------------------------------------------------------------------
+    test "desktop viewport renders Layouts.app chrome (navbar + breadcrumbs)",
+         %{conn: conn} do
+      {:ok, _lv, html} = live(conn, ~p"/studio")
+
+      # Top navbar lives inside Layouts.app — sticky header at top.
+      assert html =~ "backdrop-blur sticky top-0 z-30"
+      # Studio document header (Document / title / Dashboard link) is present.
+      assert html =~ ~s(id="studio-document-header")
+      # Desktop root has the calc-based height (not fixed inset-0).
+      assert html =~ ~s(data-viewport="desktop")
+      refute html =~ ~s(data-viewport="mobile")
+    end
+
+    test "mobile viewport bypasses Layouts.app chrome — full-bleed surface",
+         %{conn: conn} do
+      {:ok, lv, _html} = live(conn, ~p"/studio")
+      html = render_hook(lv, "viewport_change", %{"w" => 600})
+
+      # The full-bleed wrapper is fixed inset-0 with 100dvh + z-50.
+      assert html =~ ~s(data-viewport="mobile")
+      assert html =~ ~s(fixed inset-0)
+      assert html =~ "100dvh"
+      assert html =~ "env(safe-area-inset-top"
+
+      # The page-level Document / Dashboard header is desktop-only.
+      refute html =~ ~s(id="studio-document-header")
+
+      # Breadcrumbs nav (rendered by Layouts.app) must NOT appear on mobile.
+      refute html =~ ~s(aria-label="Breadcrumb")
+    end
+
+    test "mobile viewport drops the floating preview FAB (chat rail header has 문서 toggle)",
+         %{conn: conn} do
+      {:ok, lv, _html} = live(conn, ~p"/studio")
+      html = render_hook(lv, "viewport_change", %{"w" => 600})
+
+      # The previous FAB lived at fixed bottom-6 right-6 with circular btn —
+      # that combination is gone now; the chat rail's own header has the
+      # 문서 toggle (a single document-toggle affordance).
+      refute html =~ "fixed bottom-6 right-6 btn btn-primary btn-circle"
+      refute html =~ ~s(aria-label="Toggle document preview")
+
+      # The chat rail still renders its own 문서 toggle button.
+      assert html =~ ~s(phx-click="toggle_preview")
+    end
+
+    test "rotating mobile → desktop restores Layouts.app chrome",
+         %{conn: conn} do
+      {:ok, lv, _html} = live(conn, ~p"/studio")
+      _ = render_hook(lv, "viewport_change", %{"w" => 600})
+      html = render_hook(lv, "viewport_change", %{"w" => 1600})
+
+      assert html =~ ~s(data-viewport="desktop")
+      assert html =~ ~s(id="studio-document-header")
+      assert html =~ "backdrop-blur sticky top-0 z-30"
+      refute html =~ ~s(fixed inset-0)
+    end
   end
 
   # ---------------------------------------------------------------------------
