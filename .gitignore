@@ -35,6 +35,10 @@ contract-*.tar
 # 넣지 않는다.
 *.wasm
 
+# 루트 레벨 PNG 는 보통 dev 스크린샷 cruft. 정식 이미지는 docs/, assets/,
+# priv/ 같은 정해진 디렉토리에 두고, 루트에 떨궈진 것은 추적 안 함.
+/*.png
+
 # Ignore digested assets cache.
 /priv/static/cache_manifest.json
 
