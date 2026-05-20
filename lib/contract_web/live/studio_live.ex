@@ -1564,11 +1564,7 @@ defmodule ContractWeb.StudioLive do
                       autocomplete="off"
                       spellcheck="false"
                       phx-debounce="400"
-                      class={[
-                        "relative z-10 h-7 w-[12rem] max-w-[34vw] leading-none cursor-text bg-transparent text-[13px] font-medium text-base-content px-1.5 py-0 border border-base-300 hover:z-20 hover:border-base-content/30 focus:z-20 focus:border-base-content/50 focus:bg-base-100 outline-none focus:outline-none focus:ring-0 focus:shadow-none transition-colors",
-                        @other_documents == [] && "rounded-md",
-                        @other_documents != [] && "rounded-l-md rounded-r-none"
-                      ]}
+                      class="relative z-10 h-7 w-[12rem] max-w-[34vw] leading-none cursor-text bg-transparent text-[13px] font-medium text-base-content px-1.5 py-0 border border-base-300 hover:z-20 hover:border-base-content/30 focus:z-20 focus:border-base-content/50 focus:bg-base-100 outline-none focus:outline-none focus:ring-0 focus:shadow-none transition-colors rounded-l-md rounded-r-none"
                     />
                   </form>
                   <script :type={Phoenix.LiveView.ColocatedHook} name=".BlurTitleOnSubmit">
@@ -1593,7 +1589,6 @@ defmodule ContractWeb.StudioLive do
                   </script>
 
                   <details
-                    :if={@other_documents != []}
                     class="relative shrink-0"
                     data-role="document-picker"
                   >
@@ -1615,6 +1610,14 @@ defmodule ContractWeb.StudioLive do
                         title={d.title}
                       >
                         {d.title}
+                      </.link>
+                      <.link
+                        :if={@other_documents == []}
+                        navigate={~p"/storage"}
+                        role="menuitem"
+                        class="block px-3 py-1.5 text-base-content/60 hover:bg-base-200"
+                      >
+                        {dgettext("studio", "보관함에서 문서 선택…")}
                       </.link>
                     </div>
                   </details>
