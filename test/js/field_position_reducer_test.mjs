@@ -235,6 +235,93 @@ test("ParagraphDeleted on the table's paragraph invalidates cell fields", () => 
   assert.equal(applyEvent(f, ev), INVALID)
 })
 
+// ─── 페이지 reflow 시나리오: 줄 삭제로 paragraph index 가 줄어들어
+//      field 가 다른 페이지로 넘어오는 경우. reducer 는 시각 페이지 인덱스를
+//      모르지만, paragraph/cell 인덱스가 정확히 유지되어야 다음 단계에서
+//      WASM 재렌더가 새 페이지를 정확히 그릴 수 있다. ─────────
+
+test("matchingBook preserved: 5 consecutive line deletes above body field", () => {
+  // 본문 field 가 paragraph 50 에 있고, 그 위 paragraph 10,11,12,13,14 가
+  // 순차적으로 mergeWithPrev 로 사라짐 (= 5번의 ParagraphMerged 이벤트).
+  // 결과: 최종 paragraph 인덱스는 50 - 5 = 45.
+  const start = {sectionIndex: 0, paragraphIndex: 50, charOffset: 12}
+  const seq = [
+    {type: "ParagraphMerged", sectionIndex: 0, paragraphIndex: 9,  prevLen: 0},
+    {type: "ParagraphMerged", sectionIndex: 0, paragraphIndex: 9,  prevLen: 0},
+    {type: "ParagraphMerged", sectionIndex: 0, paragraphIndex: 9,  prevLen: 0},
+    {type: "ParagraphMerged", sectionIndex: 0, paragraphIndex: 9,  prevLen: 0},
+    {type: "ParagraphMerged", sectionIndex: 0, paragraphIndex: 9,  prevLen: 0},
+  ]
+  const r = applyEvents(start, seq)
+  assert.notEqual(r, INVALID)
+  assert.deepEqual(r, {sectionIndex: 0, paragraphIndex: 45, charOffset: 12})
+})
+
+test("matchingBook preserved: cell field's parentParaIndex shifts with body line deletes above the table", () => {
+  // 표가 들어있는 paragraph 가 16 인데 그 위 본문 paragraph 들을 3번 합치면
+  // parentParaIndex 가 13 으로 시프트. 셀 안 cellPath/charOffset 은 무관.
+  const f = {sectionIndex: 0, parentParaIndex: 16, controlIndex: 0, cellIndex: 11,
+             cellParaIndex: 0, row: 2, col: 1, charOffset: 0}
+  const seq = [
+    {type: "ParagraphMerged", sectionIndex: 0, paragraphIndex: 5, prevLen: 0},
+    {type: "ParagraphMerged", sectionIndex: 0, paragraphIndex: 5, prevLen: 0},
+    {type: "ParagraphMerged", sectionIndex: 0, paragraphIndex: 5, prevLen: 0},
+  ]
+  const r = applyEvents(f, seq)
+  assert.notEqual(r, INVALID)
+  assert.equal(r.parentParaIndex, 13)
+  assert.equal(r.cellIndex, 11)
+  assert.equal(r.cellParaIndex, 0)
+  assert.equal(r.row, 2)
+  assert.equal(r.col, 1)
+})
+
+test("matchingBook preserved: range field with start/end both shift across multi-page reflow", () => {
+  // text_field range 양쪽 모두 같은 paragraph 라면 일관 시프트.
+  const start = {
+    start: {sectionIndex: 0, paragraphIndex: 30, charOffset: 5},
+    end:   {sectionIndex: 0, paragraphIndex: 30, charOffset: 12},
+  }
+  const seq = [
+    {type: "ParagraphMerged", sectionIndex: 0, paragraphIndex: 9, prevLen: 0},
+    {type: "ParagraphMerged", sectionIndex: 0, paragraphIndex: 9, prevLen: 0},
+  ]
+  const r = applyEvents(start, seq)
+  assert.notEqual(r, INVALID)
+  assert.equal(r.start.paragraphIndex, 28)
+  assert.equal(r.end.paragraphIndex, 28)
+  assert.equal(r.start.charOffset, 5)
+  assert.equal(r.end.charOffset, 12)
+})
+
+test("matchingBook preserved: deletes above, inserts below — multiple fields independently tracked", () => {
+  // 여러 fields 가 다른 페이지에 있는 상황 시뮬레이션 (배열 적용으로 모킹).
+  // 위쪽 paragraph 7 삭제 + paragraph 20 위치에 새 줄 추가 → 위치별 시프트 검증.
+  const fields = [
+    {sectionIndex: 0, paragraphIndex: 5,  charOffset: 0},   // 위쪽 — 영향 없음
+    {sectionIndex: 0, paragraphIndex: 12, charOffset: 3},   // 삭제 영향 -1
+    {sectionIndex: 0, paragraphIndex: 25, charOffset: 0},   // 삭제 -1, insert +1 = 0
+    {sectionIndex: 0, parentParaIndex: 30, controlIndex: 0, cellIndex: 0,
+     cellParaIndex: 0, row: 0, col: 0, charOffset: 0},      // 셀: 삭제 -1, insert +1 = 0
+  ]
+  const seq = [
+    {type: "ParagraphMerged",  sectionIndex: 0, paragraphIndex: 6,  prevLen: 0}, // 7→6 흡수
+    {type: "ParagraphInserted", sectionIndex: 0, paragraphIndex: 20},
+  ]
+  const expected = [
+    {sectionIndex: 0, paragraphIndex: 5,  charOffset: 0},
+    {sectionIndex: 0, paragraphIndex: 11, charOffset: 3},
+    {sectionIndex: 0, paragraphIndex: 25, charOffset: 0},
+    {sectionIndex: 0, parentParaIndex: 30, controlIndex: 0, cellIndex: 0,
+     cellParaIndex: 0, row: 0, col: 0, charOffset: 0},
+  ]
+  for (let i = 0; i < fields.length; i++) {
+    const r = applyEvents(fields[i], seq)
+    assert.notEqual(r, INVALID, `field ${i} should survive`)
+    assert.deepEqual(r, expected[i], `field ${i} mismatch`)
+  }
+})
+
 // ─── 결정성: 동일 이벤트 시퀀스 두 번 적용 결과가 일치 ──────
 
 test("determinism: applying the same sequence twice yields equal output", () => {
