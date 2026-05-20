@@ -583,22 +583,10 @@ defmodule ContractWeb.StudioLive do
     {:noreply, persist_rhwp_field_value(socket, field_id, stringify_rhwp_field_value(value))}
   end
 
-  def handle_event("rhwp.keydown", %{"key" => "Tab"} = params, socket) do
-    {:noreply,
-     push_event(socket, "rhwp.keydown", %{
-       "key" => "Tab",
-       "shiftKey" => truthy_param?(Map.get(params, "shiftKey") || Map.get(params, "shift_key"))
-     })}
-  end
-
-  def handle_event("rhwp.keydown", _params, socket), do: {:noreply, socket}
-
   def handle_event(event, params, socket) do
     handle_contract_event(event, params, socket)
   end
 
-  defp truthy_param?(value) when value in [true, "true", 1, "1"], do: true
-  defp truthy_param?(_value), do: false
 
   defp handle_contract_event(event, params, socket) do
     case event_to_command(event, params, socket.assigns) do
