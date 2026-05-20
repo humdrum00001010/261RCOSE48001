@@ -1780,7 +1780,7 @@ defmodule ContractWeb.StudioLive do
                   </div>
                   <kbd
                     aria-hidden="true"
-                    class="hidden md:inline-flex items-center rounded border border-base-300 px-1 text-[10px] leading-none font-mono text-base-content/55 select-none"
+                    class="hidden md:inline-flex items-center px-1 text-[10px] leading-none font-mono text-base-content/55 select-none"
                     title={dgettext("studio", "이전 = Shift+Tab, 다음 = Tab")}
                   >
                     Tab
