@@ -261,10 +261,8 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
               is_nil(msg_operation(msg)) and msg_kind(msg) != "reasoning" and
                 msg_role(msg) == "user"
             }
-            class="w-full rounded-md bg-base-300/60 px-3 py-1.5 text-[13px] leading-snug whitespace-pre-wrap break-words text-base-content/95"
-          >
-            {msg_body(msg)}
-          </div>
+            class="w-full border border-base-content/15 px-3 py-2 text-[13px] leading-snug whitespace-pre-wrap break-words text-base-content/95 shadow-[inset_0_2px_14px_rgba(0,0,0,0.32)]"
+          >{msg_body(msg)}</div>
 
           <%!-- Agent message: flat prose, no card. Sits flush at the
                column edge like ChatGPT / Codex CLI. `agent-text` span is
@@ -279,7 +277,7 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
             data-role="agent-text"
             data-message-id={dom_id}
             class={[
-              "block px-2 py-1.5 text-[14px] leading-relaxed break-words",
+              "block px-3 py-1 text-[14px] leading-relaxed break-words",
               msg_transient?(msg) == "true" && "text-base-content/60 italic",
               msg_transient?(msg) != "true" && "text-base-content"
             ]}
@@ -566,7 +564,7 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
            natural side-note in the conversation flow. A second
            chevron button on the right appears on hover and toggles the
            raw details panel underneath. --%>
-      <div class="group/trace relative flex w-full items-center gap-1">
+      <div class="group/trace relative flex w-full items-center gap-1 rounded-lg border border-base-content/15 px-3 py-1.5">
         <div
           id={"tool-trace-#{@operation_id}"}
           data-role="tool-trace"
