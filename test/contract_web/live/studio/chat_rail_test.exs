@@ -52,6 +52,7 @@ defmodule ContractWeb.Live.Studio.Components.ChatRailTest do
         socket
         |> PC.assign(:scope, scope)
         |> PC.assign(:studio_state, state)
+        |> PC.assign(:chat_thread, session["chat_thread"])
         |> PC.assign(:chat_layout, session["layout"] || :default)
         |> PC.assign(:grill_active?, session["grill_active?"] || nil)
         |> PC.assign(:test_pid, session["test_pid"])
@@ -80,6 +81,20 @@ defmodule ContractWeb.Live.Studio.Components.ChatRailTest do
       {:noreply, socket}
     end
 
+    def handle_event("chat.context_reset", params, socket) do
+      if pid = socket.assigns[:test_pid],
+        do: send(pid, {:captured, "chat.context_reset", params})
+
+      {:noreply, socket}
+    end
+
+    def handle_event("chat.thread.rename", params, socket) do
+      if pid = socket.assigns[:test_pid],
+        do: send(pid, {:captured, "chat.thread.rename", params})
+
+      {:noreply, socket}
+    end
+
     def handle_event(_event, _params, socket), do: {:noreply, socket}
 
     @impl true
@@ -90,6 +105,7 @@ defmodule ContractWeb.Live.Studio.Components.ChatRailTest do
           module={ChatRail}
           id="chat-rail"
           studio_state={@studio_state}
+          chat_thread={@chat_thread}
           streams={%{chat_messages: @streams.chat_messages}}
           current_scope={@scope}
           layout={@chat_layout}
@@ -146,6 +162,69 @@ defmodule ContractWeb.Live.Studio.Components.ChatRailTest do
       refute html =~ ~s(data-role="chat-message")
     end
 
+    test "renders compact title controls with context reset" do
+      html =
+        render_component(ChatRail,
+          id: "chat-rail",
+          studio_state: default_state(),
+          chat_thread: %{title: "Discussion - Scope confirmed", message_count: 4},
+          streams: %{chat_messages: empty_stream()},
+          current_scope: lawyer_scope()
+        )
+
+      assert html =~ ~s(data-role="chat-rail-controls")
+      assert html =~ ~s(data-role="chat-title-favicon")
+      assert html =~ ~s(aria-hidden="true")
+      assert html =~ ~s(src="/images/icons/openai-blossom.svg")
+      refute html =~ ~s(src="/assets/icons/openai-chatgpt-icon.png")
+      assert html =~ ~s(data-role="chat-thread-title")
+      assert html =~ ~s(data-role="chat-thread-title-input")
+      assert html =~ ~s(id="chat-thread-title-input")
+      assert html =~ ~s(name="title")
+      assert html =~ ~s(value="Discussion - Scope confirmed")
+      assert html =~ ~s(phx-submit="chat.thread.rename")
+      assert html =~ ~s(phx-change="chat.thread.rename")
+      assert html =~ ~s(phx-debounce="blur")
+
+      assert [] =
+               html
+               |> LazyHTML.from_fragment()
+               |> LazyHTML.query(~s([data-role="chat-thread-title-input"]))
+               |> LazyHTML.attribute("disabled")
+
+      assert html =~ ~s(data-role="chat-context-reset")
+      assert html =~ ~s(phx-click="chat.context_reset")
+      assert html =~ ~s(aria-label="Reset chat context")
+      refute html =~ "Agent context"
+      refute html =~ ~s(data-role="chat-message-count")
+      refute html =~ ~s(data-role="chat-rail-navbar")
+      refute html =~ ~s(data-brand="openai")
+
+      [controls_class] =
+        html
+        |> LazyHTML.from_fragment()
+        |> LazyHTML.query(~s([data-role="chat-rail-controls"]))
+        |> LazyHTML.attribute("class")
+
+      assert controls_class =~ "px-2"
+      assert controls_class =~ "py-1"
+      refute controls_class =~ "px-3"
+      refute controls_class =~ "py-2"
+
+      [favicon_class] =
+        html
+        |> LazyHTML.from_fragment()
+        |> LazyHTML.query(~s([data-role="chat-title-favicon"]))
+        |> LazyHTML.attribute("class")
+
+      assert favicon_class =~ "size-4"
+      assert favicon_class =~ "[[data-theme=studio-dark]_&]:invert"
+      refute favicon_class =~ "rounded"
+      refute favicon_class =~ "size-7"
+      refute favicon_class =~ "size-5"
+      refute favicon_class =~ "size-6"
+    end
+
     test "case 4 — send button is type=button (NOT submit) — mobile regression" do
       html =
         render_component(ChatRail,
@@ -194,38 +273,6 @@ defmodule ContractWeb.Live.Studio.Components.ChatRailTest do
       assert html =~ "env(safe-area-inset-bottom)"
       # No desktop fixed-width rail.
       refute html =~ "w-[360px]"
-    end
-
-    test "case 6b — mobile header surfaces 문서 button (goto-document affordance)" do
-      html =
-        render_component(ChatRail,
-          id: "chat-rail",
-          studio_state: default_state(),
-          streams: %{chat_messages: empty_stream()},
-          current_scope: lawyer_scope(),
-          layout: :mobile_full
-        )
-
-      # Mobile chat-rail header must expose a leading 문서 button that
-      # fires `toggle_preview` so the user can pivot from chat → document
-      # without going via /storage.
-      assert html =~ ~s(data-role="chat-rail-open-document")
-      assert html =~ ~s(phx-click="toggle_preview")
-      assert html =~ "문서"
-    end
-
-    test "case 6c — desktop header does NOT carry the 문서 toggle button" do
-      html =
-        render_component(ChatRail,
-          id: "chat-rail",
-          studio_state: default_state(),
-          streams: %{chat_messages: empty_stream()},
-          current_scope: lawyer_scope()
-        )
-
-      # Desktop renders the document inline + uses the studio-document-
-      # header's Storage link, so the in-rail toggle is mobile-only.
-      refute html =~ ~s(data-role="chat-rail-open-document")
     end
 
     test "agent_supervised persona sees the observer-mode banner" do
@@ -528,6 +575,14 @@ defmodule ContractWeb.Live.Studio.Components.ChatRailTest do
       # rendered text picks up surrounding whitespace from the wrapper layout.
       assert agent_text |> LazyHTML.text() |> String.trim() == "왼쪽에서 시작해야 합니다."
 
+      [paragraph_class] =
+        html
+        |> LazyHTML.from_fragment()
+        |> LazyHTML.query(~s(#chat-msg-agent-left [data-role="agent-paragraph"]))
+        |> LazyHTML.attribute("class")
+
+      refute paragraph_class =~ "whitespace-pre"
+
       [class] =
         agent_text
         |> LazyHTML.parent_node()
@@ -535,6 +590,105 @@ defmodule ContractWeb.Live.Studio.Components.ChatRailTest do
 
       assert class =~ "self-start"
       refute class =~ "self-center"
+    end
+
+    test "transient agent prose shows a loading indicator until the final message arrives" do
+      html =
+        render_component(ChatRail,
+          id: "chat-rail",
+          studio_state: default_state(),
+          streams: %{
+            chat_messages: [
+              {"chat-msg-agent-loading",
+               %{
+                 id: "agent-loading",
+                 role: :agent,
+                 body: "",
+                 transient?: true
+               }},
+              {"chat-msg-agent-final",
+               %{
+                 id: "agent-final",
+                 role: :agent,
+                 body: "Final answer.",
+                 transient?: false
+               }}
+            ]
+          },
+          current_scope: lawyer_scope()
+        )
+
+      fragment = LazyHTML.from_fragment(html)
+
+      [loading_role] =
+        fragment
+        |> LazyHTML.query(~s(#chat-msg-agent-loading [data-role="agent-loading"]))
+        |> LazyHTML.attribute("role")
+
+      assert loading_role == "status"
+
+      [aria_busy] =
+        fragment
+        |> LazyHTML.query(~s(#chat-msg-agent-loading [data-role="agent-text"]))
+        |> LazyHTML.attribute("aria-busy")
+
+      assert aria_busy == "true"
+
+      assert [] =
+               fragment
+               |> LazyHTML.query(~s(#chat-msg-agent-final [data-role="agent-loading"]))
+               |> LazyHTML.attribute("role")
+    end
+
+    test "reasoning renders as a compact aligned row instead of expanded prose" do
+      html =
+        render_component(ChatRail,
+          id: "chat-rail",
+          studio_state: default_state(),
+          streams: %{
+            chat_messages: [
+              {"chat-msg-reasoning-compact",
+               %{
+                 id: "reasoning-compact",
+                 role: :agent,
+                 kind: :reasoning,
+                 body:
+                   "First internal step\nSecond internal step that should not expand the rail layout.",
+                 transient?: true
+               }}
+            ]
+          },
+          current_scope: lawyer_scope()
+        )
+
+      fragment = LazyHTML.from_fragment(html)
+
+      [article_class] =
+        fragment
+        |> LazyHTML.query(~s(#chat-msg-reasoning-compact))
+        |> LazyHTML.attribute("class")
+
+      refute article_class =~ "max-w"
+
+      [reasoning_class] =
+        fragment
+        |> LazyHTML.query(~s(#chat-msg-reasoning-compact [data-role="agent-reasoning"]))
+        |> LazyHTML.attribute("class")
+
+      assert reasoning_class =~ "px-3"
+      refute reasoning_class =~ "whitespace-pre"
+
+      assert html =~ ~s(data-role="agent-reasoning-summary")
+      assert html =~ ~s(data-role="agent-reasoning-details")
+      assert html =~ "Second internal step"
+
+      [text_class] =
+        fragment
+        |> LazyHTML.query(~s(#chat-msg-reasoning-compact [data-role="agent-reasoning-text"]))
+        |> LazyHTML.attribute("class")
+
+      assert text_class =~ "truncate"
+      assert text_class =~ "whitespace-nowrap"
     end
   end
 
@@ -626,6 +780,48 @@ defmodule ContractWeb.Live.Studio.Components.ChatRailTest do
       |> render_hook("chat.submit", %{"message" => "hi agent"})
 
       assert_receive {:captured, "chat.submit", %{"message" => "hi agent"}}
+    end
+
+    test "context reset button dispatches the parent reset event", %{conn: conn} do
+      {:ok, lv, html} =
+        live_isolated(conn, WrapperLive,
+          session: %{
+            "scope" => lawyer_scope(),
+            "test_pid" => self(),
+            "chat_thread" => %{title: "Discussion - Scope confirmed", message_count: 3}
+          }
+        )
+
+      assert html =~ ~s(data-role="chat-context-reset")
+
+      lv
+      |> element(~s([data-role="chat-context-reset"]))
+      |> render_click()
+
+      assert_receive {:captured, "chat.context_reset", %{}}
+    end
+
+    test "title input dispatches the parent rename event", %{conn: conn} do
+      {:ok, lv, html} =
+        live_isolated(conn, WrapperLive,
+          session: %{
+            "scope" => lawyer_scope(),
+            "test_pid" => self(),
+            "chat_thread" => %{
+              id: Ecto.UUID.generate(),
+              title: "Discussion - Scope confirmed",
+              message_count: 3
+            }
+          }
+        )
+
+      assert html =~ ~s(id="chat-thread-title-form")
+
+      lv
+      |> form("#chat-thread-title-form", %{"title" => "Deal setup"})
+      |> render_submit()
+
+      assert_receive {:captured, "chat.thread.rename", %{"title" => "Deal setup"}}
     end
 
     test "case 5b — mobile layout: send button has a stable id, form delegates click → chat.submit",
@@ -848,7 +1044,7 @@ defmodule ContractWeb.Live.Studio.Components.ChatRailTest do
 
       assert has_element?(lv, "[data-role='tool-trace-collapse-row']")
       refute has_element?(lv, "[data-role='tool-trace-collapse-row'][class*='mt-']")
-      assert has_element?(lv, "[data-role='tool-trace-collapse-row'][class*='h-0']")
+      assert has_element?(lv, "[data-role='tool-trace-collapse-row'][class*='pt-1']")
 
       refute has_element?(lv, "#tool-trace-tool-hover-1-collapse[class*='bg-']")
 
@@ -863,6 +1059,54 @@ defmodule ContractWeb.Live.Studio.Components.ChatRailTest do
         |> render_click()
 
       refute html =~ ~s(data-role="tool-trace-details")
+    end
+
+    test "failed tool call trace shows visible details affordance and expands failure payload", %{
+      conn: conn
+    } do
+      {:ok, lv, _html} =
+        live_isolated(conn, WrapperLive, session: %{"scope" => lawyer_scope()})
+
+      send(lv.pid, {
+        :insert,
+        %{
+          id: "tool-failed-msg",
+          role: :agent,
+          operation: %{
+            id: "tool-failed-1",
+            type: "tool_call",
+            title: "doc.get",
+            status: "failed",
+            summary: "Tool failure",
+            details: %{
+              "error" => "contract-doc returned 424 Failed Dependency",
+              "tool" => "doc.get"
+            }
+          },
+          transient?: false
+        }
+      })
+
+      html = render(lv)
+      assert html =~ ~s(id="chat-msg-tool-failed-msg")
+      assert has_element?(lv, "#chat-msg-tool-failed-msg[phx-click='ui.toggle_expand']")
+      assert has_element?(lv, "#tool-trace-tool-failed-1[data-status='failed']")
+
+      assert has_element?(
+               lv,
+               "#tool-trace-tool-failed-1-expand[data-role='tool-trace-expand'][data-visible='true']"
+             )
+
+      refute html =~ ~s(data-role="tool-trace-details")
+
+      html =
+        lv
+        |> element("#chat-msg-tool-failed-msg")
+        |> render_click()
+
+      assert html =~ ~s(id="tool-trace-tool-failed-1-details")
+      assert html =~ "contract-doc returned 424 Failed Dependency"
+      assert html =~ "doc.get"
     end
   end
 end

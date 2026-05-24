@@ -49,7 +49,6 @@ defmodule ContractWeb.StudioLive do
 
         # Viewport (set by the .Viewport JS hook on connect)
         viewport: :desktop | :mobile,
-        preview_modal_open?: false,
 
       }
 
@@ -61,7 +60,6 @@ defmodule ContractWeb.StudioLive do
 
       "rename_document"       → :rename_document
       "set_contract_type"     → :set_contract_type
-      "edit_document"         → :edit_document
       "send_chat_message"     → :chat_message
       "revoke_change"         → :revoke_change
       "upload_document"       → :upload_document
@@ -73,8 +71,7 @@ defmodule ContractWeb.StudioLive do
 
   Local-only UI events (no Command emitted):
 
-      "toggle_preview", "open_modal", "close_modal", "set_node_focus",
-      "viewport_change", "noop"
+      "open_modal", "close_modal", "viewport_change", "noop"
 
   ## Protocol messages (§11)
 
@@ -113,13 +110,19 @@ defmodule ContractWeb.StudioLive do
           |> assign(:studio_state, studio_state)
           |> assign_projection(projection)
           |> assign(:current_document, current_document(scope, studio_state))
+          |> assign(:chat_thread, ChatThreads.current_thread_info(scope, studio_state))
           |> assign(:breadcrumbs, breadcrumbs)
           |> assign(:page_title, page_title(scope))
           |> assign(:viewport, :desktop)
           |> assign(:chat_rail_hidden?, false)
           |> assign(:other_documents, list_other_documents(scope, studio_state))
           |> then(fn s ->
-            snapshot = load_rhwp_snapshot(studio_state.selected_document_id)
+            snapshot =
+              load_rhwp_snapshot(
+                studio_state.selected_document_id,
+                rhwp_snapshot_format(projection)
+              )
+
             base_rev = (snapshot && snapshot.revision) || 0
 
             s
@@ -129,7 +132,6 @@ defmodule ContractWeb.StudioLive do
               load_rhwp_text_events(studio_state.selected_document_id, base_rev)
             )
           end)
-          |> assign(:preview_modal_open?, false)
           |> assign(:reconcile_modal_open?, false)
           |> assign(:reconcile_request, nil)
           |> assign(:migration_plan, nil)
@@ -160,12 +162,12 @@ defmodule ContractWeb.StudioLive do
           |> assign(:studio_state, %Contract.Studio.State{mode: :no_document})
           |> assign_projection(empty_projection())
           |> assign(:current_document, nil)
+          |> assign(:chat_thread, nil)
           |> assign(:breadcrumbs, build_breadcrumbs(scope, nil, nil))
           |> assign(:page_title, "Studio")
           |> assign(:viewport, :desktop)
           |> assign(:chat_rail_hidden?, false)
           |> assign(:other_documents, list_other_documents(scope, %{selected_document_id: nil}))
-          |> assign(:preview_modal_open?, false)
           |> assign(:reconcile_modal_open?, false)
           |> assign(:reconcile_request, nil)
           |> assign(:migration_plan, nil)
@@ -213,10 +215,6 @@ defmodule ContractWeb.StudioLive do
     {:noreply, assign(socket, :contract_type_picker_open?, false)}
   end
 
-  def handle_event("toggle_preview", _params, socket) do
-    {:noreply, update(socket, :preview_modal_open?, &(!&1))}
-  end
-
   def handle_event("toggle_chat_rail", _params, socket) do
     {:noreply, update(socket, :chat_rail_hidden?, &(!&1))}
   end
@@ -242,13 +240,6 @@ defmodule ContractWeb.StudioLive do
 
   def handle_event("close_modal", %{"modal" => modal}, socket) do
     {:noreply, update_modal(socket, modal, false)}
-  end
-
-  def handle_event("set_node_focus", %{"node_id" => node_id}, socket) do
-    {:noreply,
-     update(socket, :studio_state, fn state ->
-       %{state | selected_node_id: node_id}
-     end)}
   end
 
   def handle_event("noop", _params, socket), do: {:noreply, socket}
@@ -291,44 +282,39 @@ defmodule ContractWeb.StudioLive do
     {:noreply, socket}
   end
 
-  # rhwp 스냅샷 컴팩션 — client 가 doc.exportHwpx() 한 결과를 R2 에 직접 PUT.
-  # 1) presign: server 는 현재 latest_revision 으로 key + presigned PUT URL 발급
-  def handle_event("rhwp.snapshot.presign", _params, socket) do
-    document_id = socket.assigns.studio_state.selected_document_id
-
-    case build_rhwp_snapshot_presign(document_id) do
-      {:ok, payload} -> {:reply, payload, socket}
-      {:error, reason} -> {:reply, %{error: inspect(reason)}, socket}
-    end
-  end
-
-  # 2) commit: client 가 PUT 성공 후 alert → snapshots row insert.
-  # ir(snake_case) 가 함께 오면 projection 에 저장 — Agent prompt 합성에 쓰임.
-  def handle_event("rhwp.snapshot.commit", %{"revision" => rev, "key" => key} = params, socket)
-      when is_integer(rev) and is_binary(key) do
+  # rhwp 스냅샷 컴팩션 — client 가 원본 형식을 보존한 HWP/HWPX bytes 를 보내고,
+  # server 가 native blob + companion IR + rhwp_snapshots row 를 단일 경로로 쓴다.
+  def handle_event("rhwp.snapshot.upload", %{"bytes_base64" => encoded} = params, socket)
+      when is_binary(encoded) do
     document_id = socket.assigns.studio_state.selected_document_id
     ir = if is_map(params["ir"]), do: params["ir"], else: %{}
+    format = params["format"] || params[:format]
 
-    # Mirror the IR JSON into R2 next to the HWPX blob so doc.get can
-    # treat R2 as the single source of truth (HWPX = original, .ir.json =
-    # agent-IR projection). The DB `projection` column is kept as a hot
-    # cache + audit trail.
-    ir_key = ir_key_for(key)
-    _ = Contract.IO.R2.put(ir_key, Jason.encode!(ir), content_type: "application/json")
+    with true <- is_binary(document_id),
+         {:ok, format} <- Contract.RhwpSnapshot.normalize_format(to_string(format || "")),
+         {:ok, revision} <- Contract.Store.latest_revision(document_id),
+         {:ok, bytes} <- Base.decode64(encoded),
+         {:ok, snapshot} <-
+           Contract.RhwpSnapshot.upload_and_commit(document_id, revision, bytes, ir, format) do
+      {:reply,
+       %{
+         ok: true,
+         revision: snapshot.revision,
+         key: snapshot.r2_key,
+         format: snapshot.format
+       }, socket}
+    else
+      false ->
+        {:reply, %{error: "no_document"}, socket}
 
-    %Contract.Snapshot{}
-    |> Contract.Snapshot.changeset(%{
-      document_id: document_id,
-      revision: rev,
-      projection: ir,
-      r2_key: key
-    })
-    |> Contract.Repo.insert(
-      on_conflict: :nothing,
-      conflict_target: [:document_id, :revision]
-    )
+      :error ->
+        {:reply, %{error: "invalid_base64"}, socket}
 
-    {:noreply, socket}
+      {:error, reason} ->
+        require Logger
+        Logger.warning("rhwp.snapshot.upload failed: #{inspect(reason)}")
+        {:reply, %{error: inspect(reason)}, socket}
+    end
   end
 
   # ---------------------------------------------------------------------------
@@ -511,6 +497,43 @@ defmodule ContractWeb.StudioLive do
     {:noreply, push_event(socket, "open-document-upload-picker", %{})}
   end
 
+  def handle_event("chat.context_reset", _params, socket) do
+    if socket.assigns.studio_state.agent_run_id do
+      {:noreply, put_flash(socket, :info, "에이전트 응답이 끝난 뒤 새 컨텍스트를 시작할 수 있습니다.")}
+    else
+      case ChatThreads.reset_context(socket.assigns.current_scope, socket.assigns.studio_state) do
+        {:ok, _} ->
+          {:noreply,
+           socket
+           |> stream(:chat_messages, [], reset: true)
+           |> assign_current_chat_thread()}
+
+        {:error, reason} ->
+          {:noreply,
+           put_flash(socket, :error, "Could not reset chat context: #{inspect(reason)}")}
+      end
+    end
+  end
+
+  def handle_event("chat.thread.rename", %{"title" => title}, socket) when is_binary(title) do
+    case ChatThreads.rename_context(
+           socket.assigns.current_scope,
+           socket.assigns.studio_state,
+           title
+         ) do
+      {:ok, _thread} ->
+        {:noreply, assign_current_chat_thread(socket)}
+
+      {:error, :not_found} ->
+        {:noreply, assign_current_chat_thread(socket)}
+
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, "Could not rename chat context: #{inspect(reason)}")}
+    end
+  end
+
+  def handle_event("chat.thread.rename", _params, socket), do: {:noreply, socket}
+
   def handle_event("set_contract_type", %{"type_key" => type_key}, socket)
       when is_binary(type_key) do
     current_type_key = projection_type_key(socket.assigns.projection)
@@ -685,16 +708,6 @@ defmodule ContractWeb.StudioLive do
     end
   end
 
-  defp ir_key_for(hwpx_key) do
-    cond do
-      String.ends_with?(hwpx_key, ".hwpx") ->
-        String.replace_suffix(hwpx_key, ".hwpx", ".ir.json")
-
-      true ->
-        hwpx_key <> ".ir.json"
-    end
-  end
-
   # Helper: create a blank owner-scoped document through Runtime so both the
   # documents row and initial Change exist, then navigate document-first.
   defp create_blank_document(socket, type_key \\ nil) do
@@ -786,7 +799,11 @@ defmodule ContractWeb.StudioLive do
          %Contract.Studio.State{} = state
        ) do
     messages = ChatThreads.list_visible_messages(socket.assigns.current_scope, state)
-    stream(socket, :chat_messages, messages, reset: true)
+
+    socket
+    |> stream(:chat_messages, messages, reset: true)
+    |> maybe_insert_agent_loading_message(state.agent_run_id)
+    |> assign_current_chat_thread()
   end
 
   defp maybe_refresh_chat_messages(
@@ -804,13 +821,23 @@ defmodule ContractWeb.StudioLive do
     messages = ChatThreads.list_visible_messages(socket.assigns.current_scope, state)
 
     if messages == [] do
-      socket
+      assign_current_chat_thread(socket)
     else
-      stream(socket, :chat_messages, messages, reset: true)
+      socket
+      |> stream(:chat_messages, messages, reset: true)
+      |> assign_current_chat_thread()
     end
   end
 
   defp maybe_refresh_chat_messages(socket, _action, _state), do: socket
+
+  defp assign_current_chat_thread(socket) do
+    assign(
+      socket,
+      :chat_thread,
+      ChatThreads.current_thread_info(socket.assigns.current_scope, socket.assigns.studio_state)
+    )
+  end
 
   defp apply_submit_result(
          socket,
@@ -889,9 +916,6 @@ defmodule ContractWeb.StudioLive do
   def event_to_command("document.rename", params, assigns),
     do: build_action(assigns, :rename_document, params)
 
-  def event_to_command("document.edit", params, assigns),
-    do: build_action(assigns, :edit_document, params)
-
   def event_to_command("document.open", params, assigns),
     do: build_action(assigns, :open_document, params)
 
@@ -932,16 +956,6 @@ defmodule ContractWeb.StudioLive do
     do:
       build_action(assigns, :source_claim_unlink_from_document, params, document_required: false)
 
-  def event_to_command("change.revoke", params, assigns) do
-    case params["change_id"] || params[:change_id] do
-      change_id when is_binary(change_id) and change_id != "" ->
-        build_action(assigns, :revoke_change, params)
-
-      _ ->
-        {:error, {:missing_change_id, :revoke_change}}
-    end
-  end
-
   def event_to_command("revoke.resolve", params, assigns),
     do: build_action(assigns, :resolve_revoke, params)
 
@@ -961,20 +975,12 @@ defmodule ContractWeb.StudioLive do
     build_action(assigns, :set_contract_type, params)
   end
 
-  def event_to_command("edit_document", params, assigns) do
-    build_action(assigns, :edit_document, params)
-  end
-
   def event_to_command("send_chat_message", params, assigns) do
     build_action(assigns, :chat_message, params, document_required: false)
   end
 
   def event_to_command("update_metadata", params, assigns) do
     build_action(assigns, :update_metadata, params)
-  end
-
-  def event_to_command("revoke_change", params, assigns) do
-    event_to_command("change.revoke", params, assigns)
   end
 
   def event_to_command("upload_document", params, assigns) do
@@ -1017,10 +1023,8 @@ defmodule ContractWeb.StudioLive do
   # Local-only UI events (no Command emitted).
   def event_to_command(local, _params, _assigns)
       when local in [
-             "toggle_preview",
              "open_modal",
              "close_modal",
-             "set_node_focus",
              "viewport_change"
            ] do
     :local
@@ -1125,12 +1129,15 @@ defmodule ContractWeb.StudioLive do
   def handle_protocol_message({:change_committed, %Contract.Change{} = change}, socket) do
     socket
     |> update(:studio_state, fn state ->
-      if change.result_revision &&
-           change.result_revision > (state.last_seen_revision || 0) do
-        %{state | last_seen_revision: change.result_revision}
-      else
-        state
-      end
+      state =
+        if change.result_revision &&
+             change.result_revision > (state.last_seen_revision || 0) do
+          %{state | last_seen_revision: change.result_revision}
+        else
+          state
+        end
+
+      mark_agent_authored_nodes(state, change)
     end)
     |> stream_insert(:changes, change, at: 0)
     |> push_editor_last_change(change)
@@ -1202,6 +1209,7 @@ defmodule ContractWeb.StudioLive do
     }
 
     socket
+    |> clear_agent_loading_state(agent_run_id)
     |> update(:studio_state, fn state ->
       if state.agent_run_id == agent_run_id do
         %{state | agent_run_id: nil}
@@ -1211,10 +1219,12 @@ defmodule ContractWeb.StudioLive do
     end)
     |> stream_insert(:chat_messages, bubble)
     |> recompute_grill_assigns()
+    |> assign_current_chat_thread()
   end
 
   def handle_protocol_message({:agent_failed, agent_run_id, reason}, socket) do
     socket
+    |> clear_agent_loading_state(agent_run_id)
     |> update(:studio_state, fn state ->
       if state.agent_run_id == agent_run_id do
         %{state | agent_run_id: nil}
@@ -1232,26 +1242,18 @@ defmodule ContractWeb.StudioLive do
     # a render diff on every delta (~30-40ms in dev each), throttling the
     # stream to ~15Hz even though OpenAI sends 38Hz. Process dict is per
     # LV process state with no diff cost.
-    key = {:text_bubble_created, agent_run_id}
-    first? = Process.get(key) == nil
+    first? = not text_bubble_created?(agent_run_id)
 
     socket =
       if first? do
-        Process.put(key, true)
+        mark_text_bubble_created(agent_run_id)
         # Empty body — JS appends TextNodes via push_event below.
-        bubble = %{
-          id: "agent-#{agent_run_id}-streaming",
-          agent_run_id: agent_run_id,
-          role: :agent,
-          body: "",
-          timestamp: nil,
-          transient?: true
-        }
-
-        stream_insert(socket, :chat_messages, bubble)
+        stream_insert(socket, :chat_messages, agent_loading_message(agent_run_id))
       else
         socket
       end
+
+    mark_text_stream_started(agent_run_id)
 
     # push_event is the per-token live path. The JS ChatInput hook listens
     # for phx:agent_text_append and appends the piece into the bubble's
@@ -1326,7 +1328,8 @@ defmodule ContractWeb.StudioLive do
         summary: "Started",
         details: normalize_operation_details(tool_call)
       },
-      transient?: true
+      transient?: true,
+      agent_run_id: agent_run_id
     )
   end
 
@@ -1342,30 +1345,41 @@ defmodule ContractWeb.StudioLive do
         summary: protocol_summary(delta),
         details: normalize_operation_details(delta)
       },
-      transient?: true
+      transient?: true,
+      agent_run_id: agent_run_id
     )
   end
 
   def handle_protocol_message({:tool_call_completed, agent_run_id, tool_call_id, result}, socket) do
-    insert_operation_chat(socket, "tool-#{agent_run_id}-#{tool_call_id}", %{
-      id: "tool-#{agent_run_id}-#{tool_call_id}",
-      type: "tool_call",
-      title: tool_trace_title(result, "도구 실행"),
-      status: "completed",
-      summary: protocol_summary(result),
-      details: normalize_operation_details(result)
-    })
+    insert_operation_chat(
+      socket,
+      "tool-#{agent_run_id}-#{tool_call_id}",
+      %{
+        id: "tool-#{agent_run_id}-#{tool_call_id}",
+        type: "tool_call",
+        title: tool_trace_title(result, "도구 실행"),
+        status: "completed",
+        summary: protocol_summary(result),
+        details: normalize_operation_details(result)
+      },
+      agent_run_id: agent_run_id
+    )
   end
 
   def handle_protocol_message({:tool_call_failed, agent_run_id, tool_call_id, reason}, socket) do
-    insert_operation_chat(socket, "tool-#{agent_run_id}-#{tool_call_id}", %{
-      id: "tool-#{agent_run_id}-#{tool_call_id}",
-      type: "tool_call",
-      title: tool_trace_title(reason, "도구 실행"),
-      status: "failed",
-      summary: protocol_summary(reason),
-      details: normalize_operation_details(reason)
-    })
+    insert_operation_chat(
+      socket,
+      "tool-#{agent_run_id}-#{tool_call_id}",
+      %{
+        id: "tool-#{agent_run_id}-#{tool_call_id}",
+        type: "tool_call",
+        title: tool_trace_title(reason, "도구 실행"),
+        status: "failed",
+        summary: protocol_summary(reason),
+        details: normalize_operation_details(reason)
+      },
+      agent_run_id: agent_run_id
+    )
   end
 
   def handle_protocol_message({:source_document_uploaded, source_document}, socket) do
@@ -1667,19 +1681,9 @@ defmodule ContractWeb.StudioLive do
           streams={%{chat_messages: @streams.chat_messages}}
           current_scope={@current_scope}
           layout={:mobile_full}
+          chat_thread={@chat_thread}
           grill_marks={@grill_marks}
           grill_active?={@grill_active?}
-        />
-
-        <.live_component
-          :if={@preview_modal_open?}
-          module={Components.PreviewOverlay}
-          id="preview-overlay"
-          projection={@projection}
-          studio_state={@studio_state}
-          current_scope={@current_scope}
-          viewport={@viewport}
-          streams={%{changes: @streams.changes}}
         />
 
         <.live_component
@@ -2101,33 +2105,6 @@ defmodule ContractWeb.StudioLive do
                   text_events={@rhwp_text_events}
                   snapshot={@rhwp_snapshot}
                 />
-
-                <%= if is_nil(standard_template) do %>
-                  <.live_component
-                    :if={@studio_state.mode == :reviewing}
-                    module={Components.Canvas.Review}
-                    id="canvas"
-                    studio_state={@studio_state}
-                    projection={@projection}
-                    current_scope={@current_scope}
-                    changes_stream={@streams.changes}
-                  />
-                  <.live_component
-                    :if={@studio_state.mode != :reviewing}
-                    module={canvas_module(@studio_state.mode)}
-                    id="canvas"
-                    studio_state={@studio_state}
-                    projection={@projection}
-                    current_scope={@current_scope}
-                  />
-                  <.live_component
-                    module={Components.MarksLayer}
-                    id="marks-layer"
-                    projection={@projection}
-                    studio_state={@studio_state}
-                    viewport={@viewport}
-                  />
-                <% end %>
               </div>
             </article>
           </section>
@@ -2227,6 +2204,7 @@ defmodule ContractWeb.StudioLive do
               studio_state={@studio_state}
               streams={%{chat_messages: @streams.chat_messages}}
               current_scope={@current_scope}
+              chat_thread={@chat_thread}
               grill_marks={@grill_marks}
               grill_active?={@grill_active?}
             />
@@ -2467,9 +2445,22 @@ defmodule ContractWeb.StudioLive do
     end
   end
 
-  defp template_path(%{template_hwpx_path: path}) when is_binary(path) and path != "", do: path
   defp template_path(%{template_hwp_path: path}) when is_binary(path) and path != "", do: path
+  defp template_path(%{template_hwpx_path: path}) when is_binary(path) and path != "", do: path
   defp template_path(_spec), do: nil
+
+  defp rhwp_snapshot_format(projection) do
+    projection
+    |> standard_template_spec()
+    |> template_format()
+  end
+
+  defp template_format(%{template_hwp_path: path}) when is_binary(path) and path != "", do: "hwp"
+
+  defp template_format(%{template_hwpx_path: path}) when is_binary(path) and path != "",
+    do: "hwpx"
+
+  defp template_format(_spec), do: nil
 
   # rhwp canvas replay events: changes 테이블의 :edit_text payload 만 추출 →
   # [%{kind, sec, para, off, ...}] 리스트. 클라이언트 hook 이 mount 시 WASM
@@ -2490,42 +2481,18 @@ defmodule ContractWeb.StudioLive do
     end
   end
 
-  # 가장 최근 rhwp HWPX snapshot. r2_key 가 .hwpx 로 끝나면 우리 rhwp snapshot,
-  # 그 외(IR projection snapshot)는 무시.
-  defp load_rhwp_snapshot(nil), do: nil
+  # Most recent committed rhwp native snapshot. This is the visual document
+  # source of truth; do not silently fall back to older snapshots/templates
+  # when delivery is broken.
+  defp load_rhwp_snapshot(nil, _format), do: nil
 
-  defp load_rhwp_snapshot(document_id) do
-    import Ecto.Query, only: [from: 2]
+  defp load_rhwp_snapshot(document_id, format) do
+    case Contract.RhwpSnapshot.latest_for_document(document_id, format) do
+      %Contract.RhwpSnapshot.Record{revision: rev, format: format} ->
+        %{url: "/documents/#{document_id}/rhwp-snapshots/#{rev}.#{format}", revision: rev}
 
-    query =
-      from s in Contract.Snapshot,
-        where: s.document_id == ^document_id and like(s.r2_key, ^"%.hwpx"),
-        order_by: [desc: s.revision],
-        limit: 1
-
-    case Contract.Repo.one(query) do
       nil ->
         nil
-
-      %Contract.Snapshot{r2_key: key, revision: rev} ->
-        case Contract.IO.R2.presigned_url(key, method: :get, expires_in: 3600) do
-          {:ok, url} -> %{url: url, revision: rev}
-          _ -> nil
-        end
-    end
-  end
-
-  defp build_rhwp_snapshot_presign(nil), do: {:error, :no_document}
-
-  defp build_rhwp_snapshot_presign(document_id) do
-    with {:ok, revision} <- Contract.Store.latest_revision(document_id),
-         key = "documents/#{document_id}/snapshots/#{revision}.hwpx",
-         {:ok, url} <-
-           Contract.IO.R2.presigned_url(key,
-             method: :put,
-             expires_in: 300
-           ) do
-      {:ok, %{url: url, key: key, revision: revision}}
     end
   end
 
@@ -2613,12 +2580,6 @@ defmodule ContractWeb.StudioLive do
     |> String.downcase()
     |> String.contains?(query)
   end
-
-  defp canvas_module(:briefing), do: Components.Canvas.Briefing
-  defp canvas_module(:editing), do: Components.Canvas.Editor
-  defp canvas_module(:reviewing), do: Components.Canvas.Review
-  defp canvas_module(:no_document), do: Components.Canvas.Empty
-  defp canvas_module(_), do: Components.Canvas.Empty
 
   defp page_title(_), do: "Studio"
 
@@ -2719,6 +2680,51 @@ defmodule ContractWeb.StudioLive do
     })
   end
 
+  # Stamp `:recently_authored_agent` for every node id touched by an
+  # agent-authored Change. Reads the payload ops (the per-op `:target_id`
+  # / `"target_id"` keys — payload comes back as string-keyed maps once
+  # it round-trips through Ecto.Repo) and intersects with node-shaped
+  # `target_type`s so we don't accidentally stamp document- or field-
+  # scoped op targets. Revokes are skipped: revoking an agent edit
+  # should *un*-animate, not re-animate.
+  defp mark_agent_authored_nodes(state, %Contract.Change{
+         actor_type: :agent,
+         command_kind: kind,
+         payload: payload
+       })
+       when kind not in ["revoke_change", "resolve_revoke"] and is_list(payload) do
+    node_ids =
+      payload
+      |> Enum.flat_map(&extract_node_target/1)
+      |> Enum.uniq()
+
+    if node_ids == [] do
+      state
+    else
+      Contract.Studio.State.mark_recently_authored(
+        state,
+        node_ids,
+        System.system_time(:millisecond)
+      )
+    end
+  end
+
+  defp mark_agent_authored_nodes(state, _change), do: state
+
+  @agent_node_target_types ~w(node paragraph heading list_item)
+
+  defp extract_node_target(%{target_type: type, target_id: id})
+       when is_binary(id) and (is_atom(type) or is_binary(type)) do
+    if to_string(type) in @agent_node_target_types, do: [id], else: []
+  end
+
+  defp extract_node_target(%{"target_type" => type, "target_id" => id})
+       when is_binary(id) and is_binary(type) do
+    if type in @agent_node_target_types, do: [id], else: []
+  end
+
+  defp extract_node_target(_), do: []
+
   defp recompute_grill_assigns(socket) do
     marks = (socket.assigns[:projection] || %{})[:marks] || %{}
     current_agent_run = socket.assigns[:studio_state] && socket.assigns.studio_state.agent_run_id
@@ -2740,14 +2746,72 @@ defmodule ContractWeb.StudioLive do
     |> assign(:grill_active?, grill_marks != [])
   end
 
+  defp maybe_insert_agent_loading_message(socket, agent_run_id) when is_binary(agent_run_id) do
+    mark_text_bubble_created(agent_run_id)
+    stream_insert(socket, :chat_messages, agent_loading_message(agent_run_id))
+  end
+
+  defp maybe_insert_agent_loading_message(socket, _agent_run_id), do: socket
+
+  defp maybe_move_waiting_agent_loading_message(socket, agent_run_id)
+       when is_binary(agent_run_id) do
+    if waiting_for_agent_text?(agent_run_id) do
+      bubble = agent_loading_message(agent_run_id)
+
+      socket
+      |> stream_delete(:chat_messages, bubble)
+      |> stream_insert(:chat_messages, bubble)
+    else
+      socket
+    end
+  end
+
+  defp maybe_move_waiting_agent_loading_message(socket, _agent_run_id), do: socket
+
+  defp agent_loading_message(agent_run_id) do
+    %{
+      id: "agent-#{agent_run_id}-streaming",
+      agent_run_id: agent_run_id,
+      role: :agent,
+      body: "",
+      timestamp: nil,
+      transient?: true
+    }
+  end
+
+  defp text_bubble_created?(agent_run_id),
+    do: Process.get(text_bubble_created_key(agent_run_id)) == true
+
+  defp waiting_for_agent_text?(agent_run_id),
+    do:
+      text_bubble_created?(agent_run_id) and
+        Process.get(text_stream_started_key(agent_run_id)) != true
+
+  defp mark_text_bubble_created(agent_run_id),
+    do: Process.put(text_bubble_created_key(agent_run_id), true)
+
+  defp mark_text_stream_started(agent_run_id),
+    do: Process.put(text_stream_started_key(agent_run_id), true)
+
+  defp clear_agent_loading_state(socket, agent_run_id) do
+    _ = Process.delete(text_bubble_created_key(agent_run_id))
+    _ = Process.delete(text_stream_started_key(agent_run_id))
+    socket
+  end
+
+  defp text_bubble_created_key(agent_run_id), do: {:text_bubble_created, agent_run_id}
+  defp text_stream_started_key(agent_run_id), do: {:text_stream_started, agent_run_id}
+
   defp insert_operation_chat(socket, id, operation, opts \\ []) do
-    stream_insert(socket, :chat_messages, %{
+    socket
+    |> stream_insert(:chat_messages, %{
       id: to_string(id),
       role: :agent,
       operation: stringify_operation(operation),
       transient?: Keyword.get(opts, :transient?, false),
       timestamp: DateTime.utc_now()
     })
+    |> maybe_move_waiting_agent_loading_message(Keyword.get(opts, :agent_run_id))
   end
 
   defp stringify_operation(operation) when is_map(operation) do

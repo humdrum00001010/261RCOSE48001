@@ -217,15 +217,6 @@ defmodule ContractWeb.StudioLiveTest do
       refute html =~ ~s(data-role="context-reservoir")
     end
 
-    test "toggle_preview is a no-op on desktop layout (mobile-only button)",
-         %{conn: conn} do
-      {:ok, lv, _html} = live(conn, ~p"/studio")
-
-      assert :sys.get_state(lv.pid).socket.assigns.preview_modal_open? == false
-      _ = render_hook(lv, "toggle_preview", %{})
-      assert :sys.get_state(lv.pid).socket.assigns.preview_modal_open? == true
-    end
-
     # -------------------------------------------------------------------------
     # Owner directive 2026-05-17 — Studio LV is full-bleed on mobile.
     # "The chat should fill the whole screen in mobile, not being part of a
@@ -264,21 +255,6 @@ defmodule ContractWeb.StudioLiveTest do
 
       # Breadcrumbs nav (rendered by Layouts.app) must NOT appear on mobile.
       refute html =~ ~s(aria-label="Breadcrumb")
-    end
-
-    test "mobile viewport drops the floating preview FAB (chat rail header has 문서 toggle)",
-         %{conn: conn} do
-      {:ok, lv, _html} = live(conn, ~p"/studio")
-      html = render_hook(lv, "viewport_change", %{"w" => 600})
-
-      # The previous FAB lived at fixed bottom-6 right-6 with circular btn —
-      # that combination is gone now; the chat rail's own header has the
-      # 문서 toggle (a single document-toggle affordance).
-      refute html =~ "fixed bottom-6 right-6 btn btn-primary btn-circle"
-      refute html =~ ~s(aria-label="Toggle document preview")
-
-      # The chat rail still renders its own 문서 toggle button.
-      assert html =~ ~s(phx-click="toggle_preview")
     end
 
     test "rotating mobile → desktop restores Layouts.app chrome",
@@ -357,6 +333,11 @@ defmodule ContractWeb.StudioLiveTest do
                %State{agent_run_id: run_id} = assigns(lv).studio_state
                is_binary(run_id)
              end)
+
+      run_id = assigns(lv).studio_state.agent_run_id
+      html = render(lv)
+      assert html =~ ~s(id="chat-msg-agent-#{run_id}-streaming")
+      assert html =~ ~s(data-role="agent-loading")
 
       # The hidden seed was persisted with role "system" so it never
       # reaches the visible rail.
@@ -498,34 +479,10 @@ defmodule ContractWeb.StudioLiveTest do
                )
     end
 
-    test "document.edit → :edit_document", %{assigns: assigns} do
-      doc = Ecto.UUID.generate()
-      assigns = put_doc(assigns, doc)
-
-      assert {:ok, %Command{kind: :edit_document}} =
-               StudioLive.event_to_command("document.edit", %{"ops" => []}, assigns)
-    end
-
     test "chat.submit → :chat_message (document not required)",
          %{assigns: assigns} do
       assert {:ok, %Command{kind: :chat_message}} =
                StudioLive.event_to_command("chat.submit", %{"message" => "hi"}, assigns)
-    end
-
-    test "change.revoke → :revoke_change", %{assigns: assigns} do
-      doc = Ecto.UUID.generate()
-      assigns = put_doc(assigns, doc)
-
-      assert {:ok, %Command{kind: :revoke_change, change_id: "x"}} =
-               StudioLive.event_to_command("change.revoke", %{"change_id" => "x"}, assigns)
-    end
-
-    test "change.revoke without change_id is rejected", %{assigns: assigns} do
-      doc = Ecto.UUID.generate()
-      assigns = put_doc(assigns, doc)
-
-      assert {:error, {:missing_change_id, :revoke_change}} =
-               StudioLive.event_to_command("change.revoke", %{}, assigns)
     end
 
     test "document.upload → :upload_document (document not required)",
@@ -607,10 +564,8 @@ defmodule ContractWeb.StudioLiveTest do
     end
 
     test "local UI events return :local", %{assigns: assigns} do
-      assert :local = StudioLive.event_to_command("toggle_preview", %{}, assigns)
       assert :local = StudioLive.event_to_command("open_modal", %{}, assigns)
       assert :local = StudioLive.event_to_command("close_modal", %{}, assigns)
-      assert :local = StudioLive.event_to_command("set_node_focus", %{}, assigns)
       assert :local = StudioLive.event_to_command("viewport_change", %{}, assigns)
     end
 
@@ -768,162 +723,6 @@ defmodule ContractWeb.StudioLiveTest do
       refute card_chunk =~ "bg-success"
     end
 
-    # Wave 4 bugfix #5: the Canvas.Editor hook now sends an Engine-shaped
-    # `:edit_document` payload (`%{"ops" => [%{"op" => "replace_content", ...}]}`).
-    # The parent LV must accept that shape end-to-end — `Studio.submit/3`
-    # → `Engine.compile/2` → a Change row landing — without crashing.
-    test "edit_document with Engine-shaped ops payload lands a Change row",
-         %{conn: conn, user: user} do
-      scope = Contract.Context.for_user(user)
-
-      {:ok, doc} =
-        Contract.Documents.create(scope, %{
-          "title" => "edit-bug-5-doc",
-          "type_key" => "nda_v1"
-        })
-
-      conn =
-        Plug.Conn.put_session(
-          conn,
-          :user_perms,
-          ~w(read write commit revoke export type_change)a
-        )
-
-      {:ok, lv, _html} = live(conn, ~p"/studio")
-
-      send_state(lv, %State{
-        selected_document_id: doc.id,
-        mode: :editing,
-        last_seen_revision: 0
-      })
-
-      # Push the realistic payload the hook now sends.
-      _ =
-        render_hook(lv, "edit_document", %{
-          "ops" => [
-            %{
-              "op" => "replace_content",
-              "target_type" => "node",
-              "target_id" => "node-1",
-              "args" => %{"content" => "hello world"}
-            }
-          ]
-        })
-
-      # The LV must not crash; assigns must remain coherent.
-      assigns = assigns(lv)
-      assert %State{} = assigns.studio_state
-      assert assigns.studio_state.selected_document_id == doc.id
-    end
-
-    # Wave 4 bugfix #74 — clean-revoke (Cmd+Z) keyboard path.
-    # An `edit_document` followed by a `revoke_change` carrying the
-    # committed change's id must drive the parent LV through
-    # `Studio.submit → Engine.compile → Store.append`, producing a
-    # revoke `Change` row. The Playwright `clean-revoke.spec.ts` Cmd+Z
-    # flow rides exactly this path — this test pins the server side
-    # contract that the Editor hook depends on (without it, the hook's
-    # cached lastChangeId would be useless).
-    #
-    # Status-flip of the original change to `:revoked` is a separate
-    # Store concern (not driven from this LV path); this test asserts
-    # only what the LV + Engine compile path is responsible for.
-    test "edit_document then revoke_change for the same node lands a revoke Change row",
-         %{conn: conn, user: user} do
-      scope = Contract.Context.for_user(user)
-
-      {:ok, doc} =
-        Contract.Documents.create(scope, %{
-          "title" => "revoke-key-74-doc",
-          "type_key" => "nda_v1"
-        })
-
-      conn =
-        Plug.Conn.put_session(
-          conn,
-          :user_perms,
-          ~w(read write commit revoke export type_change)a
-        )
-
-      {:ok, lv, _html} = live(conn, ~p"/studio")
-
-      send_state(lv, %State{
-        selected_document_id: doc.id,
-        mode: :editing,
-        last_seen_revision: 0
-      })
-
-      # 1. Land an edit (the same Engine-shaped payload the hook sends).
-      _ =
-        render_hook(lv, "edit_document", %{
-          "ops" => [
-            %{
-              "op" => "replace_content",
-              "target_type" => "node",
-              "target_id" => "node-effective-date",
-              "args" => %{"content" => "2026-01-01"}
-            }
-          ]
-        })
-
-      # The edit MUST be in the store; grab its id so we can revoke it.
-      {:ok, changes_after_edit} = Contract.Store.changes_since(doc.id, 0)
-
-      edit_change =
-        Enum.find(changes_after_edit, fn c -> c.command_kind == "edit_document" end)
-
-      assert edit_change,
-             "edit_document must produce a Change row " <>
-               "(got: #{inspect(Enum.map(changes_after_edit, & &1.command_kind))})"
-
-      # The LV pushes editor:last-change to the hook as soon as the
-      # change_committed PubSub round-trip lands. Drive the protocol
-      # message directly here because `render_hook` returns before the
-      # async broadcast is delivered.
-      send(lv.pid, {:change_committed, edit_change})
-      _ = render(lv)
-
-      # 2. Simulate Cmd+Z by firing the same event the hook would push.
-      _ =
-        render_hook(lv, "change.revoke", %{
-          "change_id" => edit_change.id,
-          "node_id" => "node-effective-date"
-        })
-
-      # 3. The store now holds a revoke change pointing at the original.
-      {:ok, after_undo} = Contract.Store.changes_since(doc.id, 0)
-
-      revoke_change =
-        Enum.find(after_undo, fn c ->
-          c.command_kind == "revoke_change"
-        end)
-
-      assert revoke_change,
-             "revoke_change event must land a revoke Change row " <>
-               "(got kinds: #{inspect(Enum.map(after_undo, & &1.command_kind))})"
-
-      # The revoke's explain mark targets the change_id we intended to
-      # undo (engine.ex `build_ops_and_marks/:revoke_change`). This is
-      # the contract the editor hook's Cmd+Z relies on: the change_id
-      # it pushes must match the original edit it means to revoke.
-      revoked_target =
-        (revoke_change.marks || [])
-        |> Enum.find_value(fn
-          %{target_type: "change", target_id: id} -> id
-          %{"target_type" => "change", "target_id" => id} -> id
-          %{target_type: :change, target_id: id} -> id
-          _ -> nil
-        end)
-
-      assert revoked_target == edit_change.id,
-             "revoke Change must target the original edit by id " <>
-               "(target=#{inspect(revoked_target)}, expected=#{edit_change.id})"
-
-      # The original edit row must still be retrievable (its status flip
-      # to `:revoked` is a separate Store-side concern).
-      original = Enum.find(after_undo, fn c -> c.id == edit_change.id end)
-      assert original, "the original edit Change must still be present"
-    end
   end
 
   describe "handle_info protocol (driven through the live LV process)" do
@@ -954,6 +753,57 @@ defmodule ContractWeb.StudioLiveTest do
       send(lv.pid, {:change_committed, change})
       _ = render(lv)
       assert assigns(lv).studio_state.last_seen_revision == 7
+    end
+
+    test "{:change_committed, agent_change} stamps :recently_authored_agent for node ops",
+         %{conn: conn} do
+      doc = Ecto.UUID.generate()
+      {:ok, lv, _html} = live(conn, ~p"/studio")
+
+      send_state(lv, %State{selected_document_id: doc, mode: :editing, last_seen_revision: 0})
+
+      change = %Contract.Change{
+        id: Ecto.UUID.generate(),
+        document_id: doc,
+        command_kind: "agent_change",
+        actor_type: :agent,
+        result_revision: 9,
+        payload: [
+          %{op: :replace_content, target_type: :node, target_id: "node-x", args: %{}},
+          # A field-target op should be ignored — only node-shaped ops
+          # drive the IR-canvas typing animation.
+          %{op: :set_field, target_type: :field, target_id: "field-y", args: %{}}
+        ]
+      }
+
+      send(lv.pid, {:change_committed, change})
+      _ = render(lv)
+
+      map = assigns(lv).studio_state.recently_authored_agent
+      assert Map.has_key?(map, "node-x")
+      refute Map.has_key?(map, "field-y")
+    end
+
+    test "{:change_committed, user_change} does not stamp :recently_authored_agent",
+         %{conn: conn} do
+      doc = Ecto.UUID.generate()
+      {:ok, lv, _html} = live(conn, ~p"/studio")
+
+      send_state(lv, %State{selected_document_id: doc, mode: :editing, last_seen_revision: 0})
+
+      change = %Contract.Change{
+        id: Ecto.UUID.generate(),
+        document_id: doc,
+        command_kind: "edit_document",
+        actor_type: :user,
+        result_revision: 2,
+        payload: [%{op: :replace_content, target_type: :node, target_id: "node-x", args: %{}}]
+      }
+
+      send(lv.pid, {:change_committed, change})
+      _ = render(lv)
+
+      assert assigns(lv).studio_state.recently_authored_agent == %{}
     end
 
     test "{:revoke_requested, _} opens the reconcile modal", %{conn: conn} do

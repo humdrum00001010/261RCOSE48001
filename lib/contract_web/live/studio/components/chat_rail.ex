@@ -34,6 +34,7 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
 
   attr :id, :string, required: true
   attr :studio_state, :map, required: true
+  attr :chat_thread, :map, default: nil
   attr :streams, :map, required: true
   attr :current_scope, :map, required: true
   attr :layout, :atom, default: :default
@@ -59,6 +60,8 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
       |> assign(:observer_mode?, observer_mode?(assigns.current_scope))
       |> assign(:grill_active?, resolve_grill_active?(assigns))
       |> assign(:no_document?, no_document?(assigns.studio_state))
+      |> assign(:chat_thread_title, chat_thread_title(assigns[:chat_thread]))
+      |> assign(:chat_context_empty?, chat_context_empty?(assigns[:chat_thread]))
       |> assign(:start_options, start_options())
 
     ~H"""
@@ -73,23 +76,59 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
         @mobile? && "w-full flex-1 h-full"
       ]}
     >
-      <%!-- Mobile-only header: just the "문서 보기" toggle. Desktop renders
-           the chat at the top of the rail with no chrome. --%>
-      <header
-        :if={@mobile?}
-        class="flex items-center gap-2 px-4 py-2 border-b border-base-300 shrink-0"
+      <div
+        data-role="chat-rail-controls"
+        class="flex shrink-0 items-center justify-between gap-2 border-b border-base-300 bg-base-200/95 px-2 py-1"
       >
-        <button
-          type="button"
-          phx-click="toggle_preview"
-          data-role="chat-rail-open-document"
-          class="inline-flex items-center gap-1 rounded-md border border-base-300 px-2 py-1 text-xs text-base-content/80 hover:bg-base-200"
-          aria-label={dgettext("studio", "문서 보기")}
+        <h2
+          data-role="chat-thread-title"
+          title={@chat_thread_title}
+          class="flex min-w-0 flex-1 items-center gap-1.5 text-sm font-semibold leading-5 text-base-content"
         >
-          <.icon name="hero-document-text" class="size-4" />
-          {dgettext("studio", "문서")}
-        </button>
-      </header>
+          <img
+            src={~p"/images/icons/openai-blossom.svg"}
+            data-role="chat-title-favicon"
+            aria-hidden="true"
+            alt=""
+            class="size-4 shrink-0 opacity-85 [[data-theme=studio-dark]_&]:invert"
+          />
+          <form
+            id="chat-thread-title-form"
+            phx-submit="chat.thread.rename"
+            phx-change="chat.thread.rename"
+            data-role="chat-thread-title-form"
+            class="min-w-0 flex-1"
+          >
+            <input
+              id="chat-thread-title-input"
+              type="text"
+              name="title"
+              value={@chat_thread_title}
+              phx-debounce="blur"
+              aria-label={dgettext("studio", "Chat title")}
+              title={@chat_thread_title}
+              autocomplete="off"
+              spellcheck="false"
+              data-role="chat-thread-title-input"
+              class="block h-6 w-full min-w-0 truncate rounded-sm border border-transparent bg-transparent px-1 py-0 text-sm font-semibold leading-5 text-base-content outline-none transition-colors hover:border-base-300 hover:bg-base-100/60 focus:border-base-content/30 focus:bg-base-100 disabled:cursor-default disabled:text-base-content/70"
+            />
+          </form>
+        </h2>
+
+        <div class="flex shrink-0 items-center gap-1">
+          <button
+            type="button"
+            phx-click="chat.context_reset"
+            data-role="chat-context-reset"
+            disabled={@chat_context_empty?}
+            class="inline-flex size-8 items-center justify-center rounded-md text-base-content/60 hover:bg-base-300 hover:text-base-content disabled:cursor-not-allowed disabled:opacity-35 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-base-content/25"
+            aria-label={dgettext("studio", "Reset chat context")}
+            title={dgettext("studio", "Reset chat context")}
+          >
+            <.icon name="hero-arrow-path" class="size-4" />
+          </button>
+        </div>
+      </div>
 
       <%!-- Observer-mode banner (agent_supervised persona) --%>
       <div
@@ -211,20 +250,21 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
           tabindex={tool_call_toggle_tabindex(msg)}
           aria-expanded={tool_call_aria_expanded(@expanded_operation_ids, msg)}
           aria-controls={tool_call_aria_controls(msg)}
-          class={[
-            "group/message relative flex flex-col items-stretch gap-0.5 w-full",
-            msg_role(msg) == "agent" && "self-start",
-            msg_kind(msg) == "reasoning" && "max-w-[92%]",
-            # Collapse the parent stream's gap-3 between adjacent agent-side
-            # articles so a tool_call row and the agent text that follows
-            # read as a single turn rather than two separate messages.
-            # Negative top margin on the *next* agent article cancels the
-            # gap. Applied via Tailwind's next-sibling variant on this
-            # element when it's an agent article.
-            msg_role(msg) == "agent" && "[&+[data-message-role=agent]]:!-mt-3",
-            tool_call_message?(msg) &&
-              "cursor-pointer focus-visible:outline focus-visible:outline-1 focus-visible:outline-offset-1 focus-visible:outline-base-content/20"
-          ]}
+          class={
+            [
+              "group/message relative flex flex-col items-stretch gap-0.5 w-full",
+              msg_role(msg) == "agent" && "self-start",
+              # Collapse the parent stream's gap-3 between adjacent agent-side
+              # articles so a tool_call row and the agent text that follows
+              # read as a single turn rather than two separate messages.
+              # Negative top margin on the *next* agent article cancels the
+              # gap. Applied via Tailwind's next-sibling variant on this
+              # element when it's an agent article.
+              msg_role(msg) == "agent" && "[&+[data-message-role=agent]]:!-mt-3",
+              tool_call_message?(msg) &&
+                "cursor-pointer focus-visible:outline focus-visible:outline-1 focus-visible:outline-offset-1 focus-visible:outline-base-content/20"
+            ]
+          }
         >
           <.operation_block
             :if={msg_operation(msg)}
@@ -232,25 +272,47 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
             expanded={operation_expanded?(@expanded_operation_ids, msg, msg_operation(msg))}
             target={@myself}
           />
-          <%!-- Reasoning / "thinking" stream — dimmed italic prose,
-               no decoration except the leading sparkles glyph. --%>
-          <div
+          <%!-- Reasoning / "thinking" stream — shown as a compact disclosure
+               so it stays aligned with agent prose until the user expands it. --%>
+          <details
             :if={is_nil(msg_operation(msg)) and msg_kind(msg) == "reasoning"}
             data-role="agent-reasoning"
             class={[
-              "flex items-start gap-2 text-[12px] whitespace-pre-wrap break-words",
+              "group/reasoning self-start max-w-[85%] px-3 py-0.5 text-[11px] leading-none",
               "text-base-content/55 italic",
               msg_transient?(msg) == "true" && "animate-pulse"
             ]}
           >
-            <.icon name="hero-sparkles" class="size-3.5 shrink-0 text-base-content/35" />
-            <span
-              data-role="agent-reasoning-text"
-              data-message-id={dom_id}
+            <summary
+              data-role="agent-reasoning-summary"
+              class="flex cursor-pointer list-none items-center gap-1.5 [&::-webkit-details-marker]:hidden"
             >
-              {msg_body(msg)}
-            </span>
-          </div>
+              <.icon name="hero-sparkles" class="size-3 shrink-0 text-base-content/35" />
+              <span
+                data-role="agent-reasoning-text"
+                data-message-id={dom_id}
+                data-placeholder={reasoning_placeholder?(msg)}
+                title={msg_body(msg)}
+                class="min-w-0 truncate whitespace-nowrap"
+              >
+                {reasoning_summary(msg)}
+              </span>
+              <.icon
+                name="hero-chevron-down"
+                class="size-3 shrink-0 opacity-50 transition-transform group-open/reasoning:rotate-180"
+              />
+            </summary>
+            <div
+              data-role="agent-reasoning-details"
+              class="mt-1 rounded-md border border-base-300 bg-base-100 px-3 py-2 font-mono text-[11px] leading-relaxed text-base-content/60 shadow-sm"
+            >
+              <pre
+                data-role="agent-reasoning-details-text"
+                data-message-id={dom_id}
+                class="whitespace-pre-wrap break-words"
+              >{msg_body(msg)}</pre>
+            </div>
+          </details>
 
           <%!-- User message: full-width rounded card (Codex CLI style).
                Slightly elevated background distinguishes the input echo
@@ -261,8 +323,10 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
               is_nil(msg_operation(msg)) and msg_kind(msg) != "reasoning" and
                 msg_role(msg) == "user"
             }
-            class="w-full border border-base-content/15 px-3 py-2 text-[13px] leading-snug whitespace-pre-wrap break-words text-base-content/95 shadow-[inset_0_2px_14px_rgba(0,0,0,0.32)]"
-          >{msg_body(msg)}</div>
+            class="w-full border border-base-content/10 bg-base-300/50 px-3 py-1.5 text-[13px] leading-snug whitespace-normal break-words text-base-content/95 shadow-[inset_0_1px_3px_rgba(0,0,0,0.10)]"
+          >
+            {msg_body(msg)}
+          </div>
 
           <%!-- Agent message: flat prose, no card. Sits flush at the
                column edge like ChatGPT / Codex CLI. `agent-text` span is
@@ -276,14 +340,44 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
             }
             data-role="agent-text"
             data-message-id={dom_id}
+            aria-busy={msg_transient?(msg)}
             class={[
               "block px-3 py-1 text-[14px] leading-relaxed break-words",
               msg_transient?(msg) == "true" && "text-base-content/60 italic",
               msg_transient?(msg) != "true" && "text-base-content"
             ]}
           >
-            <%= for para <- String.split(msg_body(msg) || "", ~r/\n{2,}/) do %>
-              <span class="block whitespace-pre-wrap [&:not(:last-child)]:mb-3">{para}</span>
+            <% paragraphs = agent_paragraphs(msg) %>
+            <%= for {para, index} <- Enum.with_index(paragraphs) do %>
+              <span
+                data-role="agent-paragraph"
+                class="block whitespace-normal [&:not(:last-child)]:mb-1"
+              >
+                {para}
+                <span
+                  :if={agent_loading?(msg) and index == length(paragraphs) - 1}
+                  data-role="agent-loading"
+                  role="status"
+                  aria-label={dgettext("studio", "답변 작성 중")}
+                  class="ml-1 inline-flex h-4 translate-y-[0.125rem] items-end gap-0.5 align-baseline text-base-content/45"
+                >
+                  <span
+                    aria-hidden="true"
+                    class="size-1 rounded-full bg-current motion-safe:animate-bounce [animation-delay:-240ms]"
+                  >
+                  </span>
+                  <span
+                    aria-hidden="true"
+                    class="size-1 rounded-full bg-current motion-safe:animate-bounce [animation-delay:-120ms]"
+                  >
+                  </span>
+                  <span
+                    aria-hidden="true"
+                    class="size-1 rounded-full bg-current motion-safe:animate-bounce"
+                  >
+                  </span>
+                </span>
+              </span>
             <% end %>
           </span>
 
@@ -454,19 +548,32 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
                 `[data-role="agent-text"][data-message-id="${id}"]`
               )
               if (!container) return
-              const paraClass = "block whitespace-pre-wrap [&:not(:last-child)]:mb-1.5"
+              const paraClass = "block whitespace-normal [&:not(:last-child)]:mb-1"
+              const paraSelector = '[data-role="agent-paragraph"]'
               const mkPara = () => {
                 const s = document.createElement("span")
+                s.dataset.role = "agent-paragraph"
                 s.className = paraClass
                 container.appendChild(s)
                 return s
               }
-              let current = container.lastElementChild || mkPara()
+              const moveLoadingTo = (target) => {
+                const indicator = container.querySelector('[data-role="agent-loading"]')
+                if (indicator && indicator.parentElement !== target) target.appendChild(indicator)
+              }
+              const appendText = (target, text) => {
+                const indicator = target.querySelector('[data-role="agent-loading"]')
+                target.insertBefore(document.createTextNode(text), indicator || null)
+              }
+              const paragraphs = container.querySelectorAll(paraSelector)
+              let current = paragraphs[paragraphs.length - 1] || mkPara()
+              moveLoadingTo(current)
               const parts = piece.split(/\n{2,}/)
-              current.appendChild(document.createTextNode(parts[0]))
+              appendText(current, parts[0])
               for (let i = 1; i < parts.length; i++) {
                 current = mkPara()
-                current.appendChild(document.createTextNode(parts[i]))
+                moveLoadingTo(current)
+                appendText(current, parts[i])
               }
             }
             window.addEventListener("phx:agent_text_append", this.onAppend)
@@ -482,7 +589,15 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
               const span = document.querySelector(
                 `[data-role="agent-reasoning-text"][data-message-id="${id}"]`
               )
+              if (span && span.dataset.placeholder === "true") {
+                span.textContent = ""
+                span.dataset.placeholder = "false"
+              }
               if (span) span.appendChild(document.createTextNode(piece))
+              const details = document.querySelector(
+                `[data-role="agent-reasoning-details-text"][data-message-id="${id}"]`
+              )
+              if (details) details.appendChild(document.createTextNode(piece))
             }
             window.addEventListener("phx:agent_reasoning_append", this.onReasoningAppend)
 
@@ -564,7 +679,7 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
            natural side-note in the conversation flow. A second
            chevron button on the right appears on hover and toggles the
            raw details panel underneath. --%>
-      <div class="group/trace relative flex w-full items-center gap-1 rounded-lg border border-base-content/15 px-3 py-1.5">
+      <div class="group/trace relative flex w-full items-center gap-1 px-3 py-1.5">
         <div
           id={"tool-trace-#{@operation_id}"}
           data-role="tool-trace"
@@ -585,19 +700,24 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
               :if={@operation_summary != ""}
               data-role="tool-trace-summary"
               class="ml-1 text-base-content/40"
-            >{@operation_summary}</span>
+            >
+              {@operation_summary}
+            </span>
           </span>
         </div>
         <span
           :if={!@expanded}
           id={"tool-trace-#{@operation_id}-expand"}
           data-role="tool-trace-expand"
-          title={dgettext("studio", "펼치기")}
-          aria-hidden="true"
+          data-visible={tool_trace_expand_visible(@operation_status)}
+          title={tool_trace_expand_label(@operation_status)}
+          aria-label={tool_trace_expand_label(@operation_status)}
           class={[
             "absolute right-0 top-1/2 inline-flex size-6 -translate-y-1/2 items-center justify-center text-base-content/55 transition",
-            "opacity-0 hover:text-base-content focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-base-content/25",
-            "group-hover/message:opacity-100 group-hover/trace:opacity-100"
+            "hover:text-base-content focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-base-content/25",
+            @operation_status == "failed" && "opacity-100 text-error/80 hover:text-error",
+            @operation_status != "failed" &&
+              "opacity-0 group-hover/message:opacity-100 group-hover/trace:opacity-100"
           ]}
         >
           <.icon name="hero-chevron-down" class="size-3" />
@@ -612,15 +732,16 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
         <div class="rounded-md border border-base-300 bg-base-100 px-3 py-2 font-mono text-[11px] leading-relaxed text-base-content/60 shadow-sm">
           <pre class="whitespace-pre-wrap break-words">{operation_details(@operation)}</pre>
         </div>
-        <div data-role="tool-trace-collapse-row" class="flex h-0 justify-center overflow-visible">
+        <div data-role="tool-trace-collapse-row" class="flex justify-center pt-1">
           <span
             id={"tool-trace-#{@operation_id}-collapse"}
             data-role="tool-trace-collapse"
             title={dgettext("studio", "접기")}
-            aria-hidden="true"
-            class="inline-flex size-5 items-center justify-center text-base-content/55 transition hover:text-base-content focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-base-content/25"
+            aria-label={dgettext("studio", "접기")}
+            class="inline-flex items-center gap-1 text-[11px] text-base-content/55 transition hover:text-base-content focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-base-content/25"
           >
             <.icon name="hero-chevron-up" class="size-3" />
+            {dgettext("studio", "접기")}
           </span>
         </div>
       </div>
@@ -877,6 +998,18 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
   def observer_mode?(_), do: false
 
   # ----------------------------------------------------------------------------
+  # Header helpers
+  # ----------------------------------------------------------------------------
+
+  defp chat_thread_title(%{title: title}) when is_binary(title) and title != "",
+    do: title
+
+  defp chat_thread_title(_), do: dgettext("studio", "새 대화")
+
+  defp chat_context_empty?(%{message_count: count}) when is_integer(count), do: count == 0
+  defp chat_context_empty?(_), do: true
+
+  # ----------------------------------------------------------------------------
   # No-document welcome — SPEC.md §10. When the LV mounts WITHOUT a selected
   # document, the chat shows a pre-canned agent message with 5 quick-start
   # options. Each chip emits `agent_option_picked` with a `key`, which the
@@ -1119,6 +1252,12 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
 
   defp operation_label(_), do: "작업"
 
+  defp tool_trace_expand_visible("failed"), do: "true"
+  defp tool_trace_expand_visible(_status), do: "false"
+
+  defp tool_trace_expand_label("failed"), do: dgettext("studio", "실패 세부 정보")
+  defp tool_trace_expand_label(_status), do: dgettext("studio", "펼치기")
+
   defp operation_status_label("completed"), do: dgettext("studio", "완료")
   defp operation_status_label("ready"), do: dgettext("studio", "준비됨")
   defp operation_status_label("proposed"), do: dgettext("studio", "제안됨")
@@ -1169,6 +1308,31 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
   defp msg_kind(%{kind: kind}) when is_atom(kind), do: Atom.to_string(kind)
   defp msg_kind(%{kind: kind}) when is_binary(kind), do: kind
   defp msg_kind(_), do: "text"
+
+  defp reasoning_summary(msg) do
+    msg
+    |> msg_body()
+    |> String.replace(~r/\s+/, " ")
+    |> String.trim()
+    |> case do
+      "" -> dgettext("studio", "생각 중")
+      text -> text
+    end
+  end
+
+  defp reasoning_placeholder?(msg) do
+    msg
+    |> msg_body()
+    |> String.trim()
+    |> case do
+      "" -> "true"
+      _ -> "false"
+    end
+  end
+
+  defp agent_loading?(msg), do: msg_transient?(msg) == "true"
+
+  defp agent_paragraphs(msg), do: String.split(msg_body(msg) || "", ~r/\n{2,}/)
 
   defp msg_body(%{body: body}) when is_binary(body), do: body
   defp msg_body(%{body: body}) when is_binary(body), do: collapse_blanks(body)
