@@ -553,22 +553,25 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
                 container.appendChild(s)
                 return s
               }
-              const moveLoadingTo = (target) => {
+              // First real token arriving: kill the bouncing-dots indicator.
+              // Keeping it alive would just have it trail the prose as new
+              // text streams in (the old behaviour moved it from paragraph
+              // to paragraph), which reads as a stray glyph next to the
+              // agent's words.
+              const dropLoading = () => {
                 const indicator = container.querySelector('[data-role="agent-loading"]')
-                if (indicator && indicator.parentElement !== target) target.appendChild(indicator)
+                if (indicator) indicator.remove()
               }
               const appendText = (target, text) => {
-                const indicator = target.querySelector('[data-role="agent-loading"]')
-                target.insertBefore(document.createTextNode(text), indicator || null)
+                target.appendChild(document.createTextNode(text))
               }
               const paragraphs = container.querySelectorAll(paraSelector)
               let current = paragraphs[paragraphs.length - 1] || mkPara()
-              moveLoadingTo(current)
+              dropLoading()
               const parts = piece.split(/\n{2,}/)
               appendText(current, parts[0])
               for (let i = 1; i < parts.length; i++) {
                 current = mkPara()
-                moveLoadingTo(current)
                 appendText(current, parts[i])
               }
             }
@@ -1348,7 +1351,13 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
     end
   end
 
-  defp agent_loading?(msg), do: msg_transient?(msg) == "true"
+  # Show the bouncing-dots indicator only while the message is in-flight
+  # AND has no visible body yet. Once the first token has landed, drop the
+  # dots — otherwise the indicator keeps trailing the prose as the JS hook
+  # ferries it from paragraph to paragraph during streaming.
+  defp agent_loading?(msg) do
+    msg_transient?(msg) == "true" and (msg_body(msg) || "") == ""
+  end
 
   defp agent_paragraphs(msg), do: String.split(msg_body(msg) || "", ~r/\n{2,}/)
 
