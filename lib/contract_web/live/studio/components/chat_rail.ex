@@ -78,7 +78,7 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
     >
       <div
         data-role="chat-rail-controls"
-        class="flex shrink-0 items-center justify-between gap-2 border-b border-base-300 bg-base-200/95 px-2 py-1"
+        class="flex shrink-0 items-center justify-between gap-2 border-b border-base-300 bg-base-200/95 px-4 py-1"
       >
         <h2
           data-role="chat-thread-title"
@@ -278,14 +278,13 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
             :if={is_nil(msg_operation(msg)) and msg_kind(msg) == "reasoning"}
             data-role="agent-reasoning"
             class={[
-              "group/reasoning self-start max-w-[85%] px-3 py-0.5 text-[11px] leading-none",
-              "text-base-content/55 italic",
+              "group/reasoning self-start max-w-[85%] px-3 py-0.5",
               msg_transient?(msg) == "true" && "animate-pulse"
             ]}
           >
             <summary
               data-role="agent-reasoning-summary"
-              class="flex cursor-pointer list-none items-center gap-1.5 [&::-webkit-details-marker]:hidden"
+              class="flex cursor-pointer list-none items-center gap-1.5 text-[11px] leading-none text-base-content/55 [&::-webkit-details-marker]:hidden"
             >
               <.icon name="hero-sparkles" class="size-3 shrink-0 text-base-content/35" />
               <span
@@ -304,7 +303,7 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
             </summary>
             <div
               data-role="agent-reasoning-details"
-              class="mt-1 rounded-md border border-base-300 bg-base-100 px-3 py-2 font-mono text-[11px] leading-relaxed text-base-content/60 shadow-sm"
+              class="mt-1 rounded-md border border-base-300 bg-base-100 px-3 py-2 text-[14px] leading-relaxed text-base-content shadow-sm"
             >
               <pre
                 data-role="agent-reasoning-details-text"
