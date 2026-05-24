@@ -241,8 +241,8 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
           data-message-role={msg_role(msg)}
           data-message-kind={msg_kind(msg)}
           data-transient={msg_transient?(msg)}
-          phx-click={tool_call_toggle_event(msg)}
-          phx-keydown={tool_call_toggle_event(msg)}
+          phx-click={tool_call_toggle_event(msg, @expanded_operation_ids)}
+          phx-keydown={tool_call_toggle_event(msg, @expanded_operation_ids)}
           phx-key={tool_call_toggle_key(msg)}
           phx-value-operation_id={tool_call_toggle_operation_id(msg)}
           phx-target={tool_call_toggle_target(msg, @myself)}
@@ -261,7 +261,7 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
               # gap. Applied via Tailwind's next-sibling variant on this
               # element when it's an agent article.
               msg_role(msg) == "agent" && "[&+[data-message-role=agent]]:!-mt-3",
-              tool_call_message?(msg) &&
+              tool_call_message?(msg) and not tool_call_expanded?(@expanded_operation_ids, msg) &&
                 "cursor-pointer focus-visible:outline focus-visible:outline-1 focus-visible:outline-offset-1 focus-visible:outline-base-content/20"
             ]
           }
@@ -712,8 +712,11 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
           data-visible={tool_trace_expand_visible(@operation_status)}
           title={tool_trace_expand_label(@operation_status)}
           aria-label={tool_trace_expand_label(@operation_status)}
+          phx-click="ui.toggle_expand"
+          phx-value-operation_id={@operation_id}
+          phx-target={@target}
           class={[
-            "absolute right-0 top-1/2 inline-flex size-6 -translate-y-1/2 items-center justify-center text-base-content/55 transition",
+            "absolute right-0 top-1/2 inline-flex size-6 -translate-y-1/2 items-center justify-center text-base-content/55 transition cursor-pointer",
             "hover:text-base-content focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-base-content/25",
             @operation_status == "failed" && "opacity-100 text-error/80 hover:text-error",
             @operation_status != "failed" &&
@@ -733,16 +736,20 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
           <pre class="whitespace-pre-wrap break-words">{operation_details(@operation)}</pre>
         </div>
         <div data-role="tool-trace-collapse-row" class="flex justify-center pt-1">
-          <span
+          <button
             id={"tool-trace-#{@operation_id}-collapse"}
+            type="button"
             data-role="tool-trace-collapse"
             title={dgettext("studio", "접기")}
             aria-label={dgettext("studio", "접기")}
-            class="inline-flex items-center gap-1 text-[11px] text-base-content/55 transition hover:text-base-content focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-base-content/25"
+            phx-click="ui.toggle_expand"
+            phx-value-operation_id={@operation_id}
+            phx-target={@target}
+            class="inline-flex items-center gap-1 text-[11px] text-base-content/55 transition hover:text-base-content focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-base-content/25 cursor-pointer"
           >
             <.icon name="hero-chevron-up" class="size-3" />
             {dgettext("studio", "접기")}
-          </span>
+          </button>
         </div>
       </div>
     <% else %>
@@ -1058,8 +1065,23 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
 
   defp tool_call_message?(msg), do: match?(%{}, tool_call_operation(msg))
 
-  defp tool_call_toggle_event(msg) do
-    if tool_call_message?(msg), do: "ui.toggle_expand"
+  # When a tool-call row is collapsed, the whole article is the click target
+  # (any click expands). Once expanded, the article becomes inert: only the
+  # dedicated 접기 button collapses it. This keeps text selection inside the
+  # details `<pre>` from accidentally collapsing the row, and removes the
+  # double-fire that would happen if the button's click bubbled to the
+  # article (button phx-click + article phx-click both firing = no net change).
+  defp tool_call_toggle_event(msg, expanded_ids) do
+    if tool_call_message?(msg) and not tool_call_expanded?(expanded_ids, msg) do
+      "ui.toggle_expand"
+    end
+  end
+
+  defp tool_call_expanded?(expanded_ids, msg) do
+    case tool_call_operation(msg) do
+      nil -> false
+      operation -> operation_expanded?(expanded_ids, msg, operation)
+    end
   end
 
   defp tool_call_toggle_key(msg) do
