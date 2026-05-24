@@ -36,7 +36,7 @@ defmodule Contract.MCP do
       %{
         "name" => "doc.get",
         "description" =>
-          "Returns a presigned HTTPS URL pointing at the agent IR JSON in R2. Fetch the URL via GET to retrieve the document state. URL is valid for ~1 hour. Pin `since_revision` to the last `revision` you received to short-circuit when nothing changed.",
+          "Returns the current compact agent IR inline, including `revision`, paragraph list `p`, fields `f`, and any editable table/cell coordinates. Pin `since_revision` to the last `revision` you received to short-circuit when nothing changed.",
         "inputSchema" =>
           object_schema(
             %{"since_revision" => %{"type" => "integer", "minimum" => 0}},
@@ -46,19 +46,29 @@ defmodule Contract.MCP do
       %{
         "name" => "doc.edit_text",
         "description" =>
-          "Replace a character range inside one paragraph or table cell. `len=0` is pure insert, `text=\"\"` is pure delete, both nonzero is replace. For table cells, pass `cell_path` (controlIndex/cellIndex/cellParaIndex tuples) from doc.get. Pin `base_revision` to the value last seen.",
+          "Replace a character range inside one paragraph or table cell. STRONGLY PREFER passing `match` (the exact substring you intend to remove, copied verbatim from doc.get) over a numeric `len` — the server measures `match`'s length itself, so you cannot miscount Korean syllables, surrogate pairs, brackets, or whitespace. Use `len` only when you must delete by count (e.g. pure trailing delete). `match=\"\"` and `len=0` mean pure insert; `text=\"\"` means pure delete. For table cells, pass `cell_path` (controlIndex/cellIndex/cellParaIndex tuples) from doc.get. Pin `base_revision` to the value last seen.",
         "inputSchema" =>
           object_schema(
             %{
               "sec" => %{"type" => "integer", "minimum" => 0},
               "para" => %{"type" => "integer", "minimum" => 0},
               "off" => %{"type" => "integer", "minimum" => 0},
-              "len" => %{"type" => "integer", "minimum" => 0},
+              "match" => %{
+                "type" => "string",
+                "description" =>
+                  "Preferred. The exact substring expected at (sec, para, off) that should be deleted before `text` is inserted. Server computes the delete length from this string, so you never have to count characters yourself."
+              },
+              "len" => %{
+                "type" => "integer",
+                "minimum" => 0,
+                "description" =>
+                  "Legacy fallback. Number of Unicode grapheme clusters to delete. Ignored when `match` is provided. Counting Korean text or surrogate pairs by hand is error-prone — prefer `match`."
+              },
               "text" => %{"type" => "string"},
               "cell_path" => cell_path_schema(),
               "base_revision" => %{"type" => "integer", "minimum" => 0}
             },
-            ["sec", "para", "off", "len", "text"]
+            ["sec", "para", "off", "text"]
           )
       },
       %{
@@ -284,10 +294,37 @@ defmodule Contract.MCP do
 
   @document_resource_kinds ["state", "outline", "nodes", "fields", "changes", "revokes", "marks"]
 
-  @doc "Returns the MCP initialize result payload."
-  def initialize(_payload) do
+  # MCP protocol versions we implement. We speak Streamable HTTP
+  # (single `/mcp` POST endpoint, SSE-or-JSON response framing), which
+  # is the "2025-03-26" revision. The older "2024-11-05" wire is also
+  # compatible because Streamable HTTP is a strict superset of the
+  # earlier dual-endpoint SSE protocol from the server's perspective.
+  @supported_mcp_versions ~w(2025-03-26 2024-11-05)
+
+  @doc """
+  Returns the MCP initialize result payload.
+
+  Echoes the client's requested `protocolVersion` when it's one we
+  support; otherwise advertises the newest version we implement
+  (`2025-03-26`). OpenAI's hosted MCP runner upgraded to
+  `2025-03-26` — replying with the older `2024-11-05` made their
+  client treat the catalog as unreachable and surface
+  `external_connector_error / Http status code: 424 (Failed
+  Dependency)`.
+  """
+  def initialize(payload) do
+    requested =
+      case payload do
+        %{"protocolVersion" => v} when is_binary(v) -> v
+        %{protocolVersion: v} when is_binary(v) -> v
+        _ -> nil
+      end
+
+    version =
+      if requested in @supported_mcp_versions, do: requested, else: "2025-03-26"
+
     %{
-      "protocolVersion" => "2024-11-05",
+      "protocolVersion" => version,
       "serverInfo" => %{"name" => "contract-studio", "version" => "0.5.0"},
       "capabilities" => %{
         "tools" => %{"listChanged" => false},
@@ -366,13 +403,7 @@ defmodule Contract.MCP do
             {:ok, %{"ok" => true, "unchanged" => true, "revision" => state.revision}}
 
           true ->
-            compact =
-              state
-              |> Contract.MCP.Projection.to_agent_ir()
-              |> Contract.Agent.Prompt.IRRenderer.compact_map()
-
-            # Splice revision so the agent can pin base_revision on follow-up edits.
-            {:ok, Map.put(compact, "revision", state.revision)}
+            build_doc_get_response(state)
         end
       end
     end)
@@ -663,6 +694,69 @@ defmodule Contract.MCP do
     do: {:ok, not_available("collab.fetch_slack_context", "Slack context is not available yet")}
 
   def call_tool(_ctx, _route_ref, tool, _args), do: {:error, {:unknown_tool, tool}}
+
+  # Agent-facing doc.get response. The compact IR is inline because the
+  # hosted MCP tool call result is the model context; the model does not
+  # get a general-purpose HTTP fetch just because a tool returns a URL.
+  # A presigned R2 URL is still useful as metadata/debug context when it
+  # is cheap to produce, but it must never be the only document body.
+  defp build_doc_get_response(%Runtime.State{} = state) do
+    payload = compact_doc_get_payload(state)
+
+    case ensure_snapshot_ir_url(state) do
+      {:ok, url} ->
+        {:ok, Map.put(payload, "ir_url", url)}
+
+      {:error, reason} ->
+        require Logger
+
+        Logger.debug(
+          "doc.get: presign unavailable (#{inspect(reason)}); returning inline IR only"
+        )
+
+        {:ok, payload}
+    end
+  end
+
+  defp compact_doc_get_payload(%Runtime.State{} = state),
+    do:
+      state
+      |> Contract.MCP.Projection.to_agent_ir()
+      |> Contract.Agent.Prompt.IRRenderer.compact_map()
+      |> Map.put("revision", state.revision)
+      |> Map.put("ok", true)
+
+  # Returns a metadata/debug presigned GET URL for the .ir.json blob
+  # backing an existing rhwp snapshot. This must never create a snapshot
+  # row: `doc.get` already returns inline IR, and fake visual rows break
+  # the browser-side persistence path.
+  defp ensure_snapshot_ir_url(%Runtime.State{document_id: doc_id}) do
+    r2 = r2_driver()
+
+    case Contract.RhwpSnapshot.latest_for_document(doc_id) do
+      %Contract.RhwpSnapshot.Record{ir_r2_key: ir_key} when is_binary(ir_key) ->
+        # 10-minute TTL — long enough for trace/debug inspection, short
+        # enough that a leaked URL doesn't keep the IR readable indefinitely.
+        case r2.presigned_url(ir_key, method: :get, expires_in: 600) do
+          {:ok, url} when is_binary(url) ->
+            {:ok, url}
+
+          other ->
+            {:error, {:presign_failed, other}}
+        end
+
+      %Contract.RhwpSnapshot.Record{} ->
+        {:error, :no_r2_key}
+
+      nil ->
+        {:error, :no_snapshot}
+    end
+  end
+
+  defp r2_driver do
+    Application.get_env(:contract, :io_drivers, [])
+    |> Keyword.get(:r2, Contract.IO.R2)
+  end
 
   defp read_document_resource(ctx, route_ref, document_id, kind, uri)
        when kind in @document_resource_kinds do
@@ -1278,13 +1372,27 @@ defmodule Contract.MCP do
     sec = fetch_int(args, "sec")
     para = fetch_int(args, "para")
     off = fetch_int(args, "off")
-    len = fetch_int(args, "len")
     text = Map.get(args, "text") || Map.get(args, :text) || ""
     cell_path = Map.get(args, "cell_path") || Map.get(args, :cell_path)
+    match = Map.get(args, "match") || Map.get(args, :match)
+
+    # `match` (the exact substring to delete) is preferred over a numeric
+    # `len` — agents miscount Korean graphemes, surrogate pairs, and
+    # whitespace. When `match` is given, the server measures its length
+    # itself (in Unicode grapheme clusters via String.length/1, which
+    # matches the rhwp WASM core's character counting).
+    len =
+      cond do
+        is_binary(match) -> String.length(match)
+        true -> fetch_int(args, "len")
+      end
 
     cond do
-      is_nil(sec) or is_nil(para) or is_nil(off) or is_nil(len) ->
-        {:error, {:invalid_params, "sec, para, off, len are required"}}
+      is_nil(sec) or is_nil(para) or is_nil(off) ->
+        {:error, {:invalid_params, "sec, para, off are required"}}
+
+      is_nil(len) ->
+        {:error, {:invalid_params, "either match (preferred) or len is required"}}
 
       len < 0 ->
         {:error, {:invalid_params, "len must be >= 0"}}
@@ -1303,9 +1411,12 @@ defmodule Contract.MCP do
     end
   end
 
-  defp maybe_prepend_delete(ops, _sec, _para, _off, 0, _cell_path), do: ops
+  defp maybe_prepend_delete(ops, sec, para, off, len, cell_path),
+    do: maybe_prepend_delete(ops, sec, para, off, len, cell_path, nil)
 
-  defp maybe_prepend_delete(ops, sec, para, off, len, cell_path) do
+  defp maybe_prepend_delete(ops, _sec, _para, _off, 0, _cell_path, _field_id), do: ops
+
+  defp maybe_prepend_delete(ops, sec, para, off, len, cell_path, field_id) do
     [
       compact(%{
         "kind" => "delete_text",
@@ -1313,15 +1424,19 @@ defmodule Contract.MCP do
         "para" => para,
         "off" => off,
         "len" => len,
-        "cell_path" => cell_path
+        "cell_path" => cell_path,
+        "field_id" => field_id
       })
       | ops
     ]
   end
 
-  defp maybe_prepend_insert(ops, _sec, _para, _off, "", _cell_path), do: ops
+  defp maybe_prepend_insert(ops, sec, para, off, text, cell_path),
+    do: maybe_prepend_insert(ops, sec, para, off, text, cell_path, nil)
 
-  defp maybe_prepend_insert(ops, sec, para, off, text, cell_path) do
+  defp maybe_prepend_insert(ops, _sec, _para, _off, "", _cell_path, _field_id), do: ops
+
+  defp maybe_prepend_insert(ops, sec, para, off, text, cell_path, field_id) do
     [
       compact(%{
         "kind" => "insert_text",
@@ -1329,7 +1444,8 @@ defmodule Contract.MCP do
         "para" => para,
         "off" => off,
         "text" => text,
-        "cell_path" => cell_path
+        "cell_path" => cell_path,
+        "field_id" => field_id
       })
       | ops
     ]
@@ -1398,7 +1514,8 @@ defmodule Contract.MCP do
         # exist yet (see @text_op_kinds in Contract.Session.Reducer — only
         # row/column/table_delete are wired). Block this case until the IR
         # pipeline gains a `TableInserted` event.
-        {:error, {:not_supported, "doc.insert_block kind=table not wired (no rhwp table-create op)"}}
+        {:error,
+         {:not_supported, "doc.insert_block kind=table not wired (no rhwp table-create op)"}}
 
       not is_binary(text) ->
         {:error, {:invalid_params, "text must be a string"}}
@@ -1523,7 +1640,7 @@ defmodule Contract.MCP do
       true ->
         case lookup_field_position(state, id) do
           {:ok, pos} ->
-            {:ok, field_position_to_edit_ops(pos, value)}
+            {:ok, field_position_to_edit_ops(pos, value, id)}
 
           :error ->
             {:error, {:not_found, "field #{id} not found in projection"}}
@@ -1550,7 +1667,7 @@ defmodule Contract.MCP do
     end
   end
 
-  defp field_position_to_edit_ops(pos, value) do
+  defp field_position_to_edit_ops(pos, value, field_id) do
     sec = Map.get(pos, "sec") || Map.get(pos, :sec)
 
     para =
@@ -1563,8 +1680,8 @@ defmodule Contract.MCP do
     len = max(off_end - off_start, 0)
 
     []
-    |> maybe_prepend_delete(sec, para, off_start, len, cell_path)
-    |> maybe_prepend_insert(sec, para, off_start, value, cell_path)
+    |> maybe_prepend_delete(sec, para, off_start, len, cell_path, field_id)
+    |> maybe_prepend_insert(sec, para, off_start, value, cell_path, field_id)
     |> Enum.reverse()
   end
 

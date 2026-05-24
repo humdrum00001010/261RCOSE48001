@@ -267,6 +267,292 @@ defmodule Contract.MCPTest do
                })
     end
 
+    test "doc.edit_text derives delete length from `match` so the agent never has to count graphemes",
+         %{owner: owner, doc_id: doc_id, route_ref: route_ref} do
+      # Real-world failure that drove this: an agent passed len=29 for the
+      # 30-grapheme string "범용(용역[지식·정보성과물]업 분야) 표준 하도급계약서",
+      # leaving the trailing `)` behind. With `match`, the server measures
+      # the string itself and ignores any miscount.
+      target = "범용(용역[지식·정보성과물]업 분야) 표준 하도급계약서"
+
+      args = %{
+        "sec" => 0,
+        "para" => 0,
+        "off" => 0,
+        "match" => target,
+        # Deliberately also pass a wrong `len` — `match` must win.
+        "len" => 29,
+        "text" => "하도급계약"
+      }
+
+      assert {:ok, %{"ok" => true, "applied" => "edit_text"}} =
+               MCP.call_tool(owner, route_ref, "doc.edit_text", args)
+
+      [change] = changes_for(doc_id) |> Enum.filter(&(&1.command_kind == "edit_text"))
+
+      delete_op =
+        Enum.find(change.payload, fn op -> Map.get(op, "op") == "delete_text" end)
+
+      assert delete_op, "expected a delete_text op in the payload"
+      assert get_in(delete_op, ["args", "len"]) == String.length(target)
+    end
+
+    test "doc.edit_text still accepts a numeric `len` for back-compat", %{
+      owner: owner,
+      doc_id: doc_id,
+      route_ref: route_ref
+    } do
+      args = %{
+        "sec" => 0,
+        "para" => 0,
+        "off" => 0,
+        "len" => 4,
+        "text" => "X"
+      }
+
+      assert {:ok, %{"ok" => true, "applied" => "edit_text"}} =
+               MCP.call_tool(owner, route_ref, "doc.edit_text", args)
+
+      [change] = changes_for(doc_id) |> Enum.filter(&(&1.command_kind == "edit_text"))
+
+      delete_op =
+        Enum.find(change.payload, fn op -> Map.get(op, "op") == "delete_text" end)
+
+      assert get_in(delete_op, ["args", "len"]) == 4
+    end
+
+    test "doc.edit_text rejects when neither `match` nor `len` is provided", %{
+      owner: owner,
+      route_ref: route_ref
+    } do
+      assert {:error, {:invalid_params, _}} =
+               MCP.call_tool(owner, route_ref, "doc.edit_text", %{
+                 "sec" => 0,
+                 "para" => 0,
+                 "off" => 0,
+                 "text" => "X"
+               })
+    end
+
+    test "doc.get lets the agent re-fetch and continue same-paragraph field edits after offsets shift",
+         %{
+           owner: owner,
+           route_ref: route_ref
+         } do
+      doc_id = doc_with_same_paragraph_tracked_fields(owner)
+      route_ref = %{route_ref | document_id: doc_id}
+
+      assert {:ok,
+              %{
+                "revision" => base_rev,
+                "p" => [[0, 0, "Header"], [0, 1, "AAA BBB"]],
+                "f" => fields
+              }} =
+               MCP.call_tool(owner, route_ref, "doc.get", %{})
+
+      assert ["party-a", "party_a", "text", [0, 1, nil, nil, 0, 3], "AAA"] =
+               compact_field(fields, "party-a")
+
+      assert ["party-b", "party_b", "text", [0, 1, nil, nil, 4, 7], "BBB"] =
+               compact_field(fields, "party-b")
+
+      assert {:ok, %{"revision" => first_rev}} =
+               MCP.call_tool(owner, route_ref, "doc.set_field_value", %{
+                 "id" => "party-a",
+                 "value" => "ALPHA",
+                 "base_revision" => base_rev
+               })
+
+      assert {:error, {:revision_conflict, expected: ^first_rev, got: ^base_rev}} =
+               MCP.call_tool(owner, route_ref, "doc.set_field_value", %{
+                 "id" => "party-b",
+                 "value" => "OMEGA",
+                 "base_revision" => base_rev
+               })
+
+      assert {:ok,
+              %{
+                "revision" => ^first_rev,
+                "p" => [[0, 0, "Header"], [0, 1, "ALPHA BBB"]],
+                "f" => fields
+              }} =
+               MCP.call_tool(owner, route_ref, "doc.get", %{})
+
+      assert ["party-a", "party_a", "text", [0, 1, nil, nil, 0, 5], "ALPHA"] =
+               compact_field(fields, "party-a")
+
+      assert ["party-b", "party_b", "text", [0, 1, nil, nil, 6, 9], "BBB"] =
+               compact_field(fields, "party-b")
+
+      assert {:ok, %{"revision" => second_rev}} =
+               MCP.call_tool(owner, route_ref, "doc.set_field_value", %{
+                 "id" => "party-b",
+                 "value" => "OMEGA",
+                 "base_revision" => first_rev
+               })
+
+      assert {:ok,
+              %{
+                "revision" => ^second_rev,
+                "p" => [[0, 0, "Header"], [0, 1, "ALPHA OMEGA"]],
+                "f" => fields
+              }} =
+               MCP.call_tool(owner, route_ref, "doc.get", %{})
+
+      assert ["party-a", "party_a", "text", [0, 1, nil, nil, 0, 5], "ALPHA"] =
+               compact_field(fields, "party-a")
+
+      assert ["party-b", "party_b", "text", [0, 1, nil, nil, 6, 11], "OMEGA"] =
+               compact_field(fields, "party-b")
+    end
+
+    test "doc.get returns inline compact IR even when an R2 URL can be presigned", %{
+      owner: owner,
+      route_ref: route_ref
+    } do
+      original = Application.get_env(:contract, :io_drivers, [])
+
+      Application.put_env(
+        :contract,
+        :io_drivers,
+        Keyword.put(original, :r2, Contract.IO.R2Stub)
+      )
+
+      on_exit(fn -> Application.put_env(:contract, :io_drivers, original) end)
+
+      Contract.IO.R2Stub.setup()
+      Contract.IO.R2Stub.reset()
+
+      assert {:ok, %{"ok" => true, "revision" => rev} = payload} =
+               MCP.call_tool(owner, route_ref, "doc.get", %{})
+
+      assert is_integer(rev)
+      assert is_list(payload["p"])
+
+      # URL can still be present as optional metadata/debug context, but
+      # the agent must not need another fetch to read the document.
+      if url = payload["ir_url"] do
+        assert is_binary(url)
+        assert String.contains?(url, ".ir.json")
+      end
+    end
+
+    test "doc.get still returns inline IR when R2 presign fails", %{
+      owner: owner,
+      route_ref: route_ref
+    } do
+      # Stub that returns an error on presign so inline document access
+      # does not depend on R2 URL generation.
+      defmodule R2PresignFailStub do
+        def put(_, _, _ \\ []), do: {:ok, %{key: "x", etag: "y"}}
+        def get(_, _ \\ []), do: {:error, :not_found}
+        def delete(_, _ \\ []), do: :ok
+        def presigned_url(_, _ \\ []), do: {:error, :no_creds}
+      end
+
+      original = Application.get_env(:contract, :io_drivers, [])
+      Application.put_env(:contract, :io_drivers, Keyword.put(original, :r2, R2PresignFailStub))
+      on_exit(fn -> Application.put_env(:contract, :io_drivers, original) end)
+
+      assert {:ok, %{"ok" => true, "revision" => _rev} = payload} =
+               MCP.call_tool(owner, route_ref, "doc.get", %{})
+
+      assert is_list(payload["p"])
+      refute Map.has_key?(payload, "ir_url")
+    end
+
+    test "doc.get does not bootstrap snapshot rows just to expose optional URL metadata", %{
+      owner: owner,
+      doc_id: doc_id,
+      route_ref: route_ref
+    } do
+      original = Application.get_env(:contract, :io_drivers, [])
+
+      Application.put_env(
+        :contract,
+        :io_drivers,
+        Keyword.put(original, :r2, Contract.IO.R2Stub)
+      )
+
+      on_exit(fn -> Application.put_env(:contract, :io_drivers, original) end)
+
+      Contract.IO.R2Stub.setup()
+      Contract.IO.R2Stub.reset()
+
+      refute Repo.get_by(Contract.Snapshot, document_id: doc_id)
+
+      assert {:ok, %{"ok" => true, "p" => p} = payload} =
+               MCP.call_tool(owner, route_ref, "doc.get", %{})
+
+      assert is_list(p)
+      refute Map.has_key?(payload, "ir_url")
+      refute Repo.get_by(Contract.Snapshot, document_id: doc_id)
+    end
+
+    test "doc.get exposes a presigned IR URL only for an existing snapshot", %{
+      owner: owner,
+      doc_id: doc_id,
+      route_ref: route_ref
+    } do
+      original = Application.get_env(:contract, :io_drivers, [])
+
+      Application.put_env(
+        :contract,
+        :io_drivers,
+        Keyword.put(original, :r2, Contract.IO.R2Stub)
+      )
+
+      on_exit(fn -> Application.put_env(:contract, :io_drivers, original) end)
+
+      Contract.IO.R2Stub.setup()
+      Contract.IO.R2Stub.reset()
+
+      hwp_key = "documents/#{doc_id}/snapshots/1.hwp"
+      ir_key = "documents/#{doc_id}/snapshots/1.ir.json"
+
+      ir = %{
+        "title" => "Agent Doc Tools",
+        "contract_type" => "nda_v1",
+        "sections" => [%{"idx" => 0, "paragraphs" => [%{"idx" => 0, "text" => "Body"}]}],
+        "fields" => []
+      }
+
+      assert {:ok, _} = Contract.IO.R2Stub.put(hwp_key, "hwp-bytes")
+      assert {:ok, _} = Contract.IO.R2Stub.put(ir_key, Jason.encode!(ir))
+
+      {:ok, _} =
+        %Contract.RhwpSnapshot.Record{}
+        |> Contract.RhwpSnapshot.Record.changeset(%{
+          document_id: doc_id,
+          revision: 1,
+          r2_key: hwp_key,
+          ir_r2_key: ir_key,
+          format: "hwp",
+          content_type: "application/x-hwp",
+          projection: ir
+        })
+        |> Repo.insert()
+
+      assert {:ok, %{"ir_url" => url, "p" => p}} = MCP.call_tool(owner, route_ref, "doc.get", %{})
+
+      assert is_binary(url)
+      assert String.contains?(url, ".ir.json")
+      assert is_list(p)
+    end
+
+    test "doc.get short-circuits when since_revision >= revision", %{
+      owner: owner,
+      route_ref: route_ref
+    } do
+      # 1) Get current revision via a normal doc.get.
+      {:ok, %{"revision" => rev}} = MCP.call_tool(owner, route_ref, "doc.get", %{})
+
+      # 2) Re-call with since_revision = rev — server must report
+      # unchanged without paying for a presign / inline build.
+      assert {:ok, %{"ok" => true, "unchanged" => true, "revision" => ^rev}} =
+               MCP.call_tool(owner, route_ref, "doc.get", %{"since_revision" => rev})
+    end
+
     # auth rejections — one per tool: route_ref without :agent_doc scope
     # should be rebuffed at authorize_doc_mcp/1 before any DB work.
     test "doc.insert_block rejects route_ref missing :agent_doc scope", %{
@@ -354,11 +640,14 @@ defmodule Contract.MCPTest do
     doc_id = create_doc(ctx, title: "Tracked Field Doc")
 
     {:ok, _} =
-      %Contract.Snapshot{}
-      |> Contract.Snapshot.changeset(%{
+      %Contract.RhwpSnapshot.Record{}
+      |> Contract.RhwpSnapshot.Record.changeset(%{
         document_id: doc_id,
         revision: 1,
-        r2_key: "documents/#{doc_id}/snapshots/1.hwpx",
+        r2_key: "documents/#{doc_id}/snapshots/1.hwp",
+        ir_r2_key: "documents/#{doc_id}/snapshots/1.ir.json",
+        format: "hwp",
+        content_type: "application/x-hwp",
         projection: %{
           "title" => "Tracked Field Doc",
           "contract_type" => "nda_v1",
@@ -392,6 +681,70 @@ defmodule Contract.MCPTest do
     doc_id
   end
 
+  defp doc_with_same_paragraph_tracked_fields(%Context{} = ctx) do
+    doc_id = create_doc(ctx, title: "Same Paragraph Field Doc")
+
+    {:ok, _} =
+      %Contract.RhwpSnapshot.Record{}
+      |> Contract.RhwpSnapshot.Record.changeset(%{
+        document_id: doc_id,
+        revision: 1,
+        r2_key: "documents/#{doc_id}/snapshots/1.hwp",
+        ir_r2_key: "documents/#{doc_id}/snapshots/1.ir.json",
+        format: "hwp",
+        content_type: "application/x-hwp",
+        projection: %{
+          "title" => "Same Paragraph Field Doc",
+          "contract_type" => "nda_v1",
+          "sections" => [
+            %{
+              "idx" => 0,
+              "paragraphs" => [
+                %{"idx" => 0, "text" => "Header"},
+                %{"idx" => 1, "text" => "AAA BBB"}
+              ]
+            }
+          ],
+          "fields" => [
+            %{
+              "id" => "party-a",
+              "label" => "party_a",
+              "kind" => "text",
+              "position" => %{
+                "sec" => 0,
+                "para" => 1,
+                "off_start" => 0,
+                "off_end" => 3
+              },
+              "value" => "AAA"
+            },
+            %{
+              "id" => "party-b",
+              "label" => "party_b",
+              "kind" => "text",
+              "position" => %{
+                "sec" => 0,
+                "para" => 1,
+                "off_start" => 4,
+                "off_end" => 7
+              },
+              "value" => "BBB"
+            }
+          ]
+        }
+      })
+      |> Repo.insert()
+
+    doc_id
+  end
+
+  defp compact_field(fields, id) do
+    Enum.find(fields, fn
+      [^id | _] -> true
+      _ -> false
+    end)
+  end
+
   defp doc_mcp_route_ref(%Context{} = ctx, doc_id) do
     %RouteRef{
       document_id: doc_id,
@@ -415,7 +768,10 @@ defmodule Contract.MCPTest do
 
   defp changes_for(doc_id) do
     import Ecto.Query
-    Repo.all(from c in Change, where: c.document_id == ^doc_id, order_by: [asc: c.result_revision])
+
+    Repo.all(
+      from c in Change, where: c.document_id == ^doc_id, order_by: [asc: c.result_revision]
+    )
   end
 
   defp insert_source(%Context{} = ctx, attrs) do
