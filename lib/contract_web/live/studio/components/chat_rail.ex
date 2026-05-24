@@ -341,11 +341,7 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
             data-role="agent-text"
             data-message-id={dom_id}
             aria-busy={msg_transient?(msg)}
-            class={[
-              "block px-3 py-1 text-[14px] leading-relaxed break-words",
-              msg_transient?(msg) == "true" && "text-base-content/60 italic",
-              msg_transient?(msg) != "true" && "text-base-content"
-            ]}
+            class="block px-3 py-1 text-[14px] leading-relaxed break-words text-base-content"
           >
             <% paragraphs = agent_paragraphs(msg) %>
             <%= for {para, index} <- Enum.with_index(paragraphs) do %>

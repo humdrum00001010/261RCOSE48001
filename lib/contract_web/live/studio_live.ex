@@ -767,6 +767,7 @@ defmodule ContractWeb.StudioLive do
   """
   @spec dispatch(Phoenix.LiveView.Socket.t(), Command.t()) :: Phoenix.LiveView.Socket.t()
   def dispatch(socket, %Command{} = action) do
+    socket = maybe_cancel_in_flight_agent(socket, action)
     scope = socket.assigns.current_scope
     state = socket.assigns.studio_state
 
@@ -830,6 +831,25 @@ defmodule ContractWeb.StudioLive do
   end
 
   defp maybe_refresh_chat_messages(socket, _action, _state), do: socket
+
+  # When the user submits another chat message while a previous agent run
+  # is still streaming, cancel the in-flight run so only the latest message
+  # gets answered. The cancel also clears agent_run_id on studio_state, so
+  # the downstream dispatch starts from a clean slate.
+  defp maybe_cancel_in_flight_agent(socket, %Command{kind: :chat_message}) do
+    state = socket.assigns.studio_state
+
+    case state && state.agent_run_id do
+      run_id when is_binary(run_id) ->
+        _ = Contract.Agent.cancel(socket.assigns.current_scope, run_id)
+        assign(socket, :studio_state, %{state | agent_run_id: nil})
+
+      _ ->
+        socket
+    end
+  end
+
+  defp maybe_cancel_in_flight_agent(socket, _action), do: socket
 
   defp assign_current_chat_thread(socket) do
     assign(
