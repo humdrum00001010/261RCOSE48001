@@ -726,7 +726,7 @@ defmodule ContractWeb.Live.Studio.Components.ChatRailTest do
       refute html =~ "생각 중"
     end
 
-    test "synthetic thinking row uses the same trace density as tool calls" do
+    test "legacy `kind: :thinking` row no longer renders (consolidated into the reasoning bubble)" do
       html =
         render_component(ChatRail,
           id: "chat-rail",
@@ -746,18 +746,7 @@ defmodule ContractWeb.Live.Studio.Components.ChatRailTest do
           current_scope: lawyer_scope()
         )
 
-      fragment = LazyHTML.from_fragment(html)
-
-      [thinking_class] =
-        fragment
-        |> LazyHTML.query(~s(#chat-msg-thinking-run [data-role="agent-thinking"] .tool-trace))
-        |> LazyHTML.attribute("class")
-
-      assert thinking_class =~ "text-[12px]"
-      assert thinking_class =~ "leading-snug"
-      assert thinking_class =~ "animate-pulse"
-      assert html =~ "hero-wrench-screwdriver"
-      assert html =~ "Thinking..."
+      refute html =~ ~s(data-role="agent-thinking")
     end
   end
 
@@ -1012,7 +1001,8 @@ defmodule ContractWeb.Live.Studio.Components.ChatRailTest do
       assert html =~ ~s(phx-value-evidence_snapshot_id="11111111-1111-1111-1111-111111111111")
     end
 
-    test "ui.toggle_expand toggles a non-tool operation block", %{conn: conn} do
+    test "non-tool operation block expand uses client-side JS toggle on the details panel",
+         %{conn: conn} do
       {:ok, lv, _html} =
         live_isolated(conn, WrapperLive, session: %{"scope" => lawyer_scope()})
 
@@ -1029,26 +1019,41 @@ defmodule ContractWeb.Live.Studio.Components.ChatRailTest do
             summary: "Ready",
             details: %{"filename" => "contract.pdf"}
           },
-          expanded?: false,
           transient?: false
         }
       })
 
       html = render(lv)
+      fragment = LazyHTML.from_fragment(html)
+
       assert html =~ ~s(id="operation-block-export-toggle-1")
       assert html =~ ~s(id="operation-block-export-toggle-1-toggle")
-      refute html =~ ~s(data-role="operation-details")
 
-      html =
-        lv
-        |> element("#operation-block-export-toggle-1-toggle")
-        |> render_click()
+      # Details panel is always rendered, with the `hidden` attribute so
+      # the JS toggle on the button can flip it client-side without
+      # needing a server roundtrip (the row is inside a phx-update="stream"
+      # container, so changing an outer assign would not re-render it).
+      details =
+        fragment
+        |> LazyHTML.query("#operation-block-export-toggle-1-details")
 
-      assert html =~ ~s(data-role="operation-details")
+      [details_hidden] = LazyHTML.attribute(details, "hidden")
+      assert details_hidden == "" or details_hidden == "hidden"
       assert html =~ "contract.pdf"
+
+      # The toggle button carries a JS-encoded phx-click — no server event.
+      [phx_click] =
+        fragment
+        |> LazyHTML.query("#operation-block-export-toggle-1-toggle")
+        |> LazyHTML.attribute("phx-click")
+
+      assert phx_click =~ "toggle_attr"
+      assert phx_click =~ ~s(hidden)
+      assert phx_click =~ "#operation-block-export-toggle-1-details"
+      assert phx_click =~ "aria-expanded"
     end
 
-    test "tool call trace uses the whole message article as expand and collapse boundary", %{
+    test "tool call trace uses the whole message article as a client-side JS toggle target", %{
       conn: conn
     } do
       {:ok, lv, _html} =
@@ -1071,16 +1076,31 @@ defmodule ContractWeb.Live.Studio.Components.ChatRailTest do
       })
 
       html = render(lv)
+      fragment = LazyHTML.from_fragment(html)
+
       assert html =~ ~s(id="chat-msg-tool-hover-msg")
-      assert has_element?(lv, "#chat-msg-tool-hover-msg[phx-click='ui.toggle_expand']")
       refute has_element?(lv, "#chat-msg-tool-hover-msg[class*='rounded']")
       refute has_element?(lv, "#chat-msg-tool-hover-msg[class*='hover:bg']")
 
+      # Article carries a JS-encoded phx-click — no server roundtrip.
+      [article_phx_click] =
+        fragment
+        |> LazyHTML.query("#chat-msg-tool-hover-msg")
+        |> LazyHTML.attribute("phx-click")
+
+      assert article_phx_click =~ "toggle_attr"
+      assert article_phx_click =~ ~s(tool-trace-tool-hover-1-details)
+      assert article_phx_click =~ "aria-expanded"
+
+      assert has_element?(lv, "#chat-msg-tool-hover-msg[aria-expanded='false']")
+
       assert has_element?(
                lv,
-               "#chat-msg-tool-hover-msg[phx-value-operation_id='tool-hover-1']"
+               "#chat-msg-tool-hover-msg[aria-controls='tool-trace-tool-hover-1-details']"
              )
 
+      # The chevron and the 접기 sub-elements never carry their own
+      # phx-click — they bubble cleanly to the article handler.
       assert has_element?(
                lv,
                "#tool-trace-tool-hover-1-expand[data-role='tool-trace-expand']:not([phx-click])"
@@ -1088,21 +1108,19 @@ defmodule ContractWeb.Live.Studio.Components.ChatRailTest do
 
       refute has_element?(lv, "#tool-trace-tool-hover-1-expand[class*='bg-']")
 
-      refute html =~ "pr-7"
-
       assert has_element?(
                lv,
                "#tool-trace-tool-hover-1-expand .hero-chevron-down"
              )
 
-      refute has_element?(lv, "[data-role='tool-trace-collapse']")
+      # Details panel is always rendered + `hidden` so the JS toggle can
+      # flip it on the client. Inspect the attribute directly.
+      details =
+        fragment
+        |> LazyHTML.query("#tool-trace-tool-hover-1-details")
 
-      html =
-        lv
-        |> element("#chat-msg-tool-hover-msg")
-        |> render_click()
-
-      assert html =~ ~s(id="tool-trace-tool-hover-1-details")
+      [details_hidden] = LazyHTML.attribute(details, "hidden")
+      assert details_hidden == "" or details_hidden == "hidden"
       assert html =~ ~s(data-role="tool-trace-details")
       assert html =~ "since_revision"
 
@@ -1121,18 +1139,10 @@ defmodule ContractWeb.Live.Studio.Components.ChatRailTest do
                lv,
                "#tool-trace-tool-hover-1-collapse .hero-chevron-up"
              )
-
-      html =
-        lv
-        |> element("#chat-msg-tool-hover-msg")
-        |> render_click()
-
-      refute html =~ ~s(data-role="tool-trace-details")
     end
 
-    test "failed tool call trace shows visible details affordance and expands failure payload", %{
-      conn: conn
-    } do
+    test "failed tool call trace shows visible details affordance and renders the failure payload",
+         %{conn: conn} do
       {:ok, lv, _html} =
         live_isolated(conn, WrapperLive, session: %{"scope" => lawyer_scope()})
 
@@ -1157,8 +1167,18 @@ defmodule ContractWeb.Live.Studio.Components.ChatRailTest do
       })
 
       html = render(lv)
+      fragment = LazyHTML.from_fragment(html)
+
       assert html =~ ~s(id="chat-msg-tool-failed-msg")
-      assert has_element?(lv, "#chat-msg-tool-failed-msg[phx-click='ui.toggle_expand']")
+
+      [article_phx_click] =
+        fragment
+        |> LazyHTML.query("#chat-msg-tool-failed-msg")
+        |> LazyHTML.attribute("phx-click")
+
+      assert article_phx_click =~ "toggle_attr"
+      assert article_phx_click =~ ~s(tool-trace-tool-failed-1-details)
+
       assert has_element?(lv, "#tool-trace-tool-failed-1[data-status='failed']")
 
       assert has_element?(
@@ -1166,29 +1186,29 @@ defmodule ContractWeb.Live.Studio.Components.ChatRailTest do
                "#tool-trace-tool-failed-1-expand[data-role='tool-trace-expand'][data-visible='true']"
              )
 
-      refute html =~ ~s(data-role="tool-trace-details")
+      # Details panel is rendered + hidden so the JS toggle can flip it.
+      details =
+        fragment
+        |> LazyHTML.query("#tool-trace-tool-failed-1-details")
 
-      html =
-        lv
-        |> element("#chat-msg-tool-failed-msg")
-        |> render_click()
-
-      assert html =~ ~s(id="tool-trace-tool-failed-1-details")
+      [details_hidden] = LazyHTML.attribute(details, "hidden")
+      assert details_hidden == "" or details_hidden == "hidden"
       assert html =~ "contract-doc returned 424 Failed Dependency"
       assert html =~ "doc.get"
     end
 
-    test "freshly stream_inserted tool_call article carries phx-target → LiveComponent cid and expands on first click",
+    test "freshly stream_inserted tool_call article toggles via client-side JS (no server roundtrip)",
          %{conn: conn} do
-      # Bug 4 regression: tool_call rows inserted mid-conversation by the
-      # parent LV via `stream_insert(:chat_messages, ...)` would refuse to
-      # expand on the first click — the user had to reload the page first.
-      # Root cause was a duplicate `phx-click="ui.toggle_expand"` on the
-      # expand chevron inside `operation_block`: the chevron click bubbled
-      # up to the article (which also handled the same event), firing the
-      # toggle twice and netting to no change. Fix moves the only
-      # phx-click onto the article. This test pins the wiring + asserts
-      # that a single click expands the row.
+      # Regression: tool_call rows inserted mid-conversation by the parent
+      # LV via `stream_insert(:chat_messages, ...)` would refuse to expand
+      # on the first click — the user had to reload the page first. Root
+      # cause was that `phx-update="stream"` items don't re-render when
+      # outer assigns change, so server-side expand state (`MapSet` on
+      # the LiveComponent) never reached the DOM after insertion. Fix
+      # moves the toggle to a `Phoenix.LiveView.JS` command on the
+      # article that flips `hidden` on the details panel client-side.
+      # This test pins the wiring + asserts the details panel is always
+      # rendered and starts hidden.
       {:ok, lv, _html} =
         live_isolated(conn, WrapperLive, session: %{"scope" => lawyer_scope()})
 
@@ -1208,38 +1228,41 @@ defmodule ContractWeb.Live.Studio.Components.ChatRailTest do
         }
       })
 
-      _ = render(lv)
+      html = render(lv)
+      fragment = LazyHTML.from_fragment(html)
 
-      assert has_element?(lv, "#chat-msg-tool-fresh-msg[phx-click='ui.toggle_expand']")
-      assert has_element?(lv, "#chat-msg-tool-fresh-msg[phx-value-operation_id='tool-fresh-1']")
-
-      [target_cid] =
-        lv
-        |> render()
-        |> LazyHTML.from_fragment()
+      [article_phx_click] =
+        fragment
         |> LazyHTML.query("#chat-msg-tool-fresh-msg")
-        |> LazyHTML.attribute("phx-target")
+        |> LazyHTML.attribute("phx-click")
 
-      assert target_cid =~ ~r/^\d+$/,
-             "expected phx-target to be a LiveComponent cid (digits), got: #{inspect(target_cid)}"
+      assert article_phx_click =~ "toggle_attr"
+      assert article_phx_click =~ ~s(tool-trace-tool-fresh-1-details)
+      assert article_phx_click =~ "aria-expanded"
+
+      # No phx-target needed — the click never reaches the server.
+      assert LazyHTML.query(fragment, "#chat-msg-tool-fresh-msg")
+             |> LazyHTML.attribute("phx-target") == []
 
       # Chevron must not carry phx-click — otherwise its click bubbles up
-      # to the article and double-toggles the row.
+      # to the article and the JS toggle would fire twice (no-op).
       assert has_element?(
                lv,
                "#tool-trace-tool-fresh-1-expand[data-role='tool-trace-expand']:not([phx-click])"
              )
 
-      html =
-        lv
-        |> element("#chat-msg-tool-fresh-msg")
-        |> render_click()
+      # Details panel rendered + hidden — the JS toggle flips the
+      # `hidden` attribute on the client.
+      details =
+        fragment
+        |> LazyHTML.query("#tool-trace-tool-fresh-1-details")
 
-      assert html =~ ~s(id="tool-trace-tool-fresh-1-details")
+      [details_hidden] = LazyHTML.attribute(details, "hidden")
+      assert details_hidden == "" or details_hidden == "hidden"
       assert html =~ "delivery"
     end
 
-    test "reasoning row renders through operation_block (same data-roles as tool_call) and expands",
+    test "reasoning row renders through operation_block (same data-roles as tool_call) with JS toggle",
          %{conn: conn} do
       {:ok, lv, _html} =
         live_isolated(conn, WrapperLive, session: %{"scope" => lawyer_scope()})
@@ -1264,9 +1287,16 @@ defmodule ContractWeb.Live.Studio.Components.ChatRailTest do
       })
 
       html = render(lv)
+      fragment = LazyHTML.from_fragment(html)
 
-      # Same article-level wiring as tool_call — single click target.
-      assert has_element?(lv, "#chat-msg-reasoning-run-1[phx-click='ui.toggle_expand']")
+      # Same article-level JS toggle as tool_call — pure client-side.
+      [article_phx_click] =
+        fragment
+        |> LazyHTML.query("#chat-msg-reasoning-run-1")
+        |> LazyHTML.attribute("phx-click")
+
+      assert article_phx_click =~ "toggle_attr"
+      assert article_phx_click =~ ~s(tool-trace-reasoning-run-1-details)
 
       # No standalone `<details>` element — reasoning shares operation_block.
       refute html =~ ~s(<details data-role="agent-reasoning")
@@ -1279,12 +1309,14 @@ defmodule ContractWeb.Live.Studio.Components.ChatRailTest do
       assert html =~ "Thinking:"
       assert html =~ "Reviewing the title clause"
 
-      html =
-        lv
-        |> element("#chat-msg-reasoning-run-1")
-        |> render_click()
+      # Details panel is rendered + hidden — the JS toggle flips `hidden`
+      # client-side on the same DOM element.
+      details =
+        fragment
+        |> LazyHTML.query("#tool-trace-reasoning-run-1-details")
 
-      assert html =~ ~s(id="tool-trace-reasoning-run-1-details")
+      [details_hidden] = LazyHTML.attribute(details, "hidden")
+      assert details_hidden == "" or details_hidden == "hidden"
       assert html =~ ~s(data-role="agent-reasoning-details-text")
       assert html =~ "Then check the effective date."
     end

@@ -1208,17 +1208,6 @@ defmodule ContractWeb.StudioLive do
   def handle_protocol_message({:agent_stream, _agent_run_id, _stream_event}, socket),
     do: socket
 
-  def handle_protocol_message({:agent_thinking_started, agent_run_id}, socket) do
-    stream_insert(socket, :chat_messages, %{
-      id: "thinking-#{agent_run_id}",
-      agent_run_id: agent_run_id,
-      role: :agent,
-      kind: :thinking,
-      body: "Thinking...",
-      transient?: true
-    })
-  end
-
   def handle_protocol_message({:agent_completed, agent_run_id, result}, socket) do
     body =
       case result do
@@ -1278,13 +1267,11 @@ defmodule ContractWeb.StudioLive do
     socket =
       if first? do
         mark_text_bubble_created(agent_run_id)
-        # The synthetic waiting row goes away the moment the agent starts
-        # speaking. Real reasoning summaries use a separate row and remain
-        # visible when the API provides them.
-        socket
-        |> stream_delete_by_dom_id(:chat_messages, "chat-msg-thinking-#{agent_run_id}")
-        # Empty body — JS appends TextNodes via push_event below.
-        |> stream_insert(:chat_messages, agent_loading_message(agent_run_id))
+        # Fallback for runs not pre-seeded by `chat.submit`
+        # (e.g. backend-initiated agent runs without a user-triggered
+        # `maybe_insert_agent_loading_message`). The common path already
+        # has this bubble inserted.
+        stream_insert(socket, :chat_messages, agent_loading_message(agent_run_id))
       else
         socket
       end
@@ -1307,28 +1294,12 @@ defmodule ContractWeb.StudioLive do
     if not is_binary(text) or String.trim(text) == "" do
       socket
     else
-      # See the agent_text_delta clause above for why this uses Process dict
-      # instead of an assign — render-on-every-delta would throttle the
-      # per-token stream.
-      key = {:reasoning_bubble_created, agent_run_id}
-      first? = Process.get(key) == nil
-
-      socket =
-        if first? do
-          Process.put(key, true)
-
-          # First reasoning delta is the cue that the agent is "thinking out
-          # loud" — drop the synthetic loading row immediately so the order
-          # in the rail is loading → reasoning → tool_calls → agent text.
-          # Without this the placeholder lingers above the reasoning bubble
-          # until the first agent_text_delta lands.
-          socket
-          |> stream_delete_by_dom_id(:chat_messages, "chat-msg-thinking-#{agent_run_id}")
-          |> stream_insert(:chat_messages, reasoning_bubble(agent_run_id, "", transient?: true))
-        else
-          socket
-        end
-
+      # The reasoning bubble was pre-inserted at chat.submit time
+      # (`maybe_insert_agent_loading_message`) so the row is already
+      # anchored above any tool_calls — we just append to its DOM here.
+      # No stream_insert per delta: that would push N diffs/turn through
+      # LV and throttle the per-token stream (see `agent_text_delta`).
+      # The accumulated text is persisted on `:agent_reasoning_done`.
       push_event(socket, "agent_reasoning_append", %{
         message_id: "chat-msg-reasoning-#{agent_run_id}",
         piece: text
@@ -2808,7 +2779,17 @@ defmodule ContractWeb.StudioLive do
 
   defp maybe_insert_agent_loading_message(socket, agent_run_id) when is_binary(agent_run_id) do
     mark_text_bubble_created(agent_run_id)
-    stream_insert(socket, :chat_messages, agent_loading_message(agent_run_id))
+    # The reasoning bubble is pre-inserted BEFORE any tool_call broadcasts
+    # can arrive, so when reasoning summaries do stream they update the
+    # bubble in place at its already-anchored position (above tool calls).
+    # Without this, the bubble was inserted lazily on first reasoning
+    # delta — which arrives AFTER tool_call_started — and ended up
+    # ordered tool → reasoning → tool → agent in the rail.
+    # stream_insert preserves position on update so subsequent
+    # `:agent_reasoning_done` keeps the row above tool calls.
+    socket
+    |> stream_insert(:chat_messages, reasoning_bubble(agent_run_id, "", transient?: true))
+    |> stream_insert(:chat_messages, agent_loading_message(agent_run_id))
   end
 
   defp maybe_insert_agent_loading_message(socket, _agent_run_id), do: socket
@@ -2900,7 +2881,7 @@ defmodule ContractWeb.StudioLive do
   defp clear_agent_loading_state(socket, agent_run_id) do
     _ = Process.delete(text_bubble_created_key(agent_run_id))
     _ = Process.delete(text_stream_started_key(agent_run_id))
-    stream_delete_by_dom_id(socket, :chat_messages, "chat-msg-thinking-#{agent_run_id}")
+    socket
   end
 
   defp text_bubble_created_key(agent_run_id), do: {:text_bubble_created, agent_run_id}

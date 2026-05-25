@@ -754,26 +754,20 @@ defmodule ContractWeb.StudioLiveTest do
       assert assigns(lv).studio_state.last_seen_revision == 7
     end
 
-    test "{:agent_completed, _, _} removes synthetic thinking row but keeps final answer", %{
-      conn: conn
-    } do
+    test "{:agent_completed, _, _} surfaces the final answer", %{conn: conn} do
       run_id = Ecto.UUID.generate()
       {:ok, lv, _html} = live(conn, ~p"/studio")
 
       send_state(lv, %State{mode: :briefing, last_seen_revision: 0, agent_run_id: run_id})
-      send(lv.pid, {:agent_thinking_started, run_id})
-
-      html = render(lv)
-      assert html =~ ~s(id="chat-msg-thinking-#{run_id}")
-      assert html =~ ~s(data-role="agent-thinking")
-      assert html =~ "Thinking..."
 
       send(lv.pid, {:agent_completed, run_id, "Final answer."})
 
       html = render(lv)
+      assert html =~ "Final answer."
+      # The synthetic `kind: :thinking` placeholder row has been removed;
+      # loading state is owned by the reasoning bubble (see Bug B fix).
       refute html =~ ~s(id="chat-msg-thinking-#{run_id}")
       refute html =~ ~s(data-role="agent-thinking")
-      assert html =~ "Final answer."
     end
 
     test "{:agent_reasoning_done, _, text} renders completed thinking content", %{conn: conn} do
@@ -911,18 +905,16 @@ defmodule ContractWeb.StudioLiveTest do
       assert html =~ "Found 2 clauses"
     end
 
-    test "freshly inserted tool_call article carries phx-target → LiveComponent cid and expands on first click",
+    test "freshly broadcast tool_call article toggles via client-side JS — details rendered + hidden",
          %{conn: conn} do
-      # Bug 4 regression: tool_call rows broadcast mid-conversation
-      # wouldn't expand until the user reloaded the page (after reload the
-      # SAME rows — now seeded by `ChatThreads.list_visible_messages` —
-      # worked). Root cause was a duplicate `phx-click="ui.toggle_expand"`
-      # on the chevron inside `operation_block`: chevron click bubbled to
-      # the article and the same toggle fired twice, netting to no change.
-      # The fix removes phx-click from the chevron + collapse button,
-      # leaving the article as the single toggle target. This test pins
-      # the wiring on the LIVE LV (not the isolated component) so the
-      # `phx-target={@myself}` cid resolution is also covered.
+      # Regression: tool_call rows broadcast mid-conversation wouldn't
+      # expand until the user reloaded the page. Root cause was that
+      # `phx-update="stream"` items don't re-render when outer assigns
+      # change, so the server-side expand `MapSet` never reached the DOM
+      # after the row's first insertion. Fix moves the toggle to a
+      # `Phoenix.LiveView.JS` command on the article that flips
+      # `hidden` on the always-rendered details panel — pure client-side,
+      # no server roundtrip, works on fresh inserts and after reload.
       {:ok, lv, _html} = live(conn, ~p"/studio")
       run_id = Ecto.UUID.generate()
       tool_id = Ecto.UUID.generate()
@@ -936,30 +928,34 @@ defmodule ContractWeb.StudioLiveTest do
 
       html = render(lv)
       dom_id = "chat-msg-tool-#{run_id}-#{tool_id}"
+      operation_id = "tool-#{run_id}-#{tool_id}"
 
-      assert has_element?(lv, "##{dom_id}[phx-click='ui.toggle_expand']")
-      assert has_element?(lv, "##{dom_id}[phx-value-operation_id='tool-#{run_id}-#{tool_id}']")
+      fragment = LazyHTML.from_fragment(html)
 
-      [target_cid] =
-        html
-        |> LazyHTML.from_fragment()
+      [article_phx_click] =
+        fragment
         |> LazyHTML.query("##{dom_id}")
-        |> LazyHTML.attribute("phx-target")
+        |> LazyHTML.attribute("phx-click")
 
-      assert target_cid =~ ~r/^\d+$/,
-             "expected phx-target to be a LiveComponent cid, got: #{inspect(target_cid)}"
+      assert article_phx_click =~ "toggle_attr"
+      assert article_phx_click =~ ~s(tool-trace-#{operation_id}-details)
+
+      # JS toggle is on the article itself — no LiveComponent cid round-trip.
+      assert LazyHTML.query(fragment, "##{dom_id}") |> LazyHTML.attribute("phx-target") == []
 
       assert has_element?(
                lv,
-               "#tool-trace-tool-#{run_id}-#{tool_id}-expand[data-role='tool-trace-expand']:not([phx-click])"
+               "#tool-trace-#{operation_id}-expand[data-role='tool-trace-expand']:not([phx-click])"
              )
 
-      html =
-        lv
-        |> element("##{dom_id}")
-        |> render_click()
+      # Details panel is rendered AND starts `hidden` — survives fresh
+      # broadcast inserts (the original bug) and reloads alike.
+      details =
+        fragment
+        |> LazyHTML.query("#tool-trace-#{operation_id}-details")
 
-      assert html =~ ~s(id="tool-trace-tool-#{run_id}-#{tool_id}-details")
+      [details_hidden] = LazyHTML.attribute(details, "hidden")
+      assert details_hidden == "" or details_hidden == "hidden"
       assert html =~ ~s(data-role="tool-trace-details")
     end
 
@@ -1141,7 +1137,7 @@ defmodule ContractWeb.StudioLiveTest do
   describe "dev/test operation block QA synthesis" do
     setup :log_in_a_user
 
-    test "authenticated browser hook synthesizes operation blocks that can expand", %{
+    test "authenticated browser hook synthesizes a tool_call row with a client-side JS toggle", %{
       conn: conn
     } do
       {:ok, lv, _html} = live(conn, ~p"/studio")
@@ -1150,18 +1146,31 @@ defmodule ContractWeb.StudioLiveTest do
       assert %{"ok" => true, "operation_ids" => [operation_id | _]} = json_response(conn, 200)
 
       html = render(lv)
-      assert html =~ ~s(id="operation-block-#{operation_id}")
-      assert html =~ ~s(data-role="operation-block")
-      assert html =~ ~s(id="operation-block-#{operation_id}-toggle")
-      refute html =~ ~s(id="operation-block-#{operation_id}-details")
+      fragment = LazyHTML.from_fragment(html)
 
-      html =
-        lv
-        |> element("#operation-block-#{operation_id}-toggle")
-        |> render_click()
-
-      assert html =~ ~s(id="operation-block-#{operation_id}-details")
+      # The synthesized operation is a `tool_call`, so it renders via the
+      # tool-trace branch of `operation_block` (codex-style inline row),
+      # not the `<section data-role="operation-block">` branch.
+      assert html =~ ~s(id="tool-trace-#{operation_id}")
       assert html =~ "Synthetic QA operation"
+      # Details panel is rendered up-front + `hidden`; the article-level
+      # JS toggle on the chat message flips it client-side.
+      assert html =~ ~s(id="tool-trace-#{operation_id}-details")
+
+      details =
+        fragment
+        |> LazyHTML.query("#tool-trace-#{operation_id}-details")
+
+      [details_hidden] = LazyHTML.attribute(details, "hidden")
+      assert details_hidden == "" or details_hidden == "hidden"
+
+      [article_phx_click] =
+        fragment
+        |> LazyHTML.query("#chat-msg-#{operation_id}")
+        |> LazyHTML.attribute("phx-click")
+
+      assert article_phx_click =~ "toggle_attr"
+      assert article_phx_click =~ ~s(tool-trace-#{operation_id}-details)
     end
 
     test "operation block QA synthesis requires an authenticated session" do

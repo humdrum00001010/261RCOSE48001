@@ -242,14 +242,12 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
           data-message-role={msg_role(msg)}
           data-message-kind={msg_kind(msg)}
           data-transient={msg_transient?(msg)}
-          phx-click={tool_call_toggle_event(msg, @expanded_operation_ids)}
-          phx-keydown={tool_call_toggle_event(msg, @expanded_operation_ids)}
+          phx-click={tool_call_toggle_js(msg)}
+          phx-keydown={tool_call_toggle_js(msg)}
           phx-key={tool_call_toggle_key(msg)}
-          phx-value-operation_id={tool_call_toggle_operation_id(msg)}
-          phx-target={tool_call_toggle_target(msg, @myself)}
           role={tool_call_toggle_role(msg)}
           tabindex={tool_call_toggle_tabindex(msg)}
-          aria-expanded={tool_call_aria_expanded(@expanded_operation_ids, msg)}
+          aria-expanded={tool_call_aria_expanded(msg)}
           aria-controls={tool_call_aria_controls(msg)}
           class={
             [
@@ -262,7 +260,7 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
               # gap. Applied via Tailwind's next-sibling variant on this
               # element when it's an agent article.
               msg_role(msg) == "agent" && "[&+[data-message-role=agent]]:!-mt-3",
-              (tool_call_message?(msg) and not tool_call_expanded?(@expanded_operation_ids, msg)) &&
+              tool_call_message?(msg) &&
                 "cursor-pointer focus-visible:outline focus-visible:outline-1 focus-visible:outline-offset-1 focus-visible:outline-base-content/20"
             ]
           }
@@ -270,35 +268,14 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
           <.operation_block
             :if={msg_operation(msg)}
             operation={msg_operation(msg)}
-            expanded={operation_expanded?(@expanded_operation_ids, msg, msg_operation(msg))}
             transient?={msg_transient?(msg) == "true"}
-            target={@myself}
           />
-          <%!-- Waiting state — rendered like a tool trace, but kept separate
-               from real reasoning content so it never leaves an empty
-               disclosure behind after the run finishes. --%>
-          <div
-            :if={is_nil(msg_operation(msg)) and msg_kind(msg) == "thinking"}
-            data-role="agent-thinking"
-            class="group/trace relative flex w-full items-center gap-1 px-3 py-1.5"
-          >
-            <div class="tool-trace inline-flex min-w-0 items-center gap-1.5 py-0.5 text-left text-[12px] leading-snug text-base-content/45 transition animate-pulse">
-              <.icon name="hero-wrench-screwdriver" class="size-3.5 shrink-0 opacity-70" />
-              <span class="truncate">
-                <span>{msg_body(msg)}</span>
-              </span>
-            </div>
-          </div>
-
           <%!-- User message: full-width rounded card (Codex CLI style).
                Slightly elevated background distinguishes the input echo
                from the agent's flat prose without needing a colored fill
                or a chat-tail pill. --%>
           <div
-            :if={
-              is_nil(msg_operation(msg)) and msg_kind(msg) != "thinking" and
-                msg_role(msg) == "user"
-            }
+            :if={is_nil(msg_operation(msg)) and msg_role(msg) == "user"}
             class="w-full border border-base-content/10 bg-base-300/50 px-3 py-1.5 text-[13px] leading-snug whitespace-normal break-words text-base-content/95 shadow-[inset_0_1px_3px_rgba(0,0,0,0.10)]"
           >
             {msg_body(msg)}
@@ -310,10 +287,7 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
                paragraph spans so paragraph breaks render with a real
                gap instead of being collapsed into one block. --%>
           <span
-            :if={
-              is_nil(msg_operation(msg)) and msg_kind(msg) != "thinking" and
-                msg_role(msg) == "agent"
-            }
+            :if={is_nil(msg_operation(msg)) and msg_role(msg) == "agent"}
             data-role="agent-text"
             data-message-id={dom_id}
             aria-busy={msg_transient?(msg)}
@@ -354,10 +328,7 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
           </span>
 
           <time
-            :if={
-              not is_nil(msg_timestamp(msg)) and msg_kind(msg) != "thinking" and
-                is_nil(msg_operation(msg))
-            }
+            :if={not is_nil(msg_timestamp(msg)) and is_nil(msg_operation(msg))}
             datetime={msg_timestamp(msg)}
             class="text-[10px] text-base-content/35 self-end whitespace-nowrap"
           >
@@ -635,8 +606,6 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
   end
 
   attr :operation, :map, required: true
-  attr :expanded, :boolean, default: false
-  attr :target, :any, default: nil
   attr :transient?, :boolean, default: false
 
   def operation_block(assigns) do
@@ -652,12 +621,16 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
     <%= if @operation_type in ["tool_call", "reasoning"] do %>
       <%!-- Codex-style inline trace row used for both tool calls and
            reasoning summaries. Visually identical: tiny wrench glyph + dim
-           "<Label>: <one-liner>". The whole article is the click target
-           (see `tool_call_toggle_event/2`) so the chevron and the collapse
-           button intentionally carry NO `phx-click` of their own —
-           otherwise the bubbled click would double-toggle and net to no
-           change, which is the "freshly-inserted tool_call won't expand"
-           regression. --%>
+           "<Label>: <one-liner>". The whole article carries the click
+           handler (a `Phoenix.LiveView.JS` toggle, set on the <article>
+           by the stream loop above) — child elements stay inert
+           (`pointer-events-none`) so child clicks bubble cleanly. We
+           render both the collapsed affordance AND the expanded details
+           panel; the panel starts `hidden` and `JS.toggle_attribute`
+           flips it client-side. Phoenix.LiveView streams don't re-render
+           already-inserted items on outer assign changes, so any
+           server-side expand state would never reach the DOM after the
+           first insertion. --%>
       <div class={[
         "group/trace relative flex w-full items-center gap-1 px-3 py-1.5",
         @operation_type == "reasoning" && @transient? && "animate-pulse"
@@ -701,7 +674,6 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
           </span>
         </div>
         <span
-          :if={!@expanded}
           id={"tool-trace-#{@operation_id}-expand"}
           data-role="tool-trace-expand"
           data-visible={tool_trace_expand_visible(@operation_status)}
@@ -718,9 +690,9 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
         </span>
       </div>
       <div
-        :if={@expanded}
         id={"tool-trace-#{@operation_id}-details"}
         data-role="tool-trace-details"
+        hidden
         class="self-start w-full max-w-full"
       >
         <div class="rounded-md border border-base-300 bg-base-100 px-3 py-2 font-mono text-[11px] leading-relaxed text-base-content/60 shadow-sm">
@@ -760,14 +732,26 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
         <button
           id={"operation-block-#{@operation_id}-toggle"}
           type="button"
-          phx-click="ui.toggle_expand"
-          phx-value-operation_id={@operation_id}
-          phx-target={@target}
+          aria-expanded="false"
+          aria-controls={"operation-block-#{@operation_id}-details"}
+          phx-click={
+            JS.toggle_attribute({"hidden", "hidden"},
+              to: "#operation-block-#{@operation_id}-details"
+            )
+            |> JS.toggle_attribute({"aria-expanded", "true", "false"})
+            |> JS.toggle(to: "#operation-block-#{@operation_id}-toggle [data-role='chev-right']")
+            |> JS.toggle(to: "#operation-block-#{@operation_id}-toggle [data-role='chev-down']")
+          }
           class="flex w-full items-start gap-2 px-3 py-2 text-left transition hover:bg-base-200/70"
         >
-          <.icon
-            name={if(@expanded, do: "hero-chevron-down", else: "hero-chevron-right")}
-            class="mt-0.5 size-4 shrink-0 text-base-content/50"
+          <span
+            data-role="chev-right"
+            class="mt-0.5 size-4 shrink-0 text-base-content/50 hero-chevron-right"
+          />
+          <span
+            data-role="chev-down"
+            style="display: none;"
+            class="mt-0.5 size-4 shrink-0 text-base-content/50 hero-chevron-down"
           />
           <div class="min-w-0 flex-1">
             <div class="flex items-center gap-2">
@@ -936,9 +920,9 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
           </div>
         </div>
         <div
-          :if={@expanded}
           id={"operation-block-#{@operation_id}-details"}
           data-role="operation-details"
+          hidden
           class="border-t border-base-200 bg-base-50 px-3 py-2"
         >
           <pre class="whitespace-pre-wrap break-words text-xs leading-relaxed text-base-content/70">{operation_details(@operation)}</pre>
@@ -946,25 +930,6 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
       </section>
     <% end %>
     """
-  end
-
-  @impl true
-  def mount(socket) do
-    {:ok, assign(socket, :expanded_operation_ids, MapSet.new())}
-  end
-
-  @impl true
-  def handle_event("ui.toggle_expand", %{"operation_id" => operation_id}, socket) do
-    expanded = socket.assigns[:expanded_operation_ids] || MapSet.new()
-
-    expanded =
-      if MapSet.member?(expanded, operation_id) do
-        MapSet.delete(expanded, operation_id)
-      else
-        MapSet.put(expanded, operation_id)
-      end
-
-    {:noreply, assign(socket, :expanded_operation_ids, expanded)}
   end
 
   # ----------------------------------------------------------------------------
@@ -1059,37 +1024,35 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
 
   defp tool_call_message?(msg), do: match?(%{}, tool_call_operation(msg))
 
-  # The whole article is the single click target for the expand/collapse
-  # toggle. The chevron and the 접기 button intentionally carry NO
-  # `phx-click` of their own — a duplicate handler would bubble up to the
-  # article, fire `ui.toggle_expand` twice, and net to no visible change
-  # (the "freshly-inserted tool_call won't expand" bug). Keeping the
-  # article as the only handler also fixes collapsing: a second click on
-  # the article toggles the row closed.
-  defp tool_call_toggle_event(msg, _expanded_ids) do
-    if tool_call_message?(msg), do: "ui.toggle_expand"
-  end
-
-  defp tool_call_expanded?(expanded_ids, msg) do
+  # The whole article carries a `Phoenix.LiveView.JS` toggle that flips
+  # the `hidden` attribute on the details panel and the article's
+  # aria-expanded — pure client-side, no server roundtrip. The chevron
+  # and the 접기 sub-elements stay `pointer-events-none` so a click
+  # anywhere on the row bubbles to the article handler exactly once.
+  # We can't drive expand state from a server assign because
+  # `phx-update="stream"` items don't re-render when outer assigns
+  # change — that was the "freshly-inserted tool_call won't expand,
+  # reload doesn't fix it" regression.
+  defp tool_call_toggle_js(msg) do
     case tool_call_operation(msg) do
-      nil -> false
-      operation -> operation_expanded?(expanded_ids, msg, operation)
+      nil ->
+        nil
+
+      operation ->
+        operation_id = operation_id(operation)
+
+        # Attribute selector (not `#id`) — tool ids like
+        # `tool-{run_id}-doc.get` contain dots, which CSS would parse as
+        # class separators and miss the element entirely.
+        JS.toggle_attribute({"hidden", "hidden"},
+          to: ~s([id="tool-trace-#{operation_id}-details"])
+        )
+        |> JS.toggle_attribute({"aria-expanded", "true", "false"})
     end
   end
 
   defp tool_call_toggle_key(msg) do
     if tool_call_message?(msg), do: "Enter"
-  end
-
-  defp tool_call_toggle_operation_id(msg) do
-    case tool_call_operation(msg) do
-      nil -> nil
-      operation -> operation_id(operation)
-    end
-  end
-
-  defp tool_call_toggle_target(msg, target) do
-    if tool_call_message?(msg), do: target
   end
 
   defp tool_call_toggle_role(msg) do
@@ -1100,20 +1063,14 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
     if tool_call_message?(msg), do: "0"
   end
 
-  defp tool_call_aria_expanded(expanded_ids, msg) do
-    case tool_call_operation(msg) do
-      nil ->
-        nil
-
-      operation ->
-        if operation_expanded?(expanded_ids, msg, operation), do: "true", else: "false"
-    end
+  defp tool_call_aria_expanded(msg) do
+    if tool_call_message?(msg), do: "false"
   end
 
   defp tool_call_aria_controls(msg) do
-    case tool_call_toggle_operation_id(msg) do
+    case tool_call_operation(msg) do
       nil -> nil
-      operation_id -> "tool-trace-#{operation_id}-details"
+      operation -> "tool-trace-#{operation_id(operation)}-details"
     end
   end
 
@@ -1126,15 +1083,6 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
         nil
     end
   end
-
-  defp operation_expanded?(expanded_ids, msg, operation) do
-    operation_id = operation_id(operation)
-    MapSet.member?(expanded_ids || MapSet.new(), operation_id) || msg_expanded?(msg)
-  end
-
-  defp msg_expanded?(%{expanded?: true}), do: true
-  defp msg_expanded?(%{"expanded?" => true}), do: true
-  defp msg_expanded?(_), do: false
 
   defp operation_id(operation), do: operation_value(operation, "id") || Ecto.UUID.generate()
   defp operation_type(operation), do: operation_value(operation, "type") || "operation"
