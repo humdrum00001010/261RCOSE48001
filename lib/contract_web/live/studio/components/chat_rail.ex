@@ -236,6 +236,7 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
       >
         <article
           :for={{dom_id, msg} <- @streams.chat_messages}
+          :if={msg_visible?(msg)}
           id={dom_id}
           data-role="chat-message"
           data-message-role={msg_role(msg)}
@@ -261,7 +262,7 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
               # gap. Applied via Tailwind's next-sibling variant on this
               # element when it's an agent article.
               msg_role(msg) == "agent" && "[&+[data-message-role=agent]]:!-mt-3",
-              tool_call_message?(msg) and not tool_call_expanded?(@expanded_operation_ids, msg) &&
+              (tool_call_message?(msg) and not tool_call_expanded?(@expanded_operation_ids, msg)) &&
                 "cursor-pointer focus-visible:outline focus-visible:outline-1 focus-visible:outline-offset-1 focus-visible:outline-base-content/20"
             ]
           }
@@ -270,48 +271,24 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
             :if={msg_operation(msg)}
             operation={msg_operation(msg)}
             expanded={operation_expanded?(@expanded_operation_ids, msg, msg_operation(msg))}
+            transient?={msg_transient?(msg) == "true"}
             target={@myself}
           />
-          <%!-- Reasoning / "thinking" stream — shown as a compact disclosure
-               so it stays aligned with agent prose until the user expands it. --%>
-          <details
-            :if={is_nil(msg_operation(msg)) and msg_kind(msg) == "reasoning"}
-            data-role="agent-reasoning"
-            class={[
-              "group/reasoning self-start max-w-[85%] px-3 py-0.5",
-              msg_transient?(msg) == "true" && "animate-pulse"
-            ]}
+          <%!-- Waiting state — rendered like a tool trace, but kept separate
+               from real reasoning content so it never leaves an empty
+               disclosure behind after the run finishes. --%>
+          <div
+            :if={is_nil(msg_operation(msg)) and msg_kind(msg) == "thinking"}
+            data-role="agent-thinking"
+            class="group/trace relative flex w-full items-center gap-1 px-3 py-1.5"
           >
-            <summary
-              data-role="agent-reasoning-summary"
-              class="flex cursor-pointer list-none items-center gap-1.5 text-[11px] leading-none text-base-content/55 [&::-webkit-details-marker]:hidden"
-            >
-              <.icon name="hero-sparkles" class="size-3 shrink-0 text-base-content/35" />
-              <span
-                data-role="agent-reasoning-text"
-                data-message-id={dom_id}
-                data-placeholder={reasoning_placeholder?(msg)}
-                title={msg_body(msg)}
-                class="min-w-0 truncate whitespace-nowrap"
-              >
-                {reasoning_summary(msg)}
+            <div class="tool-trace inline-flex min-w-0 items-center gap-1.5 py-0.5 text-left text-[12px] leading-snug text-base-content/45 transition animate-pulse">
+              <.icon name="hero-wrench-screwdriver" class="size-3.5 shrink-0 opacity-70" />
+              <span class="truncate">
+                <span>{msg_body(msg)}</span>
               </span>
-              <.icon
-                name="hero-chevron-down"
-                class="size-3 shrink-0 opacity-50 transition-transform group-open/reasoning:rotate-180"
-              />
-            </summary>
-            <div
-              data-role="agent-reasoning-details"
-              class="mt-1 rounded-md border border-base-300 bg-base-100 px-3 py-2 text-[14px] leading-relaxed text-base-content shadow-sm"
-            >
-              <pre
-                data-role="agent-reasoning-details-text"
-                data-message-id={dom_id}
-                class="whitespace-pre-wrap break-words"
-              >{msg_body(msg)}</pre>
             </div>
-          </details>
+          </div>
 
           <%!-- User message: full-width rounded card (Codex CLI style).
                Slightly elevated background distinguishes the input echo
@@ -319,7 +296,7 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
                or a chat-tail pill. --%>
           <div
             :if={
-              is_nil(msg_operation(msg)) and msg_kind(msg) != "reasoning" and
+              is_nil(msg_operation(msg)) and msg_kind(msg) != "thinking" and
                 msg_role(msg) == "user"
             }
             class="w-full border border-base-content/10 bg-base-300/50 px-3 py-1.5 text-[13px] leading-snug whitespace-normal break-words text-base-content/95 shadow-[inset_0_1px_3px_rgba(0,0,0,0.10)]"
@@ -334,7 +311,7 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
                gap instead of being collapsed into one block. --%>
           <span
             :if={
-              is_nil(msg_operation(msg)) and msg_kind(msg) != "reasoning" and
+              is_nil(msg_operation(msg)) and msg_kind(msg) != "thinking" and
                 msg_role(msg) == "agent"
             }
             data-role="agent-text"
@@ -378,7 +355,7 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
 
           <time
             :if={
-              not is_nil(msg_timestamp(msg)) and msg_kind(msg) != "reasoning" and
+              not is_nil(msg_timestamp(msg)) and msg_kind(msg) != "thinking" and
                 is_nil(msg_operation(msg))
             }
             datetime={msg_timestamp(msg)}
@@ -660,6 +637,7 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
   attr :operation, :map, required: true
   attr :expanded, :boolean, default: false
   attr :target, :any, default: nil
+  attr :transient?, :boolean, default: false
 
   def operation_block(assigns) do
     assigns =
@@ -671,13 +649,19 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
       |> assign(:operation_summary, operation_summary(assigns.operation))
 
     ~H"""
-    <%= if @operation_type == "tool_call" do %>
-      <%!-- Codex-style inline tool trace: tiny wrench glyph + dim
-           "Tool: <name>" label. No border, no background — reads as a
-           natural side-note in the conversation flow. A second
-           chevron button on the right appears on hover and toggles the
-           raw details panel underneath. --%>
-      <div class="group/trace relative flex w-full items-center gap-1 px-3 py-1.5">
+    <%= if @operation_type in ["tool_call", "reasoning"] do %>
+      <%!-- Codex-style inline trace row used for both tool calls and
+           reasoning summaries. Visually identical: tiny wrench glyph + dim
+           "<Label>: <one-liner>". The whole article is the click target
+           (see `tool_call_toggle_event/2`) so the chevron and the collapse
+           button intentionally carry NO `phx-click` of their own —
+           otherwise the bubbled click would double-toggle and net to no
+           change, which is the "freshly-inserted tool_call won't expand"
+           regression. --%>
+      <div class={[
+        "group/trace relative flex w-full items-center gap-1 px-3 py-1.5",
+        @operation_type == "reasoning" && @transient? && "animate-pulse"
+      ]}>
         <div
           id={"tool-trace-#{@operation_id}"}
           data-role="tool-trace"
@@ -693,9 +677,22 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
         >
           <.icon name="hero-wrench-screwdriver" class="size-3.5 shrink-0 opacity-70" />
           <span class="truncate">
-            <span class="select-none">Tool: </span><span class="font-mono">{@operation_title}</span>
+            <span class="select-none">{operation_prefix_label(@operation_type)}: </span>
+            <%= if @operation_type == "reasoning" do %>
+              <span
+                data-role="agent-reasoning-text"
+                data-message-id={"chat-msg-reasoning-#{reasoning_run_id(@operation_id)}"}
+                data-placeholder={reasoning_text_placeholder?(@operation_summary)}
+                title={operation_reasoning_full(@operation)}
+                class="min-w-0 truncate whitespace-nowrap"
+              >
+                {reasoning_text_or_placeholder(@operation_summary)}
+              </span>
+            <% else %>
+              <span class="font-mono">{@operation_title}</span>
+            <% end %>
             <span
-              :if={@operation_summary != ""}
+              :if={@operation_type == "tool_call" and @operation_summary != ""}
               data-role="tool-trace-summary"
               class="ml-1 text-base-content/40"
             >
@@ -710,13 +707,9 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
           data-visible={tool_trace_expand_visible(@operation_status)}
           title={tool_trace_expand_label(@operation_status)}
           aria-label={tool_trace_expand_label(@operation_status)}
-          phx-click="ui.toggle_expand"
-          phx-value-operation_id={@operation_id}
-          phx-target={@target}
           class={[
-            "absolute right-0 top-1/2 inline-flex size-6 -translate-y-1/2 items-center justify-center text-base-content/55 transition cursor-pointer",
-            "hover:text-base-content focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-base-content/25",
-            @operation_status == "failed" && "opacity-100 text-error/80 hover:text-error",
+            "absolute right-0 top-1/2 inline-flex size-6 -translate-y-1/2 items-center justify-center text-base-content/55 transition pointer-events-none",
+            @operation_status == "failed" && "opacity-100 text-error/80",
             @operation_status != "failed" &&
               "opacity-0 group-hover/message:opacity-100 group-hover/trace:opacity-100"
           ]}
@@ -731,23 +724,26 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
         class="self-start w-full max-w-full"
       >
         <div class="rounded-md border border-base-300 bg-base-100 px-3 py-2 font-mono text-[11px] leading-relaxed text-base-content/60 shadow-sm">
-          <pre class="whitespace-pre-wrap break-words">{operation_details(@operation)}</pre>
+          <pre
+            data-role={reasoning_details_data_role(@operation_type)}
+            data-message-id={
+              @operation_type == "reasoning" &&
+                "chat-msg-reasoning-#{reasoning_run_id(@operation_id)}"
+            }
+            class="whitespace-pre-wrap break-words"
+          >{operation_expanded_body(@operation_type, @operation)}</pre>
         </div>
         <div data-role="tool-trace-collapse-row" class="flex justify-center pt-1">
-          <button
+          <span
             id={"tool-trace-#{@operation_id}-collapse"}
-            type="button"
             data-role="tool-trace-collapse"
             title={dgettext("studio", "접기")}
             aria-label={dgettext("studio", "접기")}
-            phx-click="ui.toggle_expand"
-            phx-value-operation_id={@operation_id}
-            phx-target={@target}
-            class="inline-flex items-center gap-1 text-[11px] text-base-content/55 transition hover:text-base-content focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-base-content/25 cursor-pointer"
+            class="inline-flex items-center gap-1 text-[11px] text-base-content/55 pointer-events-none"
           >
             <.icon name="hero-chevron-up" class="size-3" />
             {dgettext("studio", "접기")}
-          </button>
+          </span>
         </div>
       </div>
     <% else %>
@@ -1063,16 +1059,15 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
 
   defp tool_call_message?(msg), do: match?(%{}, tool_call_operation(msg))
 
-  # When a tool-call row is collapsed, the whole article is the click target
-  # (any click expands). Once expanded, the article becomes inert: only the
-  # dedicated 접기 button collapses it. This keeps text selection inside the
-  # details `<pre>` from accidentally collapsing the row, and removes the
-  # double-fire that would happen if the button's click bubbled to the
-  # article (button phx-click + article phx-click both firing = no net change).
-  defp tool_call_toggle_event(msg, expanded_ids) do
-    if tool_call_message?(msg) and not tool_call_expanded?(expanded_ids, msg) do
-      "ui.toggle_expand"
-    end
+  # The whole article is the single click target for the expand/collapse
+  # toggle. The chevron and the 접기 button intentionally carry NO
+  # `phx-click` of their own — a duplicate handler would bubble up to the
+  # article, fire `ui.toggle_expand` twice, and net to no visible change
+  # (the "freshly-inserted tool_call won't expand" bug). Keeping the
+  # article as the only handler also fixes collapsing: a second click on
+  # the article toggles the row closed.
+  defp tool_call_toggle_event(msg, _expanded_ids) do
+    if tool_call_message?(msg), do: "ui.toggle_expand"
   end
 
   defp tool_call_expanded?(expanded_ids, msg) do
@@ -1125,7 +1120,7 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
   defp tool_call_operation(msg) do
     case msg_operation(msg) do
       operation when is_map(operation) ->
-        if operation_type(operation) == "tool_call", do: operation
+        if operation_type(operation) in ["tool_call", "reasoning"], do: operation
 
       _ ->
         nil
@@ -1329,26 +1324,47 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
   defp msg_kind(%{kind: kind}) when is_binary(kind), do: kind
   defp msg_kind(_), do: "text"
 
-  defp reasoning_summary(msg) do
-    msg
-    |> msg_body()
-    |> String.replace(~r/\s+/, " ")
-    |> String.trim()
-    |> case do
+  defp msg_visible?(msg) do
+    # Legacy `kind: :reasoning` rows with no operation are filtered out —
+    # the production path now persists reasoning as an `operation` map and
+    # the `:agent_reasoning_done` handler deletes the streaming bubble
+    # when the body ends up empty. Keeping the guard prevents stale ghost
+    # rows in tests / older serialized state.
+    not (is_nil(msg_operation(msg)) and msg_kind(msg) == "reasoning")
+  end
+
+  defp reasoning_text_or_placeholder(summary) when is_binary(summary) do
+    case String.trim(summary) do
       "" -> dgettext("studio", "생각 중")
       text -> text
     end
   end
 
-  defp reasoning_placeholder?(msg) do
-    msg
-    |> msg_body()
-    |> String.trim()
-    |> case do
-      "" -> "true"
-      _ -> "false"
-    end
+  defp reasoning_text_or_placeholder(_), do: dgettext("studio", "생각 중")
+
+  defp reasoning_text_placeholder?(summary) when is_binary(summary) do
+    if String.trim(summary) == "", do: "true", else: "false"
   end
+
+  defp reasoning_text_placeholder?(_), do: "true"
+
+  defp reasoning_run_id("reasoning-" <> rest), do: rest
+  defp reasoning_run_id(id) when is_binary(id), do: id
+  defp reasoning_run_id(_), do: ""
+
+  defp reasoning_details_data_role("reasoning"), do: "agent-reasoning-details-text"
+  defp reasoning_details_data_role(_), do: nil
+
+  defp operation_prefix_label("reasoning"), do: "Thinking"
+  defp operation_prefix_label(_), do: "Tool"
+
+  defp operation_reasoning_full(operation) do
+    details = operation_details_map(operation)
+    Map.get(details, "text", "")
+  end
+
+  defp operation_expanded_body("reasoning", operation), do: operation_reasoning_full(operation)
+  defp operation_expanded_body(_, operation), do: operation_details(operation)
 
   # Show the bouncing-dots indicator only while the message is in-flight
   # AND has no visible body yet. Once the first token has landed, drop the

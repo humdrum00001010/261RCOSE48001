@@ -52,6 +52,117 @@ defmodule Contract.ChatThreadsTest do
       assert :user in roles
       assert length(messages) == 2
     end
+
+    test "current_thread_info/2 returns visible title metadata" do
+      owner_id = Ecto.UUID.generate()
+      document_id = Ecto.UUID.generate()
+
+      Repo.insert!(%ChatThread{
+        owner_id: owner_id,
+        document_id: document_id,
+        title: "Discussion - Scope confirmed",
+        status: "active",
+        messages: [
+          %{
+            "id" => Ecto.UUID.generate(),
+            "role" => "system",
+            "content" => "GRILL_SEED",
+            "inserted_at" => DateTime.to_iso8601(DateTime.utc_now(:second))
+          },
+          %{
+            "id" => Ecto.UUID.generate(),
+            "role" => "user",
+            "content" => "Please review this.",
+            "inserted_at" => DateTime.to_iso8601(DateTime.utc_now(:second))
+          }
+        ],
+        last_message_at: DateTime.utc_now(:second)
+      })
+
+      ctx = Context.for_user(%Contract.Accounts.User{id: owner_id})
+      state = %State{selected_document_id: document_id, mode: :editing}
+
+      assert %{
+               id: _,
+               title: "Discussion - Scope confirmed",
+               message_count: 1
+             } = ChatThreads.current_thread_info(ctx, state)
+    end
+
+    test "reset_context/2 archives the active visible thread" do
+      owner_id = Ecto.UUID.generate()
+      document_id = Ecto.UUID.generate()
+
+      thread =
+        Repo.insert!(%ChatThread{
+          owner_id: owner_id,
+          document_id: document_id,
+          title: "Discussion",
+          status: "active",
+          messages: [
+            %{
+              "id" => Ecto.UUID.generate(),
+              "role" => "user",
+              "content" => "old context",
+              "inserted_at" => DateTime.to_iso8601(DateTime.utc_now(:second))
+            }
+          ],
+          last_message_at: DateTime.utc_now(:second)
+        })
+
+      ctx = Context.for_user(%Contract.Accounts.User{id: owner_id})
+      state = %State{selected_document_id: document_id, mode: :editing}
+
+      assert {:ok, :archived} = ChatThreads.reset_context(ctx, state)
+
+      assert Repo.get!(ChatThread, thread.id).status == "archived"
+      assert ChatThreads.current_thread_info(ctx, state) == nil
+      assert ChatThreads.list_visible_messages(ctx, state) == []
+    end
+
+    test "rename_context/3 updates the active visible thread title" do
+      owner_id = Ecto.UUID.generate()
+      document_id = Ecto.UUID.generate()
+
+      thread =
+        Repo.insert!(%ChatThread{
+          owner_id: owner_id,
+          document_id: document_id,
+          title: "Discussion - Scope confirmed",
+          status: "active",
+          messages: [
+            %{
+              "id" => Ecto.UUID.generate(),
+              "role" => "user",
+              "content" => "old context",
+              "inserted_at" => DateTime.to_iso8601(DateTime.utc_now(:second))
+            }
+          ],
+          last_message_at: DateTime.utc_now(:second)
+        })
+
+      ctx = Context.for_user(%Contract.Accounts.User{id: owner_id})
+      state = %State{selected_document_id: document_id, mode: :editing}
+
+      assert {:ok, %ChatThread{title: "Deal setup"}} =
+               ChatThreads.rename_context(ctx, state, "  Deal   setup  ")
+
+      assert Repo.get!(ChatThread, thread.id).title == "Deal setup"
+      assert %{title: "Deal setup"} = ChatThreads.current_thread_info(ctx, state)
+    end
+
+    test "rename_context/3 creates the visible thread when the context is fresh" do
+      owner_id = Ecto.UUID.generate()
+      document_id = Ecto.UUID.generate()
+      ctx = Context.for_user(%Contract.Accounts.User{id: owner_id})
+      state = %State{selected_document_id: document_id, mode: :editing}
+
+      assert {:ok, %ChatThread{title: "Deal setup", messages: []}} =
+               ChatThreads.rename_context(ctx, state, "Deal setup")
+
+      assert %{title: "Deal setup", message_count: 0} =
+               ChatThreads.current_thread_info(ctx, state)
+    end
   end
 
   describe "persist_user_message/2 grill seed" do
@@ -98,6 +209,116 @@ defmodule Contract.ChatThreadsTest do
 
       assert {:ok, _thread, _command, message} = ChatThreads.persist_user_message(ctx, command)
       assert message["role"] == "user"
+    end
+
+    test "assistant reply appends a concise summary to the thread title" do
+      owner_id = Ecto.UUID.generate()
+      document_id = Ecto.UUID.generate()
+
+      ctx = Context.for_user(%Contract.Accounts.User{id: owner_id})
+
+      command = %Command{
+        kind: :chat_message,
+        actor_type: :user,
+        actor_id: owner_id,
+        document_id: document_id,
+        message: "What changed?",
+        payload: %{}
+      }
+
+      assert {:ok, %ChatThread{id: thread_id}, %Command{} = command, _message} =
+               ChatThreads.persist_user_message(ctx, command)
+
+      assert {:ok, %ChatThread{title: title}} =
+               ChatThreads.append_assistant_message(
+                 ctx,
+                 command,
+                 "검토 범위와 지급 조건을 먼저 확인해야 합니다.\n다음 질문을 드릴게요."
+               )
+
+      assert title == "Discussion - 검토 범위와 지급 조건을 먼저 확인해야 합니다."
+      assert Repo.get!(ChatThread, thread_id).title == title
+    end
+  end
+
+  describe "append_reasoning_message/2" do
+    test "persists a reasoning operation row that rehydrates through the rail" do
+      owner_id = Ecto.UUID.generate()
+      document_id = Ecto.UUID.generate()
+
+      {:ok, thread} =
+        Repo.insert(%ChatThread{
+          owner_id: owner_id,
+          document_id: document_id,
+          title: "Discussion",
+          status: "active",
+          messages: [],
+          last_message_at: DateTime.utc_now(:second)
+        })
+
+      agent_run_id = Ecto.UUID.generate()
+
+      assert {:ok, %ChatThread{} = updated} =
+               ChatThreads.append_reasoning_message(thread.id, %{
+                 agent_run_id: agent_run_id,
+                 body: "First step\nSecond internal step"
+               })
+
+      assert [persisted] = updated.messages
+      assert persisted["role"] == "agent"
+      assert persisted["agent_run_id"] == agent_run_id
+      operation = persisted["operation"]
+      assert operation["type"] == "reasoning"
+      assert operation["status"] == "completed"
+      assert operation["id"] == "reasoning-#{agent_run_id}"
+      assert operation["summary"] == "First step"
+      assert operation["details"]["text"] == "First step\nSecond internal step"
+
+      ctx = Context.for_user(%Contract.Accounts.User{id: owner_id})
+      state = %State{selected_document_id: document_id, mode: :editing}
+
+      assert [rehydrated] = ChatThreads.list_visible_messages(ctx, state)
+      assert rehydrated.role == :agent
+      # Rehydrated row carries the `operation` map, so the chat rail
+      # renders it through `operation_block` (same path as tool_call).
+      assert rehydrated.operation["type"] == "reasoning"
+      assert rehydrated.operation["details"]["text"] == "First step\nSecond internal step"
+    end
+
+    test "skips empty / whitespace-only bodies" do
+      owner_id = Ecto.UUID.generate()
+
+      {:ok, thread} =
+        Repo.insert(%ChatThread{
+          owner_id: owner_id,
+          document_id: nil,
+          title: "Discussion",
+          status: "active",
+          messages: [],
+          last_message_at: DateTime.utc_now(:second)
+        })
+
+      assert :ok =
+               ChatThreads.append_reasoning_message(thread.id, %{
+                 agent_run_id: Ecto.UUID.generate(),
+                 body: ""
+               })
+
+      assert :ok =
+               ChatThreads.append_reasoning_message(thread.id, %{
+                 agent_run_id: Ecto.UUID.generate(),
+                 body: "   \n  "
+               })
+
+      assert Repo.get!(ChatThread, thread.id).messages == []
+    end
+
+    test "skipped when chat_thread_id is nil (test/legacy path)" do
+      assert :ok ==
+               ChatThreads.append_reasoning_message(nil, %{
+                 agent_run_id: Ecto.UUID.generate(),
+                 body: "anything"
+               })
     end
   end
 

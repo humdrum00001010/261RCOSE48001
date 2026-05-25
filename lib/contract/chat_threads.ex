@@ -17,6 +17,9 @@ defmodule Contract.ChatThreads do
   alias Contract.Studio.State
 
   @assistant_roles MapSet.new(["assistant", "agent"])
+  @default_title "Discussion"
+  @title_separator " - "
+  @title_summary_max 64
 
   @doc """
   Persists the user's chat command and returns the enriched command.
@@ -77,6 +80,71 @@ defmodule Contract.ChatThreads do
     end
   end
 
+  @doc """
+  Persists a completed reasoning ("Thinking") summary as a thread message
+  so it survives reload and `stream(:chat_messages, reset: true)`. Modelled
+  on `append_tool_call_message/2` — the row carries `role: "agent"` and an
+  `operation` map of type `"reasoning"`, so the chat rail rehydrates it
+  through the same `operation_block` path that already renders tool calls.
+  Skipped when `chat_thread_id` is nil (test/legacy) or the text is empty
+  / whitespace-only.
+  """
+  @spec append_reasoning_message(binary() | nil, map()) ::
+          {:ok, ChatThread.t()} | :ok | {:error, term()}
+  def append_reasoning_message(nil, _attrs), do: :ok
+
+  def append_reasoning_message(thread_id, %{body: body} = attrs)
+      when is_binary(thread_id) and is_binary(body) do
+    case String.trim(body) do
+      "" ->
+        :ok
+
+      _ ->
+        case Repo.get(ChatThread, thread_id) do
+          %ChatThread{} = thread ->
+            agent_run_id = Map.get(attrs, :agent_run_id) || Map.get(attrs, "agent_run_id")
+            operation = build_reasoning_operation(agent_run_id, body)
+
+            message = %{
+              "id" => operation["id"],
+              "role" => "agent",
+              "content" => "",
+              "agent_run_id" => agent_run_id,
+              "operation" => operation,
+              "inserted_at" => DateTime.to_iso8601(utc_now())
+            }
+
+            append_message(thread, message)
+
+          nil ->
+            {:error, :not_found}
+        end
+    end
+  end
+
+  def append_reasoning_message(_thread_id, _attrs), do: :ok
+
+  defp build_reasoning_operation(agent_run_id, body) when is_binary(body) do
+    %{
+      "id" => "reasoning-#{agent_run_id || Ecto.UUID.generate()}",
+      "type" => "reasoning",
+      "title" => "Thinking",
+      "status" => "completed",
+      "summary" => reasoning_summary_line(body),
+      "details" => %{"text" => body},
+      "agent_run_id" => agent_run_id
+    }
+  end
+
+  defp reasoning_summary_line(body) do
+    body
+    |> String.split(~r/\r?\n/, parts: 2)
+    |> List.first()
+    |> to_string()
+    |> String.replace(~r/\s+/, " ")
+    |> String.trim()
+  end
+
   @doc "Appends an assistant-visible message to a thread."
   @spec append_assistant_message(Context.t() | nil, Command.t(), String.t() | nil) ::
           {:ok, ChatThread.t()} | :ok | {:error, term()}
@@ -88,7 +156,10 @@ defmodule Contract.ChatThreads do
     case get_thread_for_command(ctx, command) do
       {:ok, thread} ->
         message = build_message("assistant", content, command)
-        append_message(thread, message)
+
+        with {:ok, updated} <- append_message(thread, message) do
+          maybe_append_assistant_summary_to_title(updated, content)
+        end
 
       {:error, _} = error ->
         error
@@ -115,6 +186,86 @@ defmodule Contract.ChatThreads do
   end
 
   def list_visible_messages(_ctx, _state), do: []
+
+  @doc """
+  Returns metadata for the currently visible active thread.
+
+  The chat rail uses this for its compact header. `message_count` follows
+  the visible rail count, so hidden system seed messages do not make a
+  fresh context look populated.
+  """
+  @spec current_thread_info(Context.t(), State.t()) :: map() | nil
+  def current_thread_info(%Context{} = ctx, %State{} = state) do
+    case visible_thread(ctx, state) do
+      %ChatThread{} = thread -> thread_info(thread)
+      nil -> nil
+    end
+  end
+
+  def current_thread_info(_ctx, _state), do: nil
+
+  @doc """
+  Renames the currently visible active thread.
+
+  Manual title edits are scoped to the same active thread lookup used by the
+  rail header and history reads, so a user cannot rename an archived or
+  different owner's conversation by posting only a title.
+  """
+  @spec rename_context(Context.t(), State.t(), binary()) ::
+          {:ok, ChatThread.t()} | {:error, term()}
+  def rename_context(%Context{user: %{id: owner_id}} = ctx, %State{} = state, title)
+      when is_binary(title) do
+    case visible_thread(ctx, state) do
+      %ChatThread{id: thread_id} ->
+        now = utc_now()
+        title = normalize_title(title)
+
+        case Repo.update_all(
+               from(t in ChatThread,
+                 where: t.id == ^thread_id and t.owner_id == ^owner_id and t.status == "active"
+               ),
+               set: [title: title, updated_at: now]
+             ) do
+          {1, _} -> {:ok, Repo.get!(ChatThread, thread_id)}
+          {0, _} -> {:error, :not_found}
+        end
+
+      nil ->
+        create_thread(owner_id, state.selected_document_id, normalize_title(title))
+    end
+  end
+
+  def rename_context(_ctx, _state, _title), do: {:error, :forbidden}
+
+  @doc """
+  Archives the currently visible active thread.
+
+  The next user message for the same document/no-document scope creates a
+  fresh `chat_threads` row via `persist_user_message/2`, giving the agent
+  clean conversation history without deleting audit data.
+  """
+  @spec reset_context(Context.t(), State.t()) :: {:ok, :archived | :noop} | {:error, term()}
+  def reset_context(%Context{user: %{id: owner_id}} = ctx, %State{} = state) do
+    case visible_thread(ctx, state) do
+      %ChatThread{id: thread_id} ->
+        now = utc_now()
+
+        case Repo.update_all(
+               from(t in ChatThread,
+                 where: t.id == ^thread_id and t.owner_id == ^owner_id and t.status == "active"
+               ),
+               set: [status: "archived", updated_at: now]
+             ) do
+          {1, _} -> {:ok, :archived}
+          {0, _} -> {:error, :not_found}
+        end
+
+      nil ->
+        {:ok, :noop}
+    end
+  end
+
+  def reset_context(_ctx, _state), do: {:error, :forbidden}
 
   defp hidden_message?(%{} = message) do
     role = read(message, "role") || read(message, :role)
@@ -219,12 +370,12 @@ defmodule Contract.ChatThreads do
 
   defp visible_thread(_ctx, _state), do: nil
 
-  defp create_thread(owner_id, document_id) do
+  defp create_thread(owner_id, document_id, title \\ @default_title) do
     %ChatThread{}
     |> ChatThread.changeset(%{
       owner_id: owner_id,
       document_id: document_id,
-      title: "Discussion",
+      title: title,
       messages: [],
       status: "active"
     })
@@ -256,6 +407,82 @@ defmodule Contract.ChatThreads do
 
       {0, _} ->
         {:error, :not_found}
+    end
+  end
+
+  defp maybe_append_assistant_summary_to_title(%ChatThread{} = thread, content) do
+    case summarize_title(content) do
+      "" ->
+        {:ok, thread}
+
+      summary ->
+        title = title_base(thread.title) <> @title_separator <> summary
+
+        if title == thread.title do
+          {:ok, thread}
+        else
+          thread
+          |> ChatThread.changeset(%{title: title})
+          |> Repo.update()
+        end
+    end
+  end
+
+  defp thread_info(%ChatThread{} = thread) do
+    %{
+      id: thread.id,
+      title: thread.title || @default_title,
+      message_count:
+        thread.messages
+        |> List.wrap()
+        |> Enum.reject(&hidden_message?/1)
+        |> length(),
+      last_message_at: thread.last_message_at
+    }
+  end
+
+  defp title_base(title) when is_binary(title) do
+    title
+    |> String.split(@title_separator, parts: 2)
+    |> List.first()
+    |> case do
+      nil -> @default_title
+      "" -> @default_title
+      base -> base
+    end
+  end
+
+  defp title_base(_title), do: @default_title
+
+  defp normalize_title(title) when is_binary(title) do
+    title
+    |> String.replace(~r/\s+/, " ")
+    |> String.trim()
+    |> case do
+      "" -> @default_title
+      title -> truncate_title(title, @title_summary_max)
+    end
+  end
+
+  defp summarize_title(content) when is_binary(content) do
+    content
+    |> String.split(~r/\r?\n/, parts: 2)
+    |> List.first()
+    |> to_string()
+    |> String.replace(~r/[\*_`#>]+/, "")
+    |> String.trim()
+    |> String.trim_leading("- ")
+    |> String.replace(~r/\s+/, " ")
+    |> truncate_title(@title_summary_max)
+  end
+
+  defp summarize_title(_content), do: ""
+
+  defp truncate_title(text, max) do
+    if String.length(text) > max do
+      String.slice(text, 0, max) <> "..."
+    else
+      text
     end
   end
 

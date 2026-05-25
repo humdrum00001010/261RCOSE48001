@@ -640,7 +640,7 @@ defmodule ContractWeb.Live.Studio.Components.ChatRailTest do
                |> LazyHTML.attribute("role")
     end
 
-    test "reasoning renders as a compact aligned row instead of expanded prose" do
+    test "reasoning renders through operation_block as a compact aligned row" do
       html =
         render_component(ChatRail,
           id: "chat-rail",
@@ -651,9 +651,17 @@ defmodule ContractWeb.Live.Studio.Components.ChatRailTest do
                %{
                  id: "reasoning-compact",
                  role: :agent,
-                 kind: :reasoning,
-                 body:
-                   "First internal step\nSecond internal step that should not expand the rail layout.",
+                 operation: %{
+                   "id" => "reasoning-compact",
+                   "type" => "reasoning",
+                   "title" => "Thinking",
+                   "status" => "running",
+                   "summary" => "First internal step",
+                   "details" => %{
+                     "text" =>
+                       "First internal step\nSecond internal step that should not expand the rail layout."
+                   }
+                 },
                  transient?: true
                }}
             ]
@@ -670,17 +678,11 @@ defmodule ContractWeb.Live.Studio.Components.ChatRailTest do
 
       refute article_class =~ "max-w"
 
-      [reasoning_class] =
-        fragment
-        |> LazyHTML.query(~s(#chat-msg-reasoning-compact [data-role="agent-reasoning"]))
-        |> LazyHTML.attribute("class")
+      assert html =~ ~s(id="tool-trace-reasoning-compact")
 
-      assert reasoning_class =~ "px-3"
-      refute reasoning_class =~ "whitespace-pre"
-
-      assert html =~ ~s(data-role="agent-reasoning-summary")
-      assert html =~ ~s(data-role="agent-reasoning-details")
-      assert html =~ "Second internal step"
+      assert html =~ "hero-wrench-screwdriver"
+      assert html =~ "Thinking:"
+      assert html =~ "First internal step"
 
       [text_class] =
         fragment
@@ -689,6 +691,73 @@ defmodule ContractWeb.Live.Studio.Components.ChatRailTest do
 
       assert text_class =~ "truncate"
       assert text_class =~ "whitespace-nowrap"
+
+      # Reasoning uses the same trace structure as tool_call — no separate
+      # `<details>` element with native browser disclosure.
+      refute html =~ ~s(<details)
+    end
+
+    test "completed empty reasoning is not rendered as a stale thinking row" do
+      # The studio_live `:agent_reasoning_done` handler removes the
+      # reasoning bubble entirely when `text` is empty, so the chat_rail
+      # only ever sees a non-empty reasoning operation. This test pins the
+      # equivalent invariant at the component level: a row carrying ONLY
+      # `kind: :reasoning` with no operation must be hidden.
+      html =
+        render_component(ChatRail,
+          id: "chat-rail",
+          studio_state: default_state(),
+          streams: %{
+            chat_messages: [
+              {"chat-msg-reasoning-empty",
+               %{
+                 id: "reasoning-empty",
+                 role: :agent,
+                 kind: :reasoning,
+                 body: "",
+                 transient?: false
+               }}
+            ]
+          },
+          current_scope: lawyer_scope()
+        )
+
+      refute html =~ ~s(data-role="agent-reasoning")
+      refute html =~ "생각 중"
+    end
+
+    test "synthetic thinking row uses the same trace density as tool calls" do
+      html =
+        render_component(ChatRail,
+          id: "chat-rail",
+          studio_state: default_state(),
+          streams: %{
+            chat_messages: [
+              {"chat-msg-thinking-run",
+               %{
+                 id: "thinking-run",
+                 role: :agent,
+                 kind: :thinking,
+                 body: "Thinking...",
+                 transient?: true
+               }}
+            ]
+          },
+          current_scope: lawyer_scope()
+        )
+
+      fragment = LazyHTML.from_fragment(html)
+
+      [thinking_class] =
+        fragment
+        |> LazyHTML.query(~s(#chat-msg-thinking-run [data-role="agent-thinking"] .tool-trace))
+        |> LazyHTML.attribute("class")
+
+      assert thinking_class =~ "text-[12px]"
+      assert thinking_class =~ "leading-snug"
+      assert thinking_class =~ "animate-pulse"
+      assert html =~ "hero-wrench-screwdriver"
+      assert html =~ "Thinking..."
     end
   end
 
@@ -1107,6 +1176,117 @@ defmodule ContractWeb.Live.Studio.Components.ChatRailTest do
       assert html =~ ~s(id="tool-trace-tool-failed-1-details")
       assert html =~ "contract-doc returned 424 Failed Dependency"
       assert html =~ "doc.get"
+    end
+
+    test "freshly stream_inserted tool_call article carries phx-target → LiveComponent cid and expands on first click",
+         %{conn: conn} do
+      # Bug 4 regression: tool_call rows inserted mid-conversation by the
+      # parent LV via `stream_insert(:chat_messages, ...)` would refuse to
+      # expand on the first click — the user had to reload the page first.
+      # Root cause was a duplicate `phx-click="ui.toggle_expand"` on the
+      # expand chevron inside `operation_block`: the chevron click bubbled
+      # up to the article (which also handled the same event), firing the
+      # toggle twice and netting to no change. Fix moves the only
+      # phx-click onto the article. This test pins the wiring + asserts
+      # that a single click expands the row.
+      {:ok, lv, _html} =
+        live_isolated(conn, WrapperLive, session: %{"scope" => lawyer_scope()})
+
+      send(lv.pid, {
+        :insert,
+        %{
+          id: "tool-fresh-msg",
+          role: :agent,
+          operation: %{
+            id: "tool-fresh-1",
+            type: "tool_call",
+            title: "doc.find",
+            status: "completed",
+            details: %{"q" => "delivery"}
+          },
+          transient?: false
+        }
+      })
+
+      _ = render(lv)
+
+      assert has_element?(lv, "#chat-msg-tool-fresh-msg[phx-click='ui.toggle_expand']")
+      assert has_element?(lv, "#chat-msg-tool-fresh-msg[phx-value-operation_id='tool-fresh-1']")
+
+      [target_cid] =
+        lv
+        |> render()
+        |> LazyHTML.from_fragment()
+        |> LazyHTML.query("#chat-msg-tool-fresh-msg")
+        |> LazyHTML.attribute("phx-target")
+
+      assert target_cid =~ ~r/^\d+$/,
+             "expected phx-target to be a LiveComponent cid (digits), got: #{inspect(target_cid)}"
+
+      # Chevron must not carry phx-click — otherwise its click bubbles up
+      # to the article and double-toggles the row.
+      assert has_element?(
+               lv,
+               "#tool-trace-tool-fresh-1-expand[data-role='tool-trace-expand']:not([phx-click])"
+             )
+
+      html =
+        lv
+        |> element("#chat-msg-tool-fresh-msg")
+        |> render_click()
+
+      assert html =~ ~s(id="tool-trace-tool-fresh-1-details")
+      assert html =~ "delivery"
+    end
+
+    test "reasoning row renders through operation_block (same data-roles as tool_call) and expands",
+         %{conn: conn} do
+      {:ok, lv, _html} =
+        live_isolated(conn, WrapperLive, session: %{"scope" => lawyer_scope()})
+
+      send(lv.pid, {
+        :insert,
+        %{
+          id: "reasoning-run-1",
+          role: :agent,
+          operation: %{
+            "id" => "reasoning-run-1",
+            "type" => "reasoning",
+            "title" => "Thinking",
+            "status" => "completed",
+            "summary" => "Reviewing the title clause",
+            "details" => %{
+              "text" => "Reviewing the title clause\nThen check the effective date."
+            }
+          },
+          transient?: false
+        }
+      })
+
+      html = render(lv)
+
+      # Same article-level wiring as tool_call — single click target.
+      assert has_element?(lv, "#chat-msg-reasoning-run-1[phx-click='ui.toggle_expand']")
+
+      # No standalone `<details>` element — reasoning shares operation_block.
+      refute html =~ ~s(<details data-role="agent-reasoning")
+
+      # Streaming JS hook targets these data-roles (kept across the refactor
+      # so per-delta TextNode appends don't break).
+      assert html =~ ~s(data-role="agent-reasoning-text")
+      assert html =~ ~s(id="tool-trace-reasoning-run-1")
+
+      assert html =~ "Thinking:"
+      assert html =~ "Reviewing the title clause"
+
+      html =
+        lv
+        |> element("#chat-msg-reasoning-run-1")
+        |> render_click()
+
+      assert html =~ ~s(id="tool-trace-reasoning-run-1-details")
+      assert html =~ ~s(data-role="agent-reasoning-details-text")
+      assert html =~ "Then check the effective date."
     end
   end
 end
