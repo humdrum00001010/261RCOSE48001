@@ -208,7 +208,8 @@ defmodule Contract.Session.Reducer do
   defp validate_op_shape(%Operation{op: :set_attr} = op, idx, state) do
     with :ok <-
            if(needs_target?(op), do: check_target_exists(op, idx, state), else: :ok),
-         :ok <- check_set_attr_node_kind(op, idx, state) do
+         :ok <- check_set_attr_node_kind(op, idx, state),
+         :ok <- check_document_type_immutable(op, state) do
       :ok
     end
   end
@@ -265,6 +266,23 @@ defmodule Contract.Session.Reducer do
   end
 
   defp check_set_attr_node_kind(_op, _idx, _state), do: :ok
+
+  defp check_document_type_immutable(
+         %Operation{target_type: :document, args: args},
+         %Runtime.State{projection: %{type_key: current_type_key}}
+       ) do
+    args = normalize_args(args)
+
+    case {Map.get(args, :key), current_type_key, Map.get(args, :value)} do
+      {:type_key, current, next} when is_binary(current) and current != "" and current != next ->
+        {:error, :document_type_already_set}
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp check_document_type_immutable(_op, _state), do: :ok
 
   defp validate_table_attr(:column_widths, value, idx) do
     if is_list(value) and Enum.all?(value, &(is_integer(&1) and &1 > 0)) do

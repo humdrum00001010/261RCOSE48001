@@ -227,6 +227,27 @@ defmodule Contract.DocumentsTest do
       assert {:error, :write_completed} = Documents.guard_body_mutation(doc.id, change)
     end
 
+    test "guard_body_mutation/2 rejects document type replacement changes" do
+      owner = scope()
+      {:ok, doc} = Documents.create(owner, %{title: "Typed", type_key: "service_agreement_v1"})
+
+      change = %Change{
+        document_id: doc.id,
+        command_kind: "set_contract_type",
+        payload: [
+          %{
+            "op" => "set_attr",
+            "target_type" => "document",
+            "target_id" => doc.id,
+            "args" => %{"key" => "type_key", "value" => "employment_v1"}
+          }
+        ]
+      }
+
+      assert {:error, :document_type_already_set} =
+               Documents.guard_body_mutation(doc.id, change)
+    end
+
     test "archive/2 and set_type/3 enforce owner ACL" do
       owner = scope()
       other = scope()
@@ -241,13 +262,12 @@ defmodule Contract.DocumentsTest do
       assert %DocumentType{key: "nda_v1"} = Repo.get(DocumentType, doc.document_type_id)
     end
 
-    test "set_type/3 resets the persisted document state snapshot" do
+    test "set_type/3 resets the persisted document state snapshot on first selection" do
       owner = scope()
 
       {:ok, doc} =
         Documents.create(owner, %{
           title: "Typed",
-          type_key: "service_agreement_v1",
           state_snapshot: %{"metadata" => %{"rhwp_field_values" => %{"old" => "value"}}}
         })
 
@@ -255,6 +275,34 @@ defmodule Contract.DocumentsTest do
                Documents.set_type(owner, doc.id, "employment_v1")
 
       assert %Document{state_snapshot: %{}} = Repo.get!(Document, doc.id)
+    end
+
+    test "set_type/3 rejects replacing an existing document type" do
+      owner = scope()
+
+      {:ok, doc} =
+        Documents.create(owner, %{
+          title: "Typed",
+          type_key: "service_agreement_v1"
+        })
+
+      assert {:error, :document_type_already_set} =
+               Documents.set_type(owner, doc.id, "employment_v1")
+
+      assert %Document{type_key: "service_agreement_v1"} = Repo.get!(Document, doc.id)
+    end
+
+    test "set_type/2 leaves an already typed row unchanged" do
+      owner = scope()
+
+      {:ok, doc} =
+        Documents.create(owner, %{
+          title: "Typed",
+          type_key: "service_agreement_v1"
+        })
+
+      assert :ok = Documents.set_type(doc.id, "employment_v1")
+      assert %Document{type_key: "service_agreement_v1"} = Repo.get!(Document, doc.id)
     end
 
     test "touch_revision/2 never decreases latest_revision" do

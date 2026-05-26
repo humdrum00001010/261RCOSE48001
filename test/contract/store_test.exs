@@ -406,21 +406,22 @@ defmodule Contract.StoreTest do
     # When Engine emits a `:set_attr` op against `target_type: :document`,
     # Store.append must mirror the affected attribute(s) onto the
     # `documents` SQL row so dashboard/list queries don't see stale
-    # title/type_key/status. The propagation runs inside the same
-    # `Repo.transaction/1` as the Change insert.
+    # title/status or the initial type selection. The propagation runs inside
+    # the same `Repo.transaction/1` as the Change insert.
 
     alias Contract.Documents
 
-    defp setup_document_row(owner_id \\ nil) do
+    defp setup_document_row(owner_id \\ nil, opts \\ []) do
       owner_id = owner_id || Ecto.UUID.generate()
       doc_id = Ecto.UUID.generate()
+      type_key = Keyword.get(opts, :type_key, "nda_v1")
 
       {:ok, _doc} =
         %Contract.Documents.Document{id: doc_id}
         |> Contract.Documents.Document.changeset(%{
           "owner_id" => owner_id,
           "title" => "Initial",
-          "type_key" => "nda_v1",
+          "type_key" => type_key,
           "status" => "draft"
         })
         |> Contract.Repo.insert()
@@ -454,7 +455,43 @@ defmodule Contract.StoreTest do
       }
     end
 
-    test "multiple set_attr ops in one Change all propagate" do
+    test "type_key set_attr propagates for an untyped document" do
+      {doc_id, _owner_id} = setup_document_row(nil, type_key: nil)
+      lease = acquire_lease(doc_id)
+
+      change =
+        set_attr_change(doc_id, 0, :type_key, "service_agreement_v1",
+          idempotency_key: "set-type-#{doc_id}"
+        )
+
+      assert {:ok, _} = Store.append(doc_id, change, lease.fencing_token)
+
+      row = Contract.Repo.get(Contract.Documents.Document, doc_id)
+      assert row.type_key == "service_agreement_v1"
+      assert row.title == "Initial"
+      assert row.status == :draft
+    end
+
+    test "type_key set_attr replacement is rejected for an already typed document" do
+      {doc_id, _owner_id} = setup_document_row()
+      lease = acquire_lease(doc_id)
+
+      change =
+        set_attr_change(doc_id, 0, :type_key, "service_agreement_v1",
+          idempotency_key: "replace-type-#{doc_id}"
+        )
+
+      assert {:error, :document_type_already_set} =
+               Store.append(doc_id, change, lease.fencing_token)
+
+      row = Contract.Repo.get(Contract.Documents.Document, doc_id)
+      assert row.type_key == "nda_v1"
+      assert row.title == "Initial"
+      assert row.status == :draft
+      assert {:ok, 0} = Store.latest_revision(doc_id)
+    end
+
+    test "multiple non-type set_attr ops in one Change all propagate" do
       {doc_id, _owner_id} = setup_document_row()
       lease = acquire_lease(doc_id)
 
@@ -477,12 +514,6 @@ defmodule Contract.StoreTest do
             "op" => "set_attr",
             "target_type" => "document",
             "target_id" => doc_id,
-            "args" => %{"key" => "type_key", "value" => "msa_v1"}
-          },
-          %{
-            "op" => "set_attr",
-            "target_type" => "document",
-            "target_id" => doc_id,
             "args" => %{"key" => "status", "value" => "archived"}
           }
         ],
@@ -498,7 +529,7 @@ defmodule Contract.StoreTest do
 
       row = Contract.Repo.get(Contract.Documents.Document, doc_id)
       assert row.title == "Bulk Title"
-      assert row.type_key == "msa_v1"
+      assert row.type_key == "nda_v1"
       assert row.status == :archived
     end
 

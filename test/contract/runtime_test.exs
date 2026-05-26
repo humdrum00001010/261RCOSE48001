@@ -194,7 +194,12 @@ defmodule Contract.RuntimeTest do
             :agent_change
           ] do
         doc = Ecto.UUID.generate()
-        _ = create_doc(doc)
+
+        if kind == :set_contract_type do
+          _ = create_doc(doc, type_key: nil)
+        else
+          _ = create_doc(doc)
+        end
 
         action = build_session_action(kind, doc)
         assert {:ok, %Change{}} = Runtime.apply(@ctx, action), "expected #{kind} to commit"
@@ -203,6 +208,54 @@ defmodule Contract.RuntimeTest do
         assert pid = Session.whereis(doc)
         cleanup_session(pid)
       end
+    end
+
+    test "set_contract_type is allowed once and rejected after the document is typed" do
+      ctx = scope()
+      doc_id = Ecto.UUID.generate()
+
+      assert {:ok, %Change{result_revision: 1}} =
+               Runtime.apply(ctx, %Command{
+                 kind: :create_document,
+                 document_id: doc_id,
+                 actor_type: :user,
+                 actor_id: ctx.user.id,
+                 base_revision: 0,
+                 idempotency_key: "create-untyped-#{doc_id}",
+                 payload: %{"title" => "Untyped"}
+               })
+
+      assert {:ok, %Change{result_revision: 2}} =
+               Runtime.apply(ctx, %Command{
+                 kind: :set_contract_type,
+                 document_id: doc_id,
+                 actor_type: :user,
+                 actor_id: ctx.user.id,
+                 base_revision: 1,
+                 idempotency_key: "select-type-#{doc_id}",
+                 payload: %{"type_key" => "service_agreement_v1"}
+               })
+
+      assert %Document{type_key: "service_agreement_v1"} = Contract.Repo.get!(Document, doc_id)
+
+      assert {:ok, %Runtime.State{projection: %{type_key: "service_agreement_v1"}}} =
+               Runtime.load(ctx, doc_id)
+
+      assert {:error, :document_type_already_set} =
+               Runtime.apply(ctx, %Command{
+                 kind: :set_contract_type,
+                 document_id: doc_id,
+                 actor_type: :user,
+                 actor_id: ctx.user.id,
+                 base_revision: 2,
+                 idempotency_key: "replace-type-#{doc_id}",
+                 payload: %{"type_key" => "employment_v1"}
+               })
+
+      assert %Document{type_key: "service_agreement_v1"} = Contract.Repo.get!(Document, doc_id)
+
+      assert {:ok, %Runtime.State{projection: %{type_key: "service_agreement_v1"}}} =
+               Runtime.load(ctx, doc_id)
     end
   end
 
@@ -445,7 +498,14 @@ defmodule Contract.RuntimeTest do
     doc_id
   end
 
-  defp create_doc(doc) do
+  defp create_doc(doc, opts \\ []) do
+    type_key = Keyword.get(opts, :type_key, "nda")
+
+    payload =
+      if is_nil(type_key),
+        do: %{"title" => "Doc"},
+        else: %{"title" => "Doc", "type_key" => type_key}
+
     action = %Command{
       kind: :create_document,
       document_id: doc,
@@ -453,7 +513,7 @@ defmodule Contract.RuntimeTest do
       actor_id: @ctx.user.id,
       base_revision: 0,
       idempotency_key: "create-#{doc}",
-      payload: %{"title" => "Doc", "type_key" => "nda"}
+      payload: payload
     }
 
     {:ok, _} = Runtime.apply(@ctx, action)

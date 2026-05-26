@@ -388,7 +388,17 @@ defmodule Contract.Session.ReducerTest do
              ] = input.ops
     end
 
-    test "validate/2 allows replacing an existing type_key" do
+    test "validate/2 allows selecting a type when the document is untyped" do
+      state =
+        new_state(projection: %{Runtime.State.empty_projection() | type_key: nil})
+
+      a = action(:set_contract_type, payload: %{"type_key" => "nda_v1"})
+      {:ok, input} = Reducer.compile(a, state)
+
+      assert {:ok, :ok} = Reducer.validate(input, state)
+    end
+
+    test "validate/2 rejects replacing an existing type_key" do
       typed_state =
         new_state(
           projection: %{Runtime.State.empty_projection() | type_key: "service_agreement_v1"}
@@ -397,16 +407,15 @@ defmodule Contract.Session.ReducerTest do
       a = action(:set_contract_type, payload: %{"type_key" => "nda_v1"})
       {:ok, input} = Reducer.compile(a, typed_state)
 
-      assert {:ok, :ok} = Reducer.validate(input, typed_state)
+      assert {:error, :document_type_already_set} = Reducer.validate(input, typed_state)
     end
 
-    test "apply/2 changes type and clears document projection state" do
+    test "apply/2 sets type and clears document projection state for first selection" do
       state =
         new_state(
           projection: %{
             Runtime.State.empty_projection()
-            | type_key: "service_agreement_v1",
-              metadata: %{"rhwp_field_values" => %{"service_contract_name" => "old"}},
+            | metadata: %{"rhwp_field_values" => %{"service_contract_name" => "old"}},
               nodes: %{"n1" => %{id: "n1", kind: :paragraph, content: "old"}},
               node_order: ["n1"],
               fields: %{"f1" => %{id: "f1", value: "old"}},

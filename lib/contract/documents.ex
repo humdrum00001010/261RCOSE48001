@@ -230,19 +230,26 @@ defmodule Contract.Documents do
 
   @doc """
   Returns `:ok` unless the document is write-completed and the supplied
-  change mutates body or contract-condition content.
+  change mutates body or contract-condition content, or the change attempts to
+  replace an already-selected document type.
 
   Called from the Store append boundary so direct writers, LiveView, MCP, and
   agents all share the same freeze semantics.
   """
-  @spec guard_body_mutation(T.id(), Change.t()) :: :ok | {:error, :write_completed}
+  @spec guard_body_mutation(T.id(), Change.t()) ::
+          :ok | {:error, :write_completed | :document_type_already_set}
   def guard_body_mutation(document_id, %Change{} = change) when is_binary(document_id) do
     case Repo.get(Document, document_id) do
       %Document{} = doc ->
-        if write_completed?(doc) and body_mutation_change?(change) do
-          {:error, :write_completed}
-        else
-          :ok
+        cond do
+          document_type_replacement?(doc, change) ->
+            {:error, :document_type_already_set}
+
+          write_completed?(doc) and body_mutation_change?(change) ->
+            {:error, :write_completed}
+
+          true ->
+            :ok
         end
 
       _ ->
@@ -273,16 +280,27 @@ defmodule Contract.Documents do
   def write_completed?(_), do: false
 
   @doc """
-  Change a document's `:type_key` (SPEC.md §18 — type *selection*, not
-  conversion). Conversion goes through `Contract.Conversion`.
+  Select a document's `:type_key` exactly once.
+
+  A non-nil `:type_key` is immutable. Conversion or variant workflows must go
+  through `Contract.Conversion` instead of rewriting this row.
   """
   @spec set_type(Context.t(), T.id(), T.contract_type_key()) ::
           {:ok, Document.t()} | {:error, term()}
   def set_type(%Context{} = scope, document_id, type_key) when is_binary(type_key) do
     with {:ok, doc} <- get(scope, document_id) do
-      doc
-      |> Document.changeset(Map.merge(type_attrs(type_key), %{"state_snapshot" => %{}}))
-      |> Repo.update()
+      cond do
+        type_key_unset?(doc.type_key) ->
+          doc
+          |> Document.changeset(Map.merge(type_attrs(type_key), %{"state_snapshot" => %{}}))
+          |> Repo.update()
+
+        doc.type_key == type_key ->
+          {:ok, doc}
+
+        true ->
+          {:error, :document_type_already_set}
+      end
     end
   end
 
@@ -313,8 +331,8 @@ defmodule Contract.Documents do
   def set_title(_, _), do: :ok
 
   @doc """
-  Set a document's `:type_key`. Scope-less variant used by
-  `Contract.Store.append/3`.
+  Set a document's `:type_key` if it has not been selected yet. Scope-less
+  variant used by `Contract.Store.append/3`.
   """
   @spec set_type(T.id(), String.t() | nil) :: :ok
   def set_type(document_id, type_key) when is_binary(document_id) do
@@ -325,20 +343,22 @@ defmodule Contract.Documents do
         true -> nil
       end
 
-    empty_snapshot = %{}
+    if is_binary(cast) and cast != "" do
+      empty_snapshot = %{}
 
-    from(d in Document,
-      where: d.id == ^document_id,
-      update: [
-        set: [
-          type_key: ^cast,
-          document_type_id: ^document_type_id(cast),
-          state_snapshot: ^empty_snapshot,
-          updated_at: ^now()
+      from(d in Document,
+        where: d.id == ^document_id and is_nil(d.type_key),
+        update: [
+          set: [
+            type_key: ^cast,
+            document_type_id: ^document_type_id(cast),
+            state_snapshot: ^empty_snapshot,
+            updated_at: ^now()
+          ]
         ]
-      ]
-    )
-    |> Repo.update_all([])
+      )
+      |> Repo.update_all([])
+    end
 
     :ok
   rescue
@@ -428,6 +448,48 @@ defmodule Contract.Documents do
   defp ensure_not_write_completed(%Document{} = doc) do
     if write_completed?(doc), do: {:error, :write_completed}, else: :ok
   end
+
+  defp type_key_unset?(value), do: is_nil(value) or value == ""
+
+  defp document_type_replacement?(%Document{type_key: current}, %Change{} = change)
+       when is_binary(current) and current != "" do
+    change
+    |> document_type_set_values()
+    |> Enum.any?(&(is_binary(&1) and &1 != "" and &1 != current))
+  end
+
+  defp document_type_replacement?(_doc, _change), do: false
+
+  defp document_type_set_values(%Change{payload: ops}) when is_list(ops) do
+    Enum.flat_map(ops, &document_type_set_value/1)
+  end
+
+  defp document_type_set_values(_change), do: []
+
+  defp document_type_set_value(%Operation{} = op) do
+    document_type_set_value?(op.op, op.target_type, op.args || %{})
+  end
+
+  defp document_type_set_value(op) when is_map(op) do
+    document_type_set_value?(
+      read_key(op, :op),
+      read_key(op, :target_type),
+      read_key(op, :args) || %{}
+    )
+  end
+
+  defp document_type_set_value(_op), do: []
+
+  defp document_type_set_value?(op, target_type, args) when is_map(args) do
+    if atom_or_string(op) == "set_attr" and atom_or_string(target_type) == "document" and
+         atom_or_string(read_key(args, :key)) == "type_key" do
+      [read_key(args, :value)]
+    else
+      []
+    end
+  end
+
+  defp document_type_set_value?(_op, _target_type, _args), do: []
 
   defp ensure_head_checkpoint(document_id, revision) do
     if Contract.RhwpSnapshot.committed_for_revision?(document_id, revision) do
