@@ -822,6 +822,57 @@ defmodule ContractWeb.StudioLiveTest do
       assert assigns(lv).studio_state.last_seen_revision == 7
     end
 
+    test "{:change_committed, edit_text} appends RHWP replay events for ignored canvas attrs",
+         %{conn: conn} do
+      doc = Ecto.UUID.generate()
+      {:ok, lv, _html} = live(conn, ~p"/studio")
+
+      send_state(lv, %State{selected_document_id: doc, mode: :editing, last_seen_revision: 0})
+
+      change = %Contract.Change{
+        id: Ecto.UUID.generate(),
+        document_id: doc,
+        command_kind: "edit_text",
+        result_revision: 2,
+        idempotency_key: "mcp:test:set_field_value",
+        payload: [
+          %{
+            "op" => "delete_text",
+            "args" => %{
+              "field_id" => "contract_period",
+              "sec" => 0,
+              "para" => 12,
+              "off" => 10,
+              "len" => 28
+            }
+          },
+          %{
+            "op" => "insert_text",
+            "args" => %{
+              "field_id" => "contract_period",
+              "sec" => 0,
+              "para" => 12,
+              "off" => 10,
+              "text" => "CHAT-LONG-VERIFY"
+            }
+          }
+        ]
+      }
+
+      send(lv.pid, {:change_committed, change})
+      _ = render(lv)
+
+      assert [
+               %{"kind" => "delete_text", "revision" => 2, "field_id" => "contract_period"},
+               %{
+                 "kind" => "insert_text",
+                 "revision" => 2,
+                 "field_id" => "contract_period",
+                 "text" => "CHAT-LONG-VERIFY"
+               }
+             ] = assigns(lv).rhwp_text_events
+    end
+
     test "{:agent_completed, _, _} surfaces the final answer", %{conn: conn} do
       run_id = Ecto.UUID.generate()
       {:ok, lv, _html} = live(conn, ~p"/studio")

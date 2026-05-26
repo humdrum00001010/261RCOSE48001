@@ -1206,6 +1206,7 @@ defmodule ContractWeb.StudioLive do
     end)
     |> stream_insert(:changes, change, at: 0)
     |> push_editor_last_change(change)
+    |> append_rhwp_text_events(change)
     |> push_rhwp_remote_text(change)
     |> recompute_grill_assigns()
   end
@@ -2824,6 +2825,26 @@ defmodule ContractWeb.StudioLive do
   end
 
   defp push_rhwp_remote_text(socket, _change), do: socket
+
+  defp append_rhwp_text_events(
+         socket,
+         %Contract.Change{command_kind: "edit_text", result_revision: revision} = change
+       ) do
+    events =
+      change.payload
+      |> List.wrap()
+      |> Enum.flat_map(&change_payload_op_to_event(&1, revision))
+
+    if events == [] do
+      socket
+    else
+      update(socket, :rhwp_text_events, fn existing ->
+        List.wrap(existing) ++ events
+      end)
+    end
+  end
+
+  defp append_rhwp_text_events(socket, _change), do: socket
 
   defp maybe_put_opt(opts, _key, nil), do: opts
   defp maybe_put_opt(opts, key, value), do: Keyword.put(opts, key, value)
