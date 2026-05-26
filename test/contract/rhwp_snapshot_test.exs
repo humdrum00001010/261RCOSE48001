@@ -4,6 +4,7 @@ defmodule Contract.RhwpSnapshotTest do
   alias Contract.Change
   alias Contract.Command
   alias Contract.Context
+  alias Contract.Documents
   alias Contract.IO.R2Stub
   alias Contract.RhwpSnapshot.Record
   alias Contract.RhwpSnapshot
@@ -143,6 +144,60 @@ defmodule Contract.RhwpSnapshotTest do
       objects = R2Stub.objects()
       assert objects[hwp_key] == "server-side-hwp"
       assert {:ok, ^ir} = Jason.decode(objects[ir_key])
+    end
+
+    test "candidates_for_document/3 returns newest snapshots for render fallback" do
+      ctx = scope()
+      doc_id = create_doc(ctx)
+
+      for revision <- [1, 2, 3] do
+        key = "documents/#{doc_id}/snapshots/#{revision}.hwp"
+        assert {:ok, _} = R2Stub.put(key, "hwp-#{revision}")
+
+        assert {:ok, %Record{}} =
+                 RhwpSnapshot.commit(doc_id, revision, key, %{"revision" => revision})
+      end
+
+      assert [
+               %Record{revision: 3},
+               %Record{revision: 2}
+             ] = RhwpSnapshot.candidates_for_document(doc_id, "hwp", limit: 2)
+    end
+
+    test "upload_and_commit/5 rejects native checkpoints after write completion" do
+      ctx = scope()
+      doc_id = create_doc(ctx)
+      hwp_key = "documents/#{doc_id}/snapshots/1.hwp"
+
+      R2Stub.put(hwp_key, "approved-hwp")
+      assert {:ok, %Record{}} = RhwpSnapshot.commit(doc_id, 1, hwp_key, %{"revision" => 1})
+      assert {:ok, _doc} = Documents.complete_write(ctx, doc_id)
+
+      assert {:error, :write_completed} =
+               RhwpSnapshot.upload_and_commit(doc_id, 1, "mutated-hwp", %{"revision" => 1}, "hwp")
+
+      assert R2Stub.objects()[hwp_key] == "approved-hwp"
+    end
+
+    test "commit/4 refuses to replace the completion-approved snapshot row" do
+      ctx = scope()
+      doc_id = create_doc(ctx)
+      hwp_key = "documents/#{doc_id}/snapshots/1.hwp"
+      ir_key = "documents/#{doc_id}/snapshots/1.ir.json"
+
+      R2Stub.put(hwp_key, "approved-hwp")
+      assert {:ok, %Record{}} = RhwpSnapshot.commit(doc_id, 1, hwp_key, %{"approved" => true})
+      assert {:ok, _doc} = Documents.complete_write(ctx, doc_id)
+
+      assert {:error, :write_completed} =
+               RhwpSnapshot.commit(doc_id, 1, hwp_key, %{"approved" => false})
+
+      assert %Record{projection: %{"approved" => true}, r2_key: ^hwp_key} =
+               Repo.get_by!(Record, document_id: doc_id, revision: 1)
+
+      objects = R2Stub.objects()
+      assert objects[hwp_key] == "approved-hwp"
+      assert {:ok, %{"approved" => true}} = Jason.decode(objects[ir_key])
     end
   end
 

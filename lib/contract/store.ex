@@ -87,7 +87,9 @@ defmodule Contract.Store do
 
   defp latest_snapshot(document_id) do
     from(s in Snapshot,
-      where: s.document_id == ^document_id,
+      where:
+        s.document_id == ^document_id and like(s.r2_key, ^"%.json") and
+          not like(s.r2_key, ^"%.ir.json"),
       order_by: [desc: s.revision],
       limit: 1
     )
@@ -202,6 +204,11 @@ defmodule Contract.Store do
 
     if not is_nil(base) and base != current_rev do
       Repo.rollback({:revision_conflict, expected: current_rev, got: base})
+    end
+
+    case Contract.Documents.guard_body_mutation(document_id, change) do
+      :ok -> :ok
+      {:error, reason} -> Repo.rollback(reason)
     end
 
     next_rev = current_rev + 1

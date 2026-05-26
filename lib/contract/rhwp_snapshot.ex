@@ -64,22 +64,28 @@ defmodule Contract.RhwpSnapshot do
 
     with {:ok, format} <- format_for_key(snapshot_key),
          content_type = content_type_for(format),
-         {:ok, _} <-
-           put_with_retry(ir_key, ir_body, content_type: "application/json"),
          {:ok, snapshot} <-
-           insert_snapshot_row(
-             document_id,
-             revision,
-             snapshot_key,
-             ir_key,
-             format,
-             content_type,
-             ir
-           ) do
+           Contract.Documents.with_document_lock(document_id, fn ->
+             with :ok <- reject_write_completed(document_id),
+                  {:ok, _} <-
+                    put_with_retry(ir_key, ir_body, content_type: "application/json"),
+                  {:ok, snapshot} <-
+                    insert_snapshot_row(
+                      document_id,
+                      revision,
+                      snapshot_key,
+                      ir_key,
+                      format,
+                      content_type,
+                      ir
+                    ) do
+               {:ok, snapshot}
+             end
+           end) do
       {:ok, snapshot}
     else
       {:error, reason} ->
-        rollback(snapshot_key, ir_key, reason)
+        maybe_rollback(snapshot_key, ir_key, reason)
         {:error, reason}
     end
   end
@@ -101,8 +107,33 @@ defmodule Contract.RhwpSnapshot do
              is_binary(format) do
     with {:ok, format} <- normalize_format(format),
          {:ok, key} <- key_for(document_id, revision, format),
-         {:ok, _} <- put_with_retry(key, body, content_type: content_type_for(format)) do
-      commit(document_id, revision, key, ir)
+         ir_key = ir_key_for(key),
+         ir_body = Jason.encode!(ir),
+         {:ok, snapshot} <-
+           Contract.Documents.with_document_lock(document_id, fn ->
+             with :ok <- reject_write_completed(document_id),
+                  {:ok, _} <- put_with_retry(key, body, content_type: content_type_for(format)) do
+               with {:ok, _} <-
+                      put_with_retry(ir_key, ir_body, content_type: "application/json"),
+                    {:ok, snapshot} <-
+                      insert_snapshot_row(
+                        document_id,
+                        revision,
+                        key,
+                        ir_key,
+                        format,
+                        content_type_for(format),
+                        ir
+                      ) do
+                 {:ok, snapshot}
+               else
+                 {:error, reason} ->
+                   maybe_rollback(key, ir_key, reason)
+                   {:error, reason}
+               end
+             end
+           end) do
+      {:ok, snapshot}
     end
   end
 
@@ -140,6 +171,55 @@ defmodule Contract.RhwpSnapshot do
       _ -> nil
     end
   end
+
+  @doc """
+  Return newest native rhwp visual snapshots for render fallback.
+  """
+  @spec candidates_for_document(binary() | nil, binary() | nil, keyword()) :: [Record.t()]
+  def candidates_for_document(document_id, format, opts \\ [])
+  def candidates_for_document(nil, _format, _opts), do: []
+
+  def candidates_for_document(document_id, nil, opts) when is_binary(document_id) do
+    limit = Keyword.get(opts, :limit, 5)
+
+    Repo.all(
+      from s in Record,
+        where: s.document_id == ^document_id,
+        order_by: [desc: s.revision],
+        limit: ^limit
+    )
+  end
+
+  def candidates_for_document(document_id, format, opts)
+      when is_binary(document_id) and is_binary(format) do
+    limit = Keyword.get(opts, :limit, 5)
+
+    with {:ok, format} <- normalize_format(format) do
+      Repo.all(
+        from s in Record,
+          where: s.document_id == ^document_id and s.format == ^format,
+          order_by: [desc: s.revision],
+          limit: ^limit
+      )
+    else
+      _ -> []
+    end
+  end
+
+  @doc """
+  True when a native rhwp snapshot row has been durably committed for the
+  exact document revision.
+  """
+  @spec committed_for_revision?(binary() | nil, integer() | nil) :: boolean()
+  def committed_for_revision?(document_id, revision)
+      when is_binary(document_id) and is_integer(revision) do
+    Repo.exists?(
+      from s in Record,
+        where: s.document_id == ^document_id and s.revision == ^revision
+    )
+  end
+
+  def committed_for_revision?(_document_id, _revision), do: false
 
   @spec get(binary(), integer(), binary()) :: Record.t() | nil
   def get(document_id, revision, format)
@@ -256,6 +336,14 @@ defmodule Contract.RhwpSnapshot do
     e in Ecto.ChangeError -> {:error, {:insert_failed, Exception.message(e)}}
   end
 
+  defp reject_write_completed(document_id) do
+    if Contract.Documents.write_completed?(document_id) do
+      {:error, :write_completed}
+    else
+      :ok
+    end
+  end
+
   defp rollback(snapshot_key, ir_key, reason) do
     Logger.warning(
       "rhwp.snapshot rollback (snapshot=#{snapshot_key}, ir=#{ir_key}): #{inspect(reason)}"
@@ -268,4 +356,7 @@ defmodule Contract.RhwpSnapshot do
     _ = r2_driver().delete(snapshot_key)
     :ok
   end
+
+  defp maybe_rollback(_snapshot_key, _ir_key, :write_completed), do: :ok
+  defp maybe_rollback(snapshot_key, ir_key, reason), do: rollback(snapshot_key, ir_key, reason)
 end

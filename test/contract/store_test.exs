@@ -257,6 +257,40 @@ defmodule Contract.StoreTest do
       assert {:ok, %Runtime.State{revision: 2, projection: proj}} = Store.load(doc)
       assert proj.title == "Renamed"
     end
+
+    test "ignores rhwp native visual snapshot rows when hydrating the runtime projection" do
+      doc = new_document_id()
+      lease = acquire_lease(doc)
+
+      assert {:ok, _} =
+               Store.append(
+                 doc,
+                 build_create_change(doc, title: "Runtime Doc"),
+                 lease.fencing_token
+               )
+
+      {:ok, _} =
+        %Contract.RhwpSnapshot.Record{}
+        |> Contract.RhwpSnapshot.Record.changeset(%{
+          document_id: doc,
+          revision: 1,
+          r2_key: "documents/#{doc}/snapshots/1.hwp",
+          ir_r2_key: "documents/#{doc}/snapshots/1.ir.json",
+          format: "hwp",
+          content_type: "application/x-hwp",
+          projection: %{
+            "title" => "Agent IR Cache",
+            "contract_type" => "service_agreement_v1",
+            "sections" => [%{"idx" => 0, "paragraphs" => []}],
+            "fields" => []
+          }
+        })
+        |> Contract.Repo.insert()
+
+      assert {:ok, %Runtime.State{revision: 1, projection: proj}} = Store.load(doc)
+      assert proj.title == "Runtime Doc"
+      assert proj.type_key == "nda"
+    end
   end
 
   describe "snapshot/2" do

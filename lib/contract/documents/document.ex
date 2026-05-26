@@ -49,12 +49,24 @@ defmodule Contract.Documents.Document do
     belongs_to :document_type, Contract.ContractTypes.DocumentType
 
     field :status, Ecto.Enum,
-      values: [:draft, :importing, :editing, :reviewing, :export_ready, :archived],
+      values: [
+        :draft,
+        :importing,
+        :editing,
+        :reviewing,
+        :write_completed,
+        :export_ready,
+        :archived
+      ],
       default: :draft
 
     field :parent_document_id, :binary_id
     field :variant_of_change_id, :binary_id
     field :latest_revision, :integer, default: 0
+    field :write_completed_at, :utc_datetime
+    field :write_completed_by_id, :binary_id
+    field :write_completed_revision, :integer
+    field :write_completed_snapshot_revision, :integer
     field :metadata, :map, default: %{}
 
     # SPEC.md v0.5 §7.1 — state_snapshot is the materialized document

@@ -16,8 +16,10 @@ defmodule Contract.Documents do
   import Ecto.Query
 
   alias Contract.Context
+  alias Contract.Change
   alias Contract.ContractTypes
   alias Contract.Documents.Document
+  alias Contract.Operation
   alias Contract.Repo
   alias Contract.Types, as: T
 
@@ -179,6 +181,98 @@ defmodule Contract.Documents do
   end
 
   @doc """
+  Mark body/contract-condition authoring as complete.
+
+  This is not a signing or execution state. Completion freezes the document
+  body at the current DB head and requires a committed native rhwp snapshot
+  at that same revision so future readers can recover the exact HWP/HWPX
+  checkpoint that was approved.
+  """
+  @spec complete_write(Context.t(), T.id()) ::
+          {:ok, Document.t()} | {:error, term()}
+  def complete_write(%Context{} = scope, document_id) do
+    with_document_lock(document_id, fn ->
+      with {:ok, %Document{} = doc} <- get(scope, document_id),
+           :ok <- ensure_not_write_completed(doc),
+           {:ok, head_revision} <- Contract.Store.latest_revision(document_id),
+           :ok <- ensure_head_checkpoint(document_id, head_revision) do
+        doc
+        |> Ecto.Changeset.change(%{
+          status: :write_completed,
+          latest_revision: head_revision,
+          write_completed_at: DateTime.utc_now() |> DateTime.truncate(:second),
+          write_completed_by_id: scope.user.id,
+          write_completed_revision: head_revision,
+          write_completed_snapshot_revision: head_revision
+        })
+        |> Repo.update()
+      end
+    end)
+  end
+
+  @doc false
+  @spec with_document_lock(T.id(), (-> {:ok, term()} | {:error, term()})) ::
+          {:ok, term()} | {:error, term()}
+  def with_document_lock(document_id, fun) when is_binary(document_id) and is_function(fun, 0) do
+    case Repo.transaction(fn ->
+           :ok = take_advisory_lock!(document_id)
+
+           case fun.() do
+             {:ok, value} -> value
+             {:error, reason} -> Repo.rollback(reason)
+             other -> Repo.rollback({:bad_document_lock_return, other})
+           end
+         end) do
+      {:ok, value} -> {:ok, value}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @doc """
+  Returns `:ok` unless the document is write-completed and the supplied
+  change mutates body or contract-condition content.
+
+  Called from the Store append boundary so direct writers, LiveView, MCP, and
+  agents all share the same freeze semantics.
+  """
+  @spec guard_body_mutation(T.id(), Change.t()) :: :ok | {:error, :write_completed}
+  def guard_body_mutation(document_id, %Change{} = change) when is_binary(document_id) do
+    case Repo.get(Document, document_id) do
+      %Document{} = doc ->
+        if write_completed?(doc) and body_mutation_change?(change) do
+          {:error, :write_completed}
+        else
+          :ok
+        end
+
+      _ ->
+        :ok
+    end
+  rescue
+    Ecto.Query.CastError -> :ok
+  end
+
+  def guard_body_mutation(_document_id, _change), do: :ok
+
+  @doc "True when the document has passed body/condition authoring completion."
+  @spec write_completed?(T.id() | Document.t() | nil) :: boolean()
+  def write_completed?(%Document{status: :write_completed}), do: true
+  def write_completed?(%Document{write_completed_at: %DateTime{}}), do: true
+  def write_completed?(%Document{}), do: false
+  def write_completed?(nil), do: false
+
+  def write_completed?(document_id) when is_binary(document_id) do
+    case Repo.get(Document, document_id) do
+      %Document{} = doc -> write_completed?(doc)
+      _ -> false
+    end
+  rescue
+    Ecto.Query.CastError -> false
+  end
+
+  def write_completed?(_), do: false
+
+  @doc """
   Change a document's `:type_key` (SPEC.md §18 — type *selection*, not
   conversion). Conversion goes through `Contract.Conversion`.
   """
@@ -277,7 +371,14 @@ defmodule Contract.Documents do
           nil
       end
 
-    if cast in [:draft, :importing, :editing, :reviewing, :export_ready, :archived] do
+    if cast in [
+         :draft,
+         :importing,
+         :editing,
+         :reviewing,
+         :export_ready,
+         :archived
+       ] do
       from(d in Document,
         where: d.id == ^document_id,
         update: [set: [status: ^cast, updated_at: ^now()]]
@@ -318,6 +419,66 @@ defmodule Contract.Documents do
   end
 
   def touch_revision(_, _), do: :ok
+
+  defp take_advisory_lock!(document_id) do
+    {:ok, _} = Repo.query("SELECT pg_advisory_xact_lock(hashtext($1))", [document_id])
+    :ok
+  end
+
+  defp ensure_not_write_completed(%Document{} = doc) do
+    if write_completed?(doc), do: {:error, :write_completed}, else: :ok
+  end
+
+  defp ensure_head_checkpoint(document_id, revision) do
+    if Contract.RhwpSnapshot.committed_for_revision?(document_id, revision) do
+      :ok
+    else
+      {:error, :checkpoint_required}
+    end
+  end
+
+  @body_command_kinds ~w(edit_document edit_text set_contract_type agent_change update_metadata)
+  @body_op_kinds ~w(insert_text delete_text insert_paragraph merge_paragraph
+                    table_row_insert table_row_delete table_column_insert
+                    table_column_delete table_delete set_field create_node
+                    delete_node move_node replace_content bind_ref unbind_ref
+                    create_projection)
+  @body_document_attr_keys ~w(type_key node_order metadata)
+
+  defp body_mutation_change?(%Change{command_kind: kind, payload: ops}) do
+    atom_or_string(kind) in @body_command_kinds or
+      (is_list(ops) and Enum.any?(ops, &body_mutation_op?/1))
+  end
+
+  defp body_mutation_change?(_change), do: false
+
+  defp body_mutation_op?(%Operation{} = op) do
+    body_mutation_op?(%{
+      "op" => op.op,
+      "target_type" => op.target_type,
+      "args" => op.args || %{}
+    })
+  end
+
+  defp body_mutation_op?(op) when is_map(op) do
+    op_kind = op |> read_key(:op) |> atom_or_string()
+    target_type = op |> read_key(:target_type) |> atom_or_string()
+    args = read_key(op, :args) || %{}
+    attr_key = args |> read_key(:key) |> atom_or_string()
+
+    op_kind in @body_op_kinds or target_type in ["node", "field", "projection"] or
+      (target_type == "document" and attr_key in @body_document_attr_keys)
+  end
+
+  defp body_mutation_op?(_op), do: false
+
+  defp read_key(map, key) when is_map(map) and is_atom(key) do
+    Map.get(map, key) || Map.get(map, Atom.to_string(key))
+  end
+
+  defp atom_or_string(value) when is_atom(value), do: Atom.to_string(value)
+  defp atom_or_string(value) when is_binary(value), do: value
+  defp atom_or_string(_), do: nil
 
   defp put_document_type_attrs(%{"type_key" => type_key} = attrs) do
     Map.merge(attrs, type_attrs(type_key))

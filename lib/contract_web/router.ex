@@ -164,6 +164,7 @@ defmodule ContractWeb.Router do
     get "/dashboard", LegacyRedirectController, :dashboard
 
     get "/exports/:export_id/download", ExportDownloadController, :show
+    get "/documents/:document_id/rhwp-snapshots/:revision", RhwpSnapshotController, :show
 
     post "/users/update-password", UserSessionController, :update_password
 

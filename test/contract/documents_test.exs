@@ -1,10 +1,13 @@
 defmodule Contract.DocumentsTest do
-  use Contract.DataCase, async: true
+  use Contract.DataCase, async: false
 
   alias Contract.Context
+  alias Contract.Change
   alias Contract.ContractTypes.DocumentType
   alias Contract.Documents
   alias Contract.Documents.Document
+  alias Contract.RhwpSnapshot.Record
+  alias Contract.Store
 
   defp scope do
     %Context{
@@ -108,6 +111,122 @@ defmodule Contract.DocumentsTest do
   end
 
   describe "updates" do
+    test "complete_write/2 freezes the current head and matching snapshot revision" do
+      owner = scope()
+      {:ok, doc} = Documents.create(owner, %{title: "Ready"})
+      insert_change!(doc.id, 3)
+      insert_rhwp_snapshot!(doc.id, 3)
+
+      assert {:ok, %Document{} = completed} = Documents.complete_write(owner, doc.id)
+
+      assert completed.status == :write_completed
+      assert %DateTime{} = completed.write_completed_at
+      assert completed.write_completed_by_id == owner.user.id
+      assert completed.write_completed_revision == 3
+      assert completed.write_completed_snapshot_revision == 3
+    end
+
+    test "complete_write/2 uses the actual changes head when documents.latest_revision is stale" do
+      owner = scope()
+      {:ok, doc} = Documents.create(owner, %{title: "Stale cached revision"})
+      assert :ok = Documents.touch_revision(doc.id, 3)
+      insert_change!(doc.id, 4)
+      insert_rhwp_snapshot!(doc.id, 3)
+
+      assert {:ok, 4} = Store.latest_revision(doc.id)
+      assert Repo.get!(Document, doc.id).latest_revision == 3
+      assert {:error, :checkpoint_required} = Documents.complete_write(owner, doc.id)
+
+      insert_rhwp_snapshot!(doc.id, 4)
+
+      assert {:ok, %Document{} = completed} = Documents.complete_write(owner, doc.id)
+      assert completed.status == :write_completed
+      assert completed.write_completed_revision == 4
+      assert completed.write_completed_snapshot_revision == 4
+    end
+
+    test "complete_write/2 waits on the same per-document advisory lock as Store.append/3" do
+      owner = scope()
+      {:ok, doc} = Documents.create(owner, %{title: "Serialized completion"})
+      insert_change!(doc.id, 1)
+      insert_rhwp_snapshot!(doc.id, 1)
+      parent = self()
+
+      holder =
+        Task.async(fn ->
+          receive do
+            :take_lock ->
+              Repo.transaction(fn ->
+                take_document_lock!(doc.id)
+                send(parent, :lock_acquired)
+
+                receive do
+                  :release_lock -> :ok
+                end
+              end)
+          end
+        end)
+
+      Ecto.Adapters.SQL.Sandbox.allow(Repo, parent, holder.pid)
+      send(holder.pid, :take_lock)
+      assert_receive :lock_acquired
+
+      task =
+        Task.async(fn ->
+          Documents.complete_write(owner, doc.id)
+        end)
+
+      Ecto.Adapters.SQL.Sandbox.allow(Repo, parent, task.pid)
+      ref = task.ref
+      refute_receive {^ref, _result}, 100
+
+      send(holder.pid, :release_lock)
+      assert {:ok, :ok} = Task.await(holder)
+
+      assert {:ok, %Document{status: :write_completed}} = Task.await(task)
+    end
+
+    test "with_document_lock/2 runs the callback inside a transaction" do
+      assert {:ok, :locked} =
+               Documents.with_document_lock(Ecto.UUID.generate(), fn ->
+                 assert Repo.in_transaction?()
+                 {:ok, :locked}
+               end)
+    end
+
+    test "complete_write/2 requires a committed rhwp snapshot at the document head" do
+      owner = scope()
+      {:ok, doc} = Documents.create(owner, %{title: "Needs checkpoint"})
+      insert_change!(doc.id, 3)
+
+      assert {:error, :checkpoint_required} = Documents.complete_write(owner, doc.id)
+
+      assert %Document{status: :draft} = Repo.get!(Document, doc.id)
+    end
+
+    test "guard_body_mutation/2 rejects body changes after write completion" do
+      owner = scope()
+      {:ok, doc} = Documents.create(owner, %{title: "Frozen"})
+      insert_change!(doc.id, 2)
+      insert_rhwp_snapshot!(doc.id, 2)
+      assert {:ok, _completed} = Documents.complete_write(owner, doc.id)
+
+      change = %Change{
+        document_id: doc.id,
+        command_kind: "edit_text",
+        payload: [
+          %{
+            "op" => "insert_text",
+            "target_type" => "document",
+            "target_id" => doc.id,
+            "args" => %{"text" => "late"}
+          }
+        ]
+      }
+
+      assert {:error, :write_completed} = Documents.guard_body_mutation(doc.id, change)
+    end
+
     test "archive/2 and set_type/3 enforce owner ACL" do
       owner = scope()
       other = scope()
@@ -147,5 +266,35 @@ defmodule Contract.DocumentsTest do
       assert :ok = Documents.touch_revision(doc.id, 2)
       assert Contract.Repo.get!(Document, doc.id).latest_revision == 5
     end
+  end
+
+  defp insert_rhwp_snapshot!(document_id, revision) do
+    %Record{}
+    |> Record.changeset(%{
+      document_id: document_id,
+      revision: revision,
+      format: "hwp",
+      content_type: "application/x-hwp",
+      r2_key: "documents/#{document_id}/snapshots/#{revision}.hwp",
+      ir_r2_key: "documents/#{document_id}/snapshots/#{revision}.ir.json",
+      projection: %{"revision" => revision}
+    })
+    |> Repo.insert!()
+  end
+
+  defp insert_change!(document_id, revision) do
+    %Change{}
+    |> Change.changeset(%{
+      document_id: document_id,
+      command_kind: "edit_text",
+      actor_type: :user,
+      result_revision: revision,
+      payload: []
+    })
+    |> Repo.insert!()
+  end
+
+  defp take_document_lock!(document_id) do
+    Repo.query!("SELECT pg_advisory_xact_lock(hashtext($1))", [document_id])
   end
 end
