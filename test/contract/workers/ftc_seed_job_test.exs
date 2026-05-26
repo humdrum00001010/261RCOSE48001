@@ -100,7 +100,7 @@ defmodule Contract.Workers.FtcSeedJobTest do
     end
 
     test "passes the FTC URL + Korean Accept-Language header on the way out", %{bypass: bypass} do
-      Bypass.expect_once(bypass, "GET", "/franchise.hwp", fn conn ->
+      Bypass.expect_once(bypass, "GET", "/service.hwp", fn conn ->
         [ua] = Plug.Conn.get_req_header(conn, "user-agent")
         [accept_lang] = Plug.Conn.get_req_header(conn, "accept-language")
         assert ua =~ "Mozilla"
@@ -151,7 +151,7 @@ defmodule Contract.Workers.FtcSeedJobTest do
 
   describe "perform/1 — failure paths" do
     test "returns an error tuple when the FTC download 5xxs", %{bypass: bypass} do
-      Bypass.expect(bypass, "GET", "/franchise.hwp", fn conn ->
+      Bypass.expect(bypass, "GET", "/service.hwp", fn conn ->
         Plug.Conn.resp(conn, 503, "service unavailable")
       end)
 

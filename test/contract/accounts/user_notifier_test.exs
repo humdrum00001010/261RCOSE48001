@@ -73,7 +73,7 @@ defmodule Contract.Accounts.UserNotifierTest do
     # Oban worker).
     assert_receive {:email, email}, 100
 
-    assert email.subject == "Confirmation instructions"
+    assert email.subject == "계정 확인 안내 · 계약기계"
     body = email.text_body
 
     assert body =~ "https://#{@public_host}/users/log-in/",

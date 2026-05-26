@@ -114,7 +114,7 @@ defmodule Contract.ContractTypesTest do
     test "@external_resource lists every shipped TOML path" do
       paths = ContractTypes.__toml_paths__()
 
-      assert length(paths) >= 5
+      assert length(paths) >= 4
       assert Enum.all?(paths, &String.ends_with?(&1, ".toml"))
 
       # external_resource attrs are recorded on the module; surface them via

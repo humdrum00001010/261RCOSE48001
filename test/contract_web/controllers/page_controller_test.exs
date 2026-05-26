@@ -8,12 +8,12 @@ defmodule ContractWeb.PageControllerTest do
 
   These tests pin the *intent* of the v31 design:
 
-    * Three conceptual blocks (`프로젝트 브리프` / `AI가 먼저 묻는 핵심
-      질문` / `조항과 변경 이력으로 남김`). Block copy is customer-facing
+    * Three conceptual blocks (`포맷 → IR 정규화` / `AI가 먼저 묻는 핵심
+      질문` / `답이 곧 계약 조항`). Block copy is customer-facing
       Korean only — no internal module/class names (e.g. "StudioLive")
       may appear on this surface.
-    * Three-line serif headline (`프로젝트의 맥락을` / `계약 조항으로` /
-      `구체화합니다.`).
+    * Three-line serif headline (`복잡한 문서 프로토콜을,` / `병렬 하네스로` /
+      `패키지합니다.`).
     * A primary `보관함 열기` CTA that targets `/dashboard` for
       authenticated users and `/users/log-in` for anonymous users.
     * A secondary `작동 방식 보기 →` link that anchors to `#how-it-works`.
@@ -23,27 +23,27 @@ defmodule ContractWeb.PageControllerTest do
   describe "GET /" do
     test "renders the Korean-primary v31 headline ladder", %{conn: conn} do
       body = conn |> get(~p"/") |> html_response(200)
-      assert body =~ "프로젝트의 맥락을"
-      assert body =~ "계약 조항으로"
-      assert body =~ "구체화합니다."
+      assert body =~ "복잡한 문서 프로토콜을,"
+      assert body =~ "병렬 하네스로"
+      assert body =~ "패키지합니다."
     end
 
     test "renders the lead paragraph in Korean", %{conn: conn} do
       body = conn |> get(~p"/") |> html_response(200)
-      assert body =~ "계약기계는 계약서를 쓰기 전에"
-      assert body =~ "프로젝트가 실제로 어떻게 진행되는지 묻습니다."
-      assert body =~ "그 답이 곧 계약 조항으로 완성됩니다."
+      assert body =~ "한국어 계약서를 손볼 때,"
+      assert body =~ "AI 에이전트가 먼저 필요한 조건을 묻고"
+      assert body =~ "그 답을 그대로 조항으로 옮겨 적습니다."
     end
 
     test "renders the three conceptual blocks (DESIGN.md §3)", %{conn: conn} do
       body = conn |> get(~p"/") |> html_response(200)
-      assert body =~ "프로젝트 브리프"
+      assert body =~ "포맷 → IR 정규화"
       assert body =~ "AI가 먼저 묻는 핵심 질문"
       assert body =~ "답이 곧 계약 조항"
       # And the numbered eyebrows on each block.
-      assert body =~ ">01<"
-      assert body =~ ">02<"
-      assert body =~ ">03<"
+      assert body =~ ~s(data-eyebrow="01")
+      assert body =~ ~s(data-eyebrow="02")
+      assert body =~ ~s(data-eyebrow="03")
     end
 
     test "landing pitch is about writing the contract, not logging history", %{conn: conn} do
