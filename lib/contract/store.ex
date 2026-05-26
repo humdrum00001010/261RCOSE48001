@@ -216,8 +216,6 @@ defmodule Contract.Store do
     attrs = %{
       document_id: document_id,
       chat_thread_id: change.chat_thread_id,
-      source_document_id: change.source_document_id,
-      source_claim_id: change.source_claim_id,
       agent_run_id: change.agent_run_id,
       command_kind: change.command_kind,
       actor_type: change.actor_type,

@@ -262,21 +262,6 @@ defmodule Contract.DocumentsTest do
       assert %DocumentType{key: "nda_v1"} = Repo.get(DocumentType, doc.document_type_id)
     end
 
-    test "set_type/3 resets the persisted document state snapshot on first selection" do
-      owner = scope()
-
-      {:ok, doc} =
-        Documents.create(owner, %{
-          title: "Typed",
-          state_snapshot: %{"metadata" => %{"rhwp_field_values" => %{"old" => "value"}}}
-        })
-
-      assert {:ok, %Document{type_key: "employment_v1", state_snapshot: %{}}} =
-               Documents.set_type(owner, doc.id, "employment_v1")
-
-      assert %Document{state_snapshot: %{}} = Repo.get!(Document, doc.id)
-    end
-
     test "set_type/3 rejects replacing an existing document type" do
       owner = scope()
 

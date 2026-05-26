@@ -20,15 +20,13 @@ defmodule Contract.RouteRef do
 
   The per-turn `agent_run_id` is never reconstructed from whatever run
   happens to be active later. A nil-agent bearer remains nil and doc.*
-  handlers reject it. If a handler receives a caller-supplied run id, it
-  must prove that id is the active `Contract.Agent.Document` attempt for
-  the same `(user_id, document_id)` before stamping a change.
+  handlers reject it; callers cannot authorize doc.* by passing
+  `agent_run_id` as a tool argument.
 
   A current `Contract.Agent.Document` attempt may explicitly opt into a
   run-bound route_ref payload. That token is no longer the deterministic
   list-cache bearer; it exists so hosted `doc.*` calls can prove the
-  semantic run identity without relying on the model to pass an
-  undocumented `agent_run_id` tool argument.
+  semantic run identity.
   """
 
   @type purpose :: String.t()

@@ -22,7 +22,7 @@ defmodule Contract.IO.R2Test do
 
   describe "put/3" do
     test "PUTs bytes to bucket-prefixed path, returns key + etag", %{bypass: bypass} do
-      Bypass.expect_once(bypass, "PUT", "/test-bucket/matters/m1/sources/abc.pdf", fn conn ->
+      Bypass.expect_once(bypass, "PUT", "/test-bucket/uploads/abc.pdf", fn conn ->
         {:ok, body, conn} = Plug.Conn.read_body(conn, length: 50_000_000)
         assert body == "PDFBYTES"
 
@@ -31,8 +31,8 @@ defmodule Contract.IO.R2Test do
         |> Plug.Conn.resp(200, "")
       end)
 
-      assert {:ok, %{key: "matters/m1/sources/abc.pdf", etag: "\"abc123\""}} =
-               R2.put("matters/m1/sources/abc.pdf", "PDFBYTES")
+      assert {:ok, %{key: "uploads/abc.pdf", etag: "\"abc123\""}} =
+               R2.put("uploads/abc.pdf", "PDFBYTES")
     end
 
     test "passes content_type opt through as request header", %{bypass: bypass} do
@@ -91,55 +91,13 @@ defmodule Contract.IO.R2Test do
 
   describe "presigned_url/2" do
     test "returns a signed URL with auth params and honours :expires_in" do
-      assert {:ok, default_url} = R2.presigned_url("exports/abc.pdf")
+      assert {:ok, default_url} = R2.presigned_url("downloads/abc.pdf")
       assert is_binary(default_url)
-      assert default_url =~ "/test-bucket/exports/abc.pdf"
+      assert default_url =~ "/test-bucket/downloads/abc.pdf"
       assert default_url =~ "X-Amz-Signature="
 
       assert {:ok, custom} = R2.presigned_url("k", expires_in: 60)
       assert custom =~ "X-Amz-Expires=60"
-    end
-  end
-
-  describe "export/4" do
-    test "renders via fun, PUTs to exports/<id>.<ext>, returns Export struct", %{bypass: bypass} do
-      Bypass.expect(bypass, fn conn ->
-        assert conn.method == "PUT"
-        assert conn.request_path =~ ~r{^/test-bucket/exports/[^/]+\.pdf$}
-        {:ok, body, conn} = Plug.Conn.read_body(conn, length: 50_000_000)
-        assert body == "PDFBYTES"
-        Plug.Conn.resp(conn, 200, "")
-      end)
-
-      render_fun = fn %{document_id: id, format: :pdf} ->
-        assert is_binary(id)
-        {:ok, "PDFBYTES", "application/pdf"}
-      end
-
-      assert {:ok, export} =
-               R2.export(nil, Ecto.UUID.generate(), :pdf, render_fun: render_fun)
-
-      assert %Contract.Export{format: :pdf, key: "exports/" <> _, url: url} = export
-      assert is_binary(export.id)
-      assert url =~ "/test-bucket/exports/"
-    end
-
-    test "supports :docx format → .docx extension", %{bypass: bypass} do
-      Bypass.expect(bypass, fn conn ->
-        assert conn.method == "PUT"
-        assert conn.request_path =~ ~r{^/test-bucket/exports/[^/]+\.docx$}
-        Plug.Conn.resp(conn, 200, "")
-      end)
-
-      render_fun = fn _ -> {:ok, "DOCXBYTES", "application/vnd.openxmlformats..."} end
-
-      assert {:ok, %Contract.Export{format: :docx}} =
-               R2.export(nil, "doc1", :docx, render_fun: render_fun)
-    end
-
-    test "propagates render error" do
-      render_fun = fn _ -> {:error, :boom} end
-      assert {:error, :boom} = R2.export(nil, "doc1", :pdf, render_fun: render_fun)
     end
   end
 end

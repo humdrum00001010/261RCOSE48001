@@ -3,15 +3,14 @@ defmodule Contract.ChatThreads do
   Durable chat-thread operations for Studio.
 
   Chat threads are owner scoped and may exist without a document. Messages are
-  stored as maps so later source/evidence/export workers can append structured
-  operation data without another schema migration.
+  stored as maps so tool trace messages can survive reloads without another
+  schema migration.
   """
 
   import Ecto.Query
 
   alias Contract.ChatThread
   alias Contract.Command
-  alias Contract.SourceClaim
   alias Contract.Context
   alias Contract.Repo
   alias Contract.Studio.State
@@ -515,51 +514,7 @@ defmodule Contract.ChatThreads do
     }
   end
 
-  defp rehydrate_operation(%Context{} = ctx, %{"type" => "source_claim"} = operation) do
-    claim_id = source_claim_id(operation)
-
-    case claim_id && Contract.SourceClaims.get(ctx, claim_id) do
-      {:ok, %SourceClaim{} = claim} -> merge_source_claim(operation, claim)
-      _ -> operation
-    end
-  end
-
-  defp rehydrate_operation(%Context{} = ctx, %{type: "source_claim"} = operation) do
-    rehydrate_operation(ctx, stringify_keys(operation))
-  end
-
   defp rehydrate_operation(_ctx, operation), do: operation
-
-  defp source_claim_id(%{} = operation) do
-    details = read(operation, "details") || read(operation, :details) || %{}
-
-    read(details, "source_claim_id") || read(details, :source_claim_id) || read(operation, "id") ||
-      read(operation, :id)
-  end
-
-  defp merge_source_claim(operation, %SourceClaim{} = claim) do
-    details = read(operation, "details") || %{}
-
-    details =
-      Map.merge(details, %{
-        "source_claim_id" => claim.id,
-        "source_document_id" => claim.source_document_id,
-        "proposed_kind" => claim.proposed_kind,
-        "proposed_value" => claim.proposed_value,
-        "proposed_structured" => claim.proposed_structured || %{},
-        "user_value" => claim.user_value,
-        "status" => claim.status,
-        "linked_document_id" => claim.linked_document_id,
-        "linked_node_id" => claim.linked_node_id,
-        "confidence" => claim.confidence && Decimal.to_string(claim.confidence)
-      })
-
-    operation
-    |> Map.put("status", claim.status)
-    |> Map.put("details", details)
-  end
-
-  defp stringify_keys(%{} = map), do: Map.new(map, fn {key, value} -> {to_string(key), value} end)
 
   defp rail_role("user"), do: :user
   defp rail_role(role) when role in ["assistant", "agent"], do: :agent

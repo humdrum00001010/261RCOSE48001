@@ -6,7 +6,7 @@ defmodule Contract.Gateway do
     * `verify_route_ref/2` — decode/validate a token back into a
       `%Contract.RouteRef{}`.
     * `mcp_tool/3` — dispatch an inbound MCP `tools/call` request to the
-      matching `studio.*` handler.
+      live `doc.*` handler.
 
   Slack ingress (`slack_event/1`, `slack_action/1`, `slack_command/1`) is
   intentionally NOT implemented in this build — the `/slack/*` HTTP routes
@@ -24,18 +24,13 @@ defmodule Contract.Gateway do
   ## MCP tool dispatch
 
   `mcp_tool/3` is the single entrypoint that the inbound
-  `ContractWeb.MCP.MCPPlug` calls. Tool handlers receive a
-  `%Contract.Context{}` plus the decoded arguments and return either
-  `{:ok, content_payload}` or `{:error, reason}`. The plug wraps the
-  `{:ok, ...}` result into MCP `content[]` shape; this module does not
-  produce JSON-RPC envelopes itself.
+  `ContractWeb.MCP.MCPPlug` calls. The gateway now exposes only the
+  agent document surface: `doc.get`, `doc.find`, `doc.read`, and `doc.edit`.
   """
 
-  alias Contract.Command
   alias Contract.Context
   alias Contract.MCP
   alias Contract.RouteRef
-  alias Contract.Runtime
 
   @salt "route_ref"
   @default_ttl 3_600
@@ -57,102 +52,7 @@ defmodule Contract.Gateway do
   """
   @spec tools_descriptor() :: [map()]
   def tools_descriptor do
-    legacy_tools_descriptor() ++ MCP.expanded_tool_descriptors()
-  end
-
-  defp legacy_tools_descriptor do
-    [
-      %{
-        "name" => "studio.search_documents",
-        "description" =>
-          "Search Contract Studio documents whose title or metadata matches a query string.",
-        "inputSchema" => %{
-          "type" => "object",
-          "properties" => %{
-            "query" => %{"type" => "string"},
-            "limit" => %{"type" => "integer", "minimum" => 1, "maximum" => 100}
-          },
-          "required" => ["query"]
-        }
-      },
-      %{
-        "name" => "studio.get_document",
-        "description" => "Return the current projection of a document by id.",
-        "inputSchema" => %{
-          "type" => "object",
-          "properties" => %{"document_id" => %{"type" => "string"}},
-          "required" => ["document_id"]
-        }
-      },
-      %{
-        "name" => "studio.submit_action",
-        "description" =>
-          "Submit a Contract.Command to Runtime.apply. Use this to drive Contract Studio from external clients (rename, edit, add_mark, etc.).",
-        "inputSchema" => %{
-          "type" => "object",
-          "properties" => %{
-            "action" => %{
-              "type" => "object",
-              "properties" => %{
-                "kind" => %{"type" => "string"},
-                "document_id" => %{"type" => "string"},
-                "base_revision" => %{"type" => "integer"},
-                "idempotency_key" => %{"type" => "string"},
-                "payload" => %{"type" => "object"},
-                "message" => %{"type" => "string"}
-              },
-              "required" => ["kind"]
-            }
-          },
-          "required" => ["action"]
-        }
-      },
-      %{
-        "name" => "studio.get_change_history",
-        "description" =>
-          "Return Changes applied to a document after `since_revision` (inclusive of revisions > since_revision).",
-        "inputSchema" => %{
-          "type" => "object",
-          "properties" => %{
-            "document_id" => %{"type" => "string"},
-            "since_revision" => %{"type" => "integer", "minimum" => 0}
-          },
-          "required" => ["document_id"]
-        }
-      },
-      %{
-        "name" => "studio.list_marks",
-        "description" => "List soft marks attached to the document's current projection.",
-        "inputSchema" => %{
-          "type" => "object",
-          "properties" => %{"document_id" => %{"type" => "string"}},
-          "required" => ["document_id"]
-        }
-      },
-      %{
-        "name" => "studio.search_law",
-        "description" =>
-          "Search Korean law via the upstream korean-law-mcp server. Passthrough wrapper.",
-        "inputSchema" => %{
-          "type" => "object",
-          "properties" => %{
-            "query" => %{"type" => "string"},
-            "limit" => %{"type" => "integer", "minimum" => 1, "maximum" => 50}
-          },
-          "required" => ["query"]
-        }
-      },
-      %{
-        "name" => "studio.verify_citations",
-        "description" =>
-          "Verify Korean law citations inside `text` via the upstream korean-law-mcp server.",
-        "inputSchema" => %{
-          "type" => "object",
-          "properties" => %{"text" => %{"type" => "string"}},
-          "required" => ["text"]
-        }
-      }
-    ]
+    MCP.expanded_tool_descriptors()
   end
 
   # ----------------------------------------------------------------------------
@@ -323,7 +223,7 @@ defmodule Contract.Gateway do
   # ----------------------------------------------------------------------------
 
   @doc """
-  Dispatches an inbound MCP `tools/call` to the matching `studio.*` handler.
+  Dispatches an inbound MCP `tools/call` to the matching `doc.*` handler.
 
   `ctx` is the request-scoped `%Contract.Context{}` (with `:matter` and
   `:perms` already populated from the bearer). `args` is the decoded JSON
@@ -333,102 +233,6 @@ defmodule Contract.Gateway do
   into the MCP `%{content: [%{type: "text", text: rendered}]}` shape.
   """
   @spec mcp_tool(Context.t() | nil, String.t(), map()) :: {:ok, term()} | {:error, term()}
-  def mcp_tool(ctx, "studio.search_documents", args) do
-    query = Map.get(args, "query") || Map.get(args, :query)
-    limit = normalize_limit(Map.get(args, "limit") || Map.get(args, :limit), 20)
-
-    if is_binary(query) and query != "" do
-      {:ok, search_documents(ctx, query, limit)}
-    else
-      {:error, :invalid_query}
-    end
-  end
-
-  def mcp_tool(ctx, "studio.get_document", args) do
-    case fetch_doc_id(args) do
-      {:ok, doc_id} ->
-        with :ok <- authorize_document(ctx, doc_id),
-             {:ok, state} <- Runtime.load(ctx, doc_id) do
-          {:ok, render_projection(state)}
-        end
-
-      :error ->
-        {:error, :missing_document_id}
-    end
-  end
-
-  def mcp_tool(ctx, "studio.submit_action", args) do
-    raw = Map.get(args, "action") || Map.get(args, :action) || args
-
-    with {:ok, action} <- build_action(raw),
-         :ok <- authorize_document(ctx, action.document_id) do
-      case Runtime.apply(ctx, action) do
-        {:ok, result} -> {:ok, render_action_result(result)}
-        {:error, _} = err -> err
-      end
-    end
-  end
-
-  def mcp_tool(ctx, "studio.get_change_history", args) do
-    case fetch_doc_id(args) do
-      {:ok, doc_id} ->
-        with :ok <- authorize_document(ctx, doc_id) do
-          since = Map.get(args, "since_revision") || Map.get(args, :since_revision) || 0
-
-          case Runtime.sync_since(ctx, doc_id, since) do
-            {:ok, changes} ->
-              {:ok, %{document_id: doc_id, changes: Enum.map(changes, &render_change/1)}}
-
-            {:error, _} = err ->
-              err
-          end
-        end
-
-      :error ->
-        {:error, :missing_document_id}
-    end
-  end
-
-  def mcp_tool(ctx, "studio.list_marks", args) do
-    case fetch_doc_id(args) do
-      {:ok, doc_id} ->
-        with :ok <- authorize_document(ctx, doc_id),
-             {:ok, state} <- Runtime.load(ctx, doc_id) do
-          marks =
-            state.projection
-            |> Map.get(:marks, %{})
-            |> Map.values()
-
-          {:ok, %{document_id: doc_id, marks: marks}}
-        end
-
-      :error ->
-        {:error, :missing_document_id}
-    end
-  end
-
-  def mcp_tool(ctx, "studio.search_law", args) do
-    query = Map.get(args, "query") || Map.get(args, :query)
-    limit = Map.get(args, "limit") || Map.get(args, :limit)
-    opts = if is_integer(limit), do: [limit: limit], else: []
-
-    if is_binary(query) and query != "" do
-      Contract.Providers.search_law(ctx, query, opts)
-    else
-      {:error, :invalid_query}
-    end
-  end
-
-  def mcp_tool(ctx, "studio.verify_citations", args) do
-    text = Map.get(args, "text") || Map.get(args, :text)
-
-    if is_binary(text) and text != "" do
-      Contract.Providers.verify_citation(ctx, text, [])
-    else
-      {:error, :invalid_text}
-    end
-  end
-
   def mcp_tool(ctx, tool, args) do
     if tool in MCP.expanded_tool_names() do
       route_ref = ctx && Map.get(ctx.perms || %{}, :route_ref)
@@ -507,25 +311,6 @@ defmodule Contract.Gateway do
 
   defp contains_pid_or_ref?(_), do: false
 
-  defp normalize_limit(limit, _default) when is_integer(limit) and limit > 0 and limit <= 100,
-    do: limit
-
-  defp normalize_limit(limit, default) when is_binary(limit) do
-    case Integer.parse(limit) do
-      {n, ""} when n > 0 and n <= 100 -> n
-      _ -> default
-    end
-  end
-
-  defp normalize_limit(_, default), do: default
-
-  defp fetch_doc_id(args) do
-    case Map.get(args, "document_id") || Map.get(args, :document_id) do
-      id when is_binary(id) and id != "" -> {:ok, id}
-      _ -> :error
-    end
-  end
-
   # ---- scope enforcement -----------------------------------------------------
 
   @doc false
@@ -568,118 +353,4 @@ defmodule Contract.Gateway do
 
   defp authorize_pinned_document(%Context{} = ctx, doc_id),
     do: authorize_visible_document(ctx, doc_id)
-
-  # ---- search ----------------------------------------------------------------
-
-  defp search_documents(ctx, query, limit) do
-    matches =
-      ctx
-      |> Contract.Documents.search(query, limit)
-      |> Enum.map(fn doc ->
-        %{document_id: doc.id, title: doc.title, revision: doc.latest_revision}
-      end)
-
-    %{query: query, count: length(matches), results: matches}
-  end
-
-  defp render_projection(%Contract.Runtime.State{} = state) do
-    %{
-      document_id: state.document_id,
-      revision: state.revision,
-      projection: state.projection
-    }
-  end
-
-  defp render_change(%Contract.Change{} = c) do
-    %{
-      id: c.id,
-      document_id: c.document_id,
-      command_kind: c.command_kind,
-      base_revision: c.base_revision,
-      result_revision: c.result_revision,
-      status: c.status,
-      actor_type: c.actor_type,
-      actor_id: c.actor_id,
-      message: c.message,
-      inserted_at: c.inserted_at
-    }
-  end
-
-  defp render_action_result(%Contract.Change{} = c), do: render_change(c)
-  defp render_action_result(%Contract.Runtime.State{} = s), do: render_projection(s)
-  defp render_action_result(other), do: %{result: inspect(other)}
-
-  defp build_action(raw) when is_map(raw) do
-    attrs = %{
-      kind: parse_atom(Map.get(raw, "kind") || Map.get(raw, :kind), valid_command_kinds()),
-      document_id: Map.get(raw, "document_id") || Map.get(raw, :document_id),
-      change_id: Map.get(raw, "change_id") || Map.get(raw, :change_id),
-      agent_run_id: Map.get(raw, "agent_run_id") || Map.get(raw, :agent_run_id),
-      actor_type:
-        parse_atom(
-          Map.get(raw, "actor_type") || Map.get(raw, :actor_type) || "user",
-          [:user, :agent, :lawyer, :slack, :system]
-        ),
-      actor_id: Map.get(raw, "actor_id") || Map.get(raw, :actor_id),
-      base_revision: Map.get(raw, "base_revision") || Map.get(raw, :base_revision),
-      idempotency_key:
-        Map.get(raw, "idempotency_key") || Map.get(raw, :idempotency_key) ||
-          "mcp-#{System.unique_integer([:positive])}",
-      payload: Map.get(raw, "payload") || Map.get(raw, :payload) || %{},
-      message: Map.get(raw, "message") || Map.get(raw, :message)
-    }
-
-    changeset = Command.changeset(%Command{}, attrs)
-
-    if changeset.valid? do
-      {:ok, Ecto.Changeset.apply_changes(changeset)}
-    else
-      {:error, {:invalid_action, errors_on(changeset)}}
-    end
-  end
-
-  defp build_action(_), do: {:error, :invalid_action_payload}
-
-  defp parse_atom(value, allowed) when is_atom(value) do
-    if value in allowed, do: value, else: nil
-  end
-
-  defp parse_atom(value, allowed) when is_binary(value) do
-    Enum.find(allowed, fn a -> Atom.to_string(a) == value end)
-  end
-
-  defp parse_atom(_, _), do: nil
-
-  defp valid_command_kinds do
-    [
-      :open_document,
-      :create_document,
-      :upload_document,
-      :duplicate_document,
-      :archive_document,
-      :restore_document,
-      :rename_document,
-      :update_metadata,
-      :set_contract_type,
-      :edit_document,
-      :add_mark,
-      :update_mark,
-      :start_type_conversion,
-      :set_field_migration_strategy,
-      :create_converted_variant,
-      :chat_message,
-      :agent_change,
-      :revoke_change,
-      :resolve_revoke,
-      :request_export
-    ]
-  end
-
-  defp errors_on(changeset) do
-    Ecto.Changeset.traverse_errors(changeset, fn {msg, opts} ->
-      Regex.replace(~r"%{(\w+)}", msg, fn _, key ->
-        opts |> Keyword.get(String.to_existing_atom(key), key) |> to_string()
-      end)
-    end)
-  end
 end

@@ -10,8 +10,6 @@ defmodule ContractWeb.StudioLiveTest do
   alias Contract.Command
   alias Contract.Repo
   alias Contract.RhwpSnapshot.Record, as: RhwpSnapshotRecord
-  alias Contract.SourceClaim
-  alias Contract.SourceDocument
   alias Contract.Studio.State
   alias ContractWeb.StudioLive
 
@@ -162,13 +160,7 @@ defmodule ContractWeb.StudioLiveTest do
       {:ok, lv, _html} = live(conn, ~p"/studio")
 
       assert has_element?(lv, ~s([data-role="canvas-empty-type-picker"]))
-      assert has_element?(lv, ~s([data-role="canvas-empty-upload-action"]), "계약서 업로드")
-
-      lv
-      |> element(~s([data-role="canvas-empty-upload-action"]))
-      |> render_click()
-
-      assert_push_event(lv, "open-document-upload-picker", %{}, 500)
+      refute has_element?(lv, ~s([data-role="canvas-empty-upload-action"]))
 
       {:ok, specs} = Contract.ContractTypes.list()
       visible_specs = Enum.reject(specs, &(&1.source == :custom))
@@ -198,7 +190,7 @@ defmodule ContractWeb.StudioLiveTest do
       assert_redirect(lv, "/studio/#{doc.id}")
     end
 
-    test "DocumentScope threads :user_perms from session onto current_scope.perms (lawyer-style) and unlocks Canvas.Empty actions",
+    test "DocumentScope threads :user_perms from session onto current_scope.perms",
          %{conn: conn} do
       # Persona sign-in (TestAuthController) writes :user_perms into the
       # session. Simulate that here — the lawyer-shaped perm set must
@@ -210,9 +202,7 @@ defmodule ContractWeb.StudioLiveTest do
 
       assert :sys.get_state(lv.pid).socket.assigns.current_scope.perms == lawyer_perms
       assert html =~ "계약 유형 선택"
-      assert html =~ "계약서 업로드"
       assert html =~ ~s(data-role="canvas-empty-type-picker")
-      assert html =~ ~s(data-role="canvas-empty-upload-action")
     end
 
     test "without :user_perms in session, current_scope.perms is nil and Canvas.Empty actions are hidden",
@@ -473,16 +463,8 @@ defmodule ContractWeb.StudioLiveTest do
       {:ok, _lv, html} = live(conn, ~p"/studio")
 
       assert html =~ ~s(data-role="canvas-empty-type-picker")
-      assert html =~ ~s(data-role="canvas-empty-upload-action")
+      refute html =~ ~s(data-role="canvas-empty-upload-action")
       refute html =~ ~s(data-role="chat-no-doc-welcome")
-    end
-
-    test "upload option pushes the document upload picker event", %{conn: conn} do
-      {:ok, lv, _html} = live(conn, ~p"/studio")
-
-      _ = render_hook(lv, "agent_option_picked", %{"key" => "upload"})
-
-      assert_push_event(lv, "open-document-upload-picker", %{}, 500)
     end
 
     test "recent option opens the document-picker modal", %{conn: conn} do
@@ -553,28 +535,6 @@ defmodule ContractWeb.StudioLiveTest do
                StudioLive.event_to_command("chat.submit", %{"message" => "hi"}, assigns)
     end
 
-    test "document.upload → :upload_document (document not required)",
-         %{assigns: assigns} do
-      assert {:ok, %Command{kind: :upload_document}} =
-               StudioLive.event_to_command("document.upload", %{"upload" => %{}}, assigns)
-    end
-
-    test "source_claim.unlink → :source_claim_unlink_from_document", %{assigns: assigns} do
-      claim_id = Ecto.UUID.generate()
-
-      assert {:ok, %Command{kind: :source_claim_unlink_from_document, source_claim_id: ^claim_id}} =
-               StudioLive.event_to_command(
-                 "source_claim.unlink",
-                 %{"source_claim_id" => claim_id},
-                 assigns
-               )
-    end
-
-    test "conversion.create_variant → :create_converted_variant", %{assigns: assigns} do
-      assert {:ok, %Command{kind: :create_converted_variant}} =
-               StudioLive.event_to_command("conversion.create_variant", %{}, assigns)
-    end
-
     test "document.open → :open_document", %{assigns: assigns} do
       doc = Ecto.UUID.generate()
 
@@ -588,14 +548,6 @@ defmodule ContractWeb.StudioLiveTest do
 
       assert {:ok, %Command{kind: :duplicate_document}} =
                StudioLive.event_to_command("document.duplicate", %{}, assigns)
-    end
-
-    test "export.request → :request_export", %{assigns: assigns} do
-      doc = Ecto.UUID.generate()
-      assigns = put_doc(assigns, doc)
-
-      assert {:ok, %Command{kind: :request_export}} =
-               StudioLive.event_to_command("export.request", %{"format" => "pdf"}, assigns)
     end
 
     test "command_palette_picked resolves to the inner kind", %{assigns: assigns} do
@@ -655,143 +607,6 @@ defmodule ContractWeb.StudioLiveTest do
     end
   end
 
-  describe "conversion wizard events (Wave 4)" do
-    setup :log_in_a_user
-
-    test "start_type_conversion with a real source document builds a plan and flips migration_panel_open?",
-         %{conn: conn, user: user} do
-      scope = Contract.Context.for_user(user)
-
-      {:ok, doc} =
-        Contract.Documents.create(scope, %{
-          "title" => "src",
-          "type_key" => "nda_v1"
-        })
-
-      # Give the LV the lawyer-style perms via session.
-      conn =
-        Plug.Conn.put_session(conn, :user_perms, ~w(read write commit revoke export type_change)a)
-
-      {:ok, lv, _html} = live(conn, ~p"/studio")
-
-      # Seed selected document.
-      send_state(lv, %State{
-        selected_document_id: doc.id,
-        mode: :editing,
-        last_seen_revision: 0
-      })
-
-      _ =
-        render_hook(lv, "conversion.start", %{
-          "target_type_key" => "service_agreement_v1"
-        })
-
-      assert assigns(lv).studio_state.migration_panel_open? == true
-
-      assert %Contract.Conversion.Plan{target_type_key: "service_agreement_v1"} =
-               assigns(lv).migration_plan
-    end
-
-    test "start_type_conversion without a selected document flashes an error",
-         %{conn: conn} do
-      {:ok, lv, _html} = live(conn, ~p"/studio")
-
-      html =
-        render_hook(lv, "conversion.start", %{"target_type_key" => "nda_v1"})
-
-      assert html =~ "No document selected"
-    end
-
-    test "start_type_conversion without target flashes an error", %{conn: conn} do
-      {:ok, lv, _html} = live(conn, ~p"/studio")
-
-      # Seed selected document.
-      send_state(lv, %State{
-        selected_document_id: Ecto.UUID.generate(),
-        mode: :editing,
-        last_seen_revision: 0
-      })
-
-      html = render_hook(lv, "conversion.start", %{"target_type_key" => ""})
-      assert html =~ "target type"
-    end
-
-    test "create_variant without a plan flashes an error", %{conn: conn} do
-      {:ok, lv, _html} = live(conn, ~p"/studio")
-      html = render_hook(lv, "conversion.create_variant", %{})
-      assert html =~ "No active conversion plan"
-    end
-
-    test "set_field_migration_strategy without a plan flashes an error",
-         %{conn: conn} do
-      {:ok, lv, _html} = live(conn, ~p"/studio")
-
-      html =
-        render_hook(lv, "conversion.field_strategy.set", %{
-          "source_field_id" => "party_a",
-          "strategy" => "copy_once"
-        })
-
-      assert html =~ "No active conversion plan"
-    end
-
-    # Wave 4 bugfix #2 + #4: when the wizard opens, the parent LV must
-    # have a populated `migration_plan` AND the rendered summary card
-    # must use a hairline accent (no emerald block fill — per
-    # `feedback-mature-visual-language`).
-    test "start_type_conversion renders plan summary with hairline accent (no emerald block)",
-         %{conn: conn, user: user} do
-      scope = Contract.Context.for_user(user)
-
-      {:ok, doc} =
-        Contract.Documents.create(scope, %{
-          "title" => "src-bug-4",
-          "type_key" => "nda_v1"
-        })
-
-      conn =
-        Plug.Conn.put_session(
-          conn,
-          :user_perms,
-          ~w(read write commit revoke export type_change)a
-        )
-
-      {:ok, lv, _html} = live(conn, ~p"/studio")
-
-      send_state(lv, %State{
-        selected_document_id: doc.id,
-        mode: :editing,
-        last_seen_revision: 0
-      })
-
-      html =
-        render_hook(lv, "conversion.start", %{
-          "target_type_key" => "service_agreement_v1"
-        })
-
-      # Bug 2 — plan is populated.
-      plan = assigns(lv).migration_plan
-      assert %Contract.Conversion.Plan{target_type_key: "service_agreement_v1"} = plan
-
-      # The wizard must be visible (parent flag flipped).
-      assert assigns(lv).studio_state.migration_panel_open? == true
-      assert html =~ ~s(data-modal="migration")
-
-      # Bug 4 — restrained hairline summary, NOT a full emerald block.
-      assert html =~ ~s(data-role="migration-plan-summary")
-      assert html =~ ~s(border-l-2 border-primary)
-      refute html =~ "alert alert-success"
-      # The previous emerald-block class combo was `bg-primary
-      # text-primary-content` on the summary card itself. The header's
-      # "CS" badge uses that combo legitimately (small avatar circle),
-      # so scope the negative assertion to the summary div.
-      [_, summary_chunk] = String.split(html, ~s(data-role="migration-plan-summary"), parts: 2)
-      [card_chunk, _] = String.split(summary_chunk, "</div>", parts: 2)
-      refute card_chunk =~ "bg-primary text-primary-content"
-      refute card_chunk =~ "bg-success"
-    end
-  end
-
   describe "handle_info protocol (driven through the live LV process)" do
     setup :log_in_a_user
 
@@ -834,7 +649,7 @@ defmodule ContractWeb.StudioLiveTest do
         document_id: doc,
         command_kind: "edit_text",
         result_revision: 2,
-        idempotency_key: "mcp:test:set_field_value",
+        idempotency_key: "mcp:test:edit_text",
         payload: [
           %{
             "op" => "delete_text",
@@ -953,30 +768,6 @@ defmodule ContractWeb.StudioLiveTest do
       _ = render(lv)
 
       assert assigns(lv).studio_state.recently_authored_agent == %{}
-    end
-
-    test "{:revoke_requested, _} opens the reconcile modal", %{conn: conn} do
-      {:ok, lv, _html} = live(conn, ~p"/studio")
-      send(lv.pid, {:revoke_requested, %{id: "r1"}})
-      _ = render(lv)
-      assert assigns(lv).reconcile_modal_open? == true
-    end
-
-    test "{:change_reconciled, change} closes the reconcile modal", %{conn: conn} do
-      {:ok, lv, _html} = live(conn, ~p"/studio")
-      send(lv.pid, {:revoke_requested, %{id: "r1"}})
-      _ = render(lv)
-      assert assigns(lv).reconcile_modal_open? == true
-
-      change = %Contract.Change{
-        id: Ecto.UUID.generate(),
-        command_kind: "resolve_revoke",
-        result_revision: 2
-      }
-
-      send(lv.pid, {:change_reconciled, change})
-      _ = render(lv)
-      assert assigns(lv).reconcile_modal_open? == false
     end
 
     test "{:marks_changed, marks} replaces projection.marks", %{conn: conn} do
@@ -1251,167 +1042,6 @@ defmodule ContractWeb.StudioLiveTest do
       [details_hidden] = LazyHTML.attribute(details, "hidden")
       assert details_hidden == "" or details_hidden == "hidden"
       assert html =~ ~s(data-role="tool-trace-details")
-    end
-
-    test "uploaded source document renders interpretation and claim operation blocks", %{
-      conn: conn
-    } do
-      old_drivers = Application.get_env(:contract, :io_drivers, [])
-
-      Application.put_env(
-        :contract,
-        :io_drivers,
-        old_drivers
-        |> Keyword.put(:r2, Contract.IO.R2Stub)
-        |> Keyword.put(:upstage, Contract.IO.DeterministicParser)
-      )
-
-      Contract.IO.R2Stub.reset()
-
-      on_exit(fn ->
-        Application.put_env(:contract, :io_drivers, old_drivers)
-        Contract.IO.R2Stub.reset()
-      end)
-
-      tmp =
-        Path.join(
-          System.tmp_dir!(),
-          "studio-source-upload-#{System.unique_integer([:positive])}.txt"
-        )
-
-      File.write!(tmp, "Effective Date: 2026-01-01\nParty A: Acme Corp\n")
-
-      upload = %{
-        path: tmp,
-        client_name: "counterparty.txt",
-        client_type: "text/plain",
-        client_size: File.stat!(tmp).size
-      }
-
-      {:ok, lv, _html} = live(conn, ~p"/studio")
-      html = render_hook(lv, "document.upload", %{"upload" => upload})
-
-      assert html =~ ~s(data-role="source-interpretation-block")
-      assert html =~ ~s(data-role="source-claim-block")
-      assert html =~ "effective_date"
-      assert html =~ "party_a"
-      refute html =~ ~s(data-operation-status="parsing")
-    end
-
-    test "source-document protocol messages render structured operation blocks", %{conn: conn} do
-      {:ok, lv, _html} = live(conn, ~p"/studio")
-      source_id = Ecto.UUID.generate()
-
-      send(lv.pid, {:source_document_uploaded, %{id: source_id, title: "Counterparty draft"}})
-      html = render(lv)
-      assert html =~ ~s(id="operation-block-source-#{source_id}")
-      assert html =~ ~s(data-operation-type="source_interpretation")
-      assert html =~ ~s(data-operation-status="uploaded")
-      assert html =~ "Counterparty draft"
-
-      send(lv.pid, {:source_document_parse_started, source_id})
-      html = render(lv)
-      assert html =~ ~s(data-operation-status="parsing")
-
-      send(lv.pid, {:source_document_parsed, %{id: source_id, title: "Counterparty draft"}})
-      html = render(lv)
-      assert html =~ ~s(data-operation-status="parsed")
-
-      claims = [%{id: "claim-1"}, %{id: "claim-2"}]
-      send(lv.pid, {:source_interpretation_ready, source_id, claims})
-      html = render(lv)
-      assert html =~ ~s(id="operation-block-source-#{source_id}-interpretation")
-      assert html =~ ~s(data-operation-status="ready")
-      assert html =~ "추출값 2개"
-
-      send(lv.pid, {:source_claim_updated, %{id: "claim-1", status: :confirmed}})
-      html = render(lv)
-      assert html =~ ~s(id="operation-block-source-claim-claim-1")
-      assert html =~ ~s(data-operation-type="source_claim")
-      assert html =~ ~s(data-operation-status="confirmed")
-    end
-
-    test "source claim controls refresh operation status immediately and after reload", %{
-      conn: conn,
-      user: user
-    } do
-      scope = Contract.Context.for_user(user)
-      {:ok, document} = Contract.Documents.create(scope, %{title: "Working draft"})
-      {:ok, source_document, claim} = seed_source_claim(user, document)
-      seed_source_claim_thread(user, document, source_document, claim)
-
-      {:ok, lv, html} = live(conn, ~p"/documents/#{document.id}")
-      assert html =~ ~s(id="operation-block-source-claim-#{claim.id}")
-      assert html =~ ~s(data-operation-status="proposed")
-
-      html =
-        render_hook(lv, "source_claim.confirm", %{
-          "source_claim_id" => claim.id,
-          "source_document_id" => source_document.id
-        })
-
-      assert html =~ ~s(data-operation-status="confirmed")
-
-      html =
-        render_hook(lv, "source_claim.reject", %{
-          "source_claim_id" => claim.id,
-          "source_document_id" => source_document.id,
-          "reason" => "wrong field"
-        })
-
-      assert html =~ ~s(data-operation-status="rejected")
-
-      html =
-        render_hook(lv, "source_claim.link_to_document", %{
-          "source_claim_id" => claim.id,
-          "source_document_id" => source_document.id,
-          "node_id" => "node-effective-date",
-          "field_id" => "effective_date"
-        })
-
-      assert html =~ ~s(data-operation-status="linked")
-
-      html =
-        render_hook(lv, "source_claim.unlink", %{
-          "source_claim_id" => claim.id,
-          "source_document_id" => source_document.id
-        })
-
-      assert html =~ ~s(data-operation-status="unlinked")
-
-      {:ok, _reloaded, reloaded_html} = live(conn, ~p"/documents/#{document.id}")
-      assert reloaded_html =~ ~s(data-operation-status="unlinked")
-    end
-
-    test "evidence and export-started protocol messages render structured operation blocks", %{
-      conn: conn
-    } do
-      {:ok, lv, _html} = live(conn, ~p"/studio")
-      evidence_id = Ecto.UUID.generate()
-      export_id = Ecto.UUID.generate()
-
-      send(lv.pid, {:evidence_created, %{id: evidence_id, summary: "Article 12 citation"}})
-      html = render(lv)
-      assert html =~ ~s(id="operation-block-evidence-#{evidence_id}")
-      assert html =~ ~s(data-operation-type="evidence")
-      assert html =~ ~s(data-operation-status="created")
-      assert html =~ "Article 12 citation"
-
-      send(
-        lv.pid,
-        {:evidence_attached, %{id: evidence_id, summary: "Article 12 citation"}, %{id: "mark-1"}}
-      )
-
-      html = render(lv)
-      assert html =~ ~s(id="operation-block-evidence-#{evidence_id}-attached-mark-1")
-      assert html =~ ~s(data-operation-status="attached")
-
-      send(lv.pid, {:export_started, export_id})
-      html = render(lv)
-      assert html =~ ~s(id="operation-block-export-#{export_id}")
-      assert html =~ ~s(data-operation-type="export_status")
-      assert html =~ ~s(data-operation-status="started")
-      assert html =~ String.slice(export_id, 0, 8)
     end
 
     test "unknown messages are ignored without crashing", %{conn: conn} do
@@ -1732,63 +1362,6 @@ defmodule ContractWeb.StudioLiveTest do
     %State{} = state = assigns.studio_state
     new_state = %{state | selected_document_id: doc, last_seen_revision: 1, mode: :editing}
     %{assigns | studio_state: new_state}
-  end
-
-  defp seed_source_claim(user, document) do
-    {:ok, source_document} =
-      %SourceDocument{}
-      |> SourceDocument.changeset(%{
-        owner_id: user.id,
-        document_id: document.id,
-        blob_ref_id: Ecto.UUID.generate(),
-        status: "ready"
-      })
-      |> Repo.insert()
-
-    {:ok, claim} =
-      %SourceClaim{}
-      |> SourceClaim.changeset(%{
-        source_document_id: source_document.id,
-        region_id: "region-effective-date",
-        proposed_kind: "effective_date",
-        proposed_value: "2026-01-01",
-        confidence: Decimal.new("0.91")
-      })
-      |> Repo.insert()
-
-    {:ok, source_document, claim}
-  end
-
-  defp seed_source_claim_thread(user, document, source_document, claim) do
-    message = %{
-      "id" => "source-claim-#{claim.id}",
-      "role" => "assistant",
-      "content" => "",
-      "inserted_at" => DateTime.to_iso8601(DateTime.utc_now(:second)),
-      "operation" => %{
-        "id" => "source-claim-#{claim.id}",
-        "type" => "source_claim",
-        "title" => "Effective date",
-        "status" => "proposed",
-        "details" => %{
-          "source_claim_id" => claim.id,
-          "source_document_id" => source_document.id,
-          "proposed_kind" => claim.proposed_kind,
-          "proposed_value" => claim.proposed_value
-        }
-      }
-    }
-
-    %ChatThread{}
-    |> ChatThread.changeset(%{
-      owner_id: user.id,
-      document_id: document.id,
-      title: "Discussion",
-      messages: [message],
-      status: "active",
-      last_message_at: DateTime.utc_now(:second)
-    })
-    |> Repo.insert!()
   end
 
   defp assigns(lv) do

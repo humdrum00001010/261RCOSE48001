@@ -7,7 +7,6 @@ defmodule Contract.SessionTest do
   alias Contract.Change
   alias Contract.IO.R2Stub
   alias Contract.Lease
-  alias Contract.RevokeRequest
   alias Contract.Session
   alias Contract.Store
 
@@ -194,99 +193,6 @@ defmodule Contract.SessionTest do
       }
 
       assert {:ok, %Change{document_id: ^doc}} = Session.commit(pid, action)
-    end
-  end
-
-  describe "revoke/2" do
-    setup do
-      doc = Ecto.UUID.generate()
-      :ok = seed_document!(doc)
-      {pid, ^doc} = start_session!(document_id: doc)
-
-      action = %Command{
-        kind: :rename_document,
-        document_id: doc,
-        actor_type: :user,
-        actor_id: Ecto.UUID.generate(),
-        base_revision: 1,
-        idempotency_key: "rn-a",
-        payload: %{"title" => "First"}
-      }
-
-      {:ok, change} = Session.commit(pid, action)
-
-      {:ok, doc: doc, pid: pid, change: change}
-    end
-
-    test "clean revoke commits an inverse Change when no overlap exists", %{
-      doc: doc,
-      pid: pid,
-      change: change
-    } do
-      action = %Command{
-        kind: :revoke_change,
-        document_id: doc,
-        change_id: change.id,
-        actor_type: :user,
-        actor_id: Ecto.UUID.generate(),
-        base_revision: 2,
-        idempotency_key: "rev-1"
-      }
-
-      assert {:ok, %Change{command_kind: "revoke_change", result_revision: 3}} =
-               Session.revoke(pid, action)
-
-      assert {:ok, state} = Session.current(pid)
-      # Title rolled back to "Seed".
-      assert state.projection.title == "Seed"
-    end
-
-    test "creates a RevokeRequest when there are overlapping later changes", %{
-      doc: doc,
-      pid: pid,
-      change: change
-    } do
-      # Second rename — overlaps the first since both target the document.
-      next = %Command{
-        kind: :rename_document,
-        document_id: doc,
-        actor_type: :user,
-        actor_id: Ecto.UUID.generate(),
-        base_revision: 2,
-        idempotency_key: "rn-b",
-        payload: %{"title" => "Second"}
-      }
-
-      {:ok, _later} = Session.commit(pid, next)
-
-      revoke = %Command{
-        kind: :revoke_change,
-        document_id: doc,
-        change_id: change.id,
-        actor_type: :user,
-        actor_id: Ecto.UUID.generate(),
-        base_revision: 3,
-        idempotency_key: "rev-with-overlap"
-      }
-
-      assert {:ok, %RevokeRequest{status: :pending}} = Session.revoke(pid, revoke)
-    end
-
-    test "fails on missing change_id" do
-      doc = Ecto.UUID.generate()
-      :ok = seed_document!(doc)
-      {pid, ^doc} = start_session!(document_id: doc)
-
-      action = %Command{
-        kind: :revoke_change,
-        document_id: doc,
-        actor_type: :user,
-        actor_id: Ecto.UUID.generate(),
-        base_revision: 1,
-        idempotency_key: "bad-rev"
-      }
-
-      assert {:error, :missing_change_id} = Session.revoke(pid, action)
     end
   end
 

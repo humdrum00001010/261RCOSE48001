@@ -7,47 +7,56 @@ defmodule Contract.MCP do
   owner ACL before exposing projections as MCP resources.
   """
 
-  import Ecto.Query
-
   alias Contract.Change
   alias Contract.Agent.Document, as: AgentDocument
   alias Contract.Command
   alias Contract.Context
-  alias Contract.Documents
-  alias Contract.EvidenceSnapshot
   alias Contract.Gateway
-  alias Contract.Providers
   alias Contract.Repo
   alias Contract.RouteRef
   alias Contract.Runtime
-  alias Contract.SourceClaim
-  alias Contract.SourceDocument
+
+  @doc_get_outline_default 12
+  @doc_get_field_default 10
+  @doc_get_max_page 50
 
   def expanded_tool_descriptors do
-    agent_doc_tool_descriptors() ++ legacy_expanded_tool_descriptors()
+    agent_doc_tool_descriptors()
   end
 
-  # Agent-facing tool surface (the 6-tool MVP used by Contract.Agent.Document
+  # Agent-facing tool surface used by Contract.Agent.Document
   # over an authenticated MCP route_ref). These are deliberately opinionated:
-  # the model gets short, positional args instead of having to construct full
-  # Command JSON via `document.submit_command`. See docs/plans for the
-  # full design rationale.
+  # the model gets short, positional args and only the RHWP-backed edit path.
   defp agent_doc_tool_descriptors do
     [
       %{
         "name" => "doc.get",
         "description" =>
-          "Returns the document's metadata, outline, fields, and revision only — NOT every paragraph. Shape: `{revision, d (title), t (type_key), counts: {sec, para}, outline: [[sec, para, level, text], ...], f (fields)}`. Use this to inspect field ids before slot-like edits. Use `doc.find` to locate a substring and `doc.read` to fetch paragraph slices. Pin `since_revision` to short-circuit when nothing changed.",
+          "Returns a bounded metadata/navigation page only — not paragraph bodies, not field values, not table cell text, and not full IR. Shape: `{revision, d, t, counts, outline, f, cursors, read}`. `outline` and `f` are paged with `outline_from`/`outline_limit` and `field_from`/`field_limit`; cursors carry the next `from`. Use `read` capabilities to choose a small `doc.read` target. Pin `since_revision` to short-circuit when nothing changed.",
         "inputSchema" =>
           object_schema(
-            %{"since_revision" => %{"type" => "integer", "minimum" => 0}},
+            %{
+              "since_revision" => %{"type" => "integer", "minimum" => 0},
+              "outline_from" => %{"type" => "integer", "minimum" => 0},
+              "outline_limit" => %{
+                "type" => "integer",
+                "minimum" => 1,
+                "maximum" => @doc_get_max_page
+              },
+              "field_from" => %{"type" => "integer", "minimum" => 0},
+              "field_limit" => %{
+                "type" => "integer",
+                "minimum" => 1,
+                "maximum" => @doc_get_max_page
+              }
+            },
             []
           )
       },
       %{
         "name" => "doc.find",
         "description" =>
-          "Search the document for `needle` (literal substring; no regex). Use when you already know target text. Returns up to `limit` hits with ±`context` characters of surrounding text and the positional triple `(sec, para, off)` plus the literal `match` substring — feed those straight back into `doc.edit_text` (no character counting). Hit shape: `[sec, para, off, len, before, match, after, kind]`. Result: `{revision, total, hits}`. Prefer this over `doc.get` for locating known text; use `doc.get` for metadata, outline, fields, and revision.",
+          "Search the document, including table cells, for `needle` (literal substring; no regex). Use when you already know target text. Paragraph hits are `[sec, para, off, len, before, match, after, \"paragraph\"]`; table cell hits are `[sec, para, off, len, before, match, after, \"cell\", {cell_path, target}]`. For cell hits, pass the returned `target` directly to `doc.edit` with `target.type: \"cell\"`.",
         "inputSchema" =>
           object_schema(
             %{
@@ -61,7 +70,7 @@ defmodule Contract.MCP do
       %{
         "name" => "doc.read",
         "description" =>
-          "Read paragraphs in a section by index. Pass `sec` plus either `para` (single paragraph) or `from`/`to` for a contiguous range (both inclusive). At most `limit` paragraphs come back; if more remain, `next_para` carries the index to resume from. Paragraph shape: `[sec, para, kind, text]`. Use after `doc.find` to inspect surrounding context, or after `doc.get` outline to drill into a section.",
+          "Read one small cursor window. Paragraph range reads (`sec` + `from`/`to`) return only low-limit paragraph previews and next cursors. Paragraph reads (`sec`,`para`) return a bounded text window with `off`/`chars` continuation. Table reads are row/column windows (`row_from`/`row_limit`, `col_from`/`col_limit`) and do not dump whole tables. Single cell reads (`sec`,`para`,`row`,`col`) and field reads (`field_id`) return bounded text plus a ready `doc.edit` target.",
         "inputSchema" =>
           object_schema(
             %{
@@ -69,112 +78,79 @@ defmodule Contract.MCP do
               "para" => %{"type" => "integer", "minimum" => 0},
               "from" => %{"type" => "integer", "minimum" => 0},
               "to" => %{"type" => "integer", "minimum" => 0},
-              "limit" => %{"type" => "integer", "minimum" => 1, "maximum" => 200}
-            },
-            ["sec"]
-          )
-      },
-      %{
-        "name" => "doc.edit_text",
-        "description" =>
-          "Replace a character range inside one paragraph or table cell. STRONGLY PREFER passing `match` (the exact substring you intend to remove, copied verbatim from doc.get/doc.find/doc.read) over a numeric `len` — the server measures `match`'s length itself, so you cannot miscount Korean syllables, surrogate pairs, brackets, or whitespace. For slot-like date/period edits, use `doc.set_field_value` when a field id exists; if you must use `doc.edit_text`, replace the full exact existing value or paragraph, not only a label prefix. Use `len` only when you must delete by count (e.g. pure trailing delete). `match=\"\"` and `len=0` mean pure insert; `text=\"\"` means pure delete. For table cells, pass `cell_path` (controlIndex/cellIndex/cellParaIndex tuples) from doc.get. Pin `base_revision` to the value last seen.",
-        "inputSchema" =>
-          object_schema(
-            %{
-              "sec" => %{"type" => "integer", "minimum" => 0},
-              "para" => %{"type" => "integer", "minimum" => 0},
+              "limit" => %{"type" => "integer", "minimum" => 1, "maximum" => 20},
               "off" => %{"type" => "integer", "minimum" => 0},
-              "match" => %{
-                "type" => "string",
-                "description" =>
-                  "Preferred. The exact substring expected at (sec, para, off) that should be deleted before `text` is inserted. Server computes the delete length from this string, so you never have to count characters yourself."
-              },
-              "len" => %{
-                "type" => "integer",
-                "minimum" => 0,
-                "description" =>
-                  "Legacy fallback. Number of Unicode grapheme clusters to delete. Ignored when `match` is provided. Counting Korean text or surrogate pairs by hand is error-prone — prefer `match`."
-              },
-              "text" => %{"type" => "string"},
-              "cell_path" => cell_path_schema(),
-              "base_revision" => %{"type" => "integer", "minimum" => 0}
+              "chars" => %{"type" => "integer", "minimum" => 1, "maximum" => 1_000},
+              "field_id" => %{"type" => "string", "minLength" => 1},
+              "row" => %{"type" => "integer", "minimum" => 0},
+              "col" => %{"type" => "integer", "minimum" => 0},
+              "row_from" => %{"type" => "integer", "minimum" => 0},
+              "row_limit" => %{"type" => "integer", "minimum" => 1, "maximum" => 3},
+              "col_from" => %{"type" => "integer", "minimum" => 0},
+              "col_limit" => %{"type" => "integer", "minimum" => 1, "maximum" => 3},
+              "control_index" => %{"type" => "integer", "minimum" => 0}
             },
-            ["sec", "para", "off", "text"]
+            []
           )
       },
       %{
-        "name" => "doc.insert_block",
+        "name" => "doc.edit",
         "description" =>
-          "Insert a new block (paragraph, heading, list_item, or table) at sec:para. For heading, pass `level` 1–6. For table, pass `rows`/`cols` (and optional `header_row_count`) instead of `text`.",
+          "Unified mutation tool. Shape: `{op, target, text?, block?, base_revision?}`. `op` is one of `replace_text`, `insert_block`, `delete_block`; omitted `op` defaults to `replace_text`. `target.type` selects the IR target shape. Text targets: paragraph `{type: \"paragraph\", sec, para, off, match? | len?}` or cell `{type: \"cell\", sec, para, cell_path, off, match? | len?}`. For table cells, use the `target` returned by `doc.read` or a cell hit from `doc.find`. Block targets are paragraph-only `{type: \"block\", sec, para}` with `block: {kind: \"paragraph\" | \"heading\" | \"list_item\", text?, level?}` for `insert_block`, or no block for `delete_block`. table structure edits are not currently supported and fail closed until the projection can materialize row/column changes. `replace_text.text` and `insert_block.block.text` are single-paragraph strings; line breaks are rejected. For multi-paragraph drafting, call `insert_block` once per paragraph and keep each block text newline-free. For text edits, STRONGLY PREFER `match` copied from doc.find/doc.read; replace the full exact existing value or paragraph, not only a label prefix. Pin `base_revision` to the value last seen.",
         "inputSchema" =>
           object_schema(
             %{
-              "sec" => %{"type" => "integer", "minimum" => 0},
-              "para" => %{"type" => "integer", "minimum" => 0},
-              "kind" => %{
-                "type" => "string",
-                "enum" => ["paragraph", "heading", "list_item", "table"]
-              },
-              "text" => %{"type" => "string"},
-              "level" => %{"type" => "integer", "minimum" => 1, "maximum" => 6},
-              "rows" => %{"type" => "integer", "minimum" => 1},
-              "cols" => %{"type" => "integer", "minimum" => 1},
-              "header_row_count" => %{"type" => "integer", "minimum" => 0},
-              "base_revision" => %{"type" => "integer", "minimum" => 0}
-            },
-            ["sec", "para", "kind"]
-          )
-      },
-      %{
-        "name" => "doc.delete_block",
-        "description" =>
-          "Delete the block (paragraph, heading, list_item, or table) at sec:para.",
-        "inputSchema" =>
-          object_schema(
-            %{
-              "sec" => %{"type" => "integer", "minimum" => 0},
-              "para" => %{"type" => "integer", "minimum" => 0},
-              "base_revision" => %{"type" => "integer", "minimum" => 0}
-            },
-            ["sec", "para"]
-          )
-      },
-      %{
-        "name" => "doc.edit_table",
-        "description" =>
-          "Structural table edits: insert or delete a row or column. For cell text edits use doc.edit_text with cell_path instead.",
-        "inputSchema" =>
-          object_schema(
-            %{
-              "sec" => %{"type" => "integer", "minimum" => 0},
-              "para" => %{"type" => "integer", "minimum" => 0},
-              "control_index" => %{"type" => "integer", "minimum" => 0},
               "op" => %{
                 "type" => "string",
-                "enum" => ["row_insert", "row_delete", "col_insert", "col_delete"]
+                "enum" => ["replace_text", "insert_block", "delete_block"]
               },
-              "at_row" => %{"type" => "integer", "minimum" => 0},
-              "at_col" => %{"type" => "integer", "minimum" => 0},
+              "target" => edit_target_schema(),
+              "block" => edit_block_schema(),
+              "text" => %{"type" => "string"},
               "base_revision" => %{"type" => "integer", "minimum" => 0}
             },
-            ["sec", "para", "op"]
-          )
-      },
-      %{
-        "name" => "doc.set_field_value",
-        "description" =>
-          "Set the value of a tracked field (slot) by its field id from doc.get's `f` list. For any slot-like date/period edit where a field id exists, prefer this over `doc.edit_text`. Server lowers to the right text edit using the field's tracked position.",
-        "inputSchema" =>
-          object_schema(
-            %{
-              "id" => string_schema(),
-              "value" => %{"type" => "string"},
-              "base_revision" => %{"type" => "integer", "minimum" => 0}
-            },
-            ["id", "value"]
+            ["target"]
           )
       }
     ]
+  end
+
+  defp edit_target_schema do
+    %{
+      "type" => "object",
+      "properties" => %{
+        "type" => %{"type" => "string", "enum" => ["paragraph", "cell", "block"]},
+        "sec" => %{"type" => "integer", "minimum" => 0},
+        "para" => %{"type" => "integer", "minimum" => 0},
+        "off" => %{"type" => "integer", "minimum" => 0},
+        "match" => %{
+          "type" => "string",
+          "description" =>
+            "Preferred. The exact substring expected at the target offset that should be deleted before `text` is inserted."
+        },
+        "len" => %{
+          "type" => "integer",
+          "minimum" => 0,
+          "description" => "Fallback delete length. Ignored when `match` is provided."
+        },
+        "cell_path" => cell_path_schema()
+      },
+      "required" => ["type", "sec", "para"]
+    }
+  end
+
+  defp edit_block_schema do
+    %{
+      "type" => "object",
+      "properties" => %{
+        "kind" => %{
+          "type" => "string",
+          "enum" => ["paragraph", "heading", "list_item"]
+        },
+        "text" => %{"type" => "string"},
+        "level" => %{"type" => "integer", "minimum" => 1, "maximum" => 6}
+      }
+    }
   end
 
   defp cell_path_schema do
@@ -191,139 +167,6 @@ defmodule Contract.MCP do
       }
     }
   end
-
-  defp legacy_expanded_tool_descriptors do
-    [
-      %{
-        "name" => "document.open",
-        "description" => "Open a document and return its current state projection.",
-        "inputSchema" => object_schema(%{"document_id" => string_schema()}, ["document_id"])
-      },
-      %{
-        "name" => "document.read",
-        "description" =>
-          "Read a document MCP resource such as state, outline, nodes, fields, changes, revokes, or marks.",
-        "inputSchema" =>
-          object_schema(%{"document_id" => string_schema(), "resource" => string_schema()}, [
-            "document_id"
-          ])
-      },
-      %{
-        "name" => "document.search",
-        "description" => "Search documents visible to the current owner scope.",
-        "inputSchema" =>
-          object_schema(%{"query" => string_schema(), "limit" => integer_schema(1, 100)}, [
-            "query"
-          ])
-      },
-      %{
-        "name" => "document.submit_command",
-        "description" =>
-          "Normalize arguments into a Contract.Command and submit through Runtime.",
-        "inputSchema" => object_schema(%{"command" => %{"type" => "object"}}, ["command"])
-      },
-      %{
-        "name" => "document.revoke_change",
-        "description" => "Emit a revoke_change Command for a document change.",
-        "inputSchema" =>
-          object_schema(%{"document_id" => string_schema(), "change_id" => string_schema()}, [
-            "document_id",
-            "change_id"
-          ])
-      },
-      %{
-        "name" => "source_document.read",
-        "description" => "Read an owner-scoped source document resource.",
-        "inputSchema" =>
-          object_schema(%{"source_document_id" => string_schema()}, ["source_document_id"])
-      },
-      %{
-        "name" => "source_document.search_regions",
-        "description" => "Search parsed source document regions by text.",
-        "inputSchema" =>
-          object_schema(%{"source_document_id" => string_schema(), "query" => string_schema()}, [
-            "source_document_id",
-            "query"
-          ])
-      },
-      %{
-        "name" => "source_document.propose_claims",
-        "description" =>
-          "Request source-claim proposal for a source document when the source pipeline is available.",
-        "inputSchema" =>
-          object_schema(%{"source_document_id" => string_schema()}, ["source_document_id"])
-      },
-      source_claim_tool(
-        "source_document.confirm_claim",
-        "Confirm a proposed source claim.",
-        "source_claim_confirm"
-      ),
-      source_claim_tool(
-        "source_document.correct_claim",
-        "Correct a proposed source claim.",
-        "source_claim_correct"
-      ),
-      source_claim_tool(
-        "source_document.reject_claim",
-        "Reject a proposed source claim.",
-        "source_claim_reject"
-      ),
-      source_claim_tool(
-        "source_document.link_claim_to_document",
-        "Link a source claim to a working document.",
-        "source_claim_link_to_document"
-      ),
-      %{
-        "name" => "law.search",
-        "description" => "Search legal provider records.",
-        "inputSchema" =>
-          object_schema(%{"query" => string_schema(), "limit" => integer_schema(1, 50)}, ["query"])
-      },
-      %{
-        "name" => "law.get_text",
-        "description" => "Fetch full law text from the legal provider.",
-        "inputSchema" => object_schema(%{"law_ref" => string_schema()}, ["law_ref"])
-      },
-      %{
-        "name" => "law.search_precedents",
-        "description" => "Search precedent records through the legal provider.",
-        "inputSchema" =>
-          object_schema(%{"query" => string_schema(), "limit" => integer_schema(1, 50)}, ["query"])
-      },
-      %{
-        "name" => "law.verify_citation",
-        "description" => "Verify legal citations through the legal provider.",
-        "inputSchema" => object_schema(%{"citation" => string_schema()}, ["citation"])
-      },
-      %{
-        "name" => "evidence.attach_mark",
-        "description" =>
-          "Attach a mark to a legal evidence snapshot by emitting an add_mark Command.",
-        "inputSchema" =>
-          object_schema(
-            %{
-              "evidence_id" => string_schema(),
-              "document_id" => string_schema(),
-              "text" => string_schema()
-            },
-            ["evidence_id", "text"]
-          )
-      },
-      %{
-        "name" => "collab.ask_user",
-        "description" =>
-          "Request user clarification through a collaboration channel when available.",
-        "inputSchema" => object_schema(%{"prompt" => string_schema()}, ["prompt"])
-      },
-      %{
-        "name" => "collab.fetch_slack_context",
-        "description" => "Fetch Slack thread context when Slack integration is available.",
-        "inputSchema" => object_schema(%{"thread_id" => string_schema()}, ["thread_id"])
-      }
-    ]
-  end
-
-  @document_resource_kinds ["state", "outline", "nodes", "fields", "changes", "revokes", "marks"]
 
   # MCP protocol versions we implement. We speak Streamable HTTP
   # (single `/mcp` POST endpoint, SSE-or-JSON response framing), which
@@ -370,57 +213,20 @@ defmodule Contract.MCP do
   @doc "Returns the complete MCP tools/list payload."
   def list_tools(_ctx, _route_ref), do: %{"tools" => Gateway.tools_descriptor()}
 
-  @doc "Returns concrete resources visible to the current owner scope."
-  def list_resources(%Context{} = ctx, _route_ref) do
-    resources =
-      document_resources(ctx) ++ source_document_resources(ctx) ++ evidence_resources(ctx)
-
-    %{"resources" => resources}
-  end
+  @doc "Resources were pruned with the legacy DB-backed MCP surface."
+  def list_resources(%Context{}, _route_ref), do: %{"resources" => []}
 
   def list_resources(_ctx, _route_ref), do: %{"resources" => []}
 
-  @doc "Reads a concrete MCP resource URI."
-  def read_resource(%Context{} = ctx, route_ref, uri) when is_binary(uri) do
-    cond do
-      String.starts_with?(uri, "source_document://") ->
-        with {:ok, id, path} <- parse_custom_uri(uri, "source_document://") do
-          read_source_resource(ctx, route_ref, id, path, uri)
-        end
-
-      String.starts_with?(uri, "chat_thread://") ->
-        {:error, {:not_available, "chat_thread resources are not implemented yet"}}
-
-      String.starts_with?(uri, "tool_call://") ->
-        {:error, {:not_available, "tool_call resources are not implemented yet"}}
-
-      true ->
-        case URI.parse(uri) do
-          %URI{scheme: "document", host: document_id, path: path} when is_binary(document_id) ->
-            read_document_resource(ctx, route_ref, document_id, normalize_path(path), uri)
-
-          %URI{scheme: "evidence", host: evidence_id, path: path} when is_binary(evidence_id) ->
-            read_evidence_resource(ctx, route_ref, evidence_id, normalize_path(path), uri)
-
-          %URI{scheme: "export"} ->
-            {:error, {:not_available, "export resources are not implemented yet"}}
-
-          _ ->
-            {:error, :invalid_uri}
-        end
-    end
-  end
+  @doc "Resource reads were pruned with the legacy DB-backed MCP surface."
+  def read_resource(%Context{}, _route_ref, uri) when is_binary(uri), do: {:error, :invalid_uri}
 
   def read_resource(_ctx, _route_ref, _uri), do: {:error, :invalid_uri}
 
   @doc "Calls an MCP tool by name. Mutating document tools emit Commands."
 
-  # --- agent-facing doc.* tools (6-tool MVP) --------------------------------
-  # Real handlers for doc.get + doc.edit_text land in #116 (the vertical
-  # slice). The remaining four stay stubbed until #120.
+  # --- agent-facing doc.* tools ---------------------------------------------
   def call_tool(%Context{} = ctx, route_ref, "doc.get" = tool, args) do
-    route_ref = resolve_agent_run_id(route_ref, args)
-
     instrumented(route_ref, tool, args, fn ->
       with :ok <- authorize_doc_mcp(route_ref),
            {:ok, document_id} <- resolve_document_id(route_ref, args),
@@ -434,7 +240,7 @@ defmodule Contract.MCP do
             {:ok, %{"ok" => true, "unchanged" => true, "revision" => state.revision}}
 
           true ->
-            build_doc_get_response(state)
+            build_doc_get_response(state, args)
         end
       end
     end)
@@ -443,8 +249,6 @@ defmodule Contract.MCP do
   def call_tool(_ctx, _route_ref, "doc.get", _args), do: {:error, :forbidden}
 
   def call_tool(%Context{} = ctx, route_ref, "doc.find" = tool, args) do
-    route_ref = resolve_agent_run_id(route_ref, args)
-
     instrumented(route_ref, tool, args, fn ->
       with :ok <- authorize_doc_mcp(route_ref),
            {:ok, document_id} <- resolve_document_id(route_ref, args),
@@ -466,14 +270,12 @@ defmodule Contract.MCP do
   def call_tool(_ctx, _route_ref, "doc.find", _args), do: {:error, :forbidden}
 
   def call_tool(%Context{} = ctx, route_ref, "doc.read" = tool, args) do
-    route_ref = resolve_agent_run_id(route_ref, args)
-
     instrumented(route_ref, tool, args, fn ->
       with :ok <- authorize_doc_mcp(route_ref),
            {:ok, document_id} <- resolve_document_id(route_ref, args),
            :ok <- authorize_route_ref_strict(route_ref, document_id),
            :ok <- Gateway.authorize_document(ctx, document_id),
-           {:ok, sec} <- fetch_required_int(args, "sec"),
+           {:ok, sec} <- read_sec(args),
            {:ok, %Runtime.State{} = state} <- Runtime.load(ctx, document_id) do
         opts =
           []
@@ -481,295 +283,72 @@ defmodule Contract.MCP do
           |> maybe_put_opt(:from, fetch_int(args, "from"))
           |> maybe_put_opt(:to, fetch_int(args, "to"))
           |> maybe_put_opt(:limit, fetch_int(args, "limit"))
+          |> maybe_put_opt(:off, fetch_int(args, "off"))
+          |> maybe_put_opt(:chars, fetch_int(args, "chars"))
+          |> maybe_put_opt(:field_id, fetch_string(args, "field_id"))
+          |> maybe_put_opt(:row, fetch_int(args, "row"))
+          |> maybe_put_opt(:col, fetch_int(args, "col"))
+          |> maybe_put_opt(:row_from, fetch_int(args, "row_from"))
+          |> maybe_put_opt(:row_limit, fetch_int(args, "row_limit"))
+          |> maybe_put_opt(:col_from, fetch_int(args, "col_from"))
+          |> maybe_put_opt(:col_limit, fetch_int(args, "col_limit"))
+          |> maybe_put_opt(:control_index, fetch_int(args, "control_index"))
 
-        %{paragraphs: paragraphs, next_para: next} =
-          Contract.MCP.Projection.read(state, sec, opts)
+        read = Contract.MCP.Projection.read(state, sec, opts)
 
-        payload =
-          %{
-            "ok" => true,
-            "revision" => state.revision,
-            "paragraphs" => paragraphs
-          }
-
-        payload = if is_nil(next), do: payload, else: Map.put(payload, "next_para", next)
-        {:ok, payload}
+        {:ok,
+         %{
+           "ok" => true,
+           "revision" => state.revision,
+           "read" => read
+         }}
       end
     end)
   end
 
   def call_tool(_ctx, _route_ref, "doc.read", _args), do: {:error, :forbidden}
 
-  def call_tool(%Context{} = ctx, route_ref, "doc.edit_text" = tool, args) do
-    route_ref = resolve_agent_run_id(route_ref, args)
-
+  def call_tool(%Context{} = ctx, route_ref, "doc.edit" = tool, args) do
     instrumented(route_ref, tool, args, fn ->
       with :ok <- authorize_doc_mcp(route_ref),
            {:ok, document_id} <- resolve_document_id(route_ref, args),
            :ok <- authorize_route_ref_strict(route_ref, document_id),
            :ok <- Gateway.authorize_document(ctx, document_id),
            {:ok, %Runtime.State{} = state} <- Runtime.load(ctx, document_id) do
-        case existing_mcp_change(route_ref, document_id, args, "edit_text") do
+        case existing_mcp_change(route_ref, document_id, args, "edit") do
           {:ok, payload} ->
             {:ok, payload}
 
           :miss ->
-            with :ok <- Contract.MCP.Projection.validate_text_edit_basis(state),
-                 {:ok, ops} <- edit_text_ops(args, state) do
-              submit_edit_text(ctx, route_ref, document_id, args, ops, "edit_text")
+            with {:ok, ops} <- edit_ops(args, state),
+                 :ok <- Contract.MCP.Projection.validate_text_edit_basis(state, ops) do
+              submit_edit_text(ctx, route_ref, document_id, args, ops, "edit")
             end
         end
       end
     end)
   end
 
-  def call_tool(_ctx, _route_ref, "doc.edit_text", _args), do: {:error, :forbidden}
-
-  def call_tool(%Context{} = ctx, route_ref, "doc.insert_block" = tool, args) do
-    route_ref = resolve_agent_run_id(route_ref, args)
-
-    instrumented(route_ref, tool, args, fn ->
-      with :ok <- authorize_doc_mcp(route_ref),
-           {:ok, document_id} <- resolve_document_id(route_ref, args),
-           :ok <- authorize_route_ref_strict(route_ref, document_id),
-           {:ok, ops} <- insert_block_ops(args) do
-        submit_edit_text(ctx, route_ref, document_id, args, ops, "insert_block")
-      end
-    end)
-  end
-
-  def call_tool(_ctx, _route_ref, "doc.insert_block", _args), do: {:error, :forbidden}
-
-  def call_tool(%Context{} = ctx, route_ref, "doc.delete_block" = tool, args) do
-    route_ref = resolve_agent_run_id(route_ref, args)
-
-    instrumented(route_ref, tool, args, fn ->
-      with :ok <- authorize_doc_mcp(route_ref),
-           {:ok, document_id} <- resolve_document_id(route_ref, args),
-           :ok <- authorize_route_ref_strict(route_ref, document_id),
-           {:ok, ops} <- delete_block_ops(args) do
-        submit_edit_text(ctx, route_ref, document_id, args, ops, "delete_block")
-      end
-    end)
-  end
-
-  def call_tool(_ctx, _route_ref, "doc.delete_block", _args), do: {:error, :forbidden}
-
-  def call_tool(%Context{} = ctx, route_ref, "doc.edit_table" = tool, args) do
-    route_ref = resolve_agent_run_id(route_ref, args)
-
-    instrumented(route_ref, tool, args, fn ->
-      with :ok <- authorize_doc_mcp(route_ref),
-           {:ok, document_id} <- resolve_document_id(route_ref, args),
-           :ok <- authorize_route_ref_strict(route_ref, document_id),
-           {:ok, ops} <- edit_table_ops(args) do
-        submit_edit_text(ctx, route_ref, document_id, args, ops, "edit_table")
-      end
-    end)
-  end
-
-  def call_tool(_ctx, _route_ref, "doc.edit_table", _args), do: {:error, :forbidden}
-
-  def call_tool(%Context{} = ctx, route_ref, "doc.set_field_value" = tool, args) do
-    route_ref = resolve_agent_run_id(route_ref, args)
-
-    instrumented(route_ref, tool, args, fn ->
-      with :ok <- authorize_doc_mcp(route_ref),
-           {:ok, document_id} <- resolve_document_id(route_ref, args),
-           :ok <- authorize_route_ref_strict(route_ref, document_id),
-           :ok <- Gateway.authorize_document(ctx, document_id),
-           {:ok, %Runtime.State{} = state} <- Runtime.load(ctx, document_id),
-           {:ok, ops} <- set_field_value_ops(args, state) do
-        submit_edit_text(ctx, route_ref, document_id, args, ops, "set_field_value")
-      end
-    end)
-  end
-
-  def call_tool(_ctx, _route_ref, "doc.set_field_value", _args), do: {:error, :forbidden}
-
-  def call_tool(ctx, route_ref, "document.open", args),
-    do: call_tool(ctx, route_ref, "document.read", args)
-
-  def call_tool(ctx, route_ref, "document.read", args) do
-    with {:ok, document_id} <- fetch_arg(args, "document_id"),
-         resource <- Map.get(args, "resource") || Map.get(args, :resource) || "state" do
-      read_resource(ctx, route_ref, "document://#{document_id}/#{resource}")
-    end
-  end
-
-  def call_tool(%Context{} = ctx, _route_ref, "document.search", args) do
-    query = Map.get(args, "query") || Map.get(args, :query)
-    limit = normalize_limit(Map.get(args, "limit") || Map.get(args, :limit), 20)
-
-    if is_binary(query) and query != "" do
-      results =
-        ctx
-        |> Documents.search(query, limit)
-        |> Enum.map(fn doc ->
-          %{
-            "document_id" => doc.id,
-            "title" => doc.title,
-            "type_key" => doc.type_key,
-            "status" => atom_to_string(doc.status),
-            "latest_revision" => doc.latest_revision
-          }
-        end)
-
-      {:ok, %{"query" => query, "count" => length(results), "results" => results}}
-    else
-      {:error, :invalid_query}
-    end
-  end
-
-  def call_tool(%Context{} = ctx, route_ref, "document.submit_command", args) do
-    raw = Map.get(args, "command") || Map.get(args, :command) || args
-
-    with {:ok, command} <- build_command(ctx, route_ref, raw),
-         :ok <- authorize_command(ctx, route_ref, command),
-         {:ok, result} <- Runtime.apply(ctx, command) do
-      {:ok, render_result(result)}
-    end
-  end
-
-  def call_tool(ctx, route_ref, "document.revoke_change", args) do
-    raw =
-      args
-      |> Map.put_new("kind", "revoke_change")
-      |> Map.put_new("command", nil)
-
-    command_args = Map.get(args, "command") || Map.get(args, :command) || raw
-    call_tool(ctx, route_ref, "document.submit_command", %{"command" => command_args})
-  end
-
-  def call_tool(ctx, route_ref, "source_document.read", args) do
-    with {:ok, id} <- fetch_arg(args, "source_document_id") do
-      read_resource(ctx, route_ref, "source_document://#{id}")
-    end
-  end
-
-  def call_tool(%Context{} = ctx, route_ref, "source_document.search_regions", args) do
-    with {:ok, id} <- fetch_arg(args, "source_document_id"),
-         {:ok, %SourceDocument{} = source} <- get_source_document(ctx, route_ref, id) do
-      query = String.downcase(to_string(Map.get(args, "query") || Map.get(args, :query) || ""))
-
-      regions =
-        source.regions
-        |> List.wrap()
-        |> Enum.filter(fn region ->
-          query == "" or String.contains?(String.downcase(inspect(region)), query)
-        end)
-
-      {:ok, %{"source_document_id" => id, "regions" => regions}}
-    end
-  end
-
-  def call_tool(ctx, route_ref, "source_document.propose_claims", args) do
-    with {:ok, id} <- fetch_arg(args, "source_document_id"),
-         {:ok, _source} <- get_source_document(ctx, route_ref, id) do
-      {:ok,
-       not_available(
-         "source_document.propose_claims",
-         "source interpretation pipeline is not available yet"
-       )}
-    end
-  end
-
-  def call_tool(ctx, route_ref, tool, args)
-      when tool in [
-             "source_document.confirm_claim",
-             "source_document.correct_claim",
-             "source_document.reject_claim",
-             "source_document.link_claim_to_document"
-           ] do
-    kind =
-      case tool do
-        "source_document.confirm_claim" -> "source_claim_confirm"
-        "source_document.correct_claim" -> "source_claim_correct"
-        "source_document.reject_claim" -> "source_claim_reject"
-        "source_document.link_claim_to_document" -> "source_claim_link_to_document"
-      end
-
-    raw = args |> Map.put("kind", kind)
-
-    with {:ok, command} <- build_command(ctx, route_ref, raw),
-         :ok <- authorize_command(ctx, route_ref, command),
-         {:ok, result} <- Runtime.apply(ctx, command) do
-      {:ok, render_result(result)}
-    end
-  end
-
-  def call_tool(ctx, _route_ref, "law.search", args) do
-    with {:ok, query} <- fetch_arg(args, "query") do
-      limit = normalize_limit(Map.get(args, "limit") || Map.get(args, :limit), 10)
-      Providers.search_law(ctx, query, limit: limit)
-    end
-  end
-
-  def call_tool(ctx, _route_ref, "law.get_text", args) do
-    with {:ok, law_ref} <- fetch_arg(args, "law_ref") do
-      Providers.get_law_text(ctx, law_ref, [])
-    end
-  end
-
-  def call_tool(ctx, _route_ref, "law.search_precedents", args) do
-    with {:ok, query} <- fetch_arg(args, "query") do
-      limit = normalize_limit(Map.get(args, "limit") || Map.get(args, :limit), 10)
-      Providers.search_precedents(ctx, query, limit: limit)
-    end
-  end
-
-  def call_tool(ctx, _route_ref, "law.verify_citation", args) do
-    citation = Map.get(args, "citation") || Map.get(args, :citation) || Map.get(args, "text")
-
-    if is_binary(citation) and citation != "" do
-      Providers.verify_citation(ctx, citation, [])
-    else
-      {:error, :invalid_text}
-    end
-  end
-
-  def call_tool(%Context{} = ctx, route_ref, "evidence.attach_mark", args) do
-    with {:ok, evidence_id} <- fetch_arg(args, "evidence_id"),
-         {:ok, %EvidenceSnapshot{} = evidence} <- get_evidence(ctx, route_ref, evidence_id) do
-      document_id =
-        Map.get(args, "document_id") || Map.get(args, :document_id) || evidence.document_id
-
-      text = Map.get(args, "text") || Map.get(args, :text) || "Evidence note"
-
-      command_args = %{
-        "kind" => "add_mark",
-        "document_id" => document_id,
-        "base_revision" => Map.get(args, "base_revision") || Map.get(args, :base_revision),
-        "idempotency_key" =>
-          Map.get(args, "idempotency_key") || "mcp-evidence-mark-#{evidence_id}",
-        "payload" => %{
-          "target_type" => "evidence",
-          "target_id" => evidence_id,
-          "intent" => Map.get(args, "intent") || "link",
-          "text" => text,
-          "data" => %{"evidence_id" => evidence_id}
-        }
-      }
-
-      call_tool(ctx, route_ref, "document.submit_command", %{"command" => command_args})
-    end
-  end
-
-  def call_tool(_ctx, _route_ref, "collab.ask_user", _args),
-    do:
-      {:ok,
-       not_available("collab.ask_user", "collaboration prompt delivery is not available yet")}
-
-  def call_tool(_ctx, _route_ref, "collab.fetch_slack_context", _args),
-    do: {:ok, not_available("collab.fetch_slack_context", "Slack context is not available yet")}
+  def call_tool(_ctx, _route_ref, "doc.edit", _args), do: {:error, :forbidden}
 
   def call_tool(_ctx, _route_ref, tool, _args), do: {:error, {:unknown_tool, tool}}
 
-  # Agent-facing doc.get response. The compact IR is inline because the
-  # hosted MCP tool call result is the model context; the model does not
-  # get a general-purpose HTTP fetch just because a tool returns a URL.
-  defp build_doc_get_response(%Runtime.State{} = state) do
+  # Agent-facing doc.get response. The full projection is loaded only to
+  # derive metadata, counts, outline, and field read hints; paragraph bodies,
+  # field values, table cells, and IR blobs stay behind doc.read/doc.find.
+  defp build_doc_get_response(%Runtime.State{} = state, args) do
     ir = Contract.MCP.Projection.to_agent_ir(state)
+    outline = Contract.MCP.Projection.outline(ir)
+    fields = compact_fields(ir["fields"] || [])
+    outline_from = fetch_int(args, "outline_from") || 0
+    outline_limit = fetch_int(args, "outline_limit") || @doc_get_outline_default
+    field_from = fetch_int(args, "field_from") || 0
+    field_limit = fetch_int(args, "field_limit") || @doc_get_field_default
+
+    {outline_page, outline_next} =
+      page_slice(outline, outline_from, outline_limit, @doc_get_outline_default)
+
+    {field_page, field_next} = page_slice(fields, field_from, field_limit, @doc_get_field_default)
 
     {:ok,
      %{
@@ -779,277 +358,92 @@ defmodule Contract.MCP do
        "t" => ir["contract_type"],
        "counts" => %{
          "sec" => length(ir["sections"] || []),
-         "para" => Contract.MCP.Projection.paragraph_count(ir)
+         "para" => Contract.MCP.Projection.paragraph_count(ir),
+         "outline" => length(outline),
+         "fields" => length(fields)
        },
-       "outline" => Contract.MCP.Projection.outline(ir),
-       "f" => compact_fields(ir["fields"] || [])
+       "outline" => outline_page,
+       "f" => field_page,
+       "cursors" =>
+         compact(%{
+           "outline" => cursor_from(outline_next),
+           "fields" => cursor_from(field_next)
+         }),
+       "read" => read_capabilities()
      }}
   end
 
   defp compact_fields(fields) when is_list(fields) do
     Enum.map(fields, fn f ->
-      [f["id"], f["label"], f["kind"], f["value"] || ""]
+      [f["id"], f["label"], f["kind"], field_read_hint(f["position"] || %{})]
     end)
   end
 
   defp compact_fields(_), do: []
 
-  defp read_document_resource(ctx, route_ref, document_id, kind, uri)
-       when kind in @document_resource_kinds do
-    with :ok <- authorize_route_ref(route_ref, document_id),
-         :ok <- Gateway.authorize_document(ctx, document_id),
-         {:ok, state} <- Runtime.load(ctx, document_id),
-         {:ok, body} <- document_resource_body(ctx, state, kind) do
-      {:ok, resource_contents(uri, body)}
+  defp page_slice(items, from, limit, default_limit) when is_list(items) do
+    from = max(from || 0, 0)
+    limit = limit |> bounded_limit(default_limit, @doc_get_max_page)
+    page = Enum.slice(items, from, limit)
+    next = from + length(page)
+    next = if next < length(items), do: next, else: nil
+    {page, next}
+  end
+
+  defp cursor_from(nil), do: nil
+  defp cursor_from(from), do: %{"from" => from}
+
+  defp bounded_limit(value, default, max_value) do
+    cond do
+      not is_integer(value) -> default
+      value < 1 -> default
+      true -> min(value, max_value)
     end
   end
 
-  defp read_document_resource(_ctx, _route_ref, _document_id, _kind, _uri),
-    do: {:error, :invalid_uri}
-
-  defp document_resource_body(_ctx, %Runtime.State{} = state, "state") do
-    {:ok,
-     %{
-       "document_id" => state.document_id,
-       "revision" => state.revision,
-       "projection" => state.projection
-     }}
-  end
-
-  defp document_resource_body(_ctx, %Runtime.State{} = state, "outline"),
-    do:
-      {:ok,
-       %{"document_id" => state.document_id, "outline" => get_projection(state, :outline, [])}}
-
-  defp document_resource_body(_ctx, %Runtime.State{} = state, "nodes"),
-    do: {:ok, %{"document_id" => state.document_id, "nodes" => get_projection(state, :nodes, [])}}
-
-  defp document_resource_body(_ctx, %Runtime.State{} = state, "fields"),
-    do:
-      {:ok,
-       %{"document_id" => state.document_id, "fields" => get_projection(state, :fields, %{})}}
-
-  defp document_resource_body(_ctx, %Runtime.State{} = state, "marks") do
-    marks = state.projection |> Map.get(:marks, %{}) |> map_values()
-    {:ok, %{"document_id" => state.document_id, "marks" => marks}}
-  end
-
-  defp document_resource_body(ctx, %Runtime.State{} = state, "changes") do
-    with {:ok, changes} <- Runtime.sync_since(ctx, state.document_id, 0) do
-      {:ok,
-       %{"document_id" => state.document_id, "changes" => Enum.map(changes, &render_change/1)}}
-    end
-  end
-
-  defp document_resource_body(ctx, %Runtime.State{} = state, "revokes") do
-    with {:ok, changes} <- Runtime.sync_since(ctx, state.document_id, 0) do
-      revokes =
-        Enum.filter(
-          changes,
-          &(&1.status in [:revoked, :partially_revoked] or
-              &1.command_kind in ["revoke_change", "resolve_revoke"])
-        )
-
-      {:ok,
-       %{"document_id" => state.document_id, "revokes" => Enum.map(revokes, &render_change/1)}}
-    end
-  end
-
-  defp read_source_resource(ctx, route_ref, id, kind, uri) do
-    with {:ok, source} <- get_source_document(ctx, route_ref, id),
-         {:ok, body} <- source_resource_body(source, kind) do
-      {:ok, resource_contents(uri, body)}
-    end
-  end
-
-  defp source_resource_body(%SourceDocument{} = source, "") do
-    {:ok,
-     %{
-       "id" => source.id,
-       "document_id" => source.document_id,
-       "chat_thread_id" => source.chat_thread_id,
-       "mime_type" => source.mime_type,
-       "original_filename" => source.original_filename,
-       "status" => source.status,
-       "regions" => source.regions
-     }}
-  end
-
-  defp source_resource_body(%SourceDocument{} = source, "regions"),
-    do: {:ok, %{"source_document_id" => source.id, "regions" => source.regions || []}}
-
-  defp source_resource_body(%SourceDocument{} = source, "claims") do
-    claims = Repo.all(from c in SourceClaim, where: c.source_document_id == ^source.id)
-
-    {:ok,
-     %{"source_document_id" => source.id, "claims" => Enum.map(claims, &render_source_claim/1)}}
-  rescue
-    _ -> {:ok, %{"source_document_id" => source.id, "claims" => []}}
-  end
-
-  defp source_resource_body(%SourceDocument{} = source, "links") do
-    claims =
-      Repo.all(
-        from c in SourceClaim,
-          where: c.source_document_id == ^source.id and not is_nil(c.linked_document_id)
-      )
-
-    {:ok,
-     %{"source_document_id" => source.id, "links" => Enum.map(claims, &render_source_claim/1)}}
-  rescue
-    _ -> {:ok, %{"source_document_id" => source.id, "links" => []}}
-  end
-
-  defp source_resource_body(_source, _kind), do: {:error, :invalid_uri}
-
-  defp read_evidence_resource(ctx, route_ref, id, kind, uri) do
-    with {:ok, evidence} <- get_evidence(ctx, route_ref, id),
-         {:ok, body} <- evidence_resource_body(evidence, kind) do
-      {:ok, resource_contents(uri, body)}
-    end
-  end
-
-  defp evidence_resource_body(%EvidenceSnapshot{} = evidence, "") do
-    {:ok,
-     %{
-       "id" => evidence.id,
-       "document_id" => evidence.document_id,
-       "source_document_id" => evidence.source_document_id,
-       "provider" => evidence.provider,
-       "query" => evidence.query,
-       "result" => evidence.result,
-       "captured_at" => evidence.captured_at
-     }}
-  end
-
-  defp evidence_resource_body(%EvidenceSnapshot{} = evidence, "raw"),
-    do: {:ok, %{"evidence_id" => evidence.id, "result" => evidence.result}}
-
-  defp evidence_resource_body(%EvidenceSnapshot{} = evidence, "citation"),
-    do:
-      {:ok,
-       %{"evidence_id" => evidence.id, "citation" => Map.get(evidence.result || %{}, "citation")}}
-
-  defp evidence_resource_body(%EvidenceSnapshot{} = evidence, "links") do
-    {:ok,
-     %{
-       "evidence_id" => evidence.id,
-       "document_id" => evidence.document_id,
-       "source_document_id" => evidence.source_document_id,
-       "chat_thread_id" => evidence.chat_thread_id
-     }}
-  end
-
-  defp evidence_resource_body(_evidence, _kind), do: {:error, :invalid_uri}
-
-  defp document_resources(%Context{} = ctx) do
-    ctx
-    |> Documents.list_recent_for_scope(limit: 50)
-    |> Enum.flat_map(fn doc ->
-      Enum.map(@document_resource_kinds, fn kind ->
-        %{
-          "uri" => "document://#{doc.id}/#{kind}",
-          "name" => "#{doc.title || doc.id} #{kind}",
-          "description" => "Document #{kind} resource",
-          "mimeType" => "application/json"
-        }
-      end)
-    end)
-  end
-
-  defp source_document_resources(%Context{user: %{id: owner_id}}) do
-    Repo.all(from s in SourceDocument, where: s.owner_id == ^owner_id, limit: 50)
-    |> Enum.flat_map(fn source ->
-      base = %{
-        "uri" => "source_document://#{source.id}",
-        "name" => source.original_filename || source.id,
-        "description" => "Source document",
-        "mimeType" => "application/json"
+  defp read_capabilities do
+    %{
+      "paragraph_window" => %{
+        "args" => ["sec", "from", "to?", "limit?"],
+        "default_limit" => 3
+      },
+      "paragraph" => %{
+        "args" => ["sec", "para", "off?", "chars?"],
+        "default_chars" => 400
+      },
+      "field" => %{
+        "args" => ["field_id", "off?", "chars?"],
+        "default_chars" => 400
+      },
+      "table_window" => %{
+        "args" => ["sec", "para", "row_from?", "row_limit?", "col_from?", "col_limit?"],
+        "default_rows" => 2,
+        "default_cols" => 2
+      },
+      "cell" => %{
+        "args" => ["sec", "para", "row", "col", "off?", "chars?"],
+        "default_chars" => 400
       }
-
-      children =
-        Enum.map(["regions", "claims", "links"], fn kind ->
-          %{
-            "uri" => "source_document://#{source.id}/#{kind}",
-            "name" => "#{source.original_filename || source.id} #{kind}",
-            "description" => "Source document #{kind}",
-            "mimeType" => "application/json"
-          }
-        end)
-
-      [base | children]
-    end)
-  rescue
-    _ -> []
+    }
   end
 
-  defp source_document_resources(_ctx), do: []
+  defp field_read_hint(pos) when is_map(pos) do
+    sec = Map.get(pos, "sec") || Map.get(pos, :sec)
 
-  defp evidence_resources(%Context{user: %{id: owner_id}}) do
-    Repo.all(from e in EvidenceSnapshot, where: e.owner_id == ^owner_id, limit: 50)
-    |> Enum.flat_map(fn evidence ->
-      base = %{
-        "uri" => "evidence://#{evidence.id}",
-        "name" => "Evidence #{evidence.provider || evidence.id}",
-        "description" => "Evidence snapshot",
-        "mimeType" => "application/json"
-      }
+    para =
+      Map.get(pos, "parent_para") || Map.get(pos, :parent_para) || Map.get(pos, "para") ||
+        Map.get(pos, :para)
 
-      children =
-        Enum.map(["raw", "citation", "links"], fn kind ->
-          %{
-            "uri" => "evidence://#{evidence.id}/#{kind}",
-            "name" => "Evidence #{kind}",
-            "description" => "Evidence #{kind}",
-            "mimeType" => "application/json"
-          }
-        end)
-
-      [base | children]
-    end)
-  rescue
-    _ -> []
+    compact(%{
+      "sec" => sec,
+      "para" => para,
+      "off_start" => Map.get(pos, "off_start") || Map.get(pos, :off_start),
+      "off_end" => Map.get(pos, "off_end") || Map.get(pos, :off_end),
+      "cell_path" => Map.get(pos, "cell_path") || Map.get(pos, :cell_path)
+    })
   end
 
-  defp evidence_resources(_ctx), do: []
-
-  defp get_source_document(%Context{user: %{id: owner_id}}, route_ref, id) do
-    case Repo.get(SourceDocument, id) do
-      %SourceDocument{owner_id: ^owner_id} = source ->
-        with :ok <- authorize_route_ref(route_ref, source.document_id) do
-          {:ok, source}
-        end
-
-      %SourceDocument{} ->
-        {:error, :forbidden}
-
-      nil ->
-        {:error, :not_found}
-    end
-  rescue
-    Ecto.Query.CastError -> {:error, :not_found}
-  end
-
-  defp get_source_document(_ctx, _route_ref, _id), do: {:error, :forbidden}
-
-  defp get_evidence(%Context{user: %{id: owner_id}}, route_ref, id) do
-    case Repo.get(EvidenceSnapshot, id) do
-      %EvidenceSnapshot{owner_id: ^owner_id} = evidence ->
-        with :ok <- authorize_route_ref(route_ref, evidence.document_id) do
-          {:ok, evidence}
-        end
-
-      %EvidenceSnapshot{} ->
-        {:error, :forbidden}
-
-      nil ->
-        {:error, :not_found}
-    end
-  rescue
-    Ecto.Query.CastError -> {:error, :not_found}
-  end
-
-  defp get_evidence(_ctx, _route_ref, _id), do: {:error, :forbidden}
+  defp field_read_hint(_pos), do: %{}
 
   defp authorize_route_ref(nil, _document_id), do: :ok
   defp authorize_route_ref(%RouteRef{document_id: nil}, _document_id), do: :ok
@@ -1062,31 +456,7 @@ defmodule Contract.MCP do
          do: Gateway.authorize_document(ctx, document_id)
   end
 
-  defp authorize_command(ctx, route_ref, %Command{source_claim_id: claim_id})
-       when is_binary(claim_id) do
-    with {:ok, claim} <- get_source_claim(ctx, claim_id),
-         {:ok, _source} <- get_source_document(ctx, route_ref, claim.source_document_id) do
-      :ok
-    end
-  end
-
   defp authorize_command(_ctx, _route_ref, %Command{}), do: :ok
-
-  defp get_source_claim(%Context{user: %{id: owner_id}}, claim_id) do
-    case Repo.one(
-           from c in SourceClaim,
-             join: s in SourceDocument,
-             on: s.id == c.source_document_id,
-             where: c.id == ^claim_id and s.owner_id == ^owner_id
-         ) do
-      %SourceClaim{} = claim -> {:ok, claim}
-      nil -> {:error, :forbidden}
-    end
-  rescue
-    Ecto.Query.CastError -> {:error, :not_found}
-  end
-
-  defp get_source_claim(_ctx, _claim_id), do: {:error, :forbidden}
 
   defp build_command(%Context{} = ctx, nil, raw), do: build_command(ctx, %RouteRef{}, raw)
 
@@ -1098,11 +468,7 @@ defmodule Contract.MCP do
       chat_thread_id:
         Map.get(raw, "chat_thread_id") || Map.get(raw, :chat_thread_id) ||
           route_ref.chat_thread_id,
-      source_document_id: Map.get(raw, "source_document_id") || Map.get(raw, :source_document_id),
-      source_claim_id: Map.get(raw, "source_claim_id") || Map.get(raw, :source_claim_id),
-      change_id: Map.get(raw, "change_id") || Map.get(raw, :change_id),
-      agent_run_id:
-        Map.get(raw, "agent_run_id") || Map.get(raw, :agent_run_id) || route_ref.agent_run_id,
+      agent_run_id: route_ref_agent_run_id(route_ref),
       actor_type:
         parse_actor_type(Map.get(raw, "actor_type") || Map.get(raw, :actor_type) || "user"),
       actor_id: Map.get(raw, "actor_id") || Map.get(raw, :actor_id) || user_id(ctx),
@@ -1126,6 +492,11 @@ defmodule Contract.MCP do
 
   defp build_command(_ctx, _route_ref, _raw), do: {:error, :invalid_action_payload}
 
+  defp route_ref_agent_run_id(%RouteRef{agent_run_id: run_id}) when is_binary(run_id),
+    do: run_id
+
+  defp route_ref_agent_run_id(_route_ref), do: nil
+
   defp parse_command_kind(value), do: parse_enum(value, Ecto.Enum.values(Command, :kind))
   defp parse_actor_type(value), do: parse_enum(value, Ecto.Enum.values(Command, :actor_type))
 
@@ -1138,79 +509,6 @@ defmodule Contract.MCP do
   end
 
   defp parse_enum(_value, _allowed), do: nil
-
-  defp fetch_arg(args, key) do
-    case Map.get(args, key) || Map.get(args, String.to_atom(key)) do
-      value when is_binary(value) and value != "" -> {:ok, value}
-      _ -> {:error, :invalid_params}
-    end
-  end
-
-  defp normalize_limit(limit, _default) when is_integer(limit) and limit > 0 and limit <= 100,
-    do: limit
-
-  defp normalize_limit(limit, default) when is_binary(limit) do
-    case Integer.parse(limit) do
-      {n, ""} when n > 0 and n <= 100 -> n
-      _ -> default
-    end
-  end
-
-  defp normalize_limit(_, default), do: default
-
-  defp resource_contents(uri, body) do
-    %{
-      "contents" => [
-        %{
-          "uri" => uri,
-          "mimeType" => "application/json",
-          "text" => Jason.encode!(json_safe(body))
-        }
-      ]
-    }
-  end
-
-  defp render_result(%Change{} = change), do: render_change(change)
-
-  defp render_result(%Runtime.State{} = state),
-    do: %{
-      "document_id" => state.document_id,
-      "revision" => state.revision,
-      "projection" => state.projection
-    }
-
-  defp render_result(other), do: json_safe(other)
-
-  defp render_change(%Change{} = change) do
-    %{
-      "id" => change.id,
-      "document_id" => change.document_id,
-      "command_kind" => change.command_kind,
-      "base_revision" => change.base_revision,
-      "result_revision" => change.result_revision,
-      "status" => atom_to_string(change.status),
-      "actor_type" => atom_to_string(change.actor_type),
-      "actor_id" => change.actor_id,
-      "message" => change.message,
-      "inserted_at" => change.inserted_at
-    }
-  end
-
-  defp render_source_claim(%SourceClaim{} = claim) do
-    %{
-      "id" => claim.id,
-      "source_document_id" => claim.source_document_id,
-      "region_id" => claim.region_id,
-      "proposed_kind" => claim.proposed_kind,
-      "proposed_value" => claim.proposed_value,
-      "status" => claim.status,
-      "linked_document_id" => claim.linked_document_id,
-      "linked_node_id" => claim.linked_node_id
-    }
-  end
-
-  defp not_available(feature, reason),
-    do: %{"status" => "not_available", "feature" => feature, "reason" => reason}
 
   # --- agent doc.* helpers --------------------------------------------------
 
@@ -1325,22 +623,6 @@ defmodule Contract.MCP do
 
   defp check_run_alive(%RouteRef{
          agent_run_id: run_id,
-         agent_run_id_source: :client_arg,
-         user_id: user_id,
-         document_id: document_id
-       })
-       when is_binary(run_id) and is_binary(user_id) and is_binary(document_id) do
-    case AgentDocument.active_attempt(user_id, document_id) do
-      {:ok, %{run_id: ^run_id}} -> :ok
-      _ -> {:error, {:forbidden, :run_not_active}}
-    end
-  end
-
-  defp check_run_alive(%RouteRef{agent_run_id_source: :client_arg}),
-    do: {:error, {:forbidden, :run_not_active}}
-
-  defp check_run_alive(%RouteRef{
-         agent_run_id: run_id,
          user_id: user_id,
          document_id: document_id
        })
@@ -1399,32 +681,6 @@ defmodule Contract.MCP do
   defp actor_type_for(%RouteRef{agent_run_id: id}) when is_binary(id), do: "agent"
   defp actor_type_for(_), do: "user"
 
-  # Task #139/#181 — the route_ref bearer is deterministic per (user, doc,
-  # thread) and intentionally carries no agent_run_id, preserving hosted MCP
-  # tools/list caching across turns. Do not rebind nil bearers to the active
-  # attempt. A caller-supplied run id is only copied into the runtime struct so
-  # check_run_alive/1 can prove it belongs to this route_ref's user/document.
-  defp resolve_agent_run_id(%RouteRef{} = ref, args) do
-    cond do
-      is_binary(ref.agent_run_id) ->
-        ref
-
-      is_binary(requested_agent_run_id(args)) ->
-        %{ref | agent_run_id: requested_agent_run_id(args), agent_run_id_source: :client_arg}
-
-      true ->
-        ref
-    end
-  end
-
-  defp resolve_agent_run_id(other, _args), do: other
-
-  defp requested_agent_run_id(args) when is_map(args) do
-    Map.get(args, "agent_run_id") || Map.get(args, :agent_run_id)
-  end
-
-  defp requested_agent_run_id(_args), do: nil
-
   defp mcp_idempotency_key(nil, tool, args) do
     "mcp-#{tool}-#{:erlang.phash2(args)}-#{System.unique_integer([:positive])}"
   end
@@ -1460,6 +716,199 @@ defmodule Contract.MCP do
     }
   end
 
+  defp edit_ops(args, %Runtime.State{} = state) do
+    case edit_operation(args) do
+      "replace_text" ->
+        with {:ok, normalized_args} <- normalize_replace_text_args(args) do
+          edit_text_ops(normalized_args, state)
+        end
+
+      "insert_block" ->
+        with {:ok, normalized_args} <- normalize_insert_block_args(args) do
+          insert_block_ops(normalized_args)
+        end
+
+      "delete_block" ->
+        with {:ok, normalized_args} <- normalize_delete_block_args(args) do
+          with :ok <- validate_not_table_block_delete(state, normalized_args) do
+            delete_block_ops(normalized_args)
+          end
+        end
+
+      _ ->
+        {:error, {:invalid_params, "op must be replace_text, insert_block, or delete_block"}}
+    end
+  end
+
+  defp edit_operation(args) when is_map(args),
+    do: Map.get(args, "op") || Map.get(args, :op) || "replace_text"
+
+  defp edit_operation(_args), do: nil
+
+  defp validate_not_table_block_delete(%Runtime.State{} = state, args) do
+    sec = fetch_int(args, "sec")
+    para = fetch_int(args, "para")
+
+    case Contract.MCP.Projection.read(state, sec, para: para) do
+      %{"type" => "table_window"} ->
+        {:error,
+         {:not_supported,
+          "delete_block cannot delete table paragraphs until table structure projection is materialized"}}
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp normalize_replace_text_args(args) when is_map(args) do
+    target = Map.get(args, "target") || Map.get(args, :target)
+    text = Map.get(args, "text") || Map.get(args, :text) || ""
+
+    with {:ok, target} <- require_target(target),
+         {:ok, target_type} <- target_type(target),
+         {:ok, base} <- normalize_edit_target(target_type, target),
+         :ok <- validate_edit_text(text) do
+      {:ok,
+       base
+       |> Map.put("text", text)
+       |> maybe_put_from(args, "base_revision")
+       |> maybe_put_from(args, "document_id")}
+    end
+  end
+
+  defp normalize_replace_text_args(_args),
+    do: {:error, {:invalid_params, "target is required"}}
+
+  defp normalize_insert_block_args(args) when is_map(args) do
+    target = Map.get(args, "target") || Map.get(args, :target)
+    block = Map.get(args, "block") || Map.get(args, :block)
+
+    with {:ok, target} <- require_target(target),
+         :ok <- require_target_type(target, "block"),
+         {:ok, base} <- block_target_args(target),
+         {:ok, block} <- require_block(block) do
+      {:ok,
+       base
+       |> Map.merge(block)
+       |> maybe_put_from(args, "base_revision")
+       |> maybe_put_from(args, "document_id")}
+    end
+  end
+
+  defp normalize_insert_block_args(_args),
+    do: {:error, {:invalid_params, "target is required"}}
+
+  defp normalize_delete_block_args(args) when is_map(args) do
+    target = Map.get(args, "target") || Map.get(args, :target)
+
+    with {:ok, target} <- require_target(target),
+         :ok <- require_target_type(target, "block"),
+         {:ok, base} <- block_target_args(target) do
+      {:ok,
+       base
+       |> maybe_put_from(args, "base_revision")
+       |> maybe_put_from(args, "document_id")}
+    end
+  end
+
+  defp normalize_delete_block_args(_args),
+    do: {:error, {:invalid_params, "target is required"}}
+
+  defp require_target(target) when is_map(target), do: {:ok, target}
+  defp require_target(_target), do: {:error, {:invalid_params, "target is required"}}
+
+  defp require_target_type(target, type) do
+    case Map.get(target, "type") || Map.get(target, :type) do
+      ^type -> :ok
+      _ -> {:error, {:invalid_params, "target.type must be #{type}"}}
+    end
+  end
+
+  defp target_type(target) do
+    case Map.get(target, "type") || Map.get(target, :type) do
+      "paragraph" -> {:ok, "paragraph"}
+      "cell" -> {:ok, "cell"}
+      _ -> {:error, {:invalid_params, "target.type must be paragraph or cell"}}
+    end
+  end
+
+  defp block_target_args(target) do
+    sec = fetch_int(target, "sec")
+    para = fetch_int(target, "para")
+
+    cond do
+      is_nil(sec) or is_nil(para) ->
+        {:error, {:invalid_params, "target.sec and target.para are required"}}
+
+      true ->
+        {:ok, %{"sec" => sec, "para" => para}}
+    end
+  end
+
+  defp require_block(block) when is_map(block), do: {:ok, stringify_keys(block)}
+  defp require_block(_block), do: {:error, {:invalid_params, "block is required"}}
+
+  defp normalize_edit_target("paragraph", target) do
+    with {:ok, base} <- base_edit_target(target) do
+      {:ok, base |> maybe_put_from(target, "match") |> maybe_put_from(target, "len")}
+    end
+  end
+
+  defp normalize_edit_target("cell", target) do
+    cell_path = Map.get(target, "cell_path") || Map.get(target, :cell_path)
+
+    cond do
+      not is_list(cell_path) or cell_path == [] ->
+        {:error, {:invalid_params, "target.cell_path is required for cell edits"}}
+
+      true ->
+        with {:ok, base} <- base_edit_target(target) do
+          {:ok,
+           base
+           |> Map.put("cell_path", cell_path)
+           |> maybe_put_from(target, "match")
+           |> maybe_put_from(target, "len")}
+        end
+    end
+  end
+
+  defp base_edit_target(target) do
+    sec = fetch_int(target, "sec")
+    para = fetch_int(target, "para")
+    off = fetch_int(target, "off")
+
+    cond do
+      is_nil(sec) or is_nil(para) or is_nil(off) ->
+        {:error, {:invalid_params, "target.sec, target.para, target.off are required"}}
+
+      true ->
+        {:ok, %{"sec" => sec, "para" => para, "off" => off}}
+    end
+  end
+
+  defp validate_edit_text(text) when is_binary(text), do: :ok
+  defp validate_edit_text(_text), do: {:error, {:invalid_params, "text must be a string"}}
+
+  defp maybe_put_from(map, source, key) do
+    case Map.fetch(source, key) do
+      {:ok, value} ->
+        Map.put(map, key, value)
+
+      :error ->
+        case Map.fetch(source, String.to_atom(key)) do
+          {:ok, value} -> Map.put(map, key, value)
+          :error -> map
+        end
+    end
+  end
+
+  defp stringify_keys(map) when is_map(map) do
+    Map.new(map, fn
+      {key, value} when is_atom(key) -> {Atom.to_string(key), value}
+      {key, value} -> {key, value}
+    end)
+  end
+
   defp edit_text_ops(args, %Runtime.State{} = state) do
     sec = fetch_int(args, "sec")
     para = fetch_int(args, "para")
@@ -1492,8 +941,14 @@ defmodule Contract.MCP do
       not is_binary(text) ->
         {:error, {:invalid_params, "text must be a string"}}
 
+      multiline_text?(text) ->
+        {:error,
+         {:invalid_params,
+          "replace_text.text must be a single paragraph; use insert_block once per paragraph for multi-paragraph drafting"}}
+
       true ->
-        with :ok <- validate_match_at_position(state, sec, para, off, match, cell_path),
+        with :ok <- validate_not_table_host_paragraph_target(state, sec, para, cell_path),
+             :ok <- validate_match_at_position(state, sec, para, off, match, cell_path),
              :ok <-
                validate_not_slot_label_prefix_replacement(
                  state,
@@ -1501,6 +956,16 @@ defmodule Contract.MCP do
                  para,
                  off,
                  match,
+                 text,
+                 cell_path
+               ),
+             :ok <-
+               validate_fixed_contact_cell_replacement(
+                 state,
+                 sec,
+                 para,
+                 off,
+                 len,
                  text,
                  cell_path
                ) do
@@ -1515,16 +980,52 @@ defmodule Contract.MCP do
     end
   end
 
+  defp validate_not_table_host_paragraph_target(_state, _sec, _para, [_ | _cell_path]), do: :ok
+
+  defp validate_not_table_host_paragraph_target(%Runtime.State{} = state, sec, para, _cell_path) do
+    case Contract.MCP.Projection.read(state, sec, para: para) do
+      %{"type" => "table_window"} ->
+        {:error, {:invalid_params, "table paragraphs must be edited with a cell target"}}
+
+      _ ->
+        :ok
+    end
+  end
+
   defp validate_match_at_position(_state, _sec, _para, _off, match, _cell_path)
        when not is_binary(match) or match == "",
        do: :ok
 
-  defp validate_match_at_position(_state, _sec, _para, _off, _match, [_ | _cell_path]),
-    do: :ok
+  defp validate_match_at_position(
+         %Runtime.State{} = state,
+         sec,
+         para,
+         off,
+         match,
+         [
+           _ | _cell_path
+         ] = cell_path
+       ) do
+    case cell_text_at_position(state, sec, para, cell_path) do
+      {:ok, text} ->
+        if String.slice(text, off, String.length(match)) == match do
+          :ok
+        else
+          {:error,
+           {:invalid_params,
+            "match is not present at sec=#{sec}, para=#{para}, off=#{off}, cell_path=#{inspect(cell_path)}"}}
+        end
+
+      :error ->
+        {:error,
+         {:invalid_params,
+          "table cell not found at sec=#{sec}, para=#{para}, cell_path=#{inspect(cell_path)}"}}
+    end
+  end
 
   defp validate_match_at_position(%Runtime.State{} = state, sec, para, off, match, _cell_path) do
-    case Contract.MCP.Projection.read(state, sec, para: para) do
-      %{paragraphs: [[^sec, ^para, _kind, text]]} when is_binary(text) ->
+    case Contract.MCP.Projection.paragraph_text_at(state, sec, para) do
+      text when is_binary(text) ->
         if String.slice(text, off, String.length(match)) == match do
           :ok
         else
@@ -1569,12 +1070,12 @@ defmodule Contract.MCP do
          replacement,
          _cell_path
        ) do
-    case Contract.MCP.Projection.read(state, sec, para: para) do
-      %{paragraphs: [[^sec, ^para, _kind, paragraph]]} when is_binary(paragraph) ->
+    case Contract.MCP.Projection.paragraph_text_at(state, sec, para) do
+      paragraph when is_binary(paragraph) ->
         if unsafe_slot_label_prefix_replacement?(paragraph, off, match, replacement) do
           {:error,
            {:invalid_params,
-            "unsafe slot label prefix replacement; use doc.set_field_value when a field id exists, or match the full existing value/paragraph"}}
+            "unsafe slot label prefix replacement; match the full existing value/paragraph"}}
         else
           :ok
         end
@@ -1604,6 +1105,78 @@ defmodule Contract.MCP do
        when is_binary(replacement) and is_binary(match) do
     String.starts_with?(replacement, match) or
       String.starts_with?(String.trim_leading(replacement), String.trim_leading(match))
+  end
+
+  defp validate_fixed_contact_cell_replacement(
+         %Runtime.State{} = state,
+         sec,
+         para,
+         off,
+         len,
+         replacement,
+         [_ | _cell_path] = cell_path
+       )
+       when is_integer(off) and is_integer(len) and is_binary(replacement) do
+    with {:ok, current_text} <- cell_text_at_position(state, sec, para, cell_path),
+         true <- fixed_phone_cell?(current_text) do
+      projected_text = replace_text_range(current_text, off, len, replacement)
+
+      cond do
+        not fixed_phone_cell?(projected_text) ->
+          fixed_contact_cell_error()
+
+        contains_email_address?(projected_text) ->
+          fixed_contact_cell_error()
+
+        String.length(String.trim(projected_text)) > 28 ->
+          fixed_contact_cell_error()
+
+        true ->
+          :ok
+      end
+    else
+      _ -> :ok
+    end
+  end
+
+  defp validate_fixed_contact_cell_replacement(
+         _state,
+         _sec,
+         _para,
+         _off,
+         _len,
+         _replacement,
+         _cell_path
+       ),
+       do: :ok
+
+  defp fixed_phone_cell?(text) when is_binary(text),
+    do: Regex.match?(~r/^\s*전화\s*번호\s*[:：]/u, text)
+
+  defp fixed_phone_cell?(_text), do: false
+
+  defp contains_email_address?(text) when is_binary(text),
+    do: Regex.match?(~r/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/iu, text)
+
+  defp contains_email_address?(_text), do: false
+
+  defp replace_text_range(text, off, len, replacement) do
+    prefix = String.slice(text, 0, off) || ""
+    suffix = String.slice(text, off + len, String.length(text)) || ""
+    prefix <> replacement <> suffix
+  end
+
+  defp fixed_contact_cell_error do
+    {:error,
+     {:invalid_params,
+      "fixed phone table cell must preserve the 전화번호 label and short phone-style content; put 담당자/email in a wider field"}}
+  end
+
+  defp cell_text_at_position(%Runtime.State{} = state, sec, para, cell_path) do
+    case Contract.MCP.Projection.cell_text_at_path(state, sec, para, cell_path) do
+      text when is_binary(text) -> {:ok, text}
+      _ -> :error
+    end
   end
 
   defp maybe_prepend_delete(ops, sec, para, off, len, cell_path),
@@ -1661,6 +1234,23 @@ defmodule Contract.MCP do
     end
   end
 
+  defp fetch_string(args, key) do
+    case Map.get(args, key) || Map.get(args, String.to_atom(key)) do
+      s when is_binary(s) and s != "" -> s
+      _ -> nil
+    end
+  end
+
+  defp read_sec(args) do
+    cond do
+      is_binary(fetch_string(args, "field_id")) ->
+        {:ok, fetch_int(args, "sec") || 0}
+
+      true ->
+        fetch_required_int(args, "sec")
+    end
+  end
+
   defp fetch_required_int(args, key) do
     case fetch_int(args, key) do
       n when is_integer(n) -> {:ok, n}
@@ -1678,12 +1268,9 @@ defmodule Contract.MCP do
   defp maybe_put_opt(opts, _key, nil), do: opts
   defp maybe_put_opt(opts, key, value), do: Keyword.put(opts, key, value)
 
-  # All four doc.* mutation tools below ride the same :edit_text Command kind —
-  # the Reducer streams every rhwp text op (insert_text/delete_text/
-  # insert_paragraph/merge_paragraph/table_row_insert/table_row_delete/
-  # table_column_insert/table_column_delete/table_delete) through the same
-  # payload shape. Only `applied` in the return envelope differs so the
-  # agent UI can tell tools apart.
+  # doc.edit rides the Runtime :edit_text command kind. The Reducer applies the
+  # rhwp text ops emitted here (insert_text/delete_text/insert_paragraph/
+  # merge_paragraph); table structure changes are not exposed through MCP.
   defp submit_edit_text(ctx, route_ref, document_id, args, ops, applied) do
     run_id = route_ref && Map.get(route_ref, :agent_run_id)
 
@@ -1758,21 +1345,6 @@ defmodule Contract.MCP do
           :ok
         end
 
-      kind when kind in ["table_row_insert", "table_row_delete"] ->
-        with :ok <- require_table_position(op, idx),
-             :ok <- require_non_negative_int(op, :at_row, idx) do
-          :ok
-        end
-
-      kind when kind in ["table_column_insert", "table_column_delete"] ->
-        with :ok <- require_table_position(op, idx),
-             :ok <- require_non_negative_int(op, :at_col, idx) do
-          :ok
-        end
-
-      "table_delete" ->
-        require_table_position(op, idx)
-
       kind ->
         {:error, {:invalid_params, "unsupported document text op at #{idx}: #{inspect(kind)}"}}
     end
@@ -1784,14 +1356,6 @@ defmodule Contract.MCP do
   defp require_text_position(op, idx) do
     with :ok <- require_non_negative_int(op, :sec, idx),
          :ok <- require_non_negative_int(op, :para, idx) do
-      :ok
-    end
-  end
-
-  defp require_table_position(op, idx) do
-    with :ok <- require_non_negative_int(op, :sec, idx),
-         :ok <- require_non_negative_int(op, :parent_para, idx),
-         :ok <- require_non_negative_int(op, :control_index, idx) do
       :ok
     end
   end
@@ -1830,6 +1394,9 @@ defmodule Contract.MCP do
     Map.get(op, Atom.to_string(key)) || Map.get(op, key)
   end
 
+  defp multiline_text?(text) when is_binary(text), do: String.contains?(text, ["\n", "\r"])
+  defp multiline_text?(_text), do: false
+
   defp insert_block_ops(args) do
     sec = fetch_int(args, "sec")
     para = fetch_int(args, "para")
@@ -1842,19 +1409,21 @@ defmodule Contract.MCP do
       is_nil(sec) or is_nil(para) ->
         {:error, {:invalid_params, "sec, para are required"}}
 
-      kind not in ["paragraph", "heading", "list_item", "table"] ->
-        {:error, {:invalid_params, "kind must be paragraph|heading|list_item|table"}}
-
       kind == "table" ->
-        # rhwp text-op kind for creating a *new* table from nothing does not
-        # exist yet (see @text_op_kinds in Contract.Session.Reducer — only
-        # row/column/table_delete are wired). Block this case until the IR
-        # pipeline gains a `TableInserted` event.
         {:error,
-         {:not_supported, "doc.insert_block kind=table not wired (no rhwp table-create op)"}}
+         {:not_supported,
+          "insert_block kind=table is not currently supported until table creation has a materialized projection"}}
+
+      kind not in ["paragraph", "heading", "list_item"] ->
+        {:error, {:invalid_params, "kind must be paragraph|heading|list_item"}}
 
       not is_binary(text) ->
         {:error, {:invalid_params, "text must be a string"}}
+
+      multiline_text?(text) ->
+        {:error,
+         {:invalid_params,
+          "insert_block.block.text must be a single paragraph; call insert_block once per paragraph"}}
 
       true ->
         # `:insert_paragraph` splits the paragraph at `(sec, para, 0)` —
@@ -1918,165 +1487,8 @@ defmodule Contract.MCP do
     end
   end
 
-  defp edit_table_ops(args) do
-    sec = fetch_int(args, "sec")
-    parent_para = fetch_int(args, "para") || fetch_int(args, "parent_para")
-    control_index = fetch_int(args, "control_index")
-    at_row = fetch_int(args, "at_row")
-    at_col = fetch_int(args, "at_col")
-    op = Map.get(args, "op") || Map.get(args, :op)
-
-    cond do
-      is_nil(sec) or is_nil(parent_para) ->
-        {:error, {:invalid_params, "sec, para are required"}}
-
-      op not in ["row_insert", "row_delete", "col_insert", "col_delete"] ->
-        {:error, {:invalid_params, "op must be row_insert|row_delete|col_insert|col_delete"}}
-
-      op in ["row_insert", "row_delete"] and is_nil(at_row) ->
-        {:error, {:invalid_params, "at_row is required for row_insert/row_delete"}}
-
-      op in ["col_insert", "col_delete"] and is_nil(at_col) ->
-        {:error, {:invalid_params, "at_col is required for col_insert/col_delete"}}
-
-      true ->
-        kind =
-          case op do
-            "row_insert" -> "table_row_insert"
-            "row_delete" -> "table_row_delete"
-            "col_insert" -> "table_column_insert"
-            "col_delete" -> "table_column_delete"
-          end
-
-        text_op =
-          compact(%{
-            "kind" => kind,
-            "sec" => sec,
-            "parent_para" => parent_para,
-            "control_index" => control_index,
-            "at_row" => at_row,
-            "at_col" => at_col
-          })
-
-        {:ok, [text_op]}
-    end
-  end
-
-  defp set_field_value_ops(args, %Runtime.State{} = state) do
-    id = Map.get(args, "id") || Map.get(args, :id)
-    value = Map.get(args, "value") || Map.get(args, :value)
-
-    cond do
-      not is_binary(id) or id == "" ->
-        {:error, {:invalid_params, "id is required"}}
-
-      not is_binary(value) ->
-        {:error, {:invalid_params, "value must be a string"}}
-
-      true ->
-        case lookup_field_position(state, id) do
-          {:ok, pos, current_value} ->
-            {:ok, field_position_to_edit_ops(pos, value, id, current_value)}
-
-          :error ->
-            {:error, {:not_found, "field #{id} not found in projection"}}
-        end
-    end
-  end
-
-  # Resolve a field id against the agent IR. We project here (vs. peeking at
-  # state.projection.fields directly) because the snapshot path is the only
-  # one carrying `position` info — the legacy create_node path produces empty
-  # positions, in which case we cannot synthesize a text edit and return :error.
-  defp lookup_field_position(%Runtime.State{} = state, id) do
-    ir = Contract.MCP.Projection.to_agent_ir(state)
-
-    case Enum.find(Map.get(ir, "fields", []) || [], fn f -> Map.get(f, "id") == id end) do
-      nil ->
-        :error
-
-      %{"position" => pos} = field when is_map(pos) and map_size(pos) > 0 ->
-        {:ok, pos, Map.get(field, "value") || Map.get(field, :value)}
-
-      _ ->
-        :error
-    end
-  end
-
-  defp field_position_to_edit_ops(pos, value, field_id, current_value) do
-    sec = Map.get(pos, "sec") || Map.get(pos, :sec)
-
-    para =
-      Map.get(pos, "parent_para") || Map.get(pos, :parent_para) ||
-        Map.get(pos, "para") || Map.get(pos, :para)
-
-    off_start = Map.get(pos, "off_start") || Map.get(pos, :off_start) || 0
-    off_end = Map.get(pos, "off_end") || Map.get(pos, :off_end)
-    cell_path = Map.get(pos, "cell_path") || Map.get(pos, :cell_path)
-    len = field_delete_len(off_start, off_end, current_value)
-
-    []
-    |> maybe_prepend_delete(sec, para, off_start, len, cell_path, field_id)
-    |> maybe_prepend_insert(sec, para, off_start, value, cell_path, field_id)
-    |> Enum.reverse()
-  end
-
-  defp field_delete_len(off_start, off_end, current_value)
-       when is_integer(off_start) and is_integer(off_end) and off_end > off_start,
-       do: max(off_end - off_start, current_value_len(current_value))
-
-  defp field_delete_len(_off_start, _off_end, current_value)
-       when is_binary(current_value) and current_value != "",
-       do: String.length(current_value)
-
-  defp field_delete_len(_off_start, _off_end, _current_value), do: 0
-
-  defp current_value_len(value) when is_binary(value) and value != "", do: String.length(value)
-  defp current_value_len(_value), do: 0
-
-  defp parse_custom_uri(uri, prefix) do
-    rest = String.replace_prefix(uri, prefix, "")
-
-    case String.split(rest, "/", parts: 2) do
-      [id] when id != "" -> {:ok, id, ""}
-      [id, path] when id != "" -> {:ok, id, normalize_path(path)}
-      _ -> {:error, :invalid_uri}
-    end
-  end
-
-  defp normalize_path(nil), do: ""
-  defp normalize_path("/"), do: ""
-  defp normalize_path("/" <> rest), do: rest
-  defp normalize_path(path), do: path
-
-  defp get_projection(%Runtime.State{projection: projection}, key, default) do
-    Map.get(projection || %{}, key) || Map.get(projection || %{}, Atom.to_string(key)) || default
-  end
-
-  defp map_values(map) when is_map(map), do: Map.values(map)
-  defp map_values(list) when is_list(list), do: list
-  defp map_values(_), do: []
-
   defp user_id(%Context{user: %{id: id}}), do: id
   defp user_id(_ctx), do: nil
-
-  defp atom_to_string(nil), do: nil
-  defp atom_to_string(atom) when is_atom(atom), do: Atom.to_string(atom)
-  defp atom_to_string(value), do: value
-
-  defp json_safe(%DateTime{} = value), do: DateTime.to_iso8601(value)
-  defp json_safe(%NaiveDateTime{} = value), do: NaiveDateTime.to_iso8601(value)
-  defp json_safe(%Decimal{} = value), do: Decimal.to_string(value)
-  defp json_safe(list) when is_list(list), do: Enum.map(list, &json_safe/1)
-
-  defp json_safe(map) when is_map(map),
-    do: map |> Map.drop([:__meta__]) |> Map.new(fn {k, v} -> {json_key(k), json_safe(v)} end)
-
-  defp json_safe(value) when is_atom(value), do: atom_to_string(value)
-  defp json_safe(value), do: value
-
-  defp json_key(key) when is_atom(key), do: Atom.to_string(key)
-  defp json_key(key), do: key
 
   defp errors_on(changeset) do
     Ecto.Changeset.traverse_errors(changeset, fn {msg, opts} ->
@@ -2088,24 +1500,5 @@ defmodule Contract.MCP do
 
   defp object_schema(properties, required) do
     %{"type" => "object", "properties" => properties, "required" => required}
-  end
-
-  defp string_schema, do: %{"type" => "string"}
-  defp integer_schema(min, max), do: %{"type" => "integer", "minimum" => min, "maximum" => max}
-
-  defp source_claim_tool(name, description, kind) do
-    %{
-      "name" => name,
-      "description" => description,
-      "inputSchema" =>
-        object_schema(
-          %{
-            "source_claim_id" => string_schema(),
-            "kind" => %{"type" => "string", "const" => kind},
-            "payload" => %{"type" => "object"}
-          },
-          ["source_claim_id"]
-        )
-    }
   end
 end

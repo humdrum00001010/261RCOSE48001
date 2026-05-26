@@ -303,10 +303,8 @@ defmodule Contract.ContractTypes do
           name_ko: spec.name_ko,
           version: spec.version,
           source: Atom.to_string(spec.source),
-          source_url: spec.source_url,
           template_hwp_path: spec.template_hwp_path,
           template_hwpx_path: spec.template_hwpx_path,
-          spec: type_spec_map(spec),
           default_matching_book: %{}
         }
 
@@ -317,35 +315,8 @@ defmodule Contract.ContractTypes do
           name_en: type_key,
           version: "legacy",
           source: "custom",
-          spec: %{},
           default_matching_book: %{}
         }
     end
-  end
-
-  defp type_spec_map(%TypeSpec{} = spec) do
-    %{
-      "key" => spec.key,
-      "family" => Atom.to_string(spec.family),
-      "name_en" => spec.name_en,
-      "name_ko" => spec.name_ko,
-      "version" => spec.version,
-      "source" => Atom.to_string(spec.source),
-      "source_url" => spec.source_url,
-      "template_hwp_path" => spec.template_hwp_path,
-      "template_hwpx_path" => spec.template_hwpx_path,
-      "notes_en" => spec.notes_en,
-      "notes_ko" => spec.notes_ko,
-      "recommended_fields" =>
-        Enum.map(spec.recommended_fields, fn field ->
-          %{
-            "id" => field.id,
-            "label_en" => field.label_en,
-            "label_ko" => field.label_ko,
-            "kind" => Atom.to_string(field.kind)
-          }
-        end),
-      "compatible_with" => spec.compatible_with
-    }
   end
 end

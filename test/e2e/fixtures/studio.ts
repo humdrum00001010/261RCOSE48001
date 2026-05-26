@@ -22,15 +22,6 @@ export interface ChangeRow {
   inserted_at: string;
 }
 
-export interface RevokeRequestRow {
-  id: string;
-  target_change_id: string;
-  overlap_changes: string[];
-  status: 'pending' | 'resolved' | 'abandoned';
-  resolution_change_id: string | null;
-  inserted_at: string;
-}
-
 export interface DocumentRow {
   id: string;
   name: string | null;
@@ -68,19 +59,6 @@ export async function getChanges(
 }
 
 /**
- * Fetch all pending revoke requests for `documentId`.
- */
-export async function getRevokeRequests(
-  request: APIRequestContext,
-  documentId: string
-): Promise<RevokeRequestRow[]> {
-  const resp = await request.get(`/test/db/revoke_requests/${documentId}`);
-  expect(resp.status()).toBe(200);
-  const body = (await resp.json()) as { ok: boolean; revoke_requests: RevokeRequestRow[] };
-  return body.revoke_requests;
-}
-
-/**
  * Fetch the full document list (most recent first). Useful when the
  * scenario needs to find a doc by name without knowing the id up front.
  */
@@ -95,7 +73,7 @@ export async function getDocuments(
 
 /**
  * Fetch the latest Oban jobs for `queue`. The result is ordered newest
- * first; pass `queue='export'` for export-delivery polling.
+ * first; pass a queue name to inspect specific workers.
  */
 export async function getObanJobs(
   request: APIRequestContext,
@@ -110,8 +88,7 @@ export async function getObanJobs(
 /**
  * Polls until `predicate` returns true or the deadline elapses. Returns
  * the last value seen on resolve, throws on timeout. The poll interval
- * is `intervalMs` (default 250 ms); the timeout defaults to 10 s — tune
- * for slow paths (Oban export jobs can take 3–5 s).
+ * is `intervalMs` (default 250 ms); the timeout defaults to 10 s.
  */
 export async function pollUntil<T>(
   fetcher: () => Promise<T>,

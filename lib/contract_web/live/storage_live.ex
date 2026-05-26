@@ -294,7 +294,6 @@ defmodule ContractWeb.StorageLive do
               type="button"
               phx-click="delete_selected_documents"
               disabled={selected_visible_count(@selected_document_ids, assigns) == 0}
-              data-confirm={dgettext("storage", "선택한 문서를 삭제하시겠습니까?")}
               class="btn btn-error btn-sm"
             >
               {dgettext("storage", "선택 삭제")}
@@ -305,8 +304,8 @@ defmodule ContractWeb.StorageLive do
         <%!-- ------------------------------------------------------------ --%>
         <%!-- Document grid — Google-Docs-style cards with body preview     --%>
         <%!-- inside the thumb. Per-card hover lifts; the whole card is a   --%>
-        <%!-- single navigation target, with the overflow menu opting out   --%>
-        <%!-- via stopPropagation on the cell.                              --%>
+        <%!-- single navigation target. The overflow menu sits above the    --%>
+        <%!-- overlay link so its own LiveView events can still bubble.      --%>
         <%!-- ------------------------------------------------------------ --%>
         <%= cond do %>
           <% @documents == [] -> %>
@@ -375,17 +374,17 @@ defmodule ContractWeb.StorageLive do
         <details
           class="absolute right-2 top-2 z-30 inline-grid place-items-center"
           data-role="document-card-menu"
-          onclick="event.stopPropagation()"
         >
           <summary class="grid h-8 w-8 cursor-pointer list-none place-items-center rounded-full border border-base-300 bg-base-100/90 text-base-content shadow-sm hover:bg-base-200">
             ⋮
           </summary>
           <div class="absolute right-0 mt-2 w-28 rounded-box border border-base-200 bg-base-100 p-1 text-sm shadow-lg">
             <button
+              id={"document-delete-#{@document.document_id}"}
               type="button"
               phx-click="delete_document"
               phx-value-id={@document.document_id}
-              data-confirm={dgettext("storage", "문서를 삭제하시겠습니까?")}
+              data-role="document-card-delete"
               class="w-full rounded-lg px-3 py-2 text-left text-error hover:bg-error/10"
             >
               {dgettext("storage", "삭제")}

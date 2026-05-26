@@ -22,17 +22,13 @@ defmodule Contract.Session.Reducer do
 
   ## What the Reducer does NOT handle
 
-  Several `Command.kind` values are routed elsewhere by `Contract.Runtime` /
-  `Contract.Studio` before they reach the Reducer. Calling `compile/2` with
-  one of those kinds raises `ArgumentError`:
+  Several `Command.kind` values are no longer part of the live runtime path.
+  Calling `compile/2` with one of those kinds raises `ArgumentError`:
 
   * `:open_document` — pure read; no Change.
-  * `:upload_document` — IO layer.
-  * `:duplicate_document` — multi-document; handled by Conversion / Studio.
-  * `:start_type_conversion`, `:set_field_migration_strategy` —
-    `Contract.Conversion`.
   * `:chat_message` — `Contract.Agent`.
-  * `:request_export` — `Contract.IO`.
+  * source/import/export/revoke/conversion/duplicate commands — pruned
+    DB-backed surfaces.
   """
 
   alias Contract.{Change, ChangeInput, Command, MarkInput, Operation, Runtime, Types}
@@ -48,9 +44,7 @@ defmodule Contract.Session.Reducer do
     :set_attr,
     :bind_ref,
     :unbind_ref,
-    :create_projection,
-    :add_mark,
-    :update_mark
+    :create_projection
   ]
 
   # Freeform rhwp text ops. rhwp WASM 이 진짜 source of truth — Reducer 는 단지
@@ -73,8 +67,18 @@ defmodule Contract.Session.Reducer do
     :duplicate_document,
     :start_type_conversion,
     :set_field_migration_strategy,
+    :create_converted_variant,
     :chat_message,
-    :request_export
+    :request_export,
+    :revoke_change,
+    :resolve_revoke,
+    :add_mark,
+    :update_mark,
+    :source_claim_confirm,
+    :source_claim_correct,
+    :source_claim_reject,
+    :source_claim_link_to_document,
+    :source_claim_unlink_from_document
   ]
 
   # ----------------------------------------------------------------------------
@@ -449,14 +453,6 @@ defmodule Contract.Session.Reducer do
     %{op: :unbind_ref, ref: Map.get(state.projection.refs, id)}
   end
 
-  defp capture_preimage(%Operation{op: :add_mark, target_id: id}, _state) do
-    %{op: :add_mark, target_id: id}
-  end
-
-  defp capture_preimage(%Operation{op: :update_mark, target_id: id}, state) do
-    %{op: :update_mark, mark: Map.get(state.projection.marks, id)}
-  end
-
   defp capture_preimage(%Operation{op: :create_projection, target_id: id}, _state) do
     %{op: :create_projection, target_id: id}
   end
@@ -501,8 +497,6 @@ defmodule Contract.Session.Reducer do
   the list of operations that would undo this Change. Used by
   `Contract.Session.Revocation` (SPEC.md §17).
 
-  Marks are append-only per SPEC.md §15 invariant 11 — `:add_mark` ops do not
-  produce an inverse op.
   """
   @spec inverse(ChangeInput.t(), preimage()) :: Types.result([Operation.t()])
   def inverse(%ChangeInput{ops: ops}, preimage) when is_map(preimage) do
@@ -588,18 +582,6 @@ defmodule Contract.Session.Reducer do
       target_type: type,
       target_id: id,
       args: %{ref: pre && pre.ref}
-    }
-  end
-
-  # Marks are append-only — no inverse for :add_mark.
-  defp build_inverse_op(%Operation{op: :add_mark}, _pre), do: nil
-
-  defp build_inverse_op(%Operation{op: :update_mark, target_type: type, target_id: id}, pre) do
-    %Operation{
-      op: :update_mark,
-      target_type: type,
-      target_id: id,
-      args: %{mark: pre && pre.mark}
     }
   end
 
@@ -787,23 +769,6 @@ defmodule Contract.Session.Reducer do
     %{projection | refs: Map.delete(projection.refs, id)}
   end
 
-  defp apply_op(%Operation{op: :add_mark, target_id: id, args: args}, projection) do
-    args = normalize_args(args)
-    mark = Map.get(args, :mark, %{}) |> Map.put(:id, id)
-    %{projection | marks: Map.put(projection.marks, id, mark)}
-  end
-
-  defp apply_op(%Operation{op: :update_mark, target_id: id, args: args}, projection) do
-    args = normalize_args(args)
-
-    payload =
-      Map.get(args, :mark) || Map.delete(args, :mark)
-
-    existing = Map.get(projection.marks, id, %{id: id})
-    updated = Map.merge(existing, payload || %{}) |> Map.put(:id, id)
-    %{projection | marks: Map.put(projection.marks, id, updated)}
-  end
-
   defp apply_op(%Operation{op: :create_projection}, projection) do
     # No-op on the current state. Variant creation produces a *new* projection
     # in the caller (Conversion module); the source projection is untouched.
@@ -898,8 +863,6 @@ defmodule Contract.Session.Reducer do
     change = %Change{
       document_id: input.document_id || command.document_id || state.document_id,
       chat_thread_id: command.chat_thread_id,
-      source_document_id: command.source_document_id,
-      source_claim_id: command.source_claim_id,
       agent_run_id: input.agent_run_id || command.agent_run_id,
       command_kind: Atom.to_string(input.action_kind || command.kind),
       field_path: field_path_from_ops(input.ops),
@@ -1136,189 +1099,6 @@ defmodule Contract.Session.Reducer do
       |> Enum.map(&parse_text_op(&1, command.document_id))
 
     {ops, [], %{}}
-  end
-
-  defp build_ops_and_marks(%Command{kind: :add_mark} = command, _state) do
-    payload = normalize_payload(command.payload)
-    marks = parse_marks(Map.get(payload, :marks, [payload]))
-    {[], marks, %{}}
-  end
-
-  defp build_ops_and_marks(%Command{kind: :update_mark} = command, _state) do
-    payload = normalize_payload(command.payload)
-    marks = parse_marks(Map.get(payload, :marks, [payload]))
-    {[], marks, %{update: true}}
-  end
-
-  defp build_ops_and_marks(%Command{kind: kind} = command, _state)
-       when kind in [:source_claim_confirm, :source_claim_correct] do
-    payload = normalize_payload(command.payload)
-
-    field_id =
-      Map.get(payload, :field_id) || Map.get(payload, :proposed_kind) || command.source_claim_id
-
-    value = Map.get(payload, :value) || Map.get(payload, :proposed_value)
-
-    op = %Operation{
-      op: :set_field,
-      target_type: :field,
-      target_id: field_id,
-      args: %{
-        key: :value,
-        value: value,
-        source_claim_id: command.source_claim_id,
-        source_document_id: command.source_document_id
-      }
-    }
-
-    mark = %MarkInput{
-      target_type: :field,
-      target_id: field_id,
-      intent: :source_claim,
-      source: command.actor_type || :user,
-      confidence: :confirmed,
-      text: value,
-      data: %{
-        source_claim_id: command.source_claim_id,
-        source_document_id: command.source_document_id,
-        action: kind
-      }
-    }
-
-    {[op], [mark], %{source_claim_id: command.source_claim_id, value: value}}
-  end
-
-  defp build_ops_and_marks(%Command{kind: :source_claim_reject} = command, _state) do
-    payload = normalize_payload(command.payload)
-
-    mark = %MarkInput{
-      target_type: :document,
-      target_id: command.document_id,
-      intent: :source_claim_rejected,
-      source: command.actor_type || :user,
-      confidence: :confirmed,
-      text: Map.get(payload, :reason),
-      data: %{
-        source_claim_id: command.source_claim_id,
-        source_document_id: command.source_document_id,
-        reason: Map.get(payload, :reason)
-      }
-    }
-
-    {[], [mark], %{source_claim_id: command.source_claim_id, rejected: true}}
-  end
-
-  defp build_ops_and_marks(%Command{kind: :source_claim_link_to_document} = command, _state) do
-    payload = normalize_payload(command.payload)
-    node_id = Map.get(payload, :node_id) || Map.get(payload, :linked_node_id)
-    field_id = Map.get(payload, :field_id) || Map.get(payload, :proposed_kind)
-    ref_id = "source-claim:#{command.source_claim_id}"
-
-    op = %Operation{
-      op: :bind_ref,
-      target_type: :artifact,
-      target_id: ref_id,
-      args: %{
-        ref: %{
-          id: ref_id,
-          type: :source_claim,
-          source_document_id: command.source_document_id,
-          source_claim_id: command.source_claim_id,
-          source_node_id: node_id,
-          target_id: node_id,
-          field_id: field_id
-        }
-      }
-    }
-
-    mark = %MarkInput{
-      target_type: :node,
-      target_id: node_id,
-      intent: :link,
-      source: command.actor_type || :user,
-      confidence: :confirmed,
-      data: %{
-        source_claim_id: command.source_claim_id,
-        source_document_id: command.source_document_id,
-        field_id: field_id
-      }
-    }
-
-    {[op], [mark], %{source_claim_id: command.source_claim_id, linked_node_id: node_id}}
-  end
-
-  defp build_ops_and_marks(%Command{kind: :source_claim_unlink_from_document} = command, _state) do
-    ref_id = "source-claim:#{command.source_claim_id}"
-
-    op = %Operation{
-      op: :unbind_ref,
-      target_type: :artifact,
-      target_id: ref_id,
-      args: %{}
-    }
-
-    mark = %MarkInput{
-      target_type: :document,
-      target_id: command.document_id,
-      intent: :link,
-      source: command.actor_type || :user,
-      confidence: :confirmed,
-      data: %{
-        source_claim_id: command.source_claim_id,
-        source_document_id: command.source_document_id,
-        unlinked: true
-      }
-    }
-
-    {[op], [mark], %{source_claim_id: command.source_claim_id, unlinked: true}}
-  end
-
-  defp build_ops_and_marks(%Command{kind: :create_converted_variant} = command, _state) do
-    payload = normalize_payload(command.payload)
-    parent_doc = Map.get(payload, :parent_document_id) || command.document_id
-    target_type_key = Map.get(payload, :target_type_key)
-    new_doc_id = Map.get(payload, :new_document_id) || command.document_id
-
-    op = %Operation{
-      op: :create_projection,
-      target_type: :projection,
-      target_id: new_doc_id,
-      args: %{
-        parent_document_id: parent_doc,
-        target_type_key: target_type_key
-      }
-    }
-
-    {[op], [], %{parent_document_id: parent_doc, target_type_key: target_type_key}}
-  end
-
-  defp build_ops_and_marks(%Command{kind: :revoke_change} = command, _state) do
-    payload = normalize_payload(command.payload)
-    inverse_ops = parse_ops(Map.get(payload, :inverse_ops, []))
-    change_id = Map.get(payload, :change_id) || command.change_id
-
-    explain_mark = %MarkInput{
-      target_type: :change,
-      target_id: change_id,
-      intent: :explain,
-      source: :system,
-      text: "Revoked change #{change_id}",
-      data: %{revoked_change_id: change_id}
-    }
-
-    {inverse_ops, [explain_mark], %{revoked_change_id: change_id}}
-  end
-
-  defp build_ops_and_marks(%Command{kind: :resolve_revoke} = command, _state) do
-    payload = normalize_payload(command.payload)
-    ops = parse_ops(Map.get(payload, :ops, []))
-    marks = parse_marks(Map.get(payload, :marks, []))
-
-    {ops, marks,
-     %{
-       reconciliation: true,
-       revoke_request_id: Map.get(payload, :revoke_request_id)
-     }}
   end
 
   defp build_ops_and_marks(%Command{kind: kind}, _state) do

@@ -21,7 +21,7 @@ import { defineConfig, devices } from '@playwright/test';
  * Env switches:
  *
  *   - WAVE_4_READY=1    — include scenarios that depend on Wave 4 logic
- *                         (type-conversion wizard, non-HWPX export).
+ *                         reserved for feature-gated smoke paths.
  *   - EXPENSIVE_E2E=0   — skip scenarios that hit real OpenAI / Upstage
  *                         (briefing-grill-edit, two-session-grill-fanout).
  *

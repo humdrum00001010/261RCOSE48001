@@ -57,7 +57,12 @@ defmodule Contract.IO.OpenAITest do
       assert "doc.get" in tool.allowed_tools
       assert "doc.find" in tool.allowed_tools
       assert "doc.read" in tool.allowed_tools
-      assert "doc.edit_text" in tool.allowed_tools
+      assert "doc.edit" in tool.allowed_tools
+      refute "doc.edit_text" in tool.allowed_tools
+      refute "doc.insert_block" in tool.allowed_tools
+      refute "doc.delete_block" in tool.allowed_tools
+      refute "doc.edit_table" in tool.allowed_tools
+      refute "doc.set_field_value" in tool.allowed_tools
     end
   end
 

@@ -4,13 +4,9 @@ defmodule ContractWeb.MCP.MCPPlugTest do
   import Mox
   import Contract.AccountsFixtures
 
-  alias Contract.Command
-  alias Contract.Change
   alias Contract.Context
   alias Contract.Gateway
-  alias Contract.Documents
   alias Contract.IO.R2Stub
-  alias Contract.Runtime
 
   setup :set_mox_from_context
   setup :verify_on_exit!
@@ -128,8 +124,7 @@ defmodule ContractWeb.MCP.MCPPlugTest do
   end
 
   describe "method: tools/list" do
-    test "returns ≥7 studio.* tools each with name/description/inputSchema",
-         %{conn: conn} do
+    test "returns only live doc.* tools each with name/description/inputSchema", %{conn: conn} do
       {:ok, token} = Gateway.issue_route_ref(@ctx, %{purpose: "list"})
       resp = jsonrpc_call(conn, token, 1, "tools/list", %{})
       assert resp.status == 200
@@ -137,15 +132,7 @@ defmodule ContractWeb.MCP.MCPPlugTest do
 
       tools = env["result"]["tools"]
       assert is_list(tools)
-      assert length(tools) >= 7
-
-      names = Enum.map(tools, & &1["name"])
-
-      for name <- ~w(studio.get_document studio.submit_action studio.search_documents
-                     studio.get_change_history studio.list_marks studio.search_law
-                     studio.verify_citations) do
-        assert name in names
-      end
+      assert Enum.map(tools, & &1["name"]) == ~w(doc.get doc.find doc.read doc.edit)
 
       Enum.each(tools, fn t ->
         assert is_binary(t["name"])
@@ -156,126 +143,32 @@ defmodule ContractWeb.MCP.MCPPlugTest do
   end
 
   describe "method: resources/list and resources/read" do
-    test "returns MCP resource list/read shapes scoped to the bearer owner", %{conn: conn} do
+    test "resources are pruned", %{conn: conn} do
       user = user_fixture()
-      ctx = Context.for_user(user)
-      doc_id = create_doc(ctx, title: "Plug Resource Doc")
       token = Phoenix.Token.sign(ContractWeb.Endpoint, "api_token", %{user_id: user.id})
 
       list_resp = jsonrpc_call(conn, token, 21, "resources/list", %{})
       assert list_resp.status == 200
       {:ok, list_env} = Jason.decode(list_resp.resp_body)
-      assert is_list(list_env["result"]["resources"])
-      uris = Enum.map(list_env["result"]["resources"], & &1["uri"])
-      assert "document://#{doc_id}/state" in uris
+      assert list_env["result"]["resources"] == []
 
       read_resp =
         jsonrpc_call(conn, token, 22, "resources/read", %{
-          "uri" => "document://#{doc_id}/state"
+          "uri" => "document://#{Ecto.UUID.generate()}/state"
         })
 
       assert read_resp.status == 200
       {:ok, read_env} = Jason.decode(read_resp.resp_body)
-      assert %{"contents" => [%{"uri" => uri, "text" => text}]} = read_env["result"]
-      assert uri == "document://#{doc_id}/state"
-      assert {:ok, %{"document_id" => ^doc_id}} = Jason.decode(text)
+      assert read_env["error"]["code"] == -32_602
     end
   end
 
-  describe "auth — api_token owner scoping" do
-    test "document tools only see the persisted token user's documents", %{conn: conn} do
-      user = user_fixture()
-      other_user = user_fixture()
-      user_ctx = Context.for_user(user)
-      other_ctx = Context.for_user(other_user)
-
-      own_doc_id = create_doc(user_ctx, title: "Token Owned Searchable")
-      other_doc_id = create_doc(other_ctx, title: "Token Foreign Searchable")
-
-      token = Phoenix.Token.sign(ContractWeb.Endpoint, "api_token", %{user_id: user.id})
-
-      search_resp =
-        jsonrpc_call(conn, token, 10, "tools/call", %{
-          "name" => "studio.search_documents",
-          "arguments" => %{"query" => "Searchable"}
-        })
-
-      assert search_resp.status == 200
-      {:ok, search_env} = Jason.decode(search_resp.resp_body)
-      [%{"text" => search_text}] = search_env["result"]["content"]
-      {:ok, search_payload} = Jason.decode(search_text)
-      result_ids = Enum.map(search_payload["results"], & &1["document_id"])
-      assert own_doc_id in result_ids
-      refute other_doc_id in result_ids
-
-      own_get_resp =
-        jsonrpc_call(conn, token, 11, "tools/call", %{
-          "name" => "studio.get_document",
-          "arguments" => %{"document_id" => own_doc_id}
-        })
-
-      {:ok, own_get_env} = Jason.decode(own_get_resp.resp_body)
-      assert own_get_env["result"]["isError"] == false
-
-      foreign_get_resp =
-        jsonrpc_call(conn, token, 12, "tools/call", %{
-          "name" => "studio.get_document",
-          "arguments" => %{"document_id" => other_doc_id}
-        })
-
-      {:ok, foreign_get_env} = Jason.decode(foreign_get_resp.resp_body)
-      assert foreign_get_env["error"]["code"] == -32_001
-
-      own_submit_resp =
-        jsonrpc_call(conn, token, 13, "tools/call", %{
-          "name" => "studio.submit_action",
-          "arguments" => %{
-            "action" => %{
-              "kind" => "rename_document",
-              "document_id" => own_doc_id,
-              "actor_type" => "user",
-              "actor_id" => user.id,
-              "base_revision" => 1,
-              "idempotency_key" => "api-token-own-rename",
-              "payload" => %{"title" => "Token Renamed"}
-            }
-          }
-        })
-
-      {:ok, own_submit_env} = Jason.decode(own_submit_resp.resp_body)
-      assert own_submit_env["result"]["isError"] == false
-
-      foreign_submit_resp =
-        jsonrpc_call(conn, token, 14, "tools/call", %{
-          "name" => "studio.submit_action",
-          "arguments" => %{
-            "action" => %{
-              "kind" => "rename_document",
-              "document_id" => other_doc_id,
-              "actor_type" => "user",
-              "actor_id" => user.id,
-              "base_revision" => 1,
-              "idempotency_key" => "api-token-foreign-rename",
-              "payload" => %{"title" => "Leaked Rename"}
-            }
-          }
-        })
-
-      {:ok, foreign_submit_env} = Jason.decode(foreign_submit_resp.resp_body)
-      assert foreign_submit_env["error"]["code"] == -32_001
-      assert {:ok, other_doc} = Documents.get(other_ctx, other_doc_id)
-      assert other_doc.title == "Token Foreign Searchable"
-    end
-  end
-
-  describe "method: tools/call — studio.get_document" do
+  describe "method: tools/call — pruned studio surface" do
     test "returns 401 without bearer", %{conn: conn} do
-      doc_id = create_doc()
-
       body =
         jsonrpc_body(1, "tools/call", %{
-          "name" => "studio.get_document",
-          "arguments" => %{"document_id" => doc_id}
+          "name" => "doc.get",
+          "arguments" => %{}
         })
 
       resp =
@@ -286,142 +179,30 @@ defmodule ContractWeb.MCP.MCPPlugTest do
       assert resp.status == 401
     end
 
-    test "forbidden (-32001) for pinned route_ref without user context or wrong doc",
-         %{conn: conn} do
-      doc_id = create_doc()
-      other = create_doc(title: "Other pinned doc")
+    test "legacy studio and private mutation tool names are rejected by the gateway", %{
+      conn: conn
+    } do
+      {:ok, token} = Gateway.issue_route_ref(@ctx, %{purpose: "legacy-doc-tool"})
 
-      # Pinned ref with no user context.
-      {:ok, no_user_token} =
-        Gateway.issue_route_ref(@ctx, %{purpose: "get", document_id: doc_id})
+      for {tool, id} <-
+            Enum.with_index(
+              ~w(studio.get_document studio.submit_action studio.search_documents
+                 studio.get_change_history studio.list_marks studio.search_law
+                 studio.verify_citations doc.edit_text doc.insert_block
+                 doc.delete_block doc.edit_table doc.set_field_value),
+              1
+            ) do
+        resp =
+          jsonrpc_call(conn, token, id, "tools/call", %{
+            "name" => tool,
+            "arguments" => %{}
+          })
 
-      no_user_resp =
-        jsonrpc_call(conn, no_user_token, 1, "tools/call", %{
-          "name" => "studio.get_document",
-          "arguments" => %{"document_id" => doc_id}
-        })
-
-      assert no_user_resp.status == 200
-      {:ok, env1} = Jason.decode(no_user_resp.resp_body)
-      assert env1["error"]["code"] == -32_001
-
-      # Pinned ref for a different doc.
-      {:ok, wrong_doc_token} =
-        Gateway.issue_route_ref(@ctx, %{purpose: "wrong", document_id: other})
-
-      wrong_doc_resp =
-        jsonrpc_call(conn, wrong_doc_token, 1, "tools/call", %{
-          "name" => "studio.get_document",
-          "arguments" => %{"document_id" => doc_id}
-        })
-
-      {:ok, env2} = Jason.decode(wrong_doc_resp.resp_body)
-      assert env2["error"]["code"] == -32_001
-    end
-
-    test "returns -32602 when document_id is missing", %{conn: conn} do
-      {:ok, token} = Gateway.issue_route_ref(@ctx, %{purpose: "miss"})
-
-      resp =
-        jsonrpc_call(conn, token, 1, "tools/call", %{
-          "name" => "studio.get_document",
-          "arguments" => %{}
-        })
-
-      {:ok, env} = Jason.decode(resp.resp_body)
-      assert env["error"]["code"] == -32_602
-    end
-  end
-
-  describe "method: tools/call — studio.submit_action" do
-    test "drives Runtime.apply and produces a Change via :rename_document", %{conn: conn} do
-      user = user_fixture()
-      ctx = Context.for_user(user)
-      doc_id = create_doc(ctx, [])
-      token = Phoenix.Token.sign(ContractWeb.Endpoint, "api_token", %{user_id: user.id})
-
-      args = %{
-        "name" => "studio.submit_action",
-        "arguments" => %{
-          "action" => %{
-            "kind" => "rename_document",
-            "document_id" => doc_id,
-            "actor_type" => "user",
-            "actor_id" => user.id,
-            "base_revision" => 1,
-            "idempotency_key" => "plug-rn-1",
-            "payload" => %{"title" => "Plug-Renamed"}
-          }
-        }
-      }
-
-      resp = jsonrpc_call(conn, token, 42, "tools/call", args)
-      assert resp.status == 200
-
-      {:ok, env} = Jason.decode(resp.resp_body)
-      assert env["id"] == 42
-      assert env["result"]["isError"] == false
-
-      [%{"text" => text}] = env["result"]["content"]
-      {:ok, payload} = Jason.decode(text)
-      assert payload["command_kind"] == "rename_document"
-      assert payload["result_revision"] == 2
-    end
-
-    test "returns -32602 for an invalid action shape", %{conn: conn} do
-      doc_id = create_doc()
-      {:ok, token} = Gateway.issue_route_ref(@ctx, %{purpose: "submit-bad", document_id: doc_id})
-
-      resp =
-        jsonrpc_call(conn, token, 1, "tools/call", %{
-          "name" => "studio.submit_action",
-          "arguments" => %{"action" => %{"kind" => "not_a_real_kind"}}
-        })
-
-      {:ok, env} = Jason.decode(resp.resp_body)
-      assert env["error"]["code"] == -32_602
-    end
-  end
-
-  describe "method: tools/call — studio.get_change_history and studio.list_marks" do
-    test "studio.get_change_history returns recorded changes", %{conn: conn} do
-      user = user_fixture()
-      ctx = Context.for_user(user)
-      doc_id = create_doc(ctx, [])
-      token = Phoenix.Token.sign(ContractWeb.Endpoint, "api_token", %{user_id: user.id})
-
-      resp =
-        jsonrpc_call(conn, token, 1, "tools/call", %{
-          "name" => "studio.get_change_history",
-          "arguments" => %{"document_id" => doc_id, "since_revision" => 0}
-        })
-
-      assert resp.status == 200
-      {:ok, env} = Jason.decode(resp.resp_body)
-      [%{"text" => text}] = env["result"]["content"]
-      {:ok, payload} = Jason.decode(text)
-      assert payload["document_id"] == doc_id
-      assert is_list(payload["changes"])
-      assert length(payload["changes"]) >= 1
-    end
-
-    test "studio.list_marks returns the marks list", %{conn: conn} do
-      user = user_fixture()
-      ctx = Context.for_user(user)
-      doc_id = create_doc(ctx, [])
-      token = Phoenix.Token.sign(ContractWeb.Endpoint, "api_token", %{user_id: user.id})
-
-      resp =
-        jsonrpc_call(conn, token, 1, "tools/call", %{
-          "name" => "studio.list_marks",
-          "arguments" => %{"document_id" => doc_id}
-        })
-
-      {:ok, env} = Jason.decode(resp.resp_body)
-      [%{"text" => text}] = env["result"]["content"]
-      {:ok, payload} = Jason.decode(text)
-      assert payload["document_id"] == doc_id
-      assert is_list(payload["marks"])
+        assert resp.status == 200
+        {:ok, env} = Jason.decode(resp.resp_body)
+        assert env["error"]["code"] == -32_601
+        assert env["error"]["message"] == "Tool not found: #{tool}"
+      end
     end
   end
 
@@ -475,14 +256,9 @@ defmodule ContractWeb.MCP.MCPPlugTest do
 
   describe "SSE transport" do
     test "responds with text/event-stream when Accept asks for it", %{conn: conn} do
-      doc_id = create_doc()
-      {:ok, token} = Gateway.issue_route_ref(@ctx, %{purpose: "sse", document_id: doc_id})
+      {:ok, token} = Gateway.issue_route_ref(@ctx, %{purpose: "sse"})
 
-      body =
-        jsonrpc_body(1, "tools/call", %{
-          "name" => "studio.get_document",
-          "arguments" => %{"document_id" => doc_id}
-        })
+      body = jsonrpc_body(1, "initialize", %{})
 
       resp =
         conn
@@ -499,14 +275,9 @@ defmodule ContractWeb.MCP.MCPPlugTest do
     end
 
     test "responds as JSON when Accept is application/json", %{conn: conn} do
-      doc_id = create_doc()
-      {:ok, token} = Gateway.issue_route_ref(@ctx, %{purpose: "json", document_id: doc_id})
+      {:ok, token} = Gateway.issue_route_ref(@ctx, %{purpose: "json"})
 
-      body =
-        jsonrpc_body(1, "tools/call", %{
-          "name" => "studio.get_document",
-          "arguments" => %{"document_id" => doc_id}
-        })
+      body = jsonrpc_body(1, "initialize", %{})
 
       resp =
         conn
@@ -533,28 +304,6 @@ defmodule ContractWeb.MCP.MCPPlugTest do
   # ---------------------------------------------------------------------------
   # helpers
   # ---------------------------------------------------------------------------
-
-  defp create_doc(opts \\ []) do
-    create_doc(@ctx, opts)
-  end
-
-  defp create_doc(%Context{} = ctx, opts) do
-    doc_id = Ecto.UUID.generate()
-    title = Keyword.get(opts, :title, "Plug Doc")
-
-    action = %Command{
-      kind: :create_document,
-      document_id: doc_id,
-      actor_type: :user,
-      actor_id: ctx.user.id,
-      base_revision: 0,
-      idempotency_key: "create-#{doc_id}",
-      payload: %{"title" => title, "type_key" => "nda"}
-    }
-
-    {:ok, %Change{}} = Runtime.apply(ctx, action)
-    doc_id
-  end
 
   defp jsonrpc_body(id, method, params) do
     Jason.encode!(%{

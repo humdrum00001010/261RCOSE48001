@@ -156,11 +156,9 @@ defmodule Contract.Documents do
 
     document = document_with_optional_id(attrs)
 
-    with :ok <- check_no_parent_cycle(attrs) do
-      document
-      |> Document.changeset(Map.drop(attrs, ["id"]))
-      |> Repo.insert()
-    end
+    document
+    |> Document.changeset(Map.drop(attrs, ["id"]))
+    |> Repo.insert()
   end
 
   # ----------------------------------------------------------------------------
@@ -282,8 +280,7 @@ defmodule Contract.Documents do
   @doc """
   Select a document's `:type_key` exactly once.
 
-  A non-nil `:type_key` is immutable. Conversion or variant workflows must go
-  through `Contract.Conversion` instead of rewriting this row.
+  A non-nil `:type_key` is immutable after selection.
   """
   @spec set_type(Context.t(), T.id(), T.contract_type_key()) ::
           {:ok, Document.t()} | {:error, term()}
@@ -292,7 +289,7 @@ defmodule Contract.Documents do
       cond do
         type_key_unset?(doc.type_key) ->
           doc
-          |> Document.changeset(Map.merge(type_attrs(type_key), %{"state_snapshot" => %{}}))
+          |> Document.changeset(type_attrs(type_key))
           |> Repo.update()
 
         doc.type_key == type_key ->
@@ -344,15 +341,12 @@ defmodule Contract.Documents do
       end
 
     if is_binary(cast) and cast != "" do
-      empty_snapshot = %{}
-
       from(d in Document,
         where: d.id == ^document_id and is_nil(d.type_key),
         update: [
           set: [
             type_key: ^cast,
             document_type_id: ^document_type_id(cast),
-            state_snapshot: ^empty_snapshot,
             updated_at: ^now()
           ]
         ]
@@ -596,96 +590,6 @@ defmodule Contract.Documents do
   def search(_scope, _query, _limit), do: []
 
   # ----------------------------------------------------------------------------
-  # Lineage
-  # ----------------------------------------------------------------------------
-
-  alias Contract.Documents.FieldLineage
-
-  @doc """
-  Insert a single lineage row. Append-only — no update path.
-  """
-  @spec insert_lineage(map()) ::
-          {:ok, FieldLineage.t()} | {:error, Ecto.Changeset.t()}
-  def insert_lineage(attrs) when is_map(attrs) do
-    %FieldLineage{}
-    |> FieldLineage.changeset(stringify_keys(attrs))
-    |> Repo.insert()
-  end
-
-  @doc """
-  List lineage rows for a document.
-  """
-  @spec list_lineage(Context.t(), T.id()) :: [FieldLineage.t()]
-  def list_lineage(%Context{} = scope, document_id) do
-    case get(scope, document_id) do
-      {:ok, _doc} ->
-        from(l in FieldLineage,
-          where: l.document_id == ^document_id,
-          order_by: [asc: l.inserted_at]
-        )
-        |> Repo.all()
-
-      _ ->
-        []
-    end
-  end
-
-  @doc """
-  Look up a single lineage row for a specific field in a document.
-  `field_id` is the TypeSpec field id (string), not a UUID.
-  """
-  @spec get_lineage_for_field(Context.t(), T.id(), String.t()) ::
-          FieldLineage.t() | nil
-  def get_lineage_for_field(%Context{} = scope, document_id, field_id) do
-    case get(scope, document_id) do
-      {:ok, _doc} ->
-        Repo.one(
-          from l in FieldLineage,
-            where: l.document_id == ^document_id and l.field_id == ^field_id,
-            limit: 1
-        )
-
-      _ ->
-        nil
-    end
-  end
-
-  @doc """
-  Walks `:parent_document_id` upward from `document_id` and returns
-  `true` if `candidate_parent_id` would close a cycle.
-  """
-  @spec would_create_cycle?(Context.t(), T.id(), T.id()) :: boolean()
-  def would_create_cycle?(%Context{} = _scope, document_id, candidate_parent_id) do
-    do_cycle_check(document_id, candidate_parent_id, MapSet.new())
-  end
-
-  defp do_cycle_check(_doc_id, nil, _seen), do: false
-
-  defp do_cycle_check(doc_id, candidate, _seen) when doc_id == candidate, do: true
-
-  defp do_cycle_check(doc_id, candidate, seen) do
-    if MapSet.member?(seen, candidate) do
-      true
-    else
-      case Repo.get(Document, candidate) do
-        nil ->
-          false
-
-        %Document{parent_document_id: nil} ->
-          false
-
-        %Document{parent_document_id: ^doc_id} ->
-          true
-
-        %Document{parent_document_id: next} ->
-          do_cycle_check(doc_id, next, MapSet.put(seen, candidate))
-      end
-    end
-  rescue
-    Ecto.Query.CastError -> false
-  end
-
-  # ----------------------------------------------------------------------------
   # internals
   # ----------------------------------------------------------------------------
 
@@ -697,19 +601,6 @@ defmodule Contract.Documents do
        do: :ok
 
   defp authorize_owner(_scope, _doc), do: {:error, :forbidden}
-
-  defp check_no_parent_cycle(%{"parent_document_id" => nil}), do: :ok
-
-  defp check_no_parent_cycle(%{"parent_document_id" => parent}) when is_binary(parent) do
-    case Repo.get(Document, parent) do
-      nil -> :ok
-      %Document{} -> :ok
-    end
-  rescue
-    Ecto.Query.CastError -> :ok
-  end
-
-  defp check_no_parent_cycle(_), do: :ok
 
   defp document_with_optional_id(%{"id" => id}) when is_binary(id) do
     case Ecto.UUID.cast(id) do

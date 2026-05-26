@@ -112,10 +112,8 @@ defmodule ContractWeb.MCP.MCPPlug do
     uri = Map.get(params, "uri") || Map.get(params, :uri)
 
     if is_binary(uri) and uri != "" do
-      case MCP.read_resource(ctx, route_ref, uri) do
-        {:ok, payload} -> send_response(conn, JSONRPC.success(id, payload))
-        {:error, reason} -> send_response(conn, JSONRPC.from_gateway_error(id, reason))
-      end
+      {:error, reason} = MCP.read_resource(ctx, route_ref, uri)
+      send_response(conn, JSONRPC.from_gateway_error(id, reason))
     else
       send_response(
         conn,

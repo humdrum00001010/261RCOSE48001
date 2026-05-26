@@ -43,11 +43,7 @@ defmodule Contract.Application do
       Contract.Agent.DocumentSupervisor,
       # Wave 2 Persistence runtime: per-document Session registry + transient supervisor.
       {Registry, keys: :unique, name: Contract.Session.Registry},
-      {DynamicSupervisor, strategy: :one_for_one, name: Contract.Session.Supervisor},
-      # Wave 4.5 Conversion plan cache: in-memory parking lot so the
-      # async OpenAI refinement worker can hand a refined plan back to
-      # the wizard via PubSub.
-      Contract.Conversion.PlanCache
+      {DynamicSupervisor, strategy: :one_for_one, name: Contract.Session.Supervisor}
     ]
 
     # See https://hexdocs.pm/elixir/Supervisor.html

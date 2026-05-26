@@ -9,8 +9,7 @@ import { PERSONAS, signInAs } from '../fixtures/personas';
  *   real browser -> public DNS -> sprite proxy -> Phoenix -> Postgres
  *
  * end-to-end. Studio-specific scenarios (briefing→grill→edit, clean
- * revoke, overlap revoke, type-conversion wizard, socket reconnect,
- * Cmd+K palette, export delivery, agent_supervised watcher) ship with
+ * socket reconnect, Cmd+K palette, agent_supervised watcher ship with
  * Wave 3C1 — see feedback-browser-persona-tests.md.
  */
 for (const persona of PERSONAS) {

@@ -458,103 +458,6 @@ defmodule ContractWeb.Live.Studio.Components.ChatRailTest do
       assert html =~ "Searching statutes"
     end
 
-    test "source interpretation block renders parse summary and proposed claims" do
-      html =
-        render_component(ChatRail,
-          id: "chat-rail",
-          studio_state: default_state(),
-          streams: %{
-            chat_messages: [
-              {"chat-msg-source-1",
-               %{
-                 id: "source-1",
-                 role: :agent,
-                 operation: %{
-                   id: "source-doc-1",
-                   type: "source_interpretation",
-                   title: "Counterparty draft",
-                   status: "ready",
-                   summary: "2 claims",
-                   details: %{
-                     "source_document_id" => "source-doc-1",
-                     "regions" => [%{"region_id" => "r1", "raw_text" => "Effective Date"}],
-                     "claims" => [
-                       %{
-                         "id" => "claim-1",
-                         "proposed_kind" => "effective_date",
-                         "proposed_value" => "2026-01-01"
-                       },
-                       %{
-                         "id" => "claim-2",
-                         "proposed_kind" => "party_a",
-                         "proposed_value" => "Acme"
-                       }
-                     ]
-                   }
-                 },
-                 transient?: false
-               }}
-            ]
-          },
-          current_scope: lawyer_scope()
-        )
-
-      assert html =~ ~s(data-role="source-interpretation-block")
-      assert html =~ "Counterparty draft"
-      # Claim count + field-kind labels are rendered as localized strings,
-      # not as the raw `summary`/`proposed_kind` values.
-      assert html =~ "추출값 2개"
-      assert html =~ "효력 발생일"
-      assert html =~ "2026-01-01"
-      assert html =~ "갑"
-    end
-
-    test "source claim block renders anchors and supervision controls" do
-      html =
-        render_component(ChatRail,
-          id: "chat-rail",
-          studio_state: default_state(),
-          streams: %{
-            chat_messages: [
-              {"chat-msg-claim-1",
-               %{
-                 id: "claim-1",
-                 role: :agent,
-                 operation: %{
-                   id: "claim-1",
-                   type: "source_claim",
-                   title: "Effective date",
-                   status: "proposed",
-                   details: %{
-                     "source_claim_id" => "claim-1",
-                     "source_document_id" => "source-doc-1",
-                     "proposed_kind" => "effective_date",
-                     "proposed_value" => "2026-01-01",
-                     "confidence" => 0.91,
-                     "anchors" => [%{"page" => 1, "text" => "Effective Date: 2026-01-01"}]
-                   }
-                 },
-                 transient?: false
-               }}
-            ]
-          },
-          current_scope: lawyer_scope()
-        )
-
-      assert html =~ ~s(data-role="source-claim-block")
-      # The field-kind is rendered as a localized label, not the raw key.
-      assert html =~ "효력 발생일"
-      assert html =~ "2026-01-01"
-      assert html =~ "0.91"
-      assert html =~ "Effective Date: 2026-01-01"
-      assert html =~ ~s(phx-click="source_claim.confirm")
-      assert html =~ ~s(phx-submit="source_claim.correct")
-      assert html =~ ~s(phx-click="source_claim.reject")
-      assert html =~ ~s(phx-click="source_claim.link_to_document")
-      assert html =~ ~s(phx-click="source_claim.unlink")
-      assert html =~ ~s(phx-value-source_claim_id="claim-1")
-    end
-
     test "agent prose starts at the left edge of the chat stream" do
       html =
         render_component(ChatRail,
@@ -598,6 +501,162 @@ defmodule ContractWeb.Live.Studio.Components.ChatRailTest do
 
       assert class =~ "self-start"
       refute class =~ "self-center"
+    end
+
+    test "agent prose renders limited Markdown and escapes raw HTML" do
+      html =
+        render_component(ChatRail,
+          id: "chat-rail",
+          studio_state: default_state(),
+          streams: %{
+            chat_messages: [
+              {"chat-msg-agent-markdown",
+               %{
+                 id: "agent-markdown",
+                 role: :agent,
+                 result: %{
+                   body: """
+                   Intro **bold** and *emphasis* with `inline()` and [docs](https://example.com/docs).
+
+                   - first item
+                   - second item
+
+                   > quoted guidance
+
+                   ```elixir
+                   IO.puts("<safe>")
+                   ```
+
+                   <script>alert("x")</script>
+                   """
+                 },
+                 transient?: false
+               }}
+            ]
+          },
+          current_scope: lawyer_scope()
+        )
+
+      fragment = LazyHTML.from_fragment(html)
+
+      assert html =~ ~s(data-markdown-role="chat-md-paragraph")
+      assert html =~ ~s(data-role="chat-md-list")
+      assert html =~ ~s(data-role="chat-md-blockquote")
+      assert html =~ ~s(data-role="chat-md-code-block")
+      assert html =~ ~s(data-role="chat-md-code-language")
+
+      assert fragment |> LazyHTML.query("strong") |> LazyHTML.text() |> String.trim() == "bold"
+      assert fragment |> LazyHTML.query("em") |> LazyHTML.text() |> String.trim() == "emphasis"
+
+      assert fragment
+             |> LazyHTML.query(~s(code[data-role="chat-md-inline-code"]))
+             |> LazyHTML.text()
+             |> String.trim() == "inline()"
+
+      assert LazyHTML.attribute(LazyHTML.query(fragment, "a"), "href") == [
+               "https://example.com/docs"
+             ]
+
+      assert fragment
+             |> LazyHTML.query(~s([data-role="chat-md-code-language"]))
+             |> LazyHTML.text()
+             |> String.trim() == "elixir"
+
+      assert fragment
+             |> LazyHTML.query(~s(pre[data-role="chat-md-code-text"]))
+             |> LazyHTML.text()
+             |> String.trim() == "IO.puts(\"<safe>\")"
+
+      refute html =~ "<script>"
+      assert html =~ ~S|&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt;|
+    end
+
+    test "user messages render Markdown without allowing raw HTML injection" do
+      html =
+        render_component(ChatRail,
+          id: "chat-rail",
+          studio_state: default_state(),
+          streams: %{
+            chat_messages: [
+              {"chat-msg-user-markdown",
+               %{
+                 id: "user-markdown",
+                 role: :user,
+                 body: """
+                 1. first
+                 2. second
+
+                 Use `<tag>` but not <b>raw html</b>.
+                 """,
+                 transient?: false
+               }}
+            ]
+          },
+          current_scope: lawyer_scope()
+        )
+
+      fragment = LazyHTML.from_fragment(html)
+
+      assert html =~ ~s(data-role="chat-md-list")
+      assert html =~ ~s(data-list-kind="ordered")
+
+      list_text =
+        fragment
+        |> LazyHTML.query("ol li")
+        |> LazyHTML.text()
+
+      assert list_text =~ "first"
+      assert list_text =~ "second"
+
+      assert fragment
+             |> LazyHTML.query(~s(code[data-role="chat-md-inline-code"]))
+             |> LazyHTML.text()
+             |> String.trim() == "<tag>"
+
+      refute html =~ "<b>raw html</b>"
+      assert html =~ ~s(&lt;b&gt;raw html&lt;/b&gt;)
+    end
+
+    test "tool call details stay plain escaped JSON instead of Markdown" do
+      html =
+        render_component(ChatRail,
+          id: "chat-rail",
+          studio_state: default_state(),
+          streams: %{
+            chat_messages: [
+              {"chat-msg-tool-markdown-json",
+               %{
+                 id: "tool-markdown-json",
+                 role: :agent,
+                 operation: %{
+                   id: "tool-markdown-json",
+                   type: "tool_call",
+                   title: "debug.echo",
+                   status: "failed",
+                   summary: "**not bold**",
+                   details: %{
+                     "payload" => "```json\n{\"unsafe\":\"<script>\"}\n```"
+                   }
+                 },
+                 transient?: false
+               }}
+            ]
+          },
+          current_scope: lawyer_scope()
+        )
+
+      fragment = LazyHTML.from_fragment(html)
+
+      assert fragment
+             |> LazyHTML.query(~s([data-role="tool-trace-summary"]))
+             |> LazyHTML.text()
+             |> String.trim() == "**not bold**"
+
+      assert LazyHTML.text(LazyHTML.query(fragment, ~s([data-role="tool-trace-details"] pre))) =~
+               "```json"
+
+      refute html =~ ~s([data-role="chat-md-code-block"])
+      refute html =~ "<script>"
     end
 
     test "transient agent prose shows a loading indicator until the final message arrives" do
@@ -789,7 +848,7 @@ defmodule ContractWeb.Live.Studio.Components.ChatRailTest do
 
       assert html =~ ~s(data-role="chat-message")
       assert html =~ ~s(data-transient="true")
-      assert html =~ "Hello, "
+      assert html =~ "Hello,"
 
       bubble2 = %{
         id: "agent-#{run_id}-2",
@@ -803,7 +862,7 @@ defmodule ContractWeb.Live.Studio.Components.ChatRailTest do
       html = render(lv)
 
       # Both transient bubbles are present in the streamed list.
-      assert html =~ "Hello, "
+      assert html =~ "Hello,"
       assert html =~ "world."
     end
 
@@ -997,45 +1056,6 @@ defmodule ContractWeb.Live.Studio.Components.ChatRailTest do
       assert html =~ ~s(data-component="grill-rail")
     end
 
-    test "renders structured evidence operation blocks with citation and attach action", %{
-      conn: conn
-    } do
-      {:ok, lv, _html} =
-        live_isolated(conn, WrapperLive, session: %{"scope" => lawyer_scope()})
-
-      send(lv.pid, {
-        :insert,
-        %{
-          id: "evidence-msg-1",
-          role: :agent,
-          operation: %{
-            id: "evidence-op-1",
-            type: "evidence",
-            status: "completed",
-            title: "민법 제390조",
-            summary: "채무불이행 손해배상 근거",
-            evidence_snapshot_id: "11111111-1111-1111-1111-111111111111",
-            provider: "law_mcp.search_law",
-            source: "Korea Law MCP",
-            citation: "민법 제390조",
-            captured_at: "2026-05-17T12:00:00Z"
-          },
-          transient?: false
-        }
-      })
-
-      html = render(lv)
-      assert html =~ ~s(data-role="evidence-block")
-      assert html =~ "민법 제390조"
-      # `source: "Korea Law MCP"` is rendered as the localized "법령 검색
-      # 결과" label, not as the raw provider string.
-      assert html =~ "법령 검색 결과"
-      assert html =~ "2026-05-17T12:00:00Z"
-      assert html =~ ~s(data-role="evidence-attach")
-      assert html =~ ~s(phx-click="evidence.attach")
-      assert html =~ ~s(phx-value-evidence_snapshot_id="11111111-1111-1111-1111-111111111111")
-    end
-
     test "non-tool operation block expand uses client-side JS toggle on the details panel",
          %{conn: conn} do
       {:ok, lv, _html} =
@@ -1047,12 +1067,12 @@ defmodule ContractWeb.Live.Studio.Components.ChatRailTest do
           id: "op-toggle-1",
           role: :agent,
           operation: %{
-            id: "export-toggle-1",
-            type: "export_status",
-            title: "PDF export",
+            id: "op-toggle-1",
+            type: "status",
+            title: "Background task",
             status: "completed",
             summary: "Ready",
-            details: %{"filename" => "contract.pdf"}
+            details: %{"detail" => "complete"}
           },
           transient?: false
         }
@@ -1061,8 +1081,8 @@ defmodule ContractWeb.Live.Studio.Components.ChatRailTest do
       html = render(lv)
       fragment = LazyHTML.from_fragment(html)
 
-      assert html =~ ~s(id="operation-block-export-toggle-1")
-      assert html =~ ~s(id="operation-block-export-toggle-1-toggle")
+      assert html =~ ~s(id="operation-block-op-toggle-1")
+      assert html =~ ~s(id="operation-block-op-toggle-1-toggle")
 
       # Details panel is always rendered, with the `hidden` attribute so
       # the JS toggle on the button can flip it client-side without
@@ -1070,21 +1090,21 @@ defmodule ContractWeb.Live.Studio.Components.ChatRailTest do
       # container, so changing an outer assign would not re-render it).
       details =
         fragment
-        |> LazyHTML.query("#operation-block-export-toggle-1-details")
+        |> LazyHTML.query("#operation-block-op-toggle-1-details")
 
       [details_hidden] = LazyHTML.attribute(details, "hidden")
       assert details_hidden == "" or details_hidden == "hidden"
-      assert html =~ "contract.pdf"
+      assert html =~ "complete"
 
       # The toggle button carries a JS-encoded phx-click — no server event.
       [phx_click] =
         fragment
-        |> LazyHTML.query("#operation-block-export-toggle-1-toggle")
+        |> LazyHTML.query("#operation-block-op-toggle-1-toggle")
         |> LazyHTML.attribute("phx-click")
 
       assert phx_click =~ "toggle_attr"
       assert phx_click =~ ~s(hidden)
-      assert phx_click =~ "#operation-block-export-toggle-1-details"
+      assert phx_click =~ "#operation-block-op-toggle-1-details"
       assert phx_click =~ "aria-expanded"
     end
 

@@ -14,18 +14,6 @@ defmodule Contract.Documents.Document do
   document therefore has `type_key: nil`; `Command(:set_contract_type)`
   fills it in later.
 
-  ## Variants
-
-  When `Contract.Conversion.create_variant/2` produces a derived document
-  from a source, the new row carries:
-
-    * `:parent_document_id` — the source document.
-    * `:variant_of_change_id` — the `:create_converted_variant` Change
-      that spawned this variant.
-
-  Lineage of individual fields is recorded in
-  `Contract.Documents.FieldLineage`, NOT here.
-
   ## latest_revision
 
   Mirrors the highest `applied_revision` of any active Change for this
@@ -60,8 +48,6 @@ defmodule Contract.Documents.Document do
       ],
       default: :draft
 
-    field :parent_document_id, :binary_id
-    field :variant_of_change_id, :binary_id
     field :latest_revision, :integer, default: 0
     field :write_completed_at, :utc_datetime
     field :write_completed_by_id, :binary_id
@@ -69,10 +55,6 @@ defmodule Contract.Documents.Document do
     field :write_completed_snapshot_revision, :integer
     field :metadata, :map, default: %{}
 
-    # SPEC.md v0.5 §7.1 — state_snapshot is the materialized document
-    # state at :current_revision.
-    field :state_snapshot, :map, default: %{}
-    field :current_revision, :integer, default: 0
     timestamps()
   end
 
@@ -97,12 +79,8 @@ defmodule Contract.Documents.Document do
       :type_key,
       :document_type_id,
       :status,
-      :parent_document_id,
-      :variant_of_change_id,
       :latest_revision,
-      :metadata,
-      :state_snapshot,
-      :current_revision
+      :metadata
     ])
     |> validate_required([:owner_id, :title])
     |> validate_length(:title, min: 1, max: 300)

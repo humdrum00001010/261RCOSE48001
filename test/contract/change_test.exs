@@ -14,17 +14,17 @@ defmodule Contract.ChangeTest do
   end
 
   describe "v0.5 runtime shape" do
-    test "exposes document/chat/source command fields and no legacy Action or Matter fields" do
+    test "exposes document/chat command fields and no legacy Action, Matter, or source fields" do
       fields = Map.keys(%Change{})
 
       refute :matter_id in fields
       refute :artifact_id in fields
       refute :action_kind in fields
+      refute :source_document_id in fields
+      refute :source_claim_id in fields
 
       assert :document_id in fields
       assert :chat_thread_id in fields
-      assert :source_document_id in fields
-      assert :source_claim_id in fields
       assert :agent_run_id in fields
       assert :command_kind in fields
       assert :field_path in fields
@@ -39,8 +39,6 @@ defmodule Contract.ChangeTest do
       attrs = %{
         document_id: Ecto.UUID.generate(),
         chat_thread_id: Ecto.UUID.generate(),
-        source_document_id: Ecto.UUID.generate(),
-        source_claim_id: Ecto.UUID.generate(),
         agent_run_id: Ecto.UUID.generate(),
         command_kind: "rename_document",
         actor_type: :user,

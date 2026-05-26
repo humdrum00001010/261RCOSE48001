@@ -489,101 +489,6 @@ defmodule Contract.Session.ReducerTest do
     end
   end
 
-  describe "compile/2 — add_mark / update_mark" do
-    test "add_mark produces no ops, only marks" do
-      state = new_state()
-
-      a =
-        action(:add_mark,
-          payload: %{"intent" => "flag", "source" => "user", "text" => "review"}
-        )
-
-      {:ok, input} = Reducer.compile(a, state)
-      assert input.ops == []
-      assert [%MarkInput{intent: :flag, source: :user, text: "review"}] = input.marks
-    end
-
-    test "update_mark stamps metadata.update=true" do
-      state = new_state()
-
-      a =
-        action(:update_mark,
-          payload: %{"intent" => "label", "source" => "user", "text" => "fixed"}
-        )
-
-      {:ok, input} = Reducer.compile(a, state)
-      assert input.metadata.update == true
-    end
-  end
-
-  describe "compile/2 — create_converted_variant" do
-    test "emits a create_projection op for the new variant" do
-      state = new_state()
-
-      a =
-        action(:create_converted_variant,
-          payload: %{
-            "parent_document_id" => uuid(1),
-            "new_document_id" => uuid(2),
-            "target_type_key" => "nda_short"
-          }
-        )
-
-      {:ok, input} = Reducer.compile(a, state)
-      assert [%Operation{op: :create_projection, target_id: target}] = input.ops
-      assert target == uuid(2)
-    end
-  end
-
-  describe "compile/2 — revoke_change" do
-    test "emits the supplied inverse ops and a system explain mark" do
-      state = new_state()
-
-      a =
-        action(:revoke_change,
-          change_id: uuid(50),
-          payload: %{
-            "change_id" => uuid(50),
-            "inverse_ops" => [
-              %{"op" => "delete_node", "target_type" => "node", "target_id" => uuid(7)}
-            ]
-          }
-        )
-
-      {:ok, input} = Reducer.compile(a, state)
-
-      assert [%Operation{op: :delete_node}] = input.ops
-      assert [%MarkInput{intent: :explain, source: :system}] = input.marks
-    end
-  end
-
-  describe "compile/2 — resolve_revoke" do
-    test "passes user-chosen ops + marks through" do
-      state = new_state()
-
-      a =
-        action(:resolve_revoke,
-          payload: %{
-            "ops" => [
-              %{
-                "op" => "replace_content",
-                "target_type" => "node",
-                "target_id" => uuid(8),
-                "args" => %{"content" => "ok"}
-              }
-            ],
-            "marks" => [],
-            "revoke_request_id" => uuid(80)
-          }
-        )
-
-      {:ok, input} = Reducer.compile(a, state)
-      assert [%Operation{op: :replace_content}] = input.ops
-      assert input.metadata.reconciliation == true
-      assert input.metadata.revoke_request_id == uuid(80)
-    end
-  end
-
   # ============================================================================
   # compile/2 — unsupported kinds
   # ============================================================================
@@ -595,8 +500,18 @@ defmodule Contract.Session.ReducerTest do
           :duplicate_document,
           :start_type_conversion,
           :set_field_migration_strategy,
+          :create_converted_variant,
           :chat_message,
-          :request_export
+          :request_export,
+          :revoke_change,
+          :resolve_revoke,
+          :add_mark,
+          :update_mark,
+          :source_claim_confirm,
+          :source_claim_correct,
+          :source_claim_reject,
+          :source_claim_link_to_document,
+          :source_claim_unlink_from_document
         ] do
       test "Reducer.compile/2 rejects #{kind}" do
         state = new_state()
@@ -827,23 +742,6 @@ defmodule Contract.Session.ReducerTest do
       {_input, new_state} = run_pipeline(a, state)
       assert new_state.projection.node_order == [node_b, node_a]
     end
-
-    test "create_converted_variant leaves the source projection alone" do
-      state = new_state()
-
-      a =
-        action(:create_converted_variant,
-          payload: %{
-            "parent_document_id" => uuid(1),
-            "new_document_id" => uuid(99),
-            "target_type_key" => "nda_short"
-          }
-        )
-
-      {_input, new_state} = run_pipeline(a, state)
-      assert new_state.revision == 1
-      assert new_state.projection == state.projection
-    end
   end
 
   # ============================================================================
@@ -889,15 +787,6 @@ defmodule Contract.Session.ReducerTest do
       inverse_input = %ChangeInput{input | ops: input.inverse_ops}
       {:ok, restored} = Reducer.apply(inverse_input, new_state)
       assert restored.projection.nodes[node_id].content == "keep me"
-    end
-
-    test "add_mark has no inverse op (marks are append-only)" do
-      state = new_state()
-      a = action(:add_mark, payload: %{"intent" => "label", "source" => "user", "text" => "x"})
-      {:ok, input} = Reducer.compile(a, state)
-      {:ok, pre} = Reducer.preimage(input, state)
-      {:ok, inv} = Reducer.inverse(input, pre)
-      assert inv == []
     end
   end
 
@@ -963,14 +852,12 @@ defmodule Contract.Session.ReducerTest do
       assert is_list(change.inverse)
     end
 
-    test "builds a v0.5 Change with direct command and source fields" do
+    test "builds a v0.5 Change with direct command fields" do
       state = new_state(revision: 3)
 
       a =
         action(:rename_document,
           chat_thread_id: uuid(30),
-          source_document_id: uuid(31),
-          source_claim_id: uuid(32),
           agent_run_id: uuid(33),
           base_revision: 3,
           payload: %{"title" => "Direct fields"}
@@ -982,13 +869,13 @@ defmodule Contract.Session.ReducerTest do
       assert change.command_kind == "rename_document"
       assert change.result_revision == 4
       assert change.chat_thread_id == uuid(30)
-      assert change.source_document_id == uuid(31)
-      assert change.source_claim_id == uuid(32)
       assert change.agent_run_id == uuid(33)
       assert change.op == "set_attr"
       assert [%{op: :set_attr}] = change.payload
       assert is_list(change.inverse)
       refute Map.has_key?(Map.from_struct(change), :action_kind)
+      refute Map.has_key?(Map.from_struct(change), :source_document_id)
+      refute Map.has_key?(Map.from_struct(change), :source_claim_id)
     end
 
     test "carries idempotency_key through" do
@@ -1292,82 +1179,6 @@ defmodule Contract.Session.ReducerTest do
         assert ci1 == ci2
         assert ci1.idempotency_key == key
       end
-    end
-  end
-
-  # ============================================================================
-  # compile/2 — source_claim_* kinds
-  # ============================================================================
-
-  describe "compile/2 — source_claim_*" do
-    test "confirm compiles to a source-backed field update and mark" do
-      state = new_state(document_id: uuid(10))
-
-      command =
-        action(:source_claim_confirm,
-          document_id: uuid(10),
-          source_document_id: uuid(98),
-          source_claim_id: uuid(99),
-          payload: %{"field_id" => "effective_date", "value" => "2026-01-01"}
-        )
-
-      assert {:ok, input} = Reducer.compile(command, state)
-      assert input.action_kind == :source_claim_confirm
-
-      assert [%Operation{op: :set_field, target_type: :field, target_id: "effective_date"}] =
-               input.ops
-
-      assert [%MarkInput{intent: :source_claim, target_id: "effective_date"}] = input.marks
-    end
-
-    test "correct compiles the corrected user value" do
-      state = new_state(document_id: uuid(10))
-
-      command =
-        action(:source_claim_correct,
-          document_id: uuid(10),
-          source_claim_id: uuid(99),
-          payload: %{"field_id" => "effective_date", "value" => "2026-02-01"}
-        )
-
-      assert {:ok, input} = Reducer.compile(command, state)
-      assert [%Operation{op: :set_field, args: %{value: "2026-02-01"}}] = input.ops
-    end
-
-    test "reject compiles to a review mark without document ops" do
-      state = new_state(document_id: uuid(10))
-
-      command =
-        action(:source_claim_reject,
-          document_id: uuid(10),
-          source_claim_id: uuid(99),
-          payload: %{"reason" => "wrong field"}
-        )
-
-      assert {:ok, input} = Reducer.compile(command, state)
-      assert input.ops == []
-      assert [%MarkInput{intent: :source_claim_rejected, target_type: :document}] = input.marks
-    end
-
-    test "link_to_document compiles to a durable ref binding" do
-      state = new_state(document_id: uuid(10))
-
-      command =
-        action(:source_claim_link_to_document,
-          document_id: uuid(10),
-          source_document_id: uuid(98),
-          source_claim_id: uuid(99),
-          payload: %{"node_id" => uuid(77), "field_id" => "effective_date"}
-        )
-
-      assert {:ok, input} = Reducer.compile(command, state)
-
-      assert [%Operation{op: :bind_ref, target_type: :artifact, target_id: ref_id, args: args}] =
-               input.ops
-
-      assert ref_id == "source-claim:#{uuid(99)}"
-      assert args.ref.target_id == uuid(77)
-      assert args.ref.source_claim_id == uuid(99)
     end
   end
 end

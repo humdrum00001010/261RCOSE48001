@@ -30,16 +30,6 @@ defmodule ContractWeb.TestDbControllerTest do
     end
   end
 
-  describe "GET /test/db/revoke_requests/:document_id" do
-    test "returns an empty list for a never-seen document id", %{conn: conn} do
-      doc_id = Ecto.UUID.generate()
-      conn = get(conn, ~p"/test/db/revoke_requests/#{doc_id}")
-
-      assert %{"ok" => true, "document_id" => ^doc_id, "revoke_requests" => []} =
-               json_response(conn, 200)
-    end
-  end
-
   describe "GET /test/db/documents" do
     test "returns [] when the documents table is absent (or empty)", %{conn: conn} do
       conn = get(conn, ~p"/test/db/documents")
@@ -49,9 +39,9 @@ defmodule ContractWeb.TestDbControllerTest do
   end
 
   describe "GET /test/db/oban_jobs" do
-    test "returns the documented envelope for the export queue", %{conn: conn} do
-      conn = get(conn, ~p"/test/db/oban_jobs?queue=export")
-      assert %{"ok" => true, "queue" => "export", "jobs" => jobs} = json_response(conn, 200)
+    test "returns the documented envelope for a queue", %{conn: conn} do
+      conn = get(conn, ~p"/test/db/oban_jobs?queue=default")
+      assert %{"ok" => true, "queue" => "default", "jobs" => jobs} = json_response(conn, 200)
       assert is_list(jobs)
     end
 

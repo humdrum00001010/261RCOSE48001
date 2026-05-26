@@ -38,15 +38,14 @@ defmodule ContractWeb.UserLive.SettingsHubTest do
       assert html =~ ~s(id="settings-hub-welcome")
     end
 
-    test "renders the sidebar with 6 category items (3 active + 3 'Soon')",
+    test "renders the sidebar with active categories and 'Soon' placeholders",
          %{conn: conn} do
       {:ok, _lv, html} = live(conn, ~p"/settings")
 
       assert html =~ ~s(id="settings-sidebar")
-      # The three active items (Account, API tokens, Integrations)
+      # The active items
       assert html =~ "Account"
       assert html =~ "API tokens"
-      assert html =~ "Integrations"
       # The three disabled placeholders
       assert html =~ "Appearance"
       assert html =~ "Documents"

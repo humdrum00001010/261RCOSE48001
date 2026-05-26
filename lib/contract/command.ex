@@ -1,7 +1,7 @@
 defmodule Contract.Command do
   @moduledoc """
-  The one intent shape. Users, agents, Slack, MCP, import jobs, export jobs,
-  and system jobs all normalize into `Contract.Command`. See SPEC.md §7.5.
+  The one intent shape. Users, agents, MCP, and system jobs normalize into
+  `Contract.Command`. See SPEC.md §7.5.
 
   Pre-v0.5 this module was named `Contract`.`Action`. Renamed for the v0.5
   Command/Change vocabulary shift.
@@ -16,25 +16,13 @@ defmodule Contract.Command do
 
   # Command kinds that always require a `document_id` to be resolvable.
   @document_scoped_kinds [
+    :archive_document,
     :edit_document,
     :edit_text,
     :rename_document,
+    :restore_document,
     :update_metadata,
-    :set_contract_type,
-    :add_mark,
-    :update_mark,
-    :revoke_change,
-    :resolve_revoke,
-    :request_export
-  ]
-
-  # Source-claim-scoped kinds always require a `source_claim_id`.
-  @source_claim_scoped_kinds [
-    :source_claim_confirm,
-    :source_claim_correct,
-    :source_claim_reject,
-    :source_claim_link_to_document,
-    :source_claim_unlink_from_document
+    :set_contract_type
   ]
 
   @primary_key false
@@ -44,8 +32,6 @@ defmodule Contract.Command do
       values: [
         :open_document,
         :create_document,
-        :upload_document,
-        :duplicate_document,
         :archive_document,
         :restore_document,
         :rename_document,
@@ -53,27 +39,11 @@ defmodule Contract.Command do
         :set_contract_type,
         :edit_document,
         :edit_text,
-        :add_mark,
-        :update_mark,
-        :source_claim_confirm,
-        :source_claim_correct,
-        :source_claim_reject,
-        :source_claim_link_to_document,
-        :source_claim_unlink_from_document,
-        :start_type_conversion,
-        :set_field_migration_strategy,
-        :create_converted_variant,
-        :chat_message,
-        :agent_change,
-        :revoke_change,
-        :resolve_revoke,
-        :request_export
+        :agent_change
       ]
 
     field :document_id, :binary_id
     field :chat_thread_id, :binary_id
-    field :source_document_id, :binary_id
-    field :source_claim_id, :binary_id
     field :change_id, :binary_id
     field :agent_run_id, :binary_id
 
@@ -96,12 +66,6 @@ defmodule Contract.Command do
   @spec document_scoped_kinds() :: [atom()]
   def document_scoped_kinds, do: @document_scoped_kinds
 
-  @doc """
-  The Command.kind values that require a `:source_claim_id` on the command.
-  """
-  @spec source_claim_scoped_kinds() :: [atom()]
-  def source_claim_scoped_kinds, do: @source_claim_scoped_kinds
-
   @spec changeset(t(), T.attrs()) :: Ecto.Changeset.t()
   def changeset(command, attrs) do
     command
@@ -109,8 +73,6 @@ defmodule Contract.Command do
       :kind,
       :document_id,
       :chat_thread_id,
-      :source_document_id,
-      :source_claim_id,
       :change_id,
       :agent_run_id,
       :actor_type,
@@ -125,7 +87,6 @@ defmodule Contract.Command do
     |> validate_required([:actor_type])
     |> validate_length(:idempotency_key, min: 6, max: 128)
     |> validate_document_id_when_required()
-    |> validate_source_claim_id_when_required()
   end
 
   defp ensure_actor_type_default(changeset) do
@@ -140,16 +101,6 @@ defmodule Contract.Command do
 
     if kind in @document_scoped_kinds do
       validate_required(changeset, [:document_id])
-    else
-      changeset
-    end
-  end
-
-  defp validate_source_claim_id_when_required(changeset) do
-    kind = get_field(changeset, :kind)
-
-    if kind in @source_claim_scoped_kinds do
-      validate_required(changeset, [:source_claim_id])
     else
       changeset
     end

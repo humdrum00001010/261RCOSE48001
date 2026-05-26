@@ -26,92 +26,38 @@ defmodule Contract.AgentTest do
       assert action.payload["marks"] == []
     end
 
-    test "edit mode produces Action(:agent_change) with ops" do
-      payload = %{
-        "mode" => "edit",
-        "questions" => [],
-        "ops" => [
-          %{
-            "op" => "replace_content",
-            "target_type" => "node",
-            "target_id" => "node:3",
-            "args" => %{"text" => "30 days"}
-          }
-        ],
-        "marks" => [],
-        "message" => "Changed payment deadline to 30 days."
-      }
-
-      assert {:ok, %Command{} = action} =
-               Agent.decode_action(Jason.encode!(payload), run_id: "RUN", turn_index: 1)
-
-      assert action.kind == :agent_change
-      assert action.payload["mode"] == "edit"
-      assert length(action.payload["ops"]) == 1
-      assert action.idempotency_key == "agent:RUN:1"
-    end
-
-    test "decode_action accepted shapes (plain text, JSON, OpenAI response variants)" do
+    test "decode_action accepts final text and OpenAI response variants only" do
       assert {:ok, %Command{message: "not-json", payload: %{"ops" => []}}} =
                Agent.decode_action("not-json", run_id: "RUN")
 
-      assert {:ok, %Command{message: "[1,2,3]"}} =
-               Agent.decode_action(Jason.encode!([1, 2, 3]), run_id: "RUN")
+      legacy_json = Jason.encode!(%{"mode" => "edit", "ops" => [%{"op" => "stale"}]})
 
-      assert {:ok, %Command{message: json_object}} =
-               Agent.decode_action(
-                 Jason.encode!(%{"questions" => [], "ops" => [], "marks" => []}),
-                 run_id: "RUN"
-               )
+      assert {:ok, %Command{message: ^legacy_json, payload: %{"ops" => []}}} =
+               Agent.decode_action(legacy_json, run_id: "RUN")
 
-      assert json_object =~ "questions"
-      assert {:error, {:decode_failed, _}} = Agent.decode_action(123, run_id: "R")
-
-      fenced =
-        "```json\n" <>
-          Jason.encode!(%{"mode" => "edit", "ops" => [], "marks" => [], "message" => "ok"}) <>
-          "\n```"
-
-      assert {:ok, %Command{kind: :agent_change}} = Agent.decode_action(fenced, run_id: "R")
-
-      # Accepted: OpenAI Response map output_text.
       assert {:ok, %Command{}} =
                Agent.decode_action(
                  %{
-                   "output_text" =>
-                     Jason.encode!(%{
-                       "mode" => "edit",
-                       "ops" => [],
-                       "marks" => [],
-                       "message" => "ok"
-                     })
+                   "output_text" => "done"
                  },
                  run_id: "R",
                  turn_index: 2
                )
 
-      # Accepted: OpenAI Response map output[].content[].text.
       response = %{
         "output" => [
           %{
             "type" => "message",
             "content" => [
-              %{
-                "type" => "output_text",
-                "text" =>
-                  Jason.encode!(%{
-                    "mode" => "edit",
-                    "ops" => [],
-                    "marks" => [],
-                    "message" => "ok"
-                  })
-              }
+              %{"type" => "output_text", "text" => "ok"}
             ]
           }
         ]
       }
 
       assert {:ok, %Command{kind: :agent_change}} = Agent.decode_action(response, run_id: "R")
+      assert {:error, {:decode_failed, _}} = Agent.decode_action(%{"output" => []}, run_id: "R")
+      assert {:error, {:decode_failed, _}} = Agent.decode_action(123, run_id: "R")
     end
   end
 
@@ -194,8 +140,9 @@ defmodule Contract.AgentTest do
       refute user_msg.content =~ "Context Reservoir"
     end
 
-    # Task #143 — the full document IR no longer ships in the
-    # instructions string. The agent must call `doc.get` to read it.
+    # Task #143/#222 — the full document IR no longer ships in the
+    # instructions string. The agent uses doc.get for metadata/read hints
+    # and doc.read/doc.find for body content.
     test "instructions no longer inline CURRENT_DOCUMENT_IR" do
       action = %Command{
         kind: :chat_message,
@@ -208,12 +155,14 @@ defmodule Contract.AgentTest do
       refute frame.system =~ "CURRENT_DOCUMENT_IR"
       assert frame.system =~ "doc.get"
       assert frame.system =~ "현재 문서 ID"
-      assert frame.system =~ "응답 본문"
+      assert frame.system =~ "bounded metadata/read hints/cursors"
+      assert frame.system =~ "doc.read"
       refute frame.system =~ "ir_url"
       refute frame.system =~ "GET"
+      refute frame.system =~ "본문 IR이 필요하면"
     end
 
-    test "instructions prefer fields for slot edits and full-value text replacement" do
+    test "instructions require doc.edit for slot edits and full-value text replacement" do
       action = %Command{
         kind: :chat_message,
         actor_type: :user,
@@ -224,10 +173,23 @@ defmodule Contract.AgentTest do
       assert {:ok, frame} = Agent.build_context(nil, action)
 
       assert frame.system =~ "slot-like date/period edit"
-      assert frame.system =~ "prefer `doc.set_field_value`"
+      assert frame.system =~ "`doc.edit`"
+      refute frame.system =~ "doc.edit_text"
+      refute frame.system =~ "doc.insert_block"
+      refute frame.system =~ "doc.delete_block"
+      refute frame.system =~ "doc.edit_table"
+      refute frame.system =~ "doc.set_field_value"
       assert frame.system =~ "replace the full exact existing value or paragraph"
       assert frame.system =~ "not only a label prefix"
-      assert frame.system =~ "Use `doc.get` for metadata, outline, fields, and revision"
+      assert frame.system =~ "Never put line breaks inside `replace_text.text`"
+      assert frame.system =~ "Do not replace one template paragraph with an entire contract body"
+      assert frame.system =~ "전화번호"
+      assert frame.system =~ "wider field"
+
+      assert frame.system =~
+               "Use `doc.get` for bounded metadata, heading labels, read hints, cursors, and revision"
+
+      assert frame.system =~ "Use `doc.read` only for small paragraph windows"
       assert frame.system =~ "Use `doc.find` when you already know target text"
     end
 
@@ -297,6 +259,7 @@ defmodule Contract.AgentTest do
       assert {:ok, frame} = Agent.build_context(nil, action)
       assert frame.system == Agent.grill_intro_system_prompt()
       assert frame.grill_seed? == true
+      assert frame.tools == []
       assert [%{role: "user", content: content}] = frame.input
       assert content =~ "DOCUMENT_BODY"
       assert content =~ "비밀유지계약서"
@@ -353,28 +316,7 @@ defmodule Contract.AgentTest do
     end
   end
 
-  describe "runtime facade compatibility" do
-    test "rejects non-supported action kinds" do
-      action = %Command{kind: :rename_document, actor_type: :user, message: "x"}
-      assert {:error, {:unsupported_action, :rename_document}} = Agent.start(nil, action)
-    end
-
-    test "start/2 is a stale runtime entrypoint for chat messages" do
-      action = %Command{
-        kind: :chat_message,
-        actor_type: :user,
-        message: "make this stricter"
-      }
-
-      assert {:error, {:stale_runtime_entrypoint, Contract.Agent, Contract.Agent.Document}} =
-               Agent.start(nil, action)
-    end
-
-    test "cancel/2 is a stale runtime entrypoint" do
-      assert {:error, {:stale_runtime_entrypoint, Contract.Agent, Contract.Agent.Document}} =
-               Agent.cancel(nil, Ecto.UUID.generate())
-    end
-
+  describe "stale runtime guards" do
     test "RunServer cannot be started directly as a GenServer" do
       Process.flag(:trap_exit, true)
       run = %Contract.Agent.Run{id: Ecto.UUID.generate()}

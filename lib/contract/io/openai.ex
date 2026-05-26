@@ -102,18 +102,14 @@ defmodule Contract.IO.OpenAI do
     doc.get
     doc.find
     doc.read
-    doc.edit_text
-    doc.insert_block
-    doc.delete_block
-    doc.edit_table
-    doc.set_field_value
+    doc.edit
   )
 
   @doc """
   Agent-facing MCP tool spec for the in-house `contract-doc` server. Takes
   a signed route_ref `bearer` token (which carries document_id +
   agent_run_id) and returns the spec to splice into a Responses-API tools
-  list. `allowed_tools` restricts the model's surface to the 6 doc.* tools
+  list. `allowed_tools` restricts the model's surface to the agent doc.* tools
   even though the server advertises more.
 
   Returns `nil` when no bearer is supplied so callers can drop it.

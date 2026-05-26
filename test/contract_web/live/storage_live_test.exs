@@ -28,6 +28,7 @@ defmodule ContractWeb.StorageLiveTest do
   import Phoenix.LiveViewTest
 
   alias Contract.Documents
+  alias Contract.Documents.Document
 
   describe "auth gate" do
     test "redirects anonymous users to /users/log-in", %{conn: conn} do
@@ -130,16 +131,35 @@ defmodule ContractWeb.StorageLiveTest do
       assert html =~ ~s(href="/documents/#{doc.id}")
     end
 
-    test "overflow ⋮ button stops propagation so the navigate link does NOT fire",
+    test "overflow ⋮ menu does not block LiveView events from delete",
          %{conn: conn, scope: scope} do
-      {:ok, _doc} = Documents.create(scope, %{title: "Menu propagation"})
+      {:ok, doc} = Documents.create(scope, %{title: "Menu propagation"})
 
       {:ok, _lv, html} = live(conn, ~p"/storage")
 
-      # The card's overflow menu must stop click bubbling so the
-      # sibling navigate-link overlay does not also fire.
+      # The menu is layered above the sibling navigate-link overlay; it must
+      # not stop bubbling, otherwise delegated phx-click handlers cannot fire.
       assert html =~ ~s(data-role="document-card-menu")
-      assert html =~ ~s|onclick="event.stopPropagation()"|
+      assert html =~ ~s(id="document-delete-#{doc.id}")
+      assert html =~ ~s(data-role="document-card-delete")
+      refute html =~ ~s(data-confirm=)
+      refute html =~ ~s|onclick="event.stopPropagation()"|
+    end
+
+    test "per-card delete archives the document and removes it from storage",
+         %{conn: conn, scope: scope} do
+      {:ok, doc} = Documents.create(scope, %{title: "Delete target"})
+
+      {:ok, lv, _html} = live(conn, ~p"/storage")
+
+      assert has_element?(lv, "#document-card-#{doc.id}")
+
+      lv
+      |> element("#document-delete-#{doc.id}")
+      |> render_click()
+
+      refute has_element?(lv, "#document-card-#{doc.id}")
+      assert %Document{status: :archived} = Contract.Repo.get!(Document, doc.id)
     end
 
     test "does not render any upload affordance on Storage",

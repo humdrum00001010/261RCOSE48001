@@ -222,54 +222,46 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
             :if={is_nil(msg_operation(msg)) and msg_role(msg) == "user"}
             class="w-full border border-base-content/10 bg-base-300/50 px-3 py-1.5 text-[13px] leading-snug whitespace-normal break-words text-base-content/95 shadow-[inset_0_1px_3px_rgba(0,0,0,0.10)]"
           >
-            {msg_body(msg)}
+            <.markdown_body body={msg_body(msg)} paragraph_role="chat-md-paragraph" />
           </div>
 
           <%!-- Agent message: flat prose, no card. Sits flush at the
                column edge like ChatGPT / Codex CLI. `agent-text` span is
-               the per-token append target; body is split on \n\n+ into
-               paragraph spans so paragraph breaks render with a real
-               gap instead of being collapsed into one block. --%>
-          <span
+               the per-token append target. Completed messages render through
+               the limited Markdown renderer; transient JS appends still add
+               escaped text nodes until the final message is inserted. --%>
+          <div
             :if={is_nil(msg_operation(msg)) and msg_role(msg) == "agent"}
             data-role="agent-text"
             data-message-id={dom_id}
             aria-busy={msg_transient?(msg)}
             class="block px-3 py-1 text-[14px] leading-relaxed break-words text-base-content"
           >
-            <% paragraphs = agent_paragraphs(msg) %>
-            <%= for {para, index} <- Enum.with_index(paragraphs) do %>
+            <.markdown_body body={msg_body(msg)} paragraph_role="agent-paragraph" />
+            <span
+              :if={agent_loading?(msg)}
+              data-role="agent-loading"
+              role="status"
+              aria-label={dgettext("studio", "답변 작성 중")}
+              class="ml-1 inline-flex h-4 translate-y-[0.125rem] items-end gap-0.5 align-baseline text-base-content/45"
+            >
               <span
-                data-role="agent-paragraph"
-                class="block whitespace-normal [&:not(:last-child)]:mb-1"
+                aria-hidden="true"
+                class="size-1 rounded-full bg-current motion-safe:animate-bounce [animation-delay:-240ms]"
               >
-                {para}
-                <span
-                  :if={agent_loading?(msg) and index == length(paragraphs) - 1}
-                  data-role="agent-loading"
-                  role="status"
-                  aria-label={dgettext("studio", "답변 작성 중")}
-                  class="ml-1 inline-flex h-4 translate-y-[0.125rem] items-end gap-0.5 align-baseline text-base-content/45"
-                >
-                  <span
-                    aria-hidden="true"
-                    class="size-1 rounded-full bg-current motion-safe:animate-bounce [animation-delay:-240ms]"
-                  >
-                  </span>
-                  <span
-                    aria-hidden="true"
-                    class="size-1 rounded-full bg-current motion-safe:animate-bounce [animation-delay:-120ms]"
-                  >
-                  </span>
-                  <span
-                    aria-hidden="true"
-                    class="size-1 rounded-full bg-current motion-safe:animate-bounce"
-                  >
-                  </span>
-                </span>
               </span>
-            <% end %>
-          </span>
+              <span
+                aria-hidden="true"
+                class="size-1 rounded-full bg-current motion-safe:animate-bounce [animation-delay:-120ms]"
+              >
+              </span>
+              <span
+                aria-hidden="true"
+                class="size-1 rounded-full bg-current motion-safe:animate-bounce"
+              >
+              </span>
+            </span>
+          </div>
 
           <time
             :if={not is_nil(msg_timestamp(msg)) and is_nil(msg_operation(msg))}
@@ -572,6 +564,124 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
     """
   end
 
+  attr :body, :string, required: true
+  attr :paragraph_role, :string, required: true
+
+  defp markdown_body(assigns) do
+    assigns = assign(assigns, :blocks, markdown_blocks(assigns.body))
+
+    ~H"""
+    <div data-role="chat-md-body" class="min-w-0 max-w-full space-y-1.5">
+      <.markdown_block
+        :for={block <- @blocks}
+        block={block}
+        paragraph_role={@paragraph_role}
+      />
+    </div>
+    """
+  end
+
+  attr :block, :map, required: true
+  attr :paragraph_role, :string, required: true
+
+  defp markdown_block(assigns) do
+    ~H"""
+    <%= case @block.type do %>
+      <% :paragraph -> %>
+        <p
+          data-role={@paragraph_role}
+          data-markdown-role="chat-md-paragraph"
+          class="whitespace-normal"
+        >
+          <.markdown_inlines nodes={@block.inlines} />
+        </p>
+      <% :ul -> %>
+        <ul
+          data-role="chat-md-list"
+          data-list-kind="unordered"
+          class="my-1 list-disc space-y-0.5 pl-5"
+        >
+          <li :for={item <- @block.items}>
+            <.markdown_inlines nodes={item} />
+          </li>
+        </ul>
+      <% :ol -> %>
+        <ol
+          data-role="chat-md-list"
+          data-list-kind="ordered"
+          class="my-1 list-decimal space-y-0.5 pl-5"
+        >
+          <li :for={item <- @block.items}>
+            <.markdown_inlines nodes={item} />
+          </li>
+        </ol>
+      <% :blockquote -> %>
+        <blockquote
+          data-role="chat-md-blockquote"
+          class="my-1 border-l-2 border-base-content/20 pl-3 text-base-content/75"
+        >
+          <p class="whitespace-normal">
+            <.markdown_inlines nodes={@block.inlines} />
+          </p>
+        </blockquote>
+      <% :code -> %>
+        <div
+          data-role="chat-md-code-block"
+          class="my-1 max-w-full overflow-hidden rounded-md border border-base-content/10 bg-base-100 text-base-content shadow-sm"
+        >
+          <div
+            :if={@block.language}
+            data-role="chat-md-code-language"
+            class="flex h-6 items-center border-b border-base-content/10 px-2.5 font-mono text-[10px] leading-none text-base-content/50"
+          >
+            {@block.language}
+          </div>
+          <pre
+            data-role="chat-md-code-text"
+            class="max-w-full overflow-x-auto px-2.5 py-2 font-mono text-[12px] leading-relaxed text-base-content/85 whitespace-pre"
+          ><code>{@block.code}</code></pre>
+        </div>
+    <% end %>
+    """
+  end
+
+  attr :nodes, :list, required: true
+
+  defp markdown_inlines(assigns) do
+    ~H"""
+    <%= for node <- @nodes do %>
+      <%= case node do %>
+        <% {:text, text} -> %>
+          {text}
+        <% {:strong, nodes} -> %>
+          <strong class="font-semibold text-base-content">
+            <.markdown_inlines nodes={nodes} />
+          </strong>
+        <% {:em, nodes} -> %>
+          <em class="italic">
+            <.markdown_inlines nodes={nodes} />
+          </em>
+        <% {:code, code} -> %>
+          <code
+            data-role="chat-md-inline-code"
+            class="rounded-sm border border-base-content/10 bg-base-content/[0.06] px-1 py-0.5 font-mono text-[0.92em] text-base-content/90"
+          >
+            {code}
+          </code>
+        <% {:link, label, href} -> %>
+          <a
+            href={href}
+            target="_blank"
+            rel="noopener noreferrer"
+            class="underline decoration-base-content/30 underline-offset-2 hover:decoration-base-content/70"
+          >
+            {label}
+          </a>
+      <% end %>
+    <% end %>
+    """
+  end
+
   attr :operation, :map, required: true
   attr :transient?, :boolean, default: false
 
@@ -743,157 +853,6 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
             </p>
           </div>
         </button>
-        <div
-          :if={@operation_type == "evidence"}
-          data-role="evidence-block"
-          class="border-t border-base-200 bg-base-50 px-3 py-2 text-xs text-base-content/70"
-        >
-          <div class="flex items-start justify-between gap-3">
-            <dl class="grid min-w-0 flex-1 grid-cols-[auto_1fr] gap-x-2 gap-y-1">
-              <dt class="text-base-content/50">인용</dt>
-              <dd class="truncate font-medium text-base-content">{evidence_citation(@operation)}</dd>
-              <dt class="text-base-content/50">출처</dt>
-              <dd class="truncate">{evidence_source(@operation)}</dd>
-              <dt class="text-base-content/50">수집 시각</dt>
-              <dd>
-                <time datetime={evidence_captured_at(@operation)}>
-                  {evidence_captured_at(@operation)}
-                </time>
-              </dd>
-            </dl>
-            <button
-              :if={evidence_snapshot_id(@operation)}
-              type="button"
-              data-role="evidence-attach"
-              phx-click="evidence.attach"
-              phx-value-evidence_snapshot_id={evidence_snapshot_id(@operation)}
-              class="inline-flex size-8 shrink-0 items-center justify-center rounded-md border border-base-300 text-base-content/70 transition hover:bg-base-200 hover:text-base-content"
-              aria-label={dgettext("studio", "근거 연결")}
-            >
-              <.icon name="hero-link" class="size-4" />
-            </button>
-          </div>
-        </div>
-        <div
-          :if={@operation_type == "source_interpretation"}
-          data-role="source-interpretation-block"
-          class="border-t border-base-200 bg-base-50 px-3 py-2 text-xs text-base-content/70"
-        >
-          <div class="flex items-center justify-between gap-3">
-            <span class="font-medium text-base-content">{dgettext("studio", "원문 문서")}</span>
-            <span>{source_claim_count_label(length(source_operation_claims(@operation)))}</span>
-          </div>
-          <ul
-            :if={source_operation_regions(@operation) != []}
-            class="mt-2 space-y-1"
-            data-role="source-regions"
-          >
-            <li :for={region <- source_operation_regions(@operation)} class="truncate">
-              <span>{detail_value(region, "raw_text")}</span>
-            </li>
-          </ul>
-          <ul
-            :if={source_operation_claims(@operation) != []}
-            class="mt-2 space-y-1"
-            data-role="source-claims"
-          >
-            <li
-              :for={claim <- source_operation_claims(@operation)}
-              class="rounded border border-base-200 px-2 py-1"
-            >
-              <span class="font-medium">{claim_kind_label(claim)}</span>
-              <span class="ml-1">{claim_value(claim)}</span>
-            </li>
-          </ul>
-        </div>
-        <div
-          :if={@operation_type == "source_claim"}
-          data-role="source-claim-block"
-          class="border-t border-base-200 bg-base-50 px-3 py-2 text-xs text-base-content/70"
-        >
-          <dl class="grid grid-cols-[auto_minmax(0,1fr)] gap-x-2 gap-y-1">
-            <dt class="font-medium text-base-content/60">항목</dt>
-            <dd>{source_claim_field_label(@operation)}</dd>
-            <dt class="font-medium text-base-content/60">값</dt>
-            <dd>{source_claim_value(@operation)}</dd>
-            <dt class="font-medium text-base-content/60">신뢰도</dt>
-            <dd>{source_claim_confidence(@operation)}</dd>
-          </dl>
-          <ul
-            :if={source_claim_anchors(@operation) != []}
-            class="mt-2 space-y-1"
-            data-role="source-claim-anchors"
-          >
-            <li
-              :for={anchor <- source_claim_anchors(@operation)}
-              class="rounded border border-base-200 px-2 py-1"
-            >
-              <span :if={detail_value(anchor, "page")}>p.{detail_value(anchor, "page")}</span>
-              <span>{detail_value(anchor, "text") || inspect(anchor)}</span>
-            </li>
-          </ul>
-          <div class="mt-2 flex flex-wrap gap-1.5" data-role="source-claim-controls">
-            <button
-              type="button"
-              class="btn btn-xs btn-primary"
-              phx-click="source_claim.confirm"
-              phx-value-source_claim_id={source_claim_id(@operation)}
-              phx-value-source_document_id={source_document_id(@operation)}
-            >
-              확정
-            </button>
-            <details class="group/correct" data-role="source-claim-correct-panel">
-              <summary class="btn btn-xs list-none marker:hidden">
-                수정
-              </summary>
-              <.form
-                for={source_claim_correction_form(@operation)}
-                id={"source-claim-correct-form-#{source_claim_id(@operation)}"}
-                phx-submit="source_claim.correct"
-                data-role="source-claim-correct-form"
-                class="mt-2 flex w-full min-w-64 items-end gap-2 rounded-md border border-base-200 bg-base-100 p-2"
-              >
-                <input type="hidden" name="source_claim_id" value={source_claim_id(@operation)} />
-                <input type="hidden" name="source_document_id" value={source_document_id(@operation)} />
-                <.input
-                  id={"source-claim-correct-value-#{source_claim_id(@operation)}"}
-                  name="value"
-                  type="text"
-                  value={source_claim_value(@operation)}
-                  class="input input-xs min-w-0 flex-1"
-                />
-                <button type="submit" class="btn btn-xs btn-primary">저장</button>
-              </.form>
-            </details>
-            <button
-              type="button"
-              class="btn btn-xs btn-ghost"
-              phx-click="source_claim.reject"
-              phx-value-source_claim_id={source_claim_id(@operation)}
-              phx-value-source_document_id={source_document_id(@operation)}
-            >
-              반려
-            </button>
-            <button
-              type="button"
-              class="btn btn-xs"
-              phx-click="source_claim.link_to_document"
-              phx-value-source_claim_id={source_claim_id(@operation)}
-              phx-value-source_document_id={source_document_id(@operation)}
-            >
-              문서에 연결
-            </button>
-            <button
-              type="button"
-              class="btn btn-xs btn-ghost"
-              phx-click="source_claim.unlink"
-              phx-value-source_claim_id={source_claim_id(@operation)}
-              phx-value-source_document_id={source_document_id(@operation)}
-            >
-              연결 해제
-            </button>
-          </div>
-        </div>
         <div
           id={"operation-block-#{@operation_id}-details"}
           data-role="operation-details"
@@ -1076,37 +1035,12 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
   defp operation_status(operation), do: operation_value(operation, "status") || "pending"
 
   defp operation_title(operation) do
-    case operation_type(operation) do
-      "source_claim" ->
-        dgettext("studio", "%{field} 확인", field: source_claim_field_label(operation))
-
-      _ ->
-        operation_value(operation, "title") || operation_label(operation_type(operation))
-    end
+    operation_value(operation, "title") || operation_label(operation_type(operation))
   end
 
   defp operation_summary(operation) do
-    case operation_type(operation) do
-      "source_interpretation" ->
-        source_claim_count_label(length(source_operation_claims(operation)))
-
-      _ ->
-        operation_value(operation, "summary") || operation_value(operation, "body") || ""
-    end
+    operation_value(operation, "summary") || operation_value(operation, "body") || ""
   end
-
-  defp evidence_snapshot_id(operation), do: operation_value(operation, "evidence_snapshot_id")
-
-  defp evidence_source(operation) do
-    operation
-    |> operation_value("source")
-    |> source_label(operation_value(operation, "provider"))
-  end
-
-  defp evidence_citation(operation),
-    do: operation_value(operation, "citation") || operation_title(operation)
-
-  defp evidence_captured_at(operation), do: operation_value(operation, "captured_at") || ""
 
   defp operation_details_map(operation) do
     case operation_value(operation, "details") do
@@ -1117,62 +1051,6 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
 
   defp stringify_detail_keys(map),
     do: Map.new(map, fn {key, value} -> {to_string(key), value} end)
-
-  defp source_operation_claims(operation),
-    do: operation |> operation_details_map() |> Map.get("claims", []) |> List.wrap()
-
-  defp source_operation_regions(operation),
-    do: operation |> operation_details_map() |> Map.get("regions", []) |> List.wrap()
-
-  defp source_claim_id(operation),
-    do: operation_details_map(operation)["source_claim_id"] || operation_value(operation, "id")
-
-  defp source_claim_correction_form(operation),
-    do: Phoenix.Component.to_form(%{"value" => source_claim_value(operation)})
-
-  defp source_document_id(operation),
-    do: operation_details_map(operation)["source_document_id"] || ""
-
-  defp source_claim_anchors(operation) do
-    details = operation_details_map(operation)
-
-    (details["anchors"] || get_in(details, ["proposed_structured", "anchors"]) || [])
-    |> List.wrap()
-  end
-
-  defp source_claim_confidence(operation),
-    do: operation |> operation_details_map() |> Map.get("confidence") |> display_value()
-
-  defp source_claim_field(operation) do
-    details = operation_details_map(operation)
-    details["proposed_kind"] || details["field"] || details["field_id"] || ""
-  end
-
-  defp source_claim_field_label(operation), do: source_claim_field(operation) |> field_label()
-
-  defp source_claim_value(operation) do
-    details = operation_details_map(operation)
-    details["user_value"] || details["value"] || details["proposed_value"] || ""
-  end
-
-  defp display_value(nil), do: ""
-  defp display_value(value) when is_binary(value), do: value
-  defp display_value(value) when is_integer(value), do: Integer.to_string(value)
-  defp display_value(value) when is_float(value), do: Float.to_string(value)
-  defp display_value(value), do: inspect(value)
-
-  defp claim_kind(claim),
-    do: detail_value(claim, "proposed_kind") || detail_value(claim, "kind") || ""
-
-  defp claim_kind_label(claim), do: claim |> claim_kind() |> field_label()
-
-  defp claim_value(claim),
-    do: detail_value(claim, "proposed_value") || detail_value(claim, "value") || ""
-
-  defp detail_value(map, key) when is_map(map),
-    do: Map.get(map, key) || Map.get(map, String.to_atom(key))
-
-  defp detail_value(_map, _key), do: nil
 
   defp operation_details(operation) do
     details = operation_value(operation, "details") || operation
@@ -1192,11 +1070,6 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
   defp operation_value(_operation, _key), do: nil
 
   defp operation_label("tool_call"), do: "도구 실행"
-  defp operation_label("source_interpretation"), do: "원문 해석"
-  defp operation_label("source_claim"), do: "추출값"
-  defp operation_label("evidence"), do: "근거"
-  defp operation_label("export_status"), do: "내보내기"
-  defp operation_label("conversion_plan"), do: "변환 계획"
 
   defp operation_label(type) when is_binary(type), do: dgettext("studio", "작업")
 
@@ -1215,34 +1088,6 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
   defp operation_status_label("failed"), do: dgettext("studio", "실패")
   defp operation_status_label(status) when is_binary(status), do: dgettext("studio", "진행 중")
   defp operation_status_label(_), do: dgettext("studio", "진행 중")
-
-  defp source_claim_count_label(count), do: dgettext("studio", "추출값 %{count}개", count: count)
-
-  defp source_label(source, provider) do
-    source = to_string(source || "")
-    provider = to_string(provider || "")
-
-    cond do
-      String.contains?(provider, "law_mcp") or String.contains?(source, "Korea Law MCP") ->
-        dgettext("studio", "법령 검색 결과")
-
-      source == "" ->
-        dgettext("studio", "제공된 근거")
-
-      true ->
-        dgettext("studio", "제공된 근거")
-    end
-  end
-
-  defp field_label("effective_date"), do: dgettext("studio", "효력 발생일")
-  defp field_label("party_a"), do: dgettext("studio", "갑")
-  defp field_label("party_b"), do: dgettext("studio", "을")
-  defp field_label("counterparty"), do: dgettext("studio", "상대방")
-  defp field_label("contract_amount"), do: dgettext("studio", "계약 금액")
-  defp field_label("payment_terms"), do: dgettext("studio", "지급 조건")
-  defp field_label("term"), do: dgettext("studio", "계약 기간")
-  defp field_label(value) when is_binary(value) and value != "", do: dgettext("studio", "문서 항목")
-  defp field_label(_), do: dgettext("studio", "문서 항목")
 
   defp msg_role(%{role: :user}), do: "user"
   defp msg_role(%{role: "user"}), do: "user"
@@ -1329,24 +1174,244 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
     msg_transient?(msg) == "true" and (msg_body(msg) || "") == ""
   end
 
-  defp agent_paragraphs(msg), do: String.split(msg_body(msg) || "", ~r/\n{2,}/)
+  defp markdown_blocks(text) when is_binary(text) do
+    text
+    |> String.replace("\r\n", "\n")
+    |> String.split("\n")
+    |> parse_markdown_blocks([])
+    |> case do
+      [] -> [%{type: :paragraph, inlines: []}]
+      blocks -> blocks
+    end
+  end
+
+  defp markdown_blocks(_), do: [%{type: :paragraph, inlines: []}]
+
+  defp parse_markdown_blocks([], acc), do: Enum.reverse(acc)
+
+  defp parse_markdown_blocks([line | rest], acc) do
+    cond do
+      blank_line?(line) ->
+        parse_markdown_blocks(rest, acc)
+
+      fence_start?(line) ->
+        {language, code, rest} = take_code_block(line, rest)
+        parse_markdown_blocks(rest, [%{type: :code, language: language, code: code} | acc])
+
+      unordered_item?(line) ->
+        {items, rest} = take_list([line | rest], :ul)
+        parse_markdown_blocks(rest, [%{type: :ul, items: items} | acc])
+
+      ordered_item?(line) ->
+        {items, rest} = take_list([line | rest], :ol)
+        parse_markdown_blocks(rest, [%{type: :ol, items: items} | acc])
+
+      blockquote_line?(line) ->
+        {quote, rest} = take_blockquote([line | rest])
+        parse_markdown_blocks(rest, [%{type: :blockquote, inlines: parse_inlines(quote)} | acc])
+
+      true ->
+        {paragraph, rest} = take_paragraph([line | rest])
+
+        parse_markdown_blocks(rest, [%{type: :paragraph, inlines: parse_inlines(paragraph)} | acc])
+    end
+  end
+
+  defp take_code_block(opening_line, lines) do
+    language =
+      opening_line
+      |> String.trim()
+      |> String.trim_leading("```")
+      |> sanitize_code_language()
+
+    {code_lines, rest} = Enum.split_while(lines, &(not fence_end?(&1)))
+
+    rest =
+      case rest do
+        [_closing | tail] -> tail
+        [] -> []
+      end
+
+    {language, Enum.join(code_lines, "\n"), rest}
+  end
+
+  defp take_list(lines, kind), do: take_list(lines, kind, [])
+
+  defp take_list([line | rest], kind, acc) do
+    item =
+      case kind do
+        :ul -> unordered_item_text(line)
+        :ol -> ordered_item_text(line)
+      end
+
+    case item do
+      nil -> {Enum.reverse(acc), [line | rest]}
+      text -> take_list(rest, kind, [parse_inlines(text) | acc])
+    end
+  end
+
+  defp take_list([], _kind, acc), do: {Enum.reverse(acc), []}
+
+  defp take_blockquote(lines), do: take_blockquote(lines, [])
+
+  defp take_blockquote([line | rest], acc) do
+    case blockquote_text(line) do
+      nil -> {acc |> Enum.reverse() |> Enum.join(" "), [line | rest]}
+      text -> take_blockquote(rest, [text | acc])
+    end
+  end
+
+  defp take_blockquote([], acc), do: {acc |> Enum.reverse() |> Enum.join(" "), []}
+
+  defp take_paragraph(lines), do: take_paragraph(lines, [])
+
+  defp take_paragraph([line | rest], acc) do
+    if markdown_block_start?(line) do
+      {acc |> Enum.reverse() |> Enum.join(" "), [line | rest]}
+    else
+      take_paragraph(rest, [String.trim(line) | acc])
+    end
+  end
+
+  defp take_paragraph([], acc), do: {acc |> Enum.reverse() |> Enum.join(" "), []}
+
+  defp markdown_block_start?(line) do
+    blank_line?(line) or fence_start?(line) or unordered_item?(line) or ordered_item?(line) or
+      blockquote_line?(line)
+  end
+
+  defp blank_line?(line), do: String.trim(line) == ""
+  defp fence_start?(line), do: Regex.match?(~r/^\s*```/, line)
+  defp fence_end?(line), do: Regex.match?(~r/^\s*```\s*$/, line)
+  defp unordered_item?(line), do: not is_nil(Regex.run(~r/^\s*[-*+]\s+(.+)$/, line))
+  defp ordered_item?(line), do: not is_nil(Regex.run(~r/^\s*\d+[.)]\s+(.+)$/, line))
+  defp blockquote_line?(line), do: not is_nil(Regex.run(~r/^\s*>\s?(.*)$/, line))
+
+  defp unordered_item_text(line) do
+    case Regex.run(~r/^\s*[-*+]\s+(.+)$/, line) do
+      [_, text] -> text
+      _ -> nil
+    end
+  end
+
+  defp ordered_item_text(line) do
+    case Regex.run(~r/^\s*\d+[.)]\s+(.+)$/, line) do
+      [_, text] -> text
+      _ -> nil
+    end
+  end
+
+  defp blockquote_text(line) do
+    case Regex.run(~r/^\s*>\s?(.*)$/, line) do
+      [_, text] -> text
+      _ -> nil
+    end
+  end
+
+  defp sanitize_code_language(language) do
+    language = String.trim(language)
+
+    if Regex.match?(~r/^[A-Za-z0-9_+.#-]{1,32}$/, language) do
+      language
+    end
+  end
+
+  defp parse_inlines(text) when is_binary(text), do: parse_inlines(text, [])
+  defp parse_inlines(_), do: []
+
+  defp parse_inlines("", acc), do: Enum.reverse(acc)
+
+  defp parse_inlines(text, acc) do
+    case next_inline_token(text) do
+      nil ->
+        Enum.reverse([{:text, text} | acc])
+
+      {start, length, node} ->
+        before = binary_part(text, 0, start)
+        rest = binary_part(text, start + length, byte_size(text) - start - length)
+        acc = if before == "", do: acc, else: [{:text, before} | acc]
+        parse_inlines(rest, [node | acc])
+    end
+  end
+
+  defp next_inline_token(text) do
+    [
+      {:code, ~r/`([^`\n]+)`/},
+      {:link, ~r/\[([^\]\n]+)\]\(([^)\s]+)\)/},
+      {:strong, ~r/\*\*([^*\n]+)\*\*/},
+      {:em, ~r/\*([^*\n]+)\*/}
+    ]
+    |> Enum.with_index()
+    |> Enum.flat_map(fn {{type, regex}, priority} ->
+      case Regex.run(regex, text, return: :index) do
+        [{start, length} | _] ->
+          token_text = binary_part(text, start, length)
+          [{start, priority, length, inline_node(type, regex, token_text)}]
+
+        nil ->
+          []
+      end
+    end)
+    |> Enum.reject(fn {_start, _priority, _length, node} -> is_nil(node) end)
+    |> Enum.sort_by(fn {start, priority, _length, _node} -> {start, priority} end)
+    |> case do
+      [{start, _priority, length, node} | _] -> {start, length, node}
+      [] -> nil
+    end
+  end
+
+  defp inline_node(:code, regex, token_text) do
+    [code] = Regex.run(regex, token_text, capture: :all_but_first)
+    {:code, code}
+  end
+
+  defp inline_node(:strong, regex, token_text) do
+    [text] = Regex.run(regex, token_text, capture: :all_but_first)
+    {:strong, parse_inlines(text)}
+  end
+
+  defp inline_node(:em, regex, token_text) do
+    [text] = Regex.run(regex, token_text, capture: :all_but_first)
+    {:em, parse_inlines(text)}
+  end
+
+  defp inline_node(:link, regex, token_text) do
+    [label, href] = Regex.run(regex, token_text, capture: :all_but_first)
+
+    case safe_markdown_href(href) do
+      nil -> {:text, token_text}
+      href -> {:link, label, href}
+    end
+  end
+
+  defp safe_markdown_href(href) do
+    href = String.trim(href)
+    parsed = URI.parse(href)
+
+    cond do
+      parsed.scheme in ["http", "https", "mailto"] ->
+        href
+
+      is_nil(parsed.scheme) and String.starts_with?(href, "/") and
+          not String.starts_with?(href, "//") ->
+        href
+
+      is_nil(parsed.scheme) and String.starts_with?(href, "#") ->
+        href
+
+      true ->
+        nil
+    end
+  end
 
   defp msg_body(%{body: body}) when is_binary(body), do: body
-  defp msg_body(%{body: body}) when is_binary(body), do: collapse_blanks(body)
-  defp msg_body(%{result: %{body: body}}) when is_binary(body), do: collapse_blanks(body)
-  defp msg_body(%{result: result}) when is_binary(result), do: collapse_blanks(result)
-  defp msg_body(%{event: %{delta: delta}}) when is_binary(delta), do: collapse_blanks(delta)
-  defp msg_body(%{event: %{body: body}}) when is_binary(body), do: collapse_blanks(body)
-  defp msg_body(%{event: %{text: text}}) when is_binary(text), do: collapse_blanks(text)
-  defp msg_body(%{event: text}) when is_binary(text), do: collapse_blanks(text)
+  defp msg_body(%{result: %{body: body}}) when is_binary(body), do: body
+  defp msg_body(%{result: result}) when is_binary(result), do: result
+  defp msg_body(%{event: %{delta: delta}}) when is_binary(delta), do: delta
+  defp msg_body(%{event: %{body: body}}) when is_binary(body), do: body
+  defp msg_body(%{event: %{text: text}}) when is_binary(text), do: text
+  defp msg_body(%{event: text}) when is_binary(text), do: text
   defp msg_body(_), do: ""
-
-  # `whitespace-pre-wrap` renders every `\n` as a literal line break,
-  # so the model's `\n\n` paragraph breaks read as a full empty line of
-  # line-height. Collapse runs of 2+ newlines to a single one to keep
-  # message density tight without losing paragraph boundaries.
-  defp collapse_blanks(text) when is_binary(text),
-    do: String.replace(text, ~r/\n{2,}/, "\n")
 
   defp msg_timestamp(%{timestamp: %DateTime{} = ts}), do: DateTime.to_iso8601(ts)
   defp msg_timestamp(%{timestamp: ts}) when is_binary(ts), do: ts

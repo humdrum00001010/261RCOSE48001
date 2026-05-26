@@ -31,14 +31,9 @@ defmodule Contract.Session do
   alias Contract.ChangeInput
   alias Contract.Session.Reducer
   alias Contract.Lease
-  alias Contract.Operation
-  alias Contract.RevokeRequest
-  alias Contract.Repo
   alias Contract.Runtime
   alias Contract.Store
   alias Contract.Types, as: T
-
-  import Ecto.Query, only: [from: 2]
 
   @registry Contract.Session.Registry
   @renew_interval_ms 10_000
@@ -89,12 +84,6 @@ defmodule Contract.Session do
   @spec commit(pid() | T.document_id(), Command.t()) :: T.result(Change.t())
   def commit(target, %Command{} = action) do
     call(target, {:commit, action})
-  end
-
-  @spec revoke(pid() | T.document_id(), Command.t()) ::
-          T.result(Change.t() | RevokeRequest.t())
-  def revoke(target, %Command{} = action) do
-    call(target, {:revoke, action})
   end
 
   @spec current(pid() | T.document_id()) :: T.result(Runtime.State.t())
@@ -163,22 +152,6 @@ defmodule Contract.Session do
     case do_commit(action, data) do
       {:ok, change, new_state} ->
         {:reply, {:ok, change}, %{data | state: new_state, last_heartbeat: DateTime.utc_now()}}
-
-      {:fenced_out, reason} ->
-        {:stop, {:fenced_out, reason}, {:error, {:fenced_out, reason}}, data}
-
-      {:error, _} = err ->
-        {:reply, err, data}
-    end
-  end
-
-  def handle_call({:revoke, %Command{} = action}, _from, data) do
-    case do_revoke(action, data) do
-      {:ok, result, new_state} ->
-        {:reply, {:ok, result}, %{data | state: new_state, last_heartbeat: DateTime.utc_now()}}
-
-      {:ok, result} ->
-        {:reply, {:ok, result}, %{data | last_heartbeat: DateTime.utc_now()}}
 
       {:fenced_out, reason} ->
         {:stop, {:fenced_out, reason}, {:error, {:fenced_out, reason}}, data}
@@ -264,7 +237,7 @@ defmodule Contract.Session do
   def terminate(_reason, _data), do: :ok
 
   # ----------------------------------------------------------------------------
-  # commit / revoke internals
+  # commit internals
   # ----------------------------------------------------------------------------
 
   defp do_commit(%Command{} = action, %{state: state, document_id: document_id} = data) do
@@ -305,167 +278,6 @@ defmodule Contract.Session do
       end
     end
   end
-
-  defp do_revoke(%Command{kind: :revoke_change} = action, %{document_id: document_id} = data) do
-    change_id = revoke_target_id(action)
-
-    case fetch_target_change(document_id, change_id) do
-      {:error, _} = err ->
-        err
-
-      {:ok, target_change} ->
-        action = enrich_revoke_action(action, target_change)
-        overlaps = find_overlaps(document_id, target_change)
-
-        if Enum.empty?(overlaps) do
-          do_clean_revoke(action, data)
-        else
-          # Reconciliation needed — write a RevokeRequest instead of a Change.
-          create_revoke_request(document_id, target_change, overlaps, action)
-        end
-    end
-  end
-
-  defp do_revoke(%Command{kind: :resolve_revoke} = action, data) do
-    do_commit(action, data)
-  end
-
-  defp do_revoke(%Command{kind: kind}, _data),
-    do: {:error, {:invalid_revoke_kind, kind}}
-
-  defp do_clean_revoke(action, data) do
-    case do_commit(action, data) do
-      {:ok, change, new_state} -> {:ok, change, new_state}
-      other -> other
-    end
-  end
-
-  defp create_revoke_request(document_id, target_change, overlaps, %Command{} = action) do
-    overlap_ids = Enum.map(overlaps, & &1.id)
-
-    attrs = %{
-      document_id: document_id,
-      target_change_id: target_change.id,
-      overlap_changes: overlap_ids,
-      status: :pending,
-      requester_id: action.actor_id
-    }
-
-    case %RevokeRequest{}
-         |> RevokeRequest.changeset(attrs)
-         |> Repo.insert() do
-      {:ok, %RevokeRequest{} = req} ->
-        Phoenix.PubSub.broadcast(
-          Contract.PubSub,
-          Store.pubsub_topic(document_id),
-          {:revoke_requested, req}
-        )
-
-        {:ok, req}
-
-      {:error, changeset} ->
-        {:error, {:revoke_request_insert_failed, changeset}}
-    end
-  end
-
-  defp revoke_target_id(%Command{change_id: id}) when not is_nil(id), do: id
-
-  defp revoke_target_id(%Command{payload: payload}) do
-    case payload do
-      %{"change_id" => id} when is_binary(id) -> id
-      %{change_id: id} when is_binary(id) -> id
-      _ -> nil
-    end
-  end
-
-  defp fetch_target_change(_document_id, nil), do: {:error, :missing_change_id}
-
-  defp fetch_target_change(document_id, change_id) do
-    case Repo.get(Change, change_id) do
-      nil ->
-        {:error, :change_not_found}
-
-      %Change{document_id: ^document_id} = change ->
-        {:ok, change}
-
-      %Change{} ->
-        {:error, :change_document_mismatch}
-    end
-  end
-
-  defp enrich_revoke_action(%Command{payload: payload} = action, %Change{} = target_change) do
-    inverse_ops = decode_stored_ops(target_change.inverse || [])
-
-    payload =
-      payload
-      |> Map.put_new("change_id", target_change.id)
-      |> Map.put_new("inverse_ops", inverse_ops)
-
-    %{action | change_id: action.change_id || target_change.id, payload: payload}
-  end
-
-  defp decode_stored_ops(ops) when is_list(ops) do
-    Enum.map(ops, &Store.decode_op/1)
-  end
-
-  defp find_overlaps(document_id, %Change{} = target_change) do
-    target_refs = ref_set(target_change.affected_refs)
-    target_targets = op_target_set(target_change.payload)
-
-    later_changes =
-      from(c in Change,
-        where:
-          c.document_id == ^document_id and
-            c.result_revision > ^target_change.result_revision and
-            c.id != ^target_change.id and
-            c.status == :active,
-        order_by: [asc: c.result_revision]
-      )
-      |> Repo.all()
-
-    Enum.filter(later_changes, fn c ->
-      refs_overlap?(target_refs, ref_set(c.affected_refs)) or
-        op_targets_overlap?(target_targets, op_target_set(c.payload))
-    end)
-  end
-
-  defp ref_set(nil), do: MapSet.new()
-
-  defp ref_set(refs) when is_list(refs) do
-    refs
-    |> Enum.flat_map(fn ref ->
-      case ref do
-        %{} = m ->
-          [
-            Map.get(m, :ref_id) || Map.get(m, "ref_id"),
-            Map.get(m, :target_id) || Map.get(m, "target_id"),
-            Map.get(m, :source_node_id) || Map.get(m, "source_node_id")
-          ]
-
-        _ ->
-          []
-      end
-    end)
-    |> Enum.reject(&is_nil/1)
-    |> MapSet.new()
-  end
-
-  defp op_target_set(nil), do: MapSet.new()
-
-  defp op_target_set(ops) when is_list(ops) do
-    ops
-    |> Enum.flat_map(fn
-      %Operation{target_id: nil} -> []
-      %Operation{target_id: id} -> [id]
-      %{"target_id" => id} when not is_nil(id) -> [id]
-      %{target_id: id} when not is_nil(id) -> [id]
-      _ -> []
-    end)
-    |> MapSet.new()
-  end
-
-  defp refs_overlap?(a, b), do: not MapSet.disjoint?(a, b)
-  defp op_targets_overlap?(a, b), do: not MapSet.disjoint?(a, b)
 
   # ----------------------------------------------------------------------------
   # idle / scheduling

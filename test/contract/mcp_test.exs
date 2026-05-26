@@ -8,167 +8,95 @@ defmodule Contract.MCPTest do
   alias Contract.Change
   alias Contract.Command
   alias Contract.Context
-  alias Contract.EvidenceSnapshot
   alias Contract.MCP
   alias Contract.Repo
   alias Contract.RouteRef
   alias Contract.Runtime
-  alias Contract.SourceDocument
 
   setup :set_mox_from_context
   setup :verify_on_exit!
 
   describe "list_tools/2" do
-    test "includes expanded document/source/law/evidence/collab tools" do
+    test "includes only live doc tools" do
       assert %{"tools" => tools} = MCP.list_tools(%Context{}, nil)
       names = Enum.map(tools, & &1["name"])
 
-      assert length(names) >= 20
-      assert "document.open" in names
-      assert "document.read" in names
-      assert "document.search" in names
-      assert "document.submit_command" in names
-      assert "document.revoke_change" in names
-      assert "source_document.read" in names
-      assert "source_document.search_regions" in names
-      assert "source_document.propose_claims" in names
-      assert "source_document.confirm_claim" in names
-      assert "source_document.correct_claim" in names
-      assert "source_document.reject_claim" in names
-      assert "source_document.link_claim_to_document" in names
-      assert "law.search" in names
-      assert "law.get_text" in names
-      assert "law.search_precedents" in names
-      assert "law.verify_citation" in names
-      assert "evidence.attach_mark" in names
-      assert "collab.ask_user" in names
-      assert "collab.fetch_slack_context" in names
+      assert names == ~w(doc.get doc.find doc.read doc.edit)
     end
 
-    test "document edit tool descriptions guard slot-like value edits" do
+    test "document edit tool descriptions expose doc.edit as the agent abstraction" do
       assert %{"tools" => tools} = MCP.list_tools(%Context{}, nil)
 
-      edit_text = Enum.find(tools, &(&1["name"] == "doc.edit_text"))
-      set_field_value = Enum.find(tools, &(&1["name"] == "doc.set_field_value"))
+      edit = Enum.find(tools, &(&1["name"] == "doc.edit"))
       get = Enum.find(tools, &(&1["name"] == "doc.get"))
       find = Enum.find(tools, &(&1["name"] == "doc.find"))
 
-      assert edit_text["description"] =~ "replace the full exact existing value or paragraph"
-      assert edit_text["description"] =~ "not only a label prefix"
-      assert set_field_value["description"] =~ "slot-like date/period edit"
-      assert set_field_value["description"] =~ "prefer this over `doc.edit_text`"
-      assert get["description"] =~ "metadata, outline, fields, and revision"
+      assert edit
+      refute Enum.any?(tools, &(&1["name"] == "doc.edit_text"))
+      refute Enum.any?(tools, &(&1["name"] == "doc.insert_block"))
+      refute Enum.any?(tools, &(&1["name"] == "doc.delete_block"))
+      refute Enum.any?(tools, &(&1["name"] == "doc.edit_table"))
+      refute Enum.any?(tools, &(&1["name"] == "doc.set_field_value"))
+      assert edit["description"] =~ "target.type"
+      assert edit["description"] =~ "paragraph"
+      assert edit["description"] =~ "cell"
+      assert edit["description"] =~ "insert_block"
+      assert edit["description"] =~ "delete_block"
+      refute edit["description"] =~ "create table"
+      refute edit["description"] =~ "rows?, cols?"
+      assert edit["description"] =~ "table structure edits are not currently supported"
+      assert edit["description"] =~ "line breaks are rejected"
+      assert edit["description"] =~ "call `insert_block` once per paragraph"
+      assert edit["description"] =~ "replace the full exact existing value or paragraph"
+      assert edit["description"] =~ "not only a label prefix"
+      assert edit["description"] =~ "cell_path"
+      assert find["description"] =~ "table cells"
+      assert find["description"] =~ "cell_path"
+      refute edit["description"] =~ "doc.edit_text"
+      refute edit["description"] =~ "doc.set_field_value"
+      assert get["description"] =~ "bounded metadata/navigation page"
+      assert get["description"] =~ "not field values"
       assert find["description"] =~ "when you already know target text"
     end
   end
 
   describe "list_resources/2 and read_resource/3" do
-    test "returns owner-scoped document/source/evidence resources" do
+    test "resources are pruned" do
       owner = scope()
-      foreign = scope()
       doc_id = create_doc(owner, title: "Owner MCP Resource")
-      foreign_doc_id = create_doc(foreign, title: "Foreign MCP Resource")
-      source = insert_source(owner, document_id: doc_id)
-      foreign_source = insert_source(foreign, document_id: foreign_doc_id)
-      evidence = insert_evidence(owner, document_id: doc_id, source_document_id: source.id)
-      foreign_evidence = insert_evidence(foreign, document_id: foreign_doc_id)
 
-      assert %{"resources" => resources} = MCP.list_resources(owner, nil)
-      uris = Enum.map(resources, & &1["uri"])
-
-      assert "document://#{doc_id}/state" in uris
-      assert "source_document://#{source.id}" in uris
-      assert "evidence://#{evidence.id}" in uris
-      refute "document://#{foreign_doc_id}/state" in uris
-      refute "source_document://#{foreign_source.id}" in uris
-      refute "evidence://#{foreign_evidence.id}" in uris
-
-      assert {:ok, doc_payload} = MCP.read_resource(owner, nil, "document://#{doc_id}/state")
-      assert %{"contents" => [%{"uri" => "document://" <> _, "text" => doc_text}]} = doc_payload
-      assert {:ok, %{"document_id" => ^doc_id}} = Jason.decode(doc_text)
-
-      assert {:ok, source_payload} =
-               MCP.read_resource(owner, nil, "source_document://#{source.id}")
-
-      [%{"text" => source_text}] = source_payload["contents"]
-      assert {:ok, %{"id" => source_id}} = Jason.decode(source_text)
-      assert source_id == source.id
-
-      assert {:ok, evidence_payload} = MCP.read_resource(owner, nil, "evidence://#{evidence.id}")
-      [%{"text" => evidence_text}] = evidence_payload["contents"]
-      assert {:ok, %{"id" => evidence_id}} = Jason.decode(evidence_text)
-      assert evidence_id == evidence.id
-
-      assert {:error, :forbidden} =
-               MCP.read_resource(owner, nil, "document://#{foreign_doc_id}/state")
-
-      assert {:error, :forbidden} =
-               MCP.read_resource(owner, nil, "source_document://#{foreign_source.id}")
-
-      assert {:error, :forbidden} =
-               MCP.read_resource(owner, nil, "evidence://#{foreign_evidence.id}")
+      assert %{"resources" => []} = MCP.list_resources(owner, nil)
+      assert {:error, :invalid_uri} = MCP.read_resource(owner, nil, "document://#{doc_id}/state")
+      assert {:error, :invalid_uri} = MCP.read_resource(owner, nil, "source_document://legacy")
+      assert {:error, :invalid_uri} = MCP.read_resource(owner, nil, "evidence://legacy")
     end
   end
 
   describe "call_tool/4" do
-    test "document.submit_command emits a Command through Runtime with owner ACL" do
-      owner = scope()
-      foreign = scope()
-      doc_id = create_doc(owner, title: "Before MCP Rename")
-      foreign_doc_id = create_doc(foreign, title: "Foreign Before MCP Rename")
-
-      args = %{
-        "command" => %{
-          "kind" => "rename_document",
-          "document_id" => doc_id,
-          "base_revision" => 1,
-          "idempotency_key" => "mcp-submit-command-1",
-          "payload" => %{"title" => "After MCP Rename"}
-        }
-      }
-
-      assert {:ok, %{"command_kind" => "rename_document", "result_revision" => 2}} =
-               MCP.call_tool(owner, nil, "document.submit_command", args)
-
-      assert {:ok, doc} = Contract.Documents.get(owner, doc_id)
-      assert doc.title == "After MCP Rename"
-
-      foreign_args = put_in(args, ["command", "document_id"], foreign_doc_id)
-
-      assert {:error, :forbidden} =
-               MCP.call_tool(owner, nil, "document.submit_command", foreign_args)
-
-      assert {:ok, foreign_doc} = Contract.Documents.get(foreign, foreign_doc_id)
-      assert foreign_doc.title == "Foreign Before MCP Rename"
-    end
-
-    test "route_ref-only access does not bypass owner ACL" do
-      owner = scope()
-      doc_id = create_doc(owner, title: "Route Ref Only")
-
-      route_ref = %RouteRef{
-        document_id: doc_id,
-        purpose: "mcp-test",
-        issued_at: DateTime.utc_now(),
-        expires_at: DateTime.utc_now() |> DateTime.add(3600, :second),
-        scopes: ["read", "write"]
-      }
-
-      ctx = %Context{perms: %{route_ref: route_ref}}
-
-      assert {:error, :forbidden} =
-               MCP.read_resource(ctx, route_ref, "document://#{doc_id}/state")
-
-      assert {:error, :forbidden} =
-               MCP.call_tool(ctx, route_ref, "document.submit_command", %{
-                 "command" => %{
-                   "kind" => "rename_document",
-                   "document_id" => doc_id,
-                   "base_revision" => 1,
-                   "idempotency_key" => "route-ref-only-denied",
-                   "payload" => %{"title" => "Should Not Apply"}
-                 }
-               })
+    test "legacy MCP tools are unknown" do
+      for tool <- [
+            "document.open",
+            "document.read",
+            "document.search",
+            "document.submit_command",
+            "document.revoke_change",
+            "source_document.read",
+            "source_document.search_regions",
+            "source_document.propose_claims",
+            "source_document.confirm_claim",
+            "source_document.correct_claim",
+            "source_document.reject_claim",
+            "source_document.link_claim_to_document",
+            "law.search",
+            "law.get_text",
+            "law.search_precedents",
+            "law.verify_citation",
+            "evidence.attach_mark",
+            "collab.ask_user",
+            "collab.fetch_slack_context"
+          ] do
+        assert {:error, {:unknown_tool, ^tool}} = MCP.call_tool(%Context{}, nil, tool, %{})
+      end
     end
   end
 
@@ -205,11 +133,13 @@ defmodule Contract.MCPTest do
       %Run{} = next_run = start_agent_attempt(owner, doc_id)
 
       assert {:error, {:forbidden, :run_not_active}} =
-               MCP.call_tool(owner, route_ref, "doc.insert_block", %{
-                 "sec" => 0,
-                 "para" => 0,
-                 "kind" => "paragraph",
-                 "text" => "Late stale bearer write"
+               MCP.call_tool(owner, route_ref, "doc.edit", %{
+                 "op" => "insert_block",
+                 "target" => %{"type" => "block", "sec" => 0, "para" => 0},
+                 "block" => %{
+                   "kind" => "paragraph",
+                   "text" => "Late stale bearer write"
+                 }
                })
 
       refute Enum.any?(changes_for(doc_id), &(&1.agent_run_id == next_run.id))
@@ -222,12 +152,14 @@ defmodule Contract.MCPTest do
          } do
       {run, route_ref} = start_agent_attempt_with_hosted_route_ref(owner, doc_id)
 
-      assert {:ok, %{"ok" => true, "applied" => "insert_block"}} =
-               MCP.call_tool(owner, route_ref, "doc.insert_block", %{
-                 "sec" => 0,
-                 "para" => 0,
-                 "kind" => "paragraph",
-                 "text" => "Current hosted run attribution"
+      assert {:ok, %{"ok" => true, "applied" => "edit"}} =
+               MCP.call_tool(owner, route_ref, "doc.edit", %{
+                 "op" => "insert_block",
+                 "target" => %{"type" => "block", "sec" => 0, "para" => 0},
+                 "block" => %{
+                   "kind" => "paragraph",
+                   "text" => "Current hosted run attribution"
+                 }
                })
 
       [change] = changes_for(doc_id) |> Enum.filter(&(&1.command_kind == "edit_text"))
@@ -246,18 +178,20 @@ defmodule Contract.MCPTest do
       %Run{} = other_run = start_agent_attempt(owner, other_doc_id)
 
       assert {:error, {:forbidden, :run_not_active}} =
-               MCP.call_tool(owner, route_ref, "doc.insert_block", %{
+               MCP.call_tool(owner, route_ref, "doc.edit", %{
                  "agent_run_id" => other_run.id,
-                 "sec" => 0,
-                 "para" => 0,
-                 "kind" => "paragraph",
-                 "text" => "Cross-scope run stamp"
+                 "op" => "insert_block",
+                 "target" => %{"type" => "block", "sec" => 0, "para" => 0},
+                 "block" => %{
+                   "kind" => "paragraph",
+                   "text" => "Cross-scope run stamp"
+                 }
                })
 
       refute Enum.any?(changes_for(doc_id), &(&1.agent_run_id == other_run.id))
     end
 
-    test "explicit same-scope agent_run_id resolves the active Agent.Document run",
+    test "client supplied same-scope agent_run_id does not authorize a doc tool",
          %{
            owner: owner,
            doc_id: doc_id,
@@ -266,18 +200,18 @@ defmodule Contract.MCPTest do
       route_ref = %{route_ref | agent_run_id: nil}
       %Run{} = run = start_agent_attempt(owner, doc_id)
 
-      assert {:ok, %{"ok" => true, "applied" => "insert_block"}} =
-               MCP.call_tool(owner, route_ref, "doc.insert_block", %{
+      assert {:error, {:forbidden, :run_not_active}} =
+               MCP.call_tool(owner, route_ref, "doc.edit", %{
                  "agent_run_id" => run.id,
-                 "sec" => 0,
-                 "para" => 0,
-                 "kind" => "paragraph",
-                 "text" => "Active run attribution"
+                 "op" => "insert_block",
+                 "target" => %{"type" => "block", "sec" => 0, "para" => 0},
+                 "block" => %{
+                   "kind" => "paragraph",
+                   "text" => "Active run attribution"
+                 }
                })
 
-      [change] = changes_for(doc_id) |> Enum.filter(&(&1.command_kind == "edit_text"))
-      assert change.actor_type == :agent
-      assert change.agent_run_id == run.id
+      refute Enum.any?(changes_for(doc_id), &(&1.agent_run_id == run.id))
     end
 
     test "stale route_ref run id is not attributed to a later document attempt", %{
@@ -292,20 +226,19 @@ defmodule Contract.MCPTest do
                MCP.call_tool(owner, route_ref, "doc.get", %{})
     end
 
-    test "doc.insert_block lowers paragraph into insert_paragraph + insert_text", %{
+    test "doc.edit insert_block lowers paragraph into insert_paragraph + insert_text", %{
       owner: owner,
       doc_id: doc_id,
       route_ref: route_ref
     } do
       args = %{
-        "sec" => 0,
-        "para" => 0,
-        "kind" => "paragraph",
-        "text" => "Hello from MCP"
+        "op" => "insert_block",
+        "target" => %{"type" => "block", "sec" => 0, "para" => 0},
+        "block" => %{"kind" => "paragraph", "text" => "Hello from MCP"}
       }
 
-      assert {:ok, %{"ok" => true, "applied" => "insert_block", "revision" => rev}} =
-               MCP.call_tool(owner, route_ref, "doc.insert_block", args)
+      assert {:ok, %{"ok" => true, "applied" => "edit", "revision" => rev}} =
+               MCP.call_tool(owner, route_ref, "doc.edit", args)
 
       assert is_integer(rev) and rev >= 2
 
@@ -315,25 +248,51 @@ defmodule Contract.MCPTest do
       assert "insert_text" in kinds
     end
 
-    test "doc.insert_block rejects kind=table (no rhwp create-table op yet)", %{
-      owner: owner,
-      route_ref: route_ref
-    } do
-      args = %{"sec" => 0, "para" => 0, "kind" => "table", "rows" => 2, "cols" => 2}
-
-      assert {:error, {:not_supported, _}} =
-               MCP.call_tool(owner, route_ref, "doc.insert_block", args)
-    end
-
-    test "doc.delete_block lowers to merge_paragraph", %{
+    test "doc.edit insert_block rejects multiline block text without committing", %{
       owner: owner,
       doc_id: doc_id,
       route_ref: route_ref
     } do
-      args = %{"sec" => 0, "para" => 3}
+      before_change_ids = changes_for(doc_id) |> Enum.map(& &1.id)
 
-      assert {:ok, %{"ok" => true, "applied" => "delete_block", "revision" => rev}} =
-               MCP.call_tool(owner, route_ref, "doc.delete_block", args)
+      assert {:error, {:invalid_params, message}} =
+               MCP.call_tool(owner, route_ref, "doc.edit", %{
+                 "op" => "insert_block",
+                 "target" => %{"type" => "block", "sec" => 0, "para" => 0},
+                 "block" => %{
+                   "kind" => "paragraph",
+                   "text" => "제1조(목적)\n본문"
+                 }
+               })
+
+      assert message =~ "single paragraph"
+      assert message =~ "insert_block once per paragraph"
+      assert changes_for(doc_id) |> Enum.map(& &1.id) == before_change_ids
+    end
+
+    test "doc.edit insert_block rejects kind=table (no rhwp create-table op yet)", %{
+      owner: owner,
+      route_ref: route_ref
+    } do
+      args = %{
+        "op" => "insert_block",
+        "target" => %{"type" => "block", "sec" => 0, "para" => 0},
+        "block" => %{"kind" => "table", "rows" => 2, "cols" => 2}
+      }
+
+      assert {:error, {:not_supported, _}} =
+               MCP.call_tool(owner, route_ref, "doc.edit", args)
+    end
+
+    test "doc.edit delete_block lowers to merge_paragraph", %{
+      owner: owner,
+      doc_id: doc_id,
+      route_ref: route_ref
+    } do
+      args = %{"op" => "delete_block", "target" => %{"type" => "block", "sec" => 0, "para" => 3}}
+
+      assert {:ok, %{"ok" => true, "applied" => "edit", "revision" => rev}} =
+               MCP.call_tool(owner, route_ref, "doc.edit", args)
 
       assert is_integer(rev)
 
@@ -341,174 +300,54 @@ defmodule Contract.MCPTest do
       assert [%{"op" => "merge_paragraph"}] = change.payload
     end
 
-    test "doc.delete_block refuses para=0 (no predecessor to merge into)", %{
+    test "doc.edit delete_block refuses para=0 (no predecessor to merge into)", %{
       owner: owner,
       route_ref: route_ref
     } do
       assert {:error, {:invalid_params, _}} =
-               MCP.call_tool(owner, route_ref, "doc.delete_block", %{"sec" => 0, "para" => 0})
+               MCP.call_tool(owner, route_ref, "doc.edit", %{
+                 "op" => "delete_block",
+                 "target" => %{"type" => "block", "sec" => 0, "para" => 0}
+               })
     end
 
-    test "doc.edit_table lowers row_insert into table_row_insert", %{
+    test "doc.edit rejects table structure ops outside the current op set", %{
       owner: owner,
       doc_id: doc_id,
       route_ref: route_ref
     } do
       args = %{
-        "sec" => 0,
-        "para" => 2,
-        "control_index" => 0,
-        "op" => "row_insert",
+        "op" => "edit_table",
+        "target" => %{"type" => "table", "sec" => 0, "para" => 2, "control_index" => 0},
+        "table_op" => "row_insert",
         "at_row" => 1
       }
 
-      assert {:ok, %{"ok" => true, "applied" => "edit_table", "revision" => rev}} =
-               MCP.call_tool(owner, route_ref, "doc.edit_table", args)
-
-      assert is_integer(rev)
-
-      [change] = changes_for(doc_id) |> Enum.filter(&(&1.command_kind == "edit_text"))
-      assert [%{"op" => "table_row_insert", "args" => op_args}] = change.payload
-      assert op_args["at_row"] == 1
-      assert op_args["control_index"] == 0
-    end
-
-    test "doc.set_field_value lowers to delete+insert at the field's tracked position", %{
-      owner: owner,
-      route_ref: route_ref
-    } do
-      doc_id = doc_with_tracked_field(owner)
-      route_ref = %{route_ref | document_id: doc_id}
-
-      args = %{"id" => "field-1", "value" => "Acme Corp"}
-
-      assert {:ok, %{"ok" => true, "applied" => "set_field_value", "revision" => _rev}} =
-               MCP.call_tool(owner, route_ref, "doc.set_field_value", args)
-
-      [change] = changes_for(doc_id) |> Enum.filter(&(&1.command_kind == "edit_text"))
-      kinds = change.payload |> Enum.map(&Map.get(&1, "op"))
-      assert "delete_text" in kinds
-      assert "insert_text" in kinds
-    end
-
-    test "doc.set_field_value clears a non-empty tracked field with delete_text only", %{
-      owner: owner,
-      route_ref: route_ref
-    } do
-      doc_id = doc_with_tracked_field(owner)
-      route_ref = %{route_ref | document_id: doc_id}
-
-      assert {:ok, %{"ok" => true, "applied" => "set_field_value", "revision" => _rev}} =
-               MCP.call_tool(owner, route_ref, "doc.set_field_value", %{
-                 "id" => "field-1",
-                 "value" => ""
-               })
-
-      [change] = changes_for(doc_id) |> Enum.filter(&(&1.command_kind == "edit_text"))
-
-      assert [
-               %{
-                 "op" => "delete_text",
-                 "args" => %{"sec" => 0, "para" => 1, "off" => 0, "len" => 6}
-               }
-             ] = change.payload
-    end
-
-    test "doc.set_field_value clears a tracked field from its current value when range is collapsed",
-         %{
-           owner: owner,
-           route_ref: route_ref
-         } do
-      doc_id = doc_with_collapsed_tracked_field(owner)
-      route_ref = %{route_ref | document_id: doc_id}
-
-      assert {:ok, %{"ok" => true, "applied" => "set_field_value", "revision" => _rev}} =
-               MCP.call_tool(owner, route_ref, "doc.set_field_value", %{
-                 "id" => "collapsed-field",
-                 "value" => ""
-               })
-
-      [change] = changes_for(doc_id) |> Enum.filter(&(&1.command_kind == "edit_text"))
-
-      assert [
-               %{
-                 "op" => "delete_text",
-                 "args" => %{"sec" => 0, "para" => 1, "off" => 0, "len" => 6}
-               }
-             ] = change.payload
-    end
-
-    test "doc.set_field_value clears the full current value when tracked end is one short",
-         %{
-           owner: owner,
-           route_ref: route_ref
-         } do
-      target = "범용(용역[지식·정보성과물]업 분야)"
-      doc_id = doc_with_short_end_tracked_field(owner, target)
-      route_ref = %{route_ref | document_id: doc_id}
-
-      assert {:ok, %{"ok" => true, "applied" => "set_field_value", "revision" => _rev}} =
-               MCP.call_tool(owner, route_ref, "doc.set_field_value", %{
-                 "id" => "short-end-field",
-                 "value" => ""
-               })
-
-      [change] = changes_for(doc_id) |> Enum.filter(&(&1.command_kind == "edit_text"))
-
-      assert [
-               %{
-                 "op" => "delete_text",
-                 "args" => %{"sec" => 0, "para" => 1, "off" => 0, "len" => len}
-               }
-             ] = change.payload
-
-      assert len == String.length(target)
-    end
-
-    test "doc.set_field_value 404s on unknown field id", %{
-      owner: owner,
-      route_ref: route_ref
-    } do
-      assert {:error, {:not_found, _}} =
-               MCP.call_tool(owner, route_ref, "doc.set_field_value", %{
-                 "id" => "no-such-field",
-                 "value" => "anything"
-               })
-    end
-
-    test "doc.set_field_value rejects an invalid tracked position without committing", %{
-      owner: owner,
-      route_ref: route_ref
-    } do
-      doc_id = doc_with_invalid_tracked_field_position(owner)
-      route_ref = %{route_ref | document_id: doc_id}
       before_change_ids = changes_for(doc_id) |> Enum.map(& &1.id)
 
-      result =
-        MCP.call_tool(owner, route_ref, "doc.set_field_value", %{
-          "id" => "bad-field",
-          "value" => "",
-          "base_revision" => 1
-        })
+      assert {:error, {:invalid_params, message}} =
+               MCP.call_tool(owner, route_ref, "doc.edit", args)
 
-      assert {:error, {:invalid_params, _}} = result
-      refute match?({:ok, %{"revision" => _, "change_id" => _}}, result)
+      assert message =~ "replace_text, insert_block, or delete_block"
       assert changes_for(doc_id) |> Enum.map(& &1.id) == before_change_ids
     end
 
-    test "doc.edit_text clears a matched existing range with delete_text only", %{
+    test "doc.edit clears a matched paragraph range with delete_text only", %{
       owner: owner,
       route_ref: route_ref
     } do
       doc_id = doc_with_text(owner, "abc")
       route_ref = %{route_ref | document_id: doc_id}
 
-      assert {:ok, %{"ok" => true, "applied" => "edit_text", "revision" => _rev}} =
-               MCP.call_tool(owner, route_ref, "doc.edit_text", %{
-                 "sec" => 0,
-                 "para" => 0,
-                 "off" => 0,
-                 "match" => "abc",
+      assert {:ok, %{"ok" => true, "applied" => "edit", "revision" => _rev}} =
+               MCP.call_tool(owner, route_ref, "doc.edit", %{
+                 "target" => %{
+                   "type" => "paragraph",
+                   "sec" => 0,
+                   "para" => 0,
+                   "off" => 0,
+                   "match" => "abc"
+                 },
                  "text" => "",
                  "base_revision" => 1
                })
@@ -523,7 +362,38 @@ defmodule Contract.MCPTest do
              ] = change.payload
     end
 
-    test "doc.edit_text duplicate retry returns the existing successful change after the match was deleted",
+    test "doc.edit rejects full-document multiline replacement of one paragraph without committing",
+         %{
+           owner: owner,
+           route_ref: route_ref
+         } do
+      original = "전문서비스 계약서"
+      doc_id = doc_with_text(owner, original)
+      route_ref = %{route_ref | document_id: doc_id}
+      before_change_ids = changes_for(doc_id) |> Enum.map(& &1.id)
+
+      result =
+        MCP.call_tool(
+          owner,
+          route_ref,
+          "doc.edit",
+          paragraph_replace_text_args(%{
+            "sec" => 0,
+            "para" => 0,
+            "off" => 0,
+            "match" => original,
+            "text" => "전문서비스 계약서\n\n본 계약은 다음과 같이 체결된다.\n\n제1조(목적)",
+            "base_revision" => 1
+          })
+        )
+
+      assert {:error, {:invalid_params, message}} = result
+      assert message =~ "single paragraph"
+      assert message =~ "insert_block once per paragraph"
+      assert changes_for(doc_id) |> Enum.map(& &1.id) == before_change_ids
+    end
+
+    test "doc.edit duplicate retry returns the existing successful change after the match was deleted",
          %{
            owner: owner,
            route_ref: route_ref
@@ -540,16 +410,18 @@ defmodule Contract.MCPTest do
         "base_revision" => 1
       }
 
-      assert {:ok, %{"revision" => rev, "change_id" => change_id}} =
-               MCP.call_tool(owner, route_ref, "doc.edit_text", args)
+      args = paragraph_replace_text_args(args)
 
-      assert {:ok, %{"revision" => ^rev, "change_id" => ^change_id}} =
-               MCP.call_tool(owner, route_ref, "doc.edit_text", args)
+      assert {:ok, %{"revision" => rev, "change_id" => change_id, "applied" => "edit"}} =
+               MCP.call_tool(owner, route_ref, "doc.edit", args)
+
+      assert {:ok, %{"revision" => ^rev, "change_id" => ^change_id, "applied" => "edit"}} =
+               MCP.call_tool(owner, route_ref, "doc.edit", args)
 
       assert [_change] = changes_for(doc_id) |> Enum.filter(&(&1.command_kind == "edit_text"))
     end
 
-    test "doc.edit_text rejects a match that is not present at the coordinates without committing",
+    test "doc.edit rejects a match that is not present at the coordinates without committing",
          %{
            owner: owner,
            route_ref: route_ref
@@ -559,21 +431,26 @@ defmodule Contract.MCPTest do
       before_change_ids = changes_for(doc_id) |> Enum.map(& &1.id)
 
       result =
-        MCP.call_tool(owner, route_ref, "doc.edit_text", %{
-          "sec" => 0,
-          "para" => 0,
-          "off" => 0,
-          "match" => "검토본",
-          "text" => "",
-          "base_revision" => 1
-        })
+        MCP.call_tool(
+          owner,
+          route_ref,
+          "doc.edit",
+          paragraph_replace_text_args(%{
+            "sec" => 0,
+            "para" => 0,
+            "off" => 0,
+            "match" => "검토본",
+            "text" => "",
+            "base_revision" => 1
+          })
+        )
 
       assert {:error, {:invalid_params, _}} = result
       refute match?({:ok, %{"revision" => _, "change_id" => _}}, result)
       assert changes_for(doc_id) |> Enum.map(& &1.id) == before_change_ids
     end
 
-    test "doc.edit_text rejects when the target projection basis is marked incomplete",
+    test "doc.edit rejects when the target projection basis is marked incomplete",
          %{
            owner: owner,
            route_ref: route_ref
@@ -592,14 +469,19 @@ defmodule Contract.MCPTest do
       before_change_ids = changes_for(doc_id) |> Enum.map(& &1.id)
 
       result =
-        MCP.call_tool(owner, route_ref, "doc.edit_text", %{
-          "sec" => 0,
-          "para" => 0,
-          "off" => 0,
-          "match" => "abc",
-          "text" => "updated",
-          "base_revision" => 1
-        })
+        MCP.call_tool(
+          owner,
+          route_ref,
+          "doc.edit",
+          paragraph_replace_text_args(%{
+            "sec" => 0,
+            "para" => 0,
+            "off" => 0,
+            "match" => "abc",
+            "text" => "updated",
+            "base_revision" => 1
+          })
+        )
 
       assert {:error, {:invalid_params, message}} = result
       assert message =~ "projection basis"
@@ -607,7 +489,7 @@ defmodule Contract.MCPTest do
       assert changes_for(doc_id) |> Enum.map(& &1.id) == before_change_ids
     end
 
-    test "doc.edit_text rejects a same-revision snapshot that is missing committed text ops",
+    test "doc.edit rejects a same-revision snapshot that is missing committed text ops",
          %{
            owner: owner,
            route_ref: route_ref
@@ -618,14 +500,19 @@ defmodule Contract.MCPTest do
       route_ref = %{route_ref | document_id: doc_id}
 
       assert {:ok, %{"revision" => 2}} =
-               MCP.call_tool(owner, route_ref, "doc.edit_text", %{
-                 "sec" => 0,
-                 "para" => 0,
-                 "off" => String.length(" ◇ 계약기간  :  "),
-                 "match" => "old suffix",
-                 "text" => replacement,
-                 "base_revision" => 1
-               })
+               MCP.call_tool(
+                 owner,
+                 route_ref,
+                 "doc.edit",
+                 paragraph_replace_text_args(%{
+                   "sec" => 0,
+                   "para" => 0,
+                   "off" => String.length(" ◇ 계약기간  :  "),
+                   "match" => "old suffix",
+                   "text" => replacement,
+                   "base_revision" => 1
+                 })
+               )
 
       {:ok, _stale_snapshot} =
         %Contract.RhwpSnapshot.Record{}
@@ -655,14 +542,19 @@ defmodule Contract.MCPTest do
       before_change_ids = changes_for(doc_id) |> Enum.map(& &1.id)
 
       result =
-        MCP.call_tool(owner, route_ref, "doc.edit_text", %{
-          "sec" => 0,
-          "para" => 0,
-          "off" => 0,
-          "match" => " ◇ 계약기간  :  ",
-          "text" => " ◇ 계약기간  :  " <> replacement,
-          "base_revision" => 2
-        })
+        MCP.call_tool(
+          owner,
+          route_ref,
+          "doc.edit",
+          paragraph_replace_text_args(%{
+            "sec" => 0,
+            "para" => 0,
+            "off" => String.length(" ◇ 계약기간  :  "),
+            "match" => "old suffix",
+            "text" => "new suffix",
+            "base_revision" => 2
+          })
+        )
 
       assert {:error, {:invalid_params, message}} = result
       assert message =~ "same-revision"
@@ -670,7 +562,72 @@ defmodule Contract.MCPTest do
       assert changes_for(doc_id) |> Enum.map(& &1.id) == before_change_ids
     end
 
-    test "doc.edit_text rejects slot label prefix replacement that would leave old period text",
+    test "doc.edit allows a paragraph edit when stale snapshot text ops touch another target",
+         %{
+           owner: owner,
+           route_ref: route_ref
+         } do
+      doc_id = doc_with_paragraphs(owner, ["target original", "other old"])
+      route_ref = %{route_ref | document_id: doc_id}
+
+      assert {:ok, %{"revision" => 2}} =
+               MCP.call_tool(
+                 owner,
+                 route_ref,
+                 "doc.edit",
+                 paragraph_replace_text_args(%{
+                   "sec" => 0,
+                   "para" => 1,
+                   "off" => 0,
+                   "match" => "other old",
+                   "text" => "other new",
+                   "base_revision" => 1
+                 })
+               )
+
+      {:ok, _stale_snapshot} =
+        %Contract.RhwpSnapshot.Record{}
+        |> Contract.RhwpSnapshot.Record.changeset(%{
+          document_id: doc_id,
+          revision: 2,
+          r2_key: "documents/#{doc_id}/snapshots/2.hwp",
+          ir_r2_key: "documents/#{doc_id}/snapshots/2.ir.json",
+          format: "hwp",
+          content_type: "application/x-hwp",
+          projection: %{
+            "title" => "Paragraphs Doc",
+            "contract_type" => "nda_v1",
+            "sections" => [
+              %{
+                "idx" => 0,
+                "paragraphs" => [
+                  %{"idx" => 0, "text" => "target original"},
+                  %{"idx" => 1, "text" => "other old"}
+                ]
+              }
+            ],
+            "fields" => []
+          }
+        })
+        |> Repo.insert()
+
+      assert {:ok, %{"revision" => 3, "applied" => "edit"}} =
+               MCP.call_tool(owner, route_ref, "doc.edit", %{
+                 "target" => %{
+                   "type" => "paragraph",
+                   "sec" => 0,
+                   "para" => 0,
+                   "off" => 0,
+                   "match" => "target original"
+                 },
+                 "text" => "target updated",
+                 "base_revision" => 2
+               })
+
+      assert List.last(changes_for(doc_id)).agent_run_id == route_ref.agent_run_id
+    end
+
+    test "doc.edit rejects slot label prefix replacement that would leave old period text",
          %{
            owner: owner,
            route_ref: route_ref
@@ -682,14 +639,19 @@ defmodule Contract.MCPTest do
       before_change_ids = changes_for(doc_id) |> Enum.map(& &1.id)
 
       result =
-        MCP.call_tool(owner, route_ref, "doc.edit_text", %{
-          "sec" => 0,
-          "para" => 0,
-          "off" => 0,
-          "match" => label,
-          "text" => label <> "2026년 1월 1일부터 2027년 12월 31일까지 LONG-FIELD",
-          "base_revision" => 1
-        })
+        MCP.call_tool(
+          owner,
+          route_ref,
+          "doc.edit",
+          paragraph_replace_text_args(%{
+            "sec" => 0,
+            "para" => 0,
+            "off" => 0,
+            "match" => label,
+            "text" => label <> "2026년 1월 1일부터 2027년 12월 31일까지 LONG-FIELD",
+            "base_revision" => 1
+          })
+        )
 
       assert {:error, {:invalid_params, message}} = result
       assert message =~ "slot label prefix"
@@ -697,7 +659,7 @@ defmodule Contract.MCPTest do
       assert changes_for(doc_id) |> Enum.map(& &1.id) == before_change_ids
     end
 
-    test "doc.edit_text rejects negative paragraph coordinates without committing", %{
+    test "doc.edit rejects negative paragraph coordinates without committing", %{
       owner: owner,
       doc_id: doc_id,
       route_ref: route_ref
@@ -705,21 +667,26 @@ defmodule Contract.MCPTest do
       before_change_ids = changes_for(doc_id) |> Enum.map(& &1.id)
 
       result =
-        MCP.call_tool(owner, route_ref, "doc.edit_text", %{
-          "sec" => 0,
-          "para" => -1,
-          "off" => 0,
-          "match" => "service_agreement_v1.hwp",
-          "text" => "",
-          "base_revision" => 1
-        })
+        MCP.call_tool(
+          owner,
+          route_ref,
+          "doc.edit",
+          paragraph_replace_text_args(%{
+            "sec" => 0,
+            "para" => -1,
+            "off" => 0,
+            "match" => "service_agreement_v1.hwp",
+            "text" => "",
+            "base_revision" => 1
+          })
+        )
 
       assert {:error, {:invalid_params, _}} = result
       refute match?({:ok, %{"revision" => _, "change_id" => _}}, result)
       assert changes_for(doc_id) |> Enum.map(& &1.id) == before_change_ids
     end
 
-    test "doc.edit_text rejects empty replacements without stamping a revision", %{
+    test "doc.edit rejects empty replacements without stamping a revision", %{
       owner: owner,
       doc_id: doc_id,
       route_ref: route_ref
@@ -727,21 +694,26 @@ defmodule Contract.MCPTest do
       before_change_ids = changes_for(doc_id) |> Enum.map(& &1.id)
 
       result =
-        MCP.call_tool(owner, route_ref, "doc.edit_text", %{
-          "sec" => 0,
-          "para" => 0,
-          "off" => 0,
-          "len" => 0,
-          "text" => "",
-          "base_revision" => 1
-        })
+        MCP.call_tool(
+          owner,
+          route_ref,
+          "doc.edit",
+          paragraph_replace_text_args(%{
+            "sec" => 0,
+            "para" => 0,
+            "off" => 0,
+            "len" => 0,
+            "text" => "",
+            "base_revision" => 1
+          })
+        )
 
       assert {:error, {:invalid_params, _}} = result
       refute match?({:ok, %{"revision" => _, "change_id" => _}}, result)
       assert changes_for(doc_id) |> Enum.map(& &1.id) == before_change_ids
     end
 
-    test "doc.edit_text derives delete length from `match` so the agent never has to count graphemes",
+    test "doc.edit derives delete length from `match` so the agent never has to count graphemes",
          %{owner: owner, route_ref: route_ref} do
       # Real-world failure that drove this: an agent passed len=29 for the
       # 30-grapheme string "범용(용역[지식·정보성과물]업 분야) 표준 하도급계약서",
@@ -761,8 +733,8 @@ defmodule Contract.MCPTest do
         "text" => "하도급계약"
       }
 
-      assert {:ok, %{"ok" => true, "applied" => "edit_text"}} =
-               MCP.call_tool(owner, route_ref, "doc.edit_text", args)
+      assert {:ok, %{"ok" => true, "applied" => "edit"}} =
+               MCP.call_tool(owner, route_ref, "doc.edit", paragraph_replace_text_args(args))
 
       [change] = changes_for(doc_id) |> Enum.filter(&(&1.command_kind == "edit_text"))
 
@@ -773,7 +745,7 @@ defmodule Contract.MCPTest do
       assert get_in(delete_op, ["args", "len"]) == String.length(target)
     end
 
-    test "doc.edit_text still accepts a numeric `len` for back-compat", %{
+    test "doc.edit accepts a numeric `len`", %{
       owner: owner,
       doc_id: doc_id,
       route_ref: route_ref
@@ -786,8 +758,8 @@ defmodule Contract.MCPTest do
         "text" => "X"
       }
 
-      assert {:ok, %{"ok" => true, "applied" => "edit_text"}} =
-               MCP.call_tool(owner, route_ref, "doc.edit_text", args)
+      assert {:ok, %{"ok" => true, "applied" => "edit"}} =
+               MCP.call_tool(owner, route_ref, "doc.edit", paragraph_replace_text_args(args))
 
       [change] = changes_for(doc_id) |> Enum.filter(&(&1.command_kind == "edit_text"))
 
@@ -797,17 +769,22 @@ defmodule Contract.MCPTest do
       assert get_in(delete_op, ["args", "len"]) == 4
     end
 
-    test "doc.edit_text rejects when neither `match` nor `len` is provided", %{
+    test "doc.edit rejects when neither `match` nor `len` is provided", %{
       owner: owner,
       route_ref: route_ref
     } do
       assert {:error, {:invalid_params, _}} =
-               MCP.call_tool(owner, route_ref, "doc.edit_text", %{
-                 "sec" => 0,
-                 "para" => 0,
-                 "off" => 0,
-                 "text" => "X"
-               })
+               MCP.call_tool(
+                 owner,
+                 route_ref,
+                 "doc.edit",
+                 paragraph_replace_text_args(%{
+                   "sec" => 0,
+                   "para" => 0,
+                   "off" => 0,
+                   "text" => "X"
+                 })
+               )
     end
 
     test "doc.get returns slim metadata + heading outline, NOT the full paragraph list", %{
@@ -834,12 +811,43 @@ defmodule Contract.MCPTest do
       assert [0, -1, 0, "Clauses Doc"] in outline
       assert Enum.any?(outline, fn [_, _, _, t] -> String.starts_with?(t, "제1조") end)
       assert Enum.any?(outline, fn [_, _, _, t] -> String.starts_with?(t, "제2조") end)
+      assert [0, 2, 2, "제1조 (목적)"] in outline
+      refute Enum.any?(outline, fn [_, _, _, t] -> String.contains?(t, "본 계약") end)
 
       # CRITICAL: no flat paragraph list — that's what doc.read is for.
       refute Map.has_key?(payload, "p")
 
-      # Fields surface as a compact list (id/label/kind/value tuples).
+      # Fields surface as compact id/label/kind/read-hint tuples.
       assert is_list(payload["f"])
+    end
+
+    test "doc.get bounds outline and field hints with cursors and no field values", %{
+      owner: owner,
+      route_ref: route_ref
+    } do
+      doc_id = doc_with_many_outline_rows_and_fields(owner)
+      route_ref = %{route_ref | document_id: doc_id}
+
+      assert {:ok, payload} = MCP.call_tool(owner, route_ref, "doc.get", %{})
+
+      assert length(payload["outline"]) == 12
+      assert length(payload["f"]) == 10
+      assert payload["cursors"]["outline"] == %{"from" => 12}
+      assert payload["cursors"]["fields"] == %{"from" => 10}
+      assert payload["read"]["paragraph_window"]["default_limit"] == 3
+      assert payload["read"]["table_window"]["default_rows"] == 2
+      refute inspect(payload) =~ "FIELD-VALUE-SHOULD-NOT-DUMP"
+
+      assert {:ok, page} =
+               MCP.call_tool(owner, route_ref, "doc.get", %{
+                 "outline_from" => 12,
+                 "outline_limit" => 3,
+                 "field_from" => 10,
+                 "field_limit" => 2
+               })
+
+      assert length(page["outline"]) == 3
+      assert length(page["f"]) == 2
     end
 
     test "doc.get falls back to typed RHWP editables before the first snapshot", %{
@@ -855,23 +863,25 @@ defmodule Contract.MCPTest do
       refute Repo.get_by(Contract.RhwpSnapshot.Record, document_id: doc_id)
       route_ref = %{route_ref | document_id: doc_id}
 
-      assert {:ok, %{"counts" => counts, "f" => fields}} =
+      assert {:ok, %{"counts" => counts, "f" => fields} = payload} =
                MCP.call_tool(owner, route_ref, "doc.get", %{})
 
       assert counts["sec"] > 0
       assert counts["para"] > 0
+      refute inspect(payload) =~ "2026년"
 
-      assert ["service_contract_start_date", "계약기간 시작일", "text_field", _] =
+      assert ["service_contract_start_date", "계약기간 시작일", "text_field", %{"sec" => 0}] =
                compact_field(fields, "service_contract_start_date")
 
-      assert ["service_contract_end_date", "계약기간 종료일", "text_field", _] =
+      assert ["service_contract_end_date", "계약기간 종료일", "text_field", %{"sec" => 0}] =
                compact_field(fields, "service_contract_end_date")
 
-      assert ["contract_period", "계약기간", "text_field", _] =
+      assert ["contract_period", "계약기간", "text_field", %{"sec" => 0, "para" => 12}] =
                compact_field(fields, "contract_period")
 
       assert {:ok,
               %{
+                "revision" => base_revision,
                 "total" => total,
                 "hits" => [[0, 12, _off, _len, _before, "계약기간", _after, "paragraph"] | _]
               }} = MCP.call_tool(owner, route_ref, "doc.find", %{"needle" => "계약기간"})
@@ -880,20 +890,32 @@ defmodule Contract.MCPTest do
 
       long_period = "2026년 2월 3일부터 2027년 4월 5일까지 CHAT-LONG-MCP"
 
-      assert {:ok, %{"revision" => 2}} =
-               MCP.call_tool(owner, route_ref, "doc.set_field_value", %{
-                 "id" => "contract_period",
-                 "value" => long_period,
-                 "base_revision" => 1
-               })
+      assert {:ok, %{"read" => %{"type" => "paragraph", "text" => original_paragraph}}} =
+               MCP.call_tool(owner, route_ref, "doc.read", %{"sec" => 0, "para" => 12})
 
-      assert {:ok, %{"paragraphs" => [[0, 12, "paragraph", paragraph]]}} =
+      assert {:ok, %{"revision" => 2}} =
+               MCP.call_tool(
+                 owner,
+                 route_ref,
+                 "doc.edit",
+                 paragraph_replace_text_args(%{
+                   "sec" => 0,
+                   "para" => 12,
+                   "off" => 0,
+                   "match" => original_paragraph,
+                   "text" => " ◇ 계약기간  :  " <> long_period,
+                   "base_revision" => base_revision
+                 })
+               )
+
+      assert {:ok, %{"read" => %{"type" => "paragraph", "text" => paragraph}}} =
                MCP.call_tool(owner, route_ref, "doc.read", %{"sec" => 0, "para" => 12})
 
       assert paragraph =~ long_period
       assert paragraph |> occurrences("CHAT-LONG-MCP") == 1
       assert paragraph |> occurrences("까지") == 1
       refute paragraph =~ "년   월"
+      refute paragraph =~ original_paragraph
     end
 
     test "doc.find returns positional hits with surrounding context", %{
@@ -942,35 +964,297 @@ defmodule Contract.MCPTest do
                MCP.call_tool(owner, route_ref, "doc.find", %{})
     end
 
-    test "doc.read returns a paragraph slice with section coordinates", %{
+    test "doc.read returns a paragraph preview window with section coordinates", %{
       owner: owner,
       route_ref: route_ref
     } do
       doc_id = doc_with_clauses(owner)
       route_ref = %{route_ref | document_id: doc_id}
 
-      assert {:ok, %{"ok" => true, "paragraphs" => paragraphs}} =
+      assert {:ok, %{"ok" => true, "read" => %{"type" => "paragraph_window", "items" => items}}} =
                MCP.call_tool(owner, route_ref, "doc.read", %{
                  "sec" => 0,
                  "from" => 0,
                  "to" => 1
                })
 
-      assert length(paragraphs) == 2
-      assert [[0, 0, _, "Clauses Doc"], [0, 1, _, _]] = paragraphs
+      assert length(items) == 2
+      assert [%{"sec" => 0, "para" => 0, "preview" => "Clauses Doc"}, %{"para" => 1}] = items
     end
 
-    test "doc.read with a single `para` returns just that paragraph", %{
+    test "doc.read with a single `para` returns a bounded paragraph read", %{
       owner: owner,
       route_ref: route_ref
     } do
       doc_id = doc_with_clauses(owner)
       route_ref = %{route_ref | document_id: doc_id}
 
-      assert {:ok, %{"paragraphs" => [[0, 2, _, text]]}} =
+      assert {:ok, %{"read" => %{"type" => "paragraph", "sec" => 0, "para" => 2, "text" => text}}} =
                MCP.call_tool(owner, route_ref, "doc.read", %{"sec" => 0, "para" => 2})
 
       assert String.starts_with?(text, "제1조")
+    end
+
+    test "doc.edit replaces table cell text using a cell target from doc.read", %{
+      owner: owner,
+      route_ref: route_ref
+    } do
+      doc_id = doc_with_table_cell(owner)
+      route_ref = %{route_ref | document_id: doc_id}
+
+      assert {:ok,
+              %{
+                "revision" => base_revision,
+                "read" => %{"type" => "table_window", "tables" => tables}
+              }} = MCP.call_tool(owner, route_ref, "doc.read", %{"sec" => 0, "para" => 0})
+
+      assert [
+               %{
+                 "control_index" => 0,
+                 "rows" => 1,
+                 "cols" => 2,
+                 "cells" => table_cells
+               }
+             ] = tables
+
+      assert length(table_cells) == 2
+
+      assert {:ok, %{"read" => %{"type" => "cell", "cell" => cell}}} =
+               MCP.call_tool(owner, route_ref, "doc.read", %{
+                 "sec" => 0,
+                 "para" => 0,
+                 "row" => 0,
+                 "col" => 1
+               })
+
+      assert cell["text"] == "기존 금액"
+      assert cell["control_index"] == 0
+      assert cell["cell_index"] == 1
+      assert cell["cell_para_index"] == 0
+
+      assert cell["target"] == %{
+               "type" => "cell",
+               "sec" => 0,
+               "para" => 0,
+               "off" => 0,
+               "match" => "기존 금액",
+               "cell_path" => cell["cell_path"]
+             }
+
+      assert {:ok, %{"ok" => true, "applied" => "edit", "revision" => 2}} =
+               MCP.call_tool(owner, route_ref, "doc.edit", %{
+                 "target" => %{
+                   "type" => "cell",
+                   "sec" => 0,
+                   "para" => 0,
+                   "off" => 0,
+                   "match" => cell["text"],
+                   "cell_path" => cell["cell_path"]
+                 },
+                 "text" => "변경 금액",
+                 "base_revision" => base_revision
+               })
+
+      assert {:ok, %{"read" => %{"type" => "cell", "cell" => updated_cell}}} =
+               MCP.call_tool(owner, route_ref, "doc.read", %{
+                 "sec" => 0,
+                 "para" => 0,
+                 "row" => 0,
+                 "col" => 1
+               })
+
+      assert updated_cell["text"] == "변경 금액"
+      refute updated_cell["text"] =~ "기존"
+
+      [change] = changes_for(doc_id) |> Enum.filter(&(&1.command_kind == "edit_text"))
+      assert Enum.all?(change.payload, &(get_in(&1, ["args", "cell_path"]) == cell["cell_path"]))
+    end
+
+    test "doc.edit rejects relabeling fixed phone table cells to email contact fields", %{
+      owner: owner,
+      route_ref: route_ref
+    } do
+      doc_id = doc_with_phone_table_cell(owner)
+      route_ref = %{route_ref | document_id: doc_id}
+
+      assert {:ok, %{"revision" => base_revision, "read" => %{"type" => "cell", "cell" => cell}}} =
+               MCP.call_tool(owner, route_ref, "doc.read", %{
+                 "sec" => 0,
+                 "para" => 0,
+                 "row" => 0,
+                 "col" => 1
+               })
+
+      before_change_ids = changes_for(doc_id) |> Enum.map(& &1.id)
+
+      assert {:error, {:invalid_params, message}} =
+               MCP.call_tool(owner, route_ref, "doc.edit", %{
+                 "target" => %{
+                   "type" => "cell",
+                   "sec" => 0,
+                   "para" => 0,
+                   "off" => 0,
+                   "match" => cell["text"],
+                   "cell_path" => cell["cell_path"]
+                 },
+                 "text" => "담당자/이메일 : 홍길동 / lead@example.com",
+                 "base_revision" => base_revision
+               })
+
+      assert message =~ "fixed phone table cell"
+      assert changes_for(doc_id) |> Enum.map(& &1.id) == before_change_ids
+    end
+
+    test "doc.edit allows paragraph edits after same-revision snapshot materializes table cell edits",
+         %{
+           owner: owner,
+           route_ref: route_ref
+         } do
+      doc_id = doc_with_table_cell_and_paragraph(owner)
+      route_ref = %{route_ref | document_id: doc_id}
+
+      assert {:ok, %{"revision" => base_revision, "read" => %{"type" => "cell", "cell" => cell}}} =
+               MCP.call_tool(owner, route_ref, "doc.read", %{
+                 "sec" => 0,
+                 "para" => 0,
+                 "row" => 0,
+                 "col" => 1
+               })
+
+      assert {:ok, %{"revision" => 2}} =
+               MCP.call_tool(owner, route_ref, "doc.edit", %{
+                 "target" => %{
+                   "type" => "cell",
+                   "sec" => 0,
+                   "para" => 0,
+                   "off" => 0,
+                   "match" => cell["text"],
+                   "cell_path" => cell["cell_path"]
+                 },
+                 "text" => "변경 금액",
+                 "base_revision" => base_revision
+               })
+
+      {:ok, _materialized_snapshot} =
+        %Contract.RhwpSnapshot.Record{}
+        |> Contract.RhwpSnapshot.Record.changeset(%{
+          document_id: doc_id,
+          revision: 2,
+          r2_key: "documents/#{doc_id}/snapshots/2.hwp",
+          ir_r2_key: "documents/#{doc_id}/snapshots/2.ir.json",
+          format: "hwp",
+          content_type: "application/x-hwp",
+          projection: %{
+            "title" => "Table Cell Doc",
+            "contract_type" => "nda_v1",
+            "sections" => [
+              %{
+                "idx" => 0,
+                "paragraphs" => [
+                  table_paragraph("품목", "변경 금액"),
+                  %{"idx" => 1, "text" => " 2. 설계도, 작성지시서, 사양서류 등"}
+                ]
+              }
+            ],
+            "fields" => []
+          }
+        })
+        |> Repo.insert()
+
+      assert {:ok, %{"revision" => 3}} =
+               MCP.call_tool(owner, route_ref, "doc.edit", %{
+                 "target" => %{
+                   "type" => "paragraph",
+                   "sec" => 0,
+                   "para" => 1,
+                   "off" => 0,
+                   "match" => " 2. 설계도, 작성지시서, 사양서류 등"
+                 },
+                 "text" => " 2. 과업범위서, 요구사항정의서, 개선 설계서 및 운영대행 사양서류",
+                 "base_revision" => 2
+               })
+    end
+
+    test "doc.find searches table cells and returns a cell target payload", %{
+      owner: owner,
+      route_ref: route_ref
+    } do
+      doc_id = doc_with_table_cell(owner)
+      route_ref = %{route_ref | document_id: doc_id}
+
+      assert {:ok, %{"revision" => 1, "total" => 1, "hits" => [hit]}} =
+               MCP.call_tool(owner, route_ref, "doc.find", %{
+                 "needle" => "기존 금액",
+                 "context" => 10
+               })
+
+      assert [
+               0,
+               0,
+               0,
+               5,
+               "",
+               "기존 금액",
+               "",
+               "cell",
+               %{
+                 "row" => 0,
+                 "col" => 1,
+                 "cell_path" => cell_path,
+                 "target" => target
+               }
+             ] = hit
+
+      assert target == %{
+               "type" => "cell",
+               "sec" => 0,
+               "para" => 0,
+               "off" => 0,
+               "match" => "기존 금액",
+               "cell_path" => cell_path
+             }
+    end
+
+    test "doc.edit rejects paragraph targets for table host paragraphs", %{
+      owner: owner,
+      route_ref: route_ref
+    } do
+      doc_id = doc_with_table_cell(owner)
+      route_ref = %{route_ref | document_id: doc_id}
+      before_change_ids = changes_for(doc_id) |> Enum.map(& &1.id)
+
+      assert {:error, {:invalid_params, message}} =
+               MCP.call_tool(owner, route_ref, "doc.edit", %{
+                 "target" => %{
+                   "type" => "paragraph",
+                   "sec" => 0,
+                   "para" => 0,
+                   "off" => 0,
+                   "len" => 0
+                 },
+                 "text" => "지급조건"
+               })
+
+      assert message =~ "cell target"
+      assert changes_for(doc_id) |> Enum.map(& &1.id) == before_change_ids
+    end
+
+    test "doc.edit delete_block rejects table host paragraphs", %{
+      owner: owner,
+      route_ref: route_ref
+    } do
+      doc_id = doc_with_table_cell(owner)
+      route_ref = %{route_ref | document_id: doc_id}
+      before_change_ids = changes_for(doc_id) |> Enum.map(& &1.id)
+
+      assert {:error, {:not_supported, message}} =
+               MCP.call_tool(owner, route_ref, "doc.edit", %{
+                 "op" => "delete_block",
+                 "target" => %{"type" => "block", "sec" => 0, "para" => 0}
+               })
+
+      assert message =~ "table paragraphs"
+      assert changes_for(doc_id) |> Enum.map(& &1.id) == before_change_ids
     end
 
     test "doc.read paginates via next_para when limit is hit", %{
@@ -980,7 +1264,7 @@ defmodule Contract.MCPTest do
       doc_id = doc_with_clauses(owner)
       route_ref = %{route_ref | document_id: doc_id}
 
-      assert {:ok, %{"paragraphs" => first_page, "next_para" => 2}} =
+      assert {:ok, %{"read" => %{"items" => first_page, "next_para" => 2}}} =
                MCP.call_tool(owner, route_ref, "doc.read", %{
                  "sec" => 0,
                  "from" => 0,
@@ -988,6 +1272,141 @@ defmodule Contract.MCPTest do
                })
 
       assert length(first_page) == 2
+    end
+
+    test "doc.read clamps the Task 223 broad range into a small cursor window without table cell dumps",
+         %{
+           owner: owner,
+           route_ref: route_ref
+         } do
+      doc_id = doc_with_period_and_payment_table(owner)
+      route_ref = %{route_ref | document_id: doc_id}
+
+      assert {:ok, payload} =
+               MCP.call_tool(owner, route_ref, "doc.read", %{
+                 "sec" => 0,
+                 "from" => 10,
+                 "to" => 20,
+                 "limit" => 20
+               })
+
+      assert %{
+               "read" => %{
+                 "type" => "paragraph_window",
+                 "sec" => 0,
+                 "items" => items,
+                 "next_para" => 13
+               }
+             } = payload
+
+      assert length(items) == 3
+      assert Enum.map(items, & &1["para"]) == [10, 11, 12]
+      assert Enum.all?(items, &Map.has_key?(&1, "read"))
+
+      refute inspect(payload) =~ "PERIOD-TAIL-SHOULD-NOT-DUMP"
+      refute inspect(payload) =~ "PAYMENT-CELL-SHOULD-NOT-DUMP"
+    end
+
+    test "doc.read single paragraph returns a bounded text window with a continuation cursor",
+         %{
+           owner: owner,
+           route_ref: route_ref
+         } do
+      long_text = String.duplicate("계약기간 본문 ", 80) <> "PARAGRAPH-TAIL-SHOULD-NOT-DUMP"
+      doc_id = doc_with_text(owner, long_text)
+      route_ref = %{route_ref | document_id: doc_id}
+
+      assert {:ok,
+              %{
+                "read" => %{
+                  "type" => "paragraph",
+                  "sec" => 0,
+                  "para" => 0,
+                  "text" => text,
+                  "range" => %{"off" => 0, "next_off" => next_off}
+                }
+              }} = MCP.call_tool(owner, route_ref, "doc.read", %{"sec" => 0, "para" => 0})
+
+      assert String.length(text) <= 400
+      assert next_off == String.length(text)
+      refute text =~ "PARAGRAPH-TAIL-SHOULD-NOT-DUMP"
+    end
+
+    test "doc.read table paragraph returns a row/column window, and single cell read returns edit target",
+         %{
+           owner: owner,
+           route_ref: route_ref
+         } do
+      doc_id = doc_with_big_table(owner)
+      route_ref = %{route_ref | document_id: doc_id}
+
+      assert {:ok,
+              %{
+                "read" => %{
+                  "type" => "table_window",
+                  "tables" => [
+                    %{
+                      "rows" => 3,
+                      "cols" => 4,
+                      "row_from" => 0,
+                      "row_limit" => 2,
+                      "col_from" => 0,
+                      "col_limit" => 2,
+                      "cells" => cells
+                    }
+                  ]
+                }
+              }} = MCP.call_tool(owner, route_ref, "doc.read", %{"sec" => 0, "para" => 0})
+
+      assert length(cells) == 4
+      refute inspect(cells) =~ "R2C3-PAYMENT-CELL-SHOULD-NOT-DUMP"
+
+      assert {:ok,
+              %{
+                "read" => %{
+                  "type" => "table_window",
+                  "tables" => [
+                    %{
+                      "row_limit" => 3,
+                      "col_limit" => 3,
+                      "cells" => broad_cells
+                    }
+                  ]
+                }
+              }} =
+               MCP.call_tool(owner, route_ref, "doc.read", %{
+                 "sec" => 0,
+                 "para" => 0,
+                 "row_limit" => 5,
+                 "col_limit" => 6
+               })
+
+      assert length(broad_cells) == 9
+      refute inspect(broad_cells) =~ "R2C3-PAYMENT-CELL-SHOULD-NOT-DUMP"
+
+      assert {:ok,
+              %{
+                "read" => %{
+                  "type" => "cell",
+                  "cell" => %{
+                    "row" => 2,
+                    "col" => 3,
+                    "text" => "R2C3-PAYMENT-CELL-SHOULD-NOT-DUMP",
+                    "target" => target
+                  }
+                }
+              }} =
+               MCP.call_tool(owner, route_ref, "doc.read", %{
+                 "sec" => 0,
+                 "para" => 0,
+                 "row" => 2,
+                 "col" => 3
+               })
+
+      assert target["type"] == "cell"
+      assert target["sec"] == 0
+      assert target["para"] == 0
+      assert target["match"] == "R2C3-PAYMENT-CELL-SHOULD-NOT-DUMP"
     end
 
     test "doc.read rejects when `sec` is missing", %{owner: owner, route_ref: route_ref} do
@@ -1006,54 +1425,116 @@ defmodule Contract.MCPTest do
       assert {:ok, %{"revision" => base_rev}} =
                MCP.call_tool(owner, route_ref, "doc.get", %{})
 
-      assert {:ok, %{"paragraphs" => [[0, 0, _, "Header"], [0, 1, _, "AAA BBB"]]}} =
+      assert {:ok, %{"read" => %{"type" => "paragraph_window", "items" => items}}} =
                MCP.call_tool(owner, route_ref, "doc.read", %{"sec" => 0, "from" => 0, "to" => 1})
 
-      assert {:ok, %{"f" => fields}} = MCP.call_tool(owner, route_ref, "doc.get", %{})
-      assert ["party-a", "party_a", "text", "AAA"] = compact_field(fields, "party-a")
-      assert ["party-b", "party_b", "text", "BBB"] = compact_field(fields, "party-b")
+      assert [%{"para" => 0, "preview" => "Header"}, %{"para" => 1, "preview" => "AAA BBB"}] =
+               items
+
+      assert {:ok, %{"read" => %{"type" => "field", "field" => party_a}}} =
+               MCP.call_tool(owner, route_ref, "doc.read", %{"field_id" => "party-a"})
+
+      assert %{
+               "id" => "party-a",
+               "label" => "party_a",
+               "kind" => "text",
+               "value" => "AAA",
+               "target" => %{
+                 "type" => "paragraph",
+                 "sec" => 0,
+                 "para" => 1,
+                 "off" => 0,
+                 "match" => "AAA"
+               }
+             } = party_a
+
+      assert {:ok, %{"read" => %{"type" => "field", "field" => party_b}}} =
+               MCP.call_tool(owner, route_ref, "doc.read", %{"field_id" => "party-b"})
+
+      assert %{
+               "id" => "party-b",
+               "label" => "party_b",
+               "kind" => "text",
+               "value" => "BBB",
+               "target" => %{
+                 "type" => "paragraph",
+                 "sec" => 0,
+                 "para" => 1,
+                 "off" => 4,
+                 "match" => "BBB"
+               }
+             } = party_b
+
+      assert {:ok, %{"f" => fields} = get_payload} =
+               MCP.call_tool(owner, route_ref, "doc.get", %{})
+
+      assert ["party-a", "party_a", "text", %{"sec" => 0, "para" => 1}] =
+               compact_field(fields, "party-a")
+
+      assert ["party-b", "party_b", "text", %{"sec" => 0, "para" => 1}] =
+               compact_field(fields, "party-b")
+
+      refute inspect(get_payload) =~ "AAA"
+      refute inspect(get_payload) =~ "BBB"
 
       assert {:ok, %{"revision" => first_rev}} =
-               MCP.call_tool(owner, route_ref, "doc.set_field_value", %{
-                 "id" => "party-a",
-                 "value" => "ALPHA",
+               MCP.call_tool(owner, route_ref, "doc.edit", %{
+                 "target" => party_a["target"],
+                 "text" => "ALPHA",
                  "base_revision" => base_rev
                })
 
       assert {:error, {:revision_conflict, expected: ^first_rev, got: ^base_rev}} =
-               MCP.call_tool(owner, route_ref, "doc.set_field_value", %{
-                 "id" => "party-b",
-                 "value" => "OMEGA",
-                 "base_revision" => base_rev
-               })
+               MCP.call_tool(
+                 owner,
+                 route_ref,
+                 "doc.edit",
+                 paragraph_replace_text_args(%{
+                   "sec" => 0,
+                   "para" => 1,
+                   "off" => String.length("ALPHA "),
+                   "match" => "BBB",
+                   "text" => "OMEGA",
+                   "base_revision" => base_rev
+                 })
+               )
 
-      assert {:ok, %{"revision" => ^first_rev, "f" => fields}} =
+      assert {:ok, %{"revision" => ^first_rev, "f" => _fields}} =
                MCP.call_tool(owner, route_ref, "doc.get", %{})
 
-      assert {:ok, %{"paragraphs" => [[0, 1, _, "ALPHA BBB"]]}} =
+      assert {:ok, %{"read" => %{"type" => "paragraph", "text" => "ALPHA BBB"}}} =
                MCP.call_tool(owner, route_ref, "doc.read", %{"sec" => 0, "para" => 1})
 
-      assert ["party-a", "party_a", "text", "ALPHA"] = compact_field(fields, "party-a")
-      assert ["party-b", "party_b", "text", "BBB"] = compact_field(fields, "party-b")
+      assert {:ok, %{"read" => %{"type" => "field", "field" => party_b_after_first}}} =
+               MCP.call_tool(owner, route_ref, "doc.read", %{"field_id" => "party-b"})
+
+      assert party_b_after_first["value"] == "BBB"
+
+      assert party_b_after_first["target"] == %{
+               "type" => "paragraph",
+               "sec" => 0,
+               "para" => 1,
+               "off" => String.length("ALPHA "),
+               "match" => "BBB"
+             }
 
       assert {:ok, %{"revision" => second_rev}} =
-               MCP.call_tool(owner, route_ref, "doc.set_field_value", %{
-                 "id" => "party-b",
-                 "value" => "OMEGA",
+               MCP.call_tool(owner, route_ref, "doc.edit", %{
+                 "target" => party_b_after_first["target"],
+                 "text" => "OMEGA",
                  "base_revision" => first_rev
                })
 
       assert {:ok, %{"revision" => ^second_rev, "f" => fields}} =
                MCP.call_tool(owner, route_ref, "doc.get", %{})
 
-      assert {:ok, %{"paragraphs" => [[0, 1, _, "ALPHA OMEGA"]]}} =
+      assert {:ok, %{"read" => %{"type" => "paragraph", "text" => "ALPHA OMEGA"}}} =
                MCP.call_tool(owner, route_ref, "doc.read", %{"sec" => 0, "para" => 1})
 
-      assert ["party-a", "party_a", "text", "ALPHA"] = compact_field(fields, "party-a")
-      assert ["party-b", "party_b", "text", "OMEGA"] = compact_field(fields, "party-b")
+      assert is_list(fields)
     end
 
-    test "doc.get returns inline compact IR without exposing an R2 URL", %{
+    test "doc.get returns metadata/read hints without exposing body IR or an R2 URL", %{
       owner: owner,
       route_ref: route_ref
     } do
@@ -1062,8 +1543,17 @@ defmodule Contract.MCPTest do
 
       assert is_integer(rev)
       assert is_list(payload["outline"])
+
+      refute Enum.any?(payload["outline"], fn
+               [_, _, _, text] when is_binary(text) -> String.contains?(text, "①")
+               _ -> false
+             end)
+
       assert is_map(payload["counts"])
       refute Map.has_key?(payload, "ir_url")
+      refute Map.has_key?(payload, "ir")
+      refute Map.has_key?(payload, "sections")
+      refute Map.has_key?(payload, "p")
     end
 
     test "doc.get returns metadata without consulting R2 presign", %{
@@ -1178,58 +1668,19 @@ defmodule Contract.MCPTest do
       {:ok, %{"revision" => rev}} = MCP.call_tool(owner, route_ref, "doc.get", %{})
 
       # 2) Re-call with since_revision = rev — server must report
-      # unchanged without rebuilding inline metadata.
+      # unchanged without rebuilding metadata/read hints.
       assert {:ok, %{"ok" => true, "unchanged" => true, "revision" => ^rev}} =
                MCP.call_tool(owner, route_ref, "doc.get", %{"since_revision" => rev})
     end
 
-    # auth rejections — one per tool: route_ref without :agent_doc scope
-    # should be rebuffed at authorize_doc_mcp/1 before any DB work.
-    test "doc.insert_block rejects route_ref missing :agent_doc scope", %{
+    test "legacy private mutation tool names are rejected by direct MCP.call_tool", %{
       owner: owner,
-      doc_id: doc_id
+      route_ref: route_ref
     } do
-      assert {:error, {:forbidden, :missing_scope_agent_doc}} =
-               MCP.call_tool(owner, weak_route_ref(doc_id), "doc.insert_block", %{
-                 "sec" => 0,
-                 "para" => 0,
-                 "kind" => "paragraph"
-               })
-    end
-
-    test "doc.delete_block rejects route_ref missing :agent_doc scope", %{
-      owner: owner,
-      doc_id: doc_id
-    } do
-      assert {:error, {:forbidden, :missing_scope_agent_doc}} =
-               MCP.call_tool(owner, weak_route_ref(doc_id), "doc.delete_block", %{
-                 "sec" => 0,
-                 "para" => 1
-               })
-    end
-
-    test "doc.edit_table rejects route_ref missing :agent_doc scope", %{
-      owner: owner,
-      doc_id: doc_id
-    } do
-      assert {:error, {:forbidden, :missing_scope_agent_doc}} =
-               MCP.call_tool(owner, weak_route_ref(doc_id), "doc.edit_table", %{
-                 "sec" => 0,
-                 "para" => 0,
-                 "op" => "row_insert",
-                 "at_row" => 0
-               })
-    end
-
-    test "doc.set_field_value rejects route_ref missing :agent_doc scope", %{
-      owner: owner,
-      doc_id: doc_id
-    } do
-      assert {:error, {:forbidden, :missing_scope_agent_doc}} =
-               MCP.call_tool(owner, weak_route_ref(doc_id), "doc.set_field_value", %{
-                 "id" => "field-1",
-                 "value" => "x"
-               })
+      for tool <-
+            ~w(doc.edit_text doc.insert_block doc.delete_block doc.edit_table doc.set_field_value) do
+        assert {:error, {:unknown_tool, ^tool}} = MCP.call_tool(owner, route_ref, tool, %{})
+      end
     end
   end
 
@@ -1300,55 +1751,6 @@ defmodule Contract.MCPTest do
     doc_id
   end
 
-  # Build a document whose projection has a tracked field with a `position`
-  # rich enough that doc.set_field_value can lower it into a text edit. The
-  # field-position info rides on a stub rhwp Snapshot row (the production
-  # path — the legacy create_document path only stores opaque field attrs).
-  defp doc_with_tracked_field(%Context{} = ctx) do
-    doc_id = create_doc(ctx, title: "Tracked Field Doc")
-
-    {:ok, _} =
-      %Contract.RhwpSnapshot.Record{}
-      |> Contract.RhwpSnapshot.Record.changeset(%{
-        document_id: doc_id,
-        revision: 1,
-        r2_key: "documents/#{doc_id}/snapshots/1.hwp",
-        ir_r2_key: "documents/#{doc_id}/snapshots/1.ir.json",
-        format: "hwp",
-        content_type: "application/x-hwp",
-        projection: %{
-          "title" => "Tracked Field Doc",
-          "contract_type" => "nda_v1",
-          "sections" => [
-            %{
-              "idx" => 0,
-              "paragraphs" => [
-                %{"idx" => 0, "text" => "Header"},
-                %{"idx" => 1, "text" => "Old Co"}
-              ]
-            }
-          ],
-          "fields" => [
-            %{
-              "id" => "field-1",
-              "label" => "party_name",
-              "kind" => "text",
-              "position" => %{
-                "sec" => 0,
-                "para" => 1,
-                "off_start" => 0,
-                "off_end" => 6
-              },
-              "value" => "Old Co"
-            }
-          ]
-        }
-      })
-      |> Repo.insert()
-
-    doc_id
-  end
-
   defp doc_with_text(%Context{} = ctx, text) do
     doc_id = create_doc(ctx, title: "Text Doc")
 
@@ -1380,8 +1782,13 @@ defmodule Contract.MCPTest do
     doc_id
   end
 
-  defp doc_with_collapsed_tracked_field(%Context{} = ctx) do
-    doc_id = create_doc(ctx, title: "Collapsed Field Doc")
+  defp doc_with_paragraphs(%Context{} = ctx, texts) when is_list(texts) do
+    doc_id = create_doc(ctx, title: "Paragraphs Doc")
+
+    paragraphs =
+      texts
+      |> Enum.with_index()
+      |> Enum.map(fn {text, idx} -> %{"idx" => idx, "text" => text} end)
 
     {:ok, _} =
       %Contract.RhwpSnapshot.Record{}
@@ -1393,30 +1800,15 @@ defmodule Contract.MCPTest do
         format: "hwp",
         content_type: "application/x-hwp",
         projection: %{
-          "title" => "Collapsed Field Doc",
+          "title" => "Paragraphs Doc",
           "contract_type" => "nda_v1",
           "sections" => [
             %{
               "idx" => 0,
-              "paragraphs" => [
-                %{"idx" => 0, "text" => "Header"},
-                %{"idx" => 1, "text" => "Old Co"}
-              ]
+              "paragraphs" => paragraphs
             }
           ],
-          "fields" => [
-            %{
-              "id" => "collapsed-field",
-              "label" => "collapsed_field",
-              "kind" => "text",
-              "position" => %{
-                "sec" => 0,
-                "para" => 1,
-                "off_start" => 0
-              },
-              "value" => "Old Co"
-            }
-          ]
+          "fields" => []
         }
       })
       |> Repo.insert()
@@ -1424,8 +1816,29 @@ defmodule Contract.MCPTest do
     doc_id
   end
 
-  defp doc_with_short_end_tracked_field(%Context{} = ctx, value) do
-    doc_id = create_doc(ctx, title: "Short End Field Doc")
+  defp doc_with_many_outline_rows_and_fields(%Context{} = ctx) do
+    doc_id = create_doc(ctx, title: "Bounded Metadata Doc")
+
+    paragraphs =
+      for idx <- 0..18 do
+        %{"idx" => idx, "text" => "제#{idx + 1}조 (항목 #{idx + 1}) 본문은 metadata에 없어야 한다."}
+      end
+
+    fields =
+      for idx <- 0..13 do
+        %{
+          "id" => "field-#{idx}",
+          "label" => "필드 #{idx}",
+          "kind" => "text",
+          "position" => %{
+            "sec" => 0,
+            "para" => idx,
+            "off_start" => 0,
+            "off_end" => 4
+          },
+          "value" => "FIELD-VALUE-SHOULD-NOT-DUMP-#{idx}"
+        }
+      end
 
     {:ok, _} =
       %Contract.RhwpSnapshot.Record{}
@@ -1437,31 +1850,10 @@ defmodule Contract.MCPTest do
         format: "hwp",
         content_type: "application/x-hwp",
         projection: %{
-          "title" => "Short End Field Doc",
+          "title" => "Bounded Metadata Doc",
           "contract_type" => "nda_v1",
-          "sections" => [
-            %{
-              "idx" => 0,
-              "paragraphs" => [
-                %{"idx" => 0, "text" => "Header"},
-                %{"idx" => 1, "text" => value}
-              ]
-            }
-          ],
-          "fields" => [
-            %{
-              "id" => "short-end-field",
-              "label" => "short_end_field",
-              "kind" => "text",
-              "position" => %{
-                "sec" => 0,
-                "para" => 1,
-                "off_start" => 0,
-                "off_end" => String.length(value) - 1
-              },
-              "value" => value
-            }
-          ]
+          "sections" => [%{"idx" => 0, "paragraphs" => paragraphs}],
+          "fields" => fields
         }
       })
       |> Repo.insert()
@@ -1469,8 +1861,8 @@ defmodule Contract.MCPTest do
     doc_id
   end
 
-  defp doc_with_invalid_tracked_field_position(%Context{} = ctx) do
-    doc_id = create_doc(ctx, title: "Invalid Field Position Doc")
+  defp doc_with_table_cell(%Context{} = ctx) do
+    doc_id = create_doc(ctx, title: "Table Cell Doc")
 
     {:ok, _} =
       %Contract.RhwpSnapshot.Record{}
@@ -1482,36 +1874,239 @@ defmodule Contract.MCPTest do
         format: "hwp",
         content_type: "application/x-hwp",
         projection: %{
-          "title" => "Invalid Field Position Doc",
+          "title" => "Table Cell Doc",
           "contract_type" => "nda_v1",
           "sections" => [
             %{
               "idx" => 0,
               "paragraphs" => [
-                %{"idx" => 0, "text" => "Header"},
-                %{"idx" => 1, "text" => "Old Co"}
+                %{
+                  "idx" => 0,
+                  "kind" => "table",
+                  "text" => "",
+                  "tables" => [
+                    %{
+                      "control_idx" => 0,
+                      "rows" => 1,
+                      "cols" => 2,
+                      "cells" => [
+                        %{
+                          "row" => 0,
+                          "col" => 0,
+                          "cell_idx" => 0,
+                          "paragraphs" => [%{"idx" => 0, "text" => "품목"}]
+                        },
+                        %{
+                          "row" => 0,
+                          "col" => 1,
+                          "cell_idx" => 1,
+                          "paragraphs" => [%{"idx" => 0, "text" => "기존 금액"}]
+                        }
+                      ]
+                    }
+                  ]
+                }
               ]
             }
           ],
-          "fields" => [
-            %{
-              "id" => "bad-field",
-              "label" => "bad_field",
-              "kind" => "text",
-              "position" => %{
-                "sec" => 0,
-                "para" => -1,
-                "off_start" => 0,
-                "off_end" => 6
-              },
-              "value" => "Old Co"
-            }
-          ]
+          "fields" => []
         }
       })
       |> Repo.insert()
 
     doc_id
+  end
+
+  defp doc_with_phone_table_cell(%Context{} = ctx) do
+    doc_id = create_doc(ctx, title: "Phone Table Cell Doc")
+
+    {:ok, _} =
+      %Contract.RhwpSnapshot.Record{}
+      |> Contract.RhwpSnapshot.Record.changeset(%{
+        document_id: doc_id,
+        revision: 1,
+        r2_key: "documents/#{doc_id}/snapshots/1.hwp",
+        ir_r2_key: "documents/#{doc_id}/snapshots/1.ir.json",
+        format: "hwp",
+        content_type: "application/x-hwp",
+        projection: %{
+          "title" => "Phone Table Cell Doc",
+          "contract_type" => "nda_v1",
+          "sections" => [
+            %{
+              "idx" => 0,
+              "paragraphs" => [
+                table_paragraph("상호", "전화번호 :")
+              ]
+            }
+          ],
+          "fields" => []
+        }
+      })
+      |> Repo.insert()
+
+    doc_id
+  end
+
+  defp doc_with_table_cell_and_paragraph(%Context{} = ctx) do
+    doc_id = create_doc(ctx, title: "Table Cell Doc")
+
+    {:ok, _} =
+      %Contract.RhwpSnapshot.Record{}
+      |> Contract.RhwpSnapshot.Record.changeset(%{
+        document_id: doc_id,
+        revision: 1,
+        r2_key: "documents/#{doc_id}/snapshots/1.hwp",
+        ir_r2_key: "documents/#{doc_id}/snapshots/1.ir.json",
+        format: "hwp",
+        content_type: "application/x-hwp",
+        projection: %{
+          "title" => "Table Cell Doc",
+          "contract_type" => "nda_v1",
+          "sections" => [
+            %{
+              "idx" => 0,
+              "paragraphs" => [
+                table_paragraph("품목", "기존 금액"),
+                %{"idx" => 1, "text" => " 2. 설계도, 작성지시서, 사양서류 등"}
+              ]
+            }
+          ],
+          "fields" => []
+        }
+      })
+      |> Repo.insert()
+
+    doc_id
+  end
+
+  defp doc_with_period_and_payment_table(%Context{} = ctx) do
+    doc_id = create_doc(ctx, title: "Task 223 Broad Read Doc")
+
+    paragraphs =
+      Enum.map(0..20, fn idx ->
+        cond do
+          idx == 10 ->
+            %{
+              "idx" => idx,
+              "text" =>
+                "계약기간은 2026년 1월 1일부터 2026년 12월 31일까지로 한다. " <>
+                  String.duplicate("범위본문 ", 80) <> "PERIOD-TAIL-SHOULD-NOT-DUMP"
+            }
+
+          idx == 12 ->
+            big_table_paragraph(idx)
+
+          true ->
+            %{"idx" => idx, "text" => "일반 조항 #{idx}"}
+        end
+      end)
+
+    {:ok, _} =
+      %Contract.RhwpSnapshot.Record{}
+      |> Contract.RhwpSnapshot.Record.changeset(%{
+        document_id: doc_id,
+        revision: 61,
+        r2_key: "documents/#{doc_id}/snapshots/61.hwp",
+        ir_r2_key: "documents/#{doc_id}/snapshots/61.ir.json",
+        format: "hwp",
+        content_type: "application/x-hwp",
+        projection: %{
+          "title" => "Task 223 Broad Read Doc",
+          "contract_type" => "nda_v1",
+          "sections" => [%{"idx" => 0, "paragraphs" => paragraphs}],
+          "fields" => []
+        }
+      })
+      |> Repo.insert()
+
+    doc_id
+  end
+
+  defp doc_with_big_table(%Context{} = ctx) do
+    doc_id = create_doc(ctx, title: "Big Table Doc")
+
+    {:ok, _} =
+      %Contract.RhwpSnapshot.Record{}
+      |> Contract.RhwpSnapshot.Record.changeset(%{
+        document_id: doc_id,
+        revision: 1,
+        r2_key: "documents/#{doc_id}/snapshots/1.hwp",
+        ir_r2_key: "documents/#{doc_id}/snapshots/1.ir.json",
+        format: "hwp",
+        content_type: "application/x-hwp",
+        projection: %{
+          "title" => "Big Table Doc",
+          "contract_type" => "nda_v1",
+          "sections" => [%{"idx" => 0, "paragraphs" => [big_table_paragraph(0)]}],
+          "fields" => []
+        }
+      })
+      |> Repo.insert()
+
+    doc_id
+  end
+
+  defp big_table_paragraph(idx) do
+    cells =
+      for row <- 0..2, col <- 0..3 do
+        text =
+          if row == 2 and col == 3 do
+            "R2C3-PAYMENT-CELL-SHOULD-NOT-DUMP"
+          else
+            "R#{row}C#{col}"
+          end
+
+        %{
+          "row" => row,
+          "col" => col,
+          "cell_idx" => row * 4 + col,
+          "paragraphs" => [%{"idx" => 0, "text" => text}]
+        }
+      end
+
+    %{
+      "idx" => idx,
+      "kind" => "table",
+      "text" => "",
+      "tables" => [
+        %{
+          "control_idx" => 0,
+          "rows" => 3,
+          "cols" => 4,
+          "cells" => cells
+        }
+      ]
+    }
+  end
+
+  defp table_paragraph(left_text, right_text) do
+    %{
+      "idx" => 0,
+      "kind" => "table",
+      "text" => "",
+      "tables" => [
+        %{
+          "control_idx" => 0,
+          "rows" => 1,
+          "cols" => 2,
+          "cells" => [
+            %{
+              "row" => 0,
+              "col" => 0,
+              "cell_idx" => 0,
+              "paragraphs" => [%{"idx" => 0, "text" => left_text}]
+            },
+            %{
+              "row" => 0,
+              "col" => 1,
+              "cell_idx" => 1,
+              "paragraphs" => [%{"idx" => 0, "text" => right_text}]
+            }
+          ]
+        }
+      ]
+    }
   end
 
   defp doc_with_same_paragraph_tracked_fields(%Context{} = ctx) do
@@ -1578,6 +2173,28 @@ defmodule Contract.MCPTest do
     end)
   end
 
+  defp paragraph_replace_text_args(args) do
+    target =
+      %{
+        "type" => "paragraph",
+        "sec" => Map.get(args, "sec"),
+        "para" => Map.get(args, "para"),
+        "off" => Map.get(args, "off")
+      }
+      |> maybe_put_from(args, "match")
+      |> maybe_put_from(args, "len")
+
+    %{"target" => target, "text" => Map.get(args, "text") || ""}
+    |> maybe_put_from(args, "base_revision")
+  end
+
+  defp maybe_put_from(map, source, key) do
+    case Map.fetch(source, key) do
+      {:ok, value} -> Map.put(map, key, value)
+      :error -> map
+    end
+  end
+
   defp occurrences(text, needle) do
     text
     |> String.split(needle)
@@ -1594,16 +2211,6 @@ defmodule Contract.MCPTest do
       agent_run_id: run_id,
       purpose: "agent_doc_mcp",
       scopes: ["agent_doc"],
-      issued_at: DateTime.utc_now(),
-      expires_at: DateTime.utc_now() |> DateTime.add(3600, :second)
-    }
-  end
-
-  defp weak_route_ref(doc_id) do
-    %RouteRef{
-      document_id: doc_id,
-      purpose: "mcp-test",
-      scopes: ["read", "write"],
       issued_at: DateTime.utc_now(),
       expires_at: DateTime.utc_now() |> DateTime.add(3600, :second)
     }
@@ -1727,41 +2334,6 @@ defmodule Contract.MCPTest do
     Repo.all(
       from c in Change, where: c.document_id == ^doc_id, order_by: [asc: c.result_revision]
     )
-  end
-
-  defp insert_source(%Context{} = ctx, attrs) do
-    {:ok, source} =
-      %SourceDocument{}
-      |> SourceDocument.changeset(%{
-        owner_id: ctx.user.id,
-        document_id: Keyword.get(attrs, :document_id),
-        blob_ref_id: Ecto.UUID.generate(),
-        mime_type: "application/pdf",
-        original_filename: "source.pdf",
-        regions: [%{"id" => "r1", "text" => "Party A"}],
-        status: "ready"
-      })
-      |> Repo.insert()
-
-    source
-  end
-
-  defp insert_evidence(%Context{} = ctx, attrs) do
-    {:ok, evidence} =
-      %EvidenceSnapshot{}
-      |> EvidenceSnapshot.changeset(%{
-        owner_id: ctx.user.id,
-        document_id: Keyword.get(attrs, :document_id),
-        source_document_id: Keyword.get(attrs, :source_document_id),
-        provider: "test-law",
-        query: %{"q" => "contract"},
-        result: %{"summary" => "citation"},
-        result_hash: Ecto.UUID.generate(),
-        captured_at: DateTime.utc_now(:second)
-      })
-      |> Repo.insert()
-
-    evidence
   end
 
   defp scope do

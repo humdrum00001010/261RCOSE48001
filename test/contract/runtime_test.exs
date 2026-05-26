@@ -187,8 +187,6 @@ defmodule Contract.RuntimeTest do
             :update_metadata,
             :set_contract_type,
             :edit_document,
-            :add_mark,
-            :update_mark,
             :archive_document,
             :restore_document,
             :agent_change
@@ -259,138 +257,37 @@ defmodule Contract.RuntimeTest do
     end
   end
 
-  describe "apply/2 → :revoke_change" do
-    test "revoke rejects documents owned by another user" do
-      owner = scope()
-      other = scope()
-      doc_id = create_owned_doc(owner, title: "No revoke")
-
-      action = %Command{
-        kind: :revoke_change,
-        document_id: doc_id,
-        change_id: Ecto.UUID.generate(),
-        actor_type: :user,
-        actor_id: other.user.id,
-        base_revision: 1,
-        idempotency_key: "revoke-forbidden"
-      }
-
-      assert {:error, :forbidden} = Runtime.revoke(other, action)
-    end
-
-    test "routes through Session.revoke, returns a revoke Change; errors on missing doc_id" do
-      doc = Ecto.UUID.generate()
-      create_action = build_session_action(:rename_document, doc, idem: "rn-revtest")
-
-      _ = create_doc(doc)
-      assert {:ok, %Change{} = base} = Runtime.apply(@ctx, create_action)
-
-      revoke = %Command{
-        kind: :revoke_change,
-        document_id: doc,
-        change_id: base.id,
-        actor_type: :user,
-        actor_id: Ecto.UUID.generate(),
-        base_revision: base.result_revision,
-        idempotency_key: "rev-#{base.id}"
-      }
-
-      assert {:ok, %Change{command_kind: "revoke_change"}} = Runtime.apply(@ctx, revoke)
-
-      pid = Session.whereis(doc)
-      cleanup_session(pid)
-
-      # Missing document_id → typed error.
-      assert {:error, :missing_document_id} =
-               Runtime.revoke(@ctx, %Command{
-                 kind: :revoke_change,
-                 actor_type: :user,
-                 actor_id: Ecto.UUID.generate(),
-                 change_id: Ecto.UUID.generate()
-               })
-    end
-  end
-
-  describe "apply/2 → conversion kinds (Wave 4 — Contract.Conversion)" do
-    test "missing-payload errors are typed for every conversion Command kind" do
+  describe "apply/2 → pruned DB-backed kinds" do
+    test "source/import/export/revoke/conversion/mark kinds are unsupported" do
       doc_id = Ecto.UUID.generate()
-      base = %Command{actor_type: :user, payload: %{}}
 
-      assert {:error, :missing_document_id} =
-               Runtime.apply(@ctx, %{
-                 base
-                 | kind: :start_type_conversion,
-                   document_id: nil,
-                   payload: %{"target_type_key" => "nda_v1"}
-               })
-
-      assert {:error, :missing_target_type_key} =
-               Runtime.apply(@ctx, %{base | kind: :start_type_conversion, document_id: doc_id})
-
-      assert {:error, :missing_plan} =
-               Runtime.apply(@ctx, %{
-                 base
-                 | kind: :set_field_migration_strategy,
-                   document_id: doc_id
-               })
-
-      assert {:error, :missing_plan} =
-               Runtime.apply(@ctx, %{base | kind: :create_converted_variant, document_id: doc_id})
-    end
-  end
-
-  describe "apply/2 → :request_export format parsing" do
-    test "requesting markdown and lawyer_packet creates persisted export rows" do
-      ctx = scope()
-      markdown_doc_id = create_owned_doc(ctx, title: "Markdown export doc")
-      packet_doc_id = create_owned_doc(ctx, title: "Packet export doc")
-
-      for {doc_id, format} <- [{markdown_doc_id, "markdown"}, {packet_doc_id, "lawyer_packet"}] do
+      for kind <- [
+            :upload_document,
+            :duplicate_document,
+            :request_export,
+            :revoke_change,
+            :resolve_revoke,
+            :start_type_conversion,
+            :set_field_migration_strategy,
+            :create_converted_variant,
+            :source_claim_confirm,
+            :source_claim_correct,
+            :source_claim_reject,
+            :source_claim_link_to_document,
+            :source_claim_unlink_from_document,
+            :add_mark,
+            :update_mark
+          ] do
         action = %Command{
-          kind: :request_export,
+          kind: kind,
           document_id: doc_id,
           actor_type: :user,
-          actor_id: ctx.user.id,
-          payload: %{"format" => format}
+          actor_id: Ecto.UUID.generate(),
+          payload: %{}
         }
 
-        assert {:ok, %Oban.Job{} = job} = Runtime.apply(ctx, action)
-        assert job.args["format"] == format
-        assert is_binary(job.args["export_id"])
-
-        assert %{
-                 document_id: ^doc_id,
-                 requester_id: requester_id,
-                 format: ^format,
-                 status: "queued",
-                 progress: 0
-               } = export_record(job.args["export_id"])
-
-        assert requester_id == ctx.user.id
+        assert {:error, {:unsupported_action_kind, ^kind}} = Runtime.apply(@ctx, action)
       end
-    end
-
-    test "rejects html / unknown formats without leaking new atoms" do
-      ctx = scope()
-      doc_id = create_owned_doc(ctx, title: "No HTML export doc")
-
-      html_action = %Command{
-        kind: :request_export,
-        document_id: doc_id,
-        actor_type: :user,
-        actor_id: ctx.user.id,
-        payload: %{"format" => "html"}
-      }
-
-      assert {:error, {:unsupported_export_format, "html"}} = Runtime.apply(ctx, html_action)
-
-      # Unknown string format → typed error AND no atom created.
-      format = "unknown_export_#{System.unique_integer([:positive])}"
-      refute existing_atom?(format)
-
-      unknown_action = %{html_action | payload: %{"format" => format}}
-      assert {:error, {:unsupported_export_format, ^format}} = Runtime.apply(ctx, unknown_action)
-      refute existing_atom?(format)
     end
   end
 
@@ -441,7 +338,7 @@ defmodule Contract.RuntimeTest do
   end
 
   describe "session_kinds/0 and helpers" do
-    test "kind-lists cover SPEC §12 mutation, revoke, and conversion families" do
+    test "kind-lists cover only live session mutation families" do
       session_kinds = Runtime.session_kinds()
 
       for kind <- [
@@ -449,19 +346,16 @@ defmodule Contract.RuntimeTest do
             :update_metadata,
             :set_contract_type,
             :edit_document,
-            :add_mark,
-            :update_mark,
+            :edit_text,
             :archive_document,
             :restore_document,
-            :duplicate_document,
             :agent_change
           ] do
         assert kind in session_kinds
       end
 
-      assert :revoke_change in Runtime.revoke_kinds()
-      assert :resolve_revoke in Runtime.revoke_kinds()
-      assert :start_type_conversion in Runtime.conversion_kinds()
+      refute :add_mark in session_kinds
+      refute :update_mark in session_kinds
     end
   end
 
@@ -544,32 +438,6 @@ defmodule Contract.RuntimeTest do
              ]
            }, 1}
 
-        :add_mark ->
-          {%{
-             "marks" => [
-               %{
-                 "target_type" => "document",
-                 "target_id" => doc,
-                 "intent" => "label",
-                 "source" => "user",
-                 "text" => "label1"
-               }
-             ]
-           }, 1}
-
-        :update_mark ->
-          {%{
-             "marks" => [
-               %{
-                 "target_type" => "document",
-                 "target_id" => doc,
-                 "intent" => "label",
-                 "source" => "user",
-                 "text" => "label1-updated"
-               }
-             ]
-           }, 1}
-
         :archive_document ->
           {%{}, 1}
 
@@ -592,25 +460,6 @@ defmodule Contract.RuntimeTest do
       idempotency_key: Keyword.get(opts, :idem, "#{kind}-#{System.unique_integer([:positive])}"),
       payload: payload
     }
-  end
-
-  defp export_record(export_id) do
-    export = Repo.get!(Contract.Export, export_id)
-
-    %{
-      document_id: export.document_id,
-      requester_id: export.requester_id,
-      format: Atom.to_string(export.format),
-      status: Atom.to_string(export.status),
-      progress: export.progress
-    }
-  end
-
-  defp existing_atom?(value) when is_binary(value) do
-    _ = String.to_existing_atom(value)
-    true
-  rescue
-    ArgumentError -> false
   end
 
   defp cleanup_session(nil), do: :ok

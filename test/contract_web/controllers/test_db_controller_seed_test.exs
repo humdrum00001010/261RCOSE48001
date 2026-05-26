@@ -21,8 +21,8 @@ defmodule ContractWeb.TestDbControllerSeedTest do
 
   use ContractWeb.ConnCase, async: true
 
-  alias Contract.{Change, Repo, RevokeRequest, Snapshot}
-  alias Contract.Documents.{Document, FieldLineage}
+  alias Contract.{Change, Repo, Snapshot}
+  alias Contract.Documents.Document
 
   setup :register_and_log_in_user
 
@@ -95,13 +95,6 @@ defmodule ContractWeb.TestDbControllerSeedTest do
           result_revision: 1
         })
 
-      revoke_request =
-        Repo.insert!(%RevokeRequest{
-          document_id: document.id,
-          target_change_id: change.id,
-          requester_id: user.id
-        })
-
       Repo.insert!(%Snapshot{
         document_id: document.id,
         revision: 1,
@@ -109,21 +102,12 @@ defmodule ContractWeb.TestDbControllerSeedTest do
         r2_key: "documents/#{document.id}/snapshots/1.json"
       })
 
-      lineage =
-        Repo.insert!(%FieldLineage{
-          document_id: document.id,
-          field_id: "effective_date",
-          strategy: :copy_once
-        })
-
       conn = post(conn, ~p"/test/reset", %{})
       assert %{"ok" => true} = json_response(conn, 200)
 
       refute Repo.get(Document, document.id)
       refute Repo.get(Change, change.id)
-      refute Repo.get(RevokeRequest, revoke_request.id)
       refute Repo.get_by(Snapshot, document_id: document.id, revision: 1)
-      refute Repo.get(FieldLineage, lineage.id)
     end
   end
 end

@@ -3,8 +3,8 @@ defmodule Contract.Agent do
   Semantic interpreter. Agent resolves targets; backend validates returned
   IDs.
 
-  This module is a prompt and decoder compatibility namespace. Runtime
-  ownership lives at `Contract.Agent.Document`.
+  This module owns prompt assembly and final-text decoding. Runtime ownership
+  lives at `Contract.Agent.Document`.
 
   See SPEC.md §20, §24 and `/tmp/wave1-research.md` for the verified
   OpenAI Responses + Korean Law MCP shapes.
@@ -12,7 +12,6 @@ defmodule Contract.Agent do
 
   alias Contract.ChatThreads
   alias Contract.Command
-  alias Contract.Agent.Run
   alias Contract.Types, as: T
 
   @grill_system_prompt """
@@ -25,7 +24,7 @@ defmodule Contract.Agent do
     * 편집 요청이라도 의도가 모호하면 먼저 한두 문장의 명확화 질문을 하세요. 추측으로 편집하지 마세요.
 
   편집을 할 때:
-    * Use `doc.get` for metadata, outline, fields, and revision. Use `doc.find` when you already know target text and need an edit position.
+    * Use `doc.get` for bounded metadata, heading labels, read hints, cursors, and revision. Use `doc.read` only for small paragraph windows, paragraph text ranges, field ids, table row/column windows, or single cells. Use `doc.find` when you already know target text and need an edit position.
     * 변경 도구에 `base_revision` 을 마지막 본 값으로 고정하세요.
     * 충돌이 나면 `doc.get` 으로 재조회 후 한 번만 재시도하세요.
     * 마치고 나서 무엇을 했는지 한두 문장으로 보고하세요 (예: "0번 단락 끝에 '[X]' 를 박았습니다.").
@@ -78,20 +77,6 @@ defmodule Contract.Agent do
   # auto-set is a follow-up that depends on the agent emitting
   # well-formed label marks first.
 
-  # --- public API -------------------------------------------------------
-
-  @spec start(T.ctx(), Command.t()) :: {:ok, Run.t()} | {:error, term()}
-  def start(_ctx, %Command{kind: kind})
-      when kind in [:chat_message, :start_type_conversion] do
-    {:error, {:stale_runtime_entrypoint, __MODULE__, Contract.Agent.Document}}
-  end
-
-  def start(_ctx, %Command{kind: kind}), do: {:error, {:unsupported_action, kind}}
-
-  @spec cancel(T.ctx(), T.agent_run_id()) :: {:ok, Run.t()} | {:error, term()}
-  def cancel(_ctx, _run_id),
-    do: {:error, {:stale_runtime_entrypoint, __MODULE__, Contract.Agent.Document}}
-
   @doc """
   Assembles the system prompt, conversation history, MCP tool list, and
   optional `previous_response_id` for one agent run.
@@ -111,24 +96,35 @@ defmodule Contract.Agent do
   @mcp_tools_addendum """
   도구 — contract-doc MCP:
 
-    * `doc.get` — metadata, outline, fields, and revision (모든 단락 X). 반환:
-      `{revision, d (title), t (type_key), counts: {sec, para}, outline: [[sec, para, level, text]], f (fields)}`.
+    * `doc.get` — bounded metadata/navigation only (모든 단락/필드값/표셀본문 X). 반환:
+      `{revision, d (title), t (type_key), counts, outline, f, cursors, read}`.
+      `outline`/`f` 는 page 이며 더 있으면 `cursors.outline.from` / `cursors.fields.from` 으로 이어 읽으세요.
     * `doc.find(needle, limit?, context?)` — 문자열 검색. Use `doc.find` when you already know target text.
-      각 hit: `[sec, para, off, len, before, match, after, kind]` — sec/para/off/match 를 그대로 `doc.edit_text` 인자로 넘기면 글자 수 셀 일 없음.
-    * `doc.read(sec, para? | from?/to?, limit?)` — paragraph 슬라이스. find 결과 주변 컨텍스트 확인, 또는 outline 에서 클릭해서 들어가는 용도.
-    * `doc.edit_text` — paragraph/cell 안 글자 구간 교체. `match` (지울 원문) 권장. If used for a slot-like date/period edit, replace the full exact existing value or paragraph, not only a label prefix.
-    * `doc.insert_block` — paragraph/heading/list_item/table 삽입
-    * `doc.delete_block` — block 제거
-    * `doc.edit_table` — 표의 row/col 구조 변경
-    * `doc.set_field_value` — 슬롯 (필드 id) 값 갱신. For any slot-like date/period edit where a field id exists in `doc.get`'s `f`, prefer `doc.set_field_value` over `doc.edit_text`.
+      paragraph hit: `[sec, para, off, len, before, match, after, "paragraph"]`.
+      table cell hit: `[sec, para, off, len, before, match, after, "cell", meta]`; `meta.target` 을 그대로 `doc.edit` target 으로 쓰세요.
+    * `doc.read(...)` — 작은 cursor/window 만 읽습니다.
+      paragraph window: `{sec, from, to?, limit?}` -> `read.type="paragraph_window"`, previews + `next_para`.
+      paragraph text: `{sec, para, off?, chars?}` -> bounded `text`, `range.next_off`, ready paragraph `target`.
+      field: `{field_id, off?, chars?}` -> bounded field `value`, ready paragraph/cell `target`.
+      table window: `{sec, para, row_from?, row_limit?, col_from?, col_limit?}` -> bounded cell previews only.
+      single cell: `{sec, para, row, col, off?, chars?}` -> bounded cell `text`, `cell_path`, ready cell `target`.
+    * `doc.edit` — paragraph/cell 안 글자 구간 교체. Shape:
+      `{op: "replace_text", target: {type: "paragraph", sec, para, off, match? | len?}, text, base_revision?}`
+      `{op: "replace_text", target: {type: "cell", sec, para, cell_path, off, match? | len?}, text, base_revision?}`
+      `{op: "insert_block", target: {type: "block", sec, para}, block: {kind: "paragraph" | "heading" | "list_item", text?, level?}, base_revision?}`
+      `{op: "delete_block", target: {type: "block", sec, para}, base_revision?}`
+      Table creation and row/column structure edits are not supported. Do not call edit_table/table_op.
+      Never put line breaks inside `replace_text.text` or `insert_block.block.text`. For multi-paragraph drafting, call `insert_block` once per paragraph with newline-free text. Do not replace one template paragraph with an entire contract body.
+      `match` (지울 원문) 권장. For a slot-like date/period edit, first use a field/cell/small paragraph read or `doc.find`; replace the full exact existing value or paragraph, not only a label prefix. For table cells, pass `target` from doc.find or a single-cell doc.read with `type: "cell"`.
+      Fixed narrow table cells must keep their existing label. In particular, do not relabel `전화번호 :` cells to 담당자/email or put email strings there; put 담당자/email in a wider field only when one exists.
 
   사용 흐름:
 
-    1. 필드/슬롯 여부나 revision 이 필요하면 `doc.get` 으로 metadata, outline, fields, and revision 을 확인하세요. 이미 편집 대상 문구를 알고 있으면 **`doc.find(needle)`** 로 위치를 잡으세요.
-    2. find 가 hit 을 돌려주면 `(sec, para, off, match)` 를 그대로 `doc.edit_text` 에 넘기세요. `base_revision` 은 find 응답의 `revision`.
-    3. 기간/날짜/금액/당사자 같은 슬롯 값 변경이고 `f` 에 field id 가 있으면 `doc.edit_text` 대신 `doc.set_field_value` 를 우선 사용하세요.
-    4. `doc.edit_text` 로 슬롯처럼 보이는 값을 고칠 때는 기존 값/문단 전체를 정확히 `match` 로 잡아 교체하세요. 라벨 접두어만 바꾸지 마세요.
-    5. 위치를 더 확인해야 하면 `doc.read(sec, para or from/to)` 로 좁은 슬라이스만 읽으세요.
+    1. 필드/슬롯 존재 여부나 revision 이 필요하면 `doc.get` 으로 bounded metadata, cursors, read hints, and revision 을 확인하세요. 본문/필드/표셀 값은 바로 넓게 읽지 말고 `doc.get.read` capability 에 맞춰 작은 `doc.read` target 을 고르세요. 이미 편집 대상 문구를 알고 있으면 **`doc.find(needle)`** 로 위치를 잡으세요.
+    2. find 가 paragraph hit 을 돌려주면 `op: "replace_text"` 와 `{type: "paragraph", sec, para, off, match}` target 으로 `doc.edit` 를 호출하세요. cell hit 이면 `meta.target` 을 사용하세요. `base_revision` 은 find 응답의 `revision`.
+    3. 기간/날짜/금액/당사자 같은 슬롯처럼 보이는 값을 고칠 때는 기존 값/문단 전체를 정확히 `match` 로 잡아 교체하세요. 라벨 접두어만 바꾸지 마세요.
+    4. 표 셀을 고칠 때는 `doc.find` cell hit 의 `meta.target` 또는 single-cell `doc.read(sec, para, row, col)` 의 `target` 을 그대로 `{type: "cell", ...}` target 에 넣으세요.
+    5. 위치를 더 확인해야 하면 broad range 대신 `doc.read(sec, from, limit<=3)`, `doc.read(sec, para, off, chars)`, field id, table window, or single cell 로 좁게 읽으세요.
     6. 모든 편집을 마친 뒤 사용자에게 한 줄 보고 (예: "제3조 둘째 줄에서 '갑'을 '원사업자'로 바꿨습니다.").
   """
 
@@ -157,11 +153,10 @@ defmodule Contract.Agent do
           []
       end
 
-    # Task #143 — the full document IR no longer ships in the
-    # instructions string. The agent fetches it on demand via
-    # `doc.get`, which now returns compact IR inline in the MCP tool
-    # output. The IRRenderer schema prompt stays so the agent knows how
-    # to parse that payload.
+    # Task #143/#222 — the full document IR no longer ships in the
+    # instructions string, and doc.get is metadata/read-hints only. The
+    # schema prompt stays so the agent knows to use doc.read/doc.find for
+    # body content and doc.edit for mutations.
     system_prompt =
       [
         @grill_system_prompt,
@@ -190,8 +185,8 @@ defmodule Contract.Agent do
 
   defp document_context_note(doc_id) when is_binary(doc_id) do
     "현재 문서 ID: #{doc_id}\n" <>
-      "본문 IR이 필요하면 contract-doc MCP의 `doc.get` 도구를 호출하세요. " <>
-      "응답 본문에서 직접 `revision`, `p`, `f` 등을 읽으세요."
+      "`doc.get`은 bounded metadata/read hints/cursors 전용입니다. " <>
+      "본문은 작은 `doc.read` window/range, 표는 row/col window 또는 single cell, 필드는 field_id로 읽고, 문자열 위치가 필요하면 `doc.find`를 호출하세요."
   end
 
   defp mint_doc_route_ref(_ctx, %Command{document_id: nil}), do: {:error, :no_document}
@@ -227,7 +222,6 @@ defmodule Contract.Agent do
 
   defp build_grill_intro_context(%Command{} = action) do
     nodes_summary = grill_seed_nodes_summary(action.payload["grill_seed_nodes"])
-    tools = [Contract.IO.OpenAI.law_mcp_tool()]
 
     user_content =
       case nodes_summary do
@@ -238,7 +232,7 @@ defmodule Contract.Agent do
     frame = %{
       system: @grill_intro_system_prompt,
       input: [%{role: "user", content: user_content}],
-      tools: tools,
+      tools: [],
       previous_response_id: nil,
       grill_seed?: true
     }
@@ -306,25 +300,11 @@ defmodule Contract.Agent do
      }}
   end
 
-  def decode_grill_intro(%{"output_text" => text}, opts) when is_binary(text),
-    do: decode_grill_intro(text, opts)
-
-  def decode_grill_intro(%{"output" => output}, opts) when is_list(output) do
-    text =
-      output
-      |> Enum.flat_map(fn
-        %{"content" => content} when is_list(content) ->
-          Enum.flat_map(content, fn
-            %{"text" => t} when is_binary(t) -> [t]
-            _ -> []
-          end)
-
-        _ ->
-          []
-      end)
-      |> Enum.join("")
-
-    decode_grill_intro(text, opts)
+  def decode_grill_intro(%{} = response, opts) do
+    case response_text(response) do
+      text when is_binary(text) -> decode_grill_intro(text, opts)
+      nil -> {:error, {:decode_failed, {:bad_shape, response}}}
+    end
   end
 
   def decode_grill_intro(other, _opts), do: {:error, {:decode_failed, {:bad_shape, other}}}
@@ -332,9 +312,8 @@ defmodule Contract.Agent do
   @doc """
   Builds an `Action(:agent_change)` from the model's final output.
 
-  Free-form text is the common case (no JSON envelope coupling). For
-  backwards compatibility we still detect a JSON envelope (used by older
-  tests / grill-protocol prompts) and route through `build_agent_change_action/2`.
+  Free-form text is the live path. Document writes happen during the stream via
+  contract-doc MCP tools; the final assistant text is stored as chat only.
   """
   @spec decode_action(String.t() | map(), keyword()) ::
           {:ok, Command.t()} | {:error, term()}
@@ -343,28 +322,36 @@ defmodule Contract.Agent do
   def decode_action(text, opts) when is_binary(text) do
     trimmed = String.trim(text)
 
-    case extract_json(trimmed) do
-      {:ok, %{"mode" => _} = payload} ->
-        build_agent_change_action(payload, opts)
+    {:ok,
+     %Command{
+       kind: :agent_change,
+       actor_type: :agent,
+       idempotency_key: idempotency_key(opts),
+       payload: %{"mode" => "edit", "ops" => [], "marks" => [], "message" => trimmed},
+       message: trimmed
+     }}
+  end
 
-      _ ->
-        # Plain prose reply — wrap into an agent_change Command with
-        # empty ops/marks and the text as the user-visible message.
-        {:ok,
-         %Command{
-           kind: :agent_change,
-           actor_type: :agent,
-           idempotency_key: idempotency_key(opts),
-           payload: %{"mode" => "edit", "ops" => [], "marks" => [], "message" => trimmed},
-           message: trimmed
-         }}
+  def decode_action(%{} = response, opts) do
+    case response_text(response) do
+      text when is_binary(text) -> decode_action(text, opts)
+      nil -> {:error, {:decode_failed, {:bad_shape, response}}}
     end
   end
 
-  def decode_action(%{"output_text" => text}, opts) when is_binary(text),
-    do: decode_action(text, opts)
+  def decode_action(other, _opts), do: {:error, {:decode_failed, {:bad_shape, other}}}
 
-  def decode_action(%{"output" => output}, opts) when is_list(output) do
+  # --- internals --------------------------------------------------------
+
+  defp idempotency_key(opts) do
+    run_id = Keyword.get(opts, :run_id, "anon")
+    turn = Keyword.get(opts, :turn_index, 0)
+    "agent:#{run_id}:#{turn}"
+  end
+
+  defp response_text(%{"output_text" => text}) when is_binary(text), do: text
+
+  defp response_text(%{"output" => output}) when is_list(output) do
     text =
       output
       |> Enum.flat_map(fn
@@ -379,82 +366,15 @@ defmodule Contract.Agent do
       end)
       |> Enum.join("")
 
-    decode_action(text, opts)
+    if text == "", do: nil, else: text
   end
 
-  def decode_action(other, _opts), do: {:error, {:decode_failed, {:bad_shape, other}}}
+  defp response_text(_response), do: nil
 
-  # --- internals --------------------------------------------------------
-  # decode_action's mode:"grill" branch (with `mark_target_type/1`) is
-  # gone — the new free-form prompt asks the model to chat naturally, so
-  # JSON envelopes with `mode: "grill" | "edit"` no longer arrive from
-  # production runs. The `mode: "edit"` clause below is kept as a
-  # backwards-compat decoder for the legacy envelope shape (and is what
-  # `agent_test.exs` still exercises).
-
-  defp build_agent_change_action(%{"mode" => "edit"} = payload, opts) do
-    ops = payload["ops"] || []
-    marks = payload["marks"] || []
-
-    {:ok,
-     %Command{
-       kind: :agent_change,
-       actor_type: :agent,
-       idempotency_key: idempotency_key(opts),
-       payload: %{
-         "mode" => "edit",
-         "ops" => ops,
-         "marks" => marks,
-         "message" => payload["message"]
-       },
-       message: payload["message"]
-     }}
-  end
-
-  defp build_agent_change_action(_other, _opts), do: {:error, {:decode_failed, :missing_mode}}
-
-  defp idempotency_key(opts) do
-    run_id = Keyword.get(opts, :run_id, "anon")
-    turn = Keyword.get(opts, :turn_index, 0)
-    "agent:#{run_id}:#{turn}"
-  end
-
-  defp extract_json(text) do
-    trimmed =
-      text
-      |> String.trim()
-      |> strip_code_fence()
-
-    case Jason.decode(trimmed) do
-      {:ok, %{} = decoded} -> {:ok, decoded}
-      {:ok, _other} -> {:error, {:decode_failed, :not_an_object}}
-      {:error, reason} -> {:error, {:decode_failed, reason}}
-    end
-  end
-
-  defp strip_code_fence(text) do
-    cond do
-      String.starts_with?(text, "```json") ->
-        text
-        |> String.replace_prefix("```json", "")
-        |> String.replace_suffix("```", "")
-        |> String.trim()
-
-      String.starts_with?(text, "```") ->
-        text
-        |> String.replace_prefix("```", "")
-        |> String.replace_suffix("```", "")
-        |> String.trim()
-
-      true ->
-        text
-    end
-  end
-
-  # Task #143 — `fetch_snapshot/2` is gone. The agent reads compact IR via
-  # `doc.get` over MCP instead of having it spliced into every
-  # `instructions` string. This still avoids paying that token cost on
-  # turns that do not need the document body.
+  # Task #143/#222 — `fetch_snapshot/2` is gone. The prompt path no longer
+  # splices document IR into every request; the agent gets metadata/read hints
+  # from doc.get and reads content through doc.read/doc.find. This still avoids
+  # paying the body-token cost on turns that do not need the document body.
 
   # Wave-3 owns the chat store; until it lands, return an empty history.
   defp fetch_history(ctx, %Command{} = action), do: ChatThreads.history_for_agent(ctx, action)

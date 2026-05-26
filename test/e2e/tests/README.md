@@ -51,10 +51,6 @@ In production both routes 404 (compile-time elision via `compile_env`).
 Wave 3C1 (Studio LV) inherits this harness and adds:
 
 * briefing → grill → edit
-* clean revoke
-* overlap revoke
-* type-conversion wizard
 * socket reconnect
 * Cmd+K palette
-* export delivery
 * agent_supervised watcher

@@ -176,12 +176,9 @@ defmodule Contract.GatewayTest do
   end
 
   describe "mcp_tool/3 — tool listing and dispatch" do
-    test "tool_names/0 + tools_descriptor/0 expose ≥7 studio.* tools without legacy matter_id" do
+    test "tool_names/0 + tools_descriptor/0 expose the agent doc.* tools" do
       names = Gateway.tool_names()
-      assert length(names) >= 7
-      assert "studio.get_document" in names
-      assert "studio.submit_action" in names
-      assert "studio.search_law" in names
+      assert names == ["doc.get", "doc.find", "doc.read", "doc.edit"]
 
       desc = Gateway.tools_descriptor()
       assert length(desc) == length(names)
@@ -191,125 +188,23 @@ defmodule Contract.GatewayTest do
         assert is_binary(entry["description"])
         assert is_map(entry["inputSchema"])
       end)
-
-      submit = Enum.find(desc, &(&1["name"] == "studio.submit_action"))
-
-      refute Map.has_key?(
-               submit["inputSchema"]["properties"]["action"]["properties"],
-               "matter_id"
-             )
     end
 
     test "unknown tool returns {:error, {:unknown_tool, name}}" do
-      assert {:error, {:unknown_tool, "studio.does_not_exist"}} =
-               Gateway.mcp_tool(@ctx, "studio.does_not_exist", %{})
+      assert {:error, {:unknown_tool, "doc.does_not_exist"}} =
+               Gateway.mcp_tool(@ctx, "doc.does_not_exist", %{})
     end
 
-    test "studio.get_document: happy path, route_ref ACL, missing document_id" do
-      owner = scope()
-      doc_id = create_doc(owner)
-      other_doc = create_doc(owner)
+    test "doc.* tools fail closed without a route_ref-backed context" do
+      assert {:error, {:forbidden, :no_route_ref}} = Gateway.mcp_tool(@ctx, "doc.get", %{})
 
-      # Happy path: pinned route_ref + matching doc returns the projection.
-      ctx = ctx_for(owner, doc_id)
+      assert {:error, {:forbidden, :no_route_ref}} =
+               Gateway.mcp_tool(@ctx, "doc.find", %{"needle" => "x"})
 
-      assert {:ok, payload} =
-               Gateway.mcp_tool(ctx, "studio.get_document", %{"document_id" => doc_id})
+      assert {:error, {:forbidden, :no_route_ref}} =
+               Gateway.mcp_tool(@ctx, "doc.read", %{"sec" => 0})
 
-      assert payload.document_id == doc_id
-      assert payload.revision >= 1
-      assert is_map(payload.projection)
-
-      # Route ref pinned to a different doc → forbidden.
-      wrong_ctx = ctx_for(owner, other_doc)
-
-      assert {:error, :forbidden} =
-               Gateway.mcp_tool(wrong_ctx, "studio.get_document", %{"document_id" => doc_id})
-
-      # Missing document_id → typed error.
-      assert {:error, :missing_document_id} =
-               Gateway.mcp_tool(@ctx, "studio.get_document", %{})
-    end
-
-    test "studio.submit_action drives Runtime.apply and returns a Change" do
-      owner = scope()
-      doc_id = create_doc(owner)
-      ctx = ctx_for(owner, doc_id)
-
-      action_args = %{
-        "action" => %{
-          "kind" => "rename_document",
-          "document_id" => doc_id,
-          "actor_type" => "user",
-          "actor_id" => Ecto.UUID.generate(),
-          "base_revision" => 1,
-          "idempotency_key" => "mcp-rn-1",
-          "payload" => %{"title" => "MCP-renamed"}
-        }
-      }
-
-      assert {:ok, payload} = Gateway.mcp_tool(ctx, "studio.submit_action", action_args)
-      assert payload.command_kind == "rename_document"
-      assert is_binary(payload.id)
-    end
-
-    test "studio.submit_action rejects an invalid action shape" do
-      ctx = ctx_for(Ecto.UUID.generate())
-
-      assert {:error, {:invalid_action, _}} =
-               Gateway.mcp_tool(ctx, "studio.submit_action", %{"action" => %{"kind" => "bogus"}})
-    end
-
-    test "studio.get_change_history returns changes" do
-      owner = scope()
-      doc_id = create_doc(owner)
-      ctx = ctx_for(owner, doc_id)
-
-      assert {:ok, payload} =
-               Gateway.mcp_tool(ctx, "studio.get_change_history", %{
-                 "document_id" => doc_id,
-                 "since_revision" => 0
-               })
-
-      assert payload.document_id == doc_id
-      assert length(payload.changes) >= 1
-      assert hd(payload.changes).command_kind == "create_document"
-    end
-
-    test "studio.list_marks returns an empty list for a fresh document" do
-      owner = scope()
-      doc_id = create_doc(owner)
-      ctx = ctx_for(owner, doc_id)
-
-      assert {:ok, %{document_id: ^doc_id, marks: marks}} =
-               Gateway.mcp_tool(ctx, "studio.list_marks", %{"document_id" => doc_id})
-
-      assert is_list(marks)
-    end
-
-    test "studio.search_documents returns owner-scoped matches by title substring" do
-      owner = scope()
-      other = scope()
-      owner_doc_id = create_doc(owner, title: "MCP-Searchable Contract")
-      other_doc_id = create_doc(other, title: "MCP-Searchable Hidden")
-
-      assert {:ok, payload} =
-               Gateway.mcp_tool(owner, "studio.search_documents", %{"query" => "Searchable"})
-
-      result_ids = Enum.map(payload.results, & &1.document_id)
-      assert owner_doc_id in result_ids
-      refute other_doc_id in result_ids
-    end
-
-    test "input validation rejects empty queries / text across tools" do
-      assert {:error, :invalid_query} =
-               Gateway.mcp_tool(@ctx, "studio.search_documents", %{"query" => ""})
-
-      assert {:error, :invalid_text} =
-               Gateway.mcp_tool(@ctx, "studio.verify_citations", %{"text" => ""})
-
-      assert {:error, :invalid_query} =
-               Gateway.mcp_tool(@ctx, "studio.search_law", %{"query" => ""})
+      assert {:error, {:forbidden, :no_route_ref}} = Gateway.mcp_tool(@ctx, "doc.edit", %{})
     end
   end
 
@@ -413,19 +308,5 @@ defmodule Contract.GatewayTest do
         email: "gateway-#{user_id}@example.test"
       }
     }
-  end
-
-  defp ctx_for(doc_id), do: ctx_for(%Context{}, doc_id)
-
-  defp ctx_for(%Context{} = ctx, doc_id) do
-    ref = %RouteRef{
-      document_id: doc_id,
-      purpose: "test",
-      issued_at: DateTime.utc_now(),
-      expires_at: DateTime.utc_now() |> DateTime.add(3_600, :second),
-      scopes: ["read", "write"]
-    }
-
-    %Context{user: ctx.user, perms: %{route_ref: ref}, now: DateTime.utc_now()}
   end
 end

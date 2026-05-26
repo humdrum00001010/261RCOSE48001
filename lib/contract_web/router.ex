@@ -63,7 +63,6 @@ defmodule ContractWeb.Router do
     scope "/test/db", ContractWeb do
       pipe_through :test_auth
       get "/changes/:document_id", TestDbController, :changes
-      get "/revoke_requests/:document_id", TestDbController, :revoke_requests
       get "/documents", TestDbController, :documents
       get "/oban_jobs", TestDbController, :oban_jobs
       post "/documents", TestDbController, :seed_document
@@ -152,27 +151,15 @@ defmodule ContractWeb.Router do
       live "/users/settings/confirm-email/:token", UserLive.Settings, :confirm_email
       live "/settings", UserLive.SettingsHub, :index
       live "/settings/api-tokens", UserLive.ApiTokens, :index
-      live "/settings/integrations", UserLive.Integrations, :index
     end
 
-    get "/matters/:matter_id/documents/:document_id",
-        LegacyRedirectController,
-        :matter_document
-
     # /dashboard → /storage (Document library was renamed to "보관함"
-    # 2026-05-17; old bookmarks/Slack unfurls must still resolve.)
+    # 2026-05-17; old bookmarks must still resolve.)
     get "/dashboard", LegacyRedirectController, :dashboard
 
-    get "/exports/:export_id/download", ExportDownloadController, :show
     get "/documents/:document_id/rhwp-snapshots/:revision", RhwpSnapshotController, :show
 
     post "/users/update-password", UserSessionController, :update_password
-
-    # Slack OAuth user-token flow (Wave 6). OUTBOUND only — Slack ingress
-    # at /slack/* stays at 501 per the project Slack-MCP memory.
-    get "/auth/slack/start", SlackOAuthController, :start
-    get "/auth/slack/callback", SlackOAuthController, :callback
-    post "/auth/slack/disconnect", SlackOAuthController, :disconnect
   end
 
   scope "/", ContractWeb do

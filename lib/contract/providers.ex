@@ -4,7 +4,7 @@ defmodule Contract.Providers do
 
   This module is the **only** public surface for outbound API calls:
   Upstage Document Parse, OpenAI Responses streaming, Korea-Law-MCP,
-  and the export renderers. It does no storage — Blobs handles that.
+  and the export renderers. It does no persistence.
 
   ## Provider mapping (SPEC §20)
 
@@ -18,8 +18,7 @@ defmodule Contract.Providers do
 
   ## Pipeline (SPEC §21)
 
-      upload → Blobs.put_upload → SourceDocument → Providers.parse_document
-            → parser_snapshot → regions → source_claims
+      document bytes/path → Providers.parse_document → regions
 
   Internally delegates to `Contract.IO.Upstage`, `Contract.IO.OpenAI`,
   `Contract.IO.LawMCP`, and `Contract.Export.Renderer`. The sub-modules
@@ -27,9 +26,6 @@ defmodule Contract.Providers do
   Session, workers, Live components) should depend on going forward.
   """
 
-  alias Contract.BlobRef
-  alias Contract.Blobs
-  alias Contract.EvidenceSnapshots
   alias Contract.IO.LawMCP
   alias Contract.IO.OpenAI
   alias Contract.Types, as: T
@@ -39,33 +35,26 @@ defmodule Contract.Providers do
   # ---------------------------------------------------------------------------
 
   @doc """
-  Parses the document referenced by `blob_ref` with Upstage Document
-  Parse and returns normalized `regions` plus a `parser_snapshot_ref`
-  (the BlobRef id) when the caller asked us to persist the raw parser
-  payload.
+  Parses document bytes or a local path with Upstage Document Parse and returns
+  normalized `regions`.
 
   Returns:
 
       {:ok, %{regions: [%{kind:, region_id:, page:, bbox:, raw_text:}, ...],
-              parser_snapshot_ref: blob_ref_id | nil,
               raw: upstage_response}}
 
   Opts:
     * `:endpoint`, `:api_key`, `:timeout`, `:ocr`, `:coordinates`,
       `:output_formats`, `:model`, `:req_opts` — forwarded to the
       Upstage driver.
-    * `:persist_snapshot?` — when `true` and a ctx is given, the raw
-      Upstage response is uploaded to R2 via `Blobs.put/3` and the
-      returned `:parser_snapshot_ref` is the BlobRef id.
   """
   @spec parse_document(
           T.ctx() | nil,
-          BlobRef.t() | %{optional(:object_key) => String.t()} | String.t() | binary(),
+          String.t() | binary(),
           keyword()
         ) ::
           T.result(%{
             regions: [map()],
-            parser_snapshot_ref: String.t() | nil,
             raw: map()
           })
   def parse_document(blob_or_path), do: parse_document(nil, blob_or_path, [])
@@ -75,19 +64,11 @@ defmodule Contract.Providers do
 
   def parse_document(ctx, blob_or_path), do: parse_document(ctx, blob_or_path, [])
 
-  def parse_document(ctx, blob_or_path, opts) do
-    with {:ok, path_or_bytes} <- resolve_source(blob_or_path),
-         {:ok, parsed} <- upstage_driver().parse(path_or_bytes, opts) do
+  def parse_document(_ctx, blob_or_path, opts) do
+    with {:ok, parsed} <- upstage_driver().parse(blob_or_path, opts) do
       regions = elements_to_regions(parsed.elements)
 
-      snapshot_ref =
-        if Keyword.get(opts, :persist_snapshot?, false) do
-          maybe_persist_snapshot(ctx, parsed.raw, opts)
-        else
-          nil
-        end
-
-      {:ok, %{regions: regions, parser_snapshot_ref: snapshot_ref, raw: parsed.raw}}
+      {:ok, %{regions: regions, raw: parsed.raw}}
     end
   end
 
@@ -134,9 +115,8 @@ defmodule Contract.Providers do
   # ---------------------------------------------------------------------------
 
   @doc """
-  Searches the Korea Law MCP corpus. Returns a list of law records
-  suitable for use as `EvidenceSnapshot` source material (each entry
-  carries `law_id` / `mst` / `title` etc.).
+  Searches the Korea Law MCP corpus. Returns a list of law records carrying
+  fields such as `law_id` / `mst` / `title`.
   """
   @spec search_law(T.ctx() | nil, String.t(), keyword()) :: T.result(list())
   def search_law(query) when is_binary(query), do: search_law(nil, query, [])
@@ -146,13 +126,8 @@ defmodule Contract.Providers do
 
   def search_law(ctx, query) when is_binary(query), do: search_law(ctx, query, [])
 
-  def search_law(ctx, query, opts) when is_binary(query) do
-    args = %{"query" => query} |> maybe_put("limit", Keyword.get(opts, :limit))
-
-    with {:ok, items} <- LawMCP.search_law(query, opts) do
-      _ = capture_evidence(ctx, "law_mcp.search_law", args, items, opts)
-      {:ok, items}
-    end
+  def search_law(_ctx, query, opts) when is_binary(query) do
+    LawMCP.search_law(query, opts)
   end
 
   @doc """
@@ -167,17 +142,8 @@ defmodule Contract.Providers do
 
   def get_law_text(ctx, law_ref) when is_binary(law_ref), do: get_law_text(ctx, law_ref, [])
 
-  def get_law_text(ctx, law_ref, opts) when is_binary(law_ref) do
-    args = %{"law_ref" => law_ref}
-
-    case LawMCP.call("get_law_text", args, opts) do
-      {:ok, result} ->
-        _ = capture_evidence(ctx, "law_mcp.get_law_text", args, result, opts)
-        {:ok, result}
-
-      {:error, _} = err ->
-        err
-    end
+  def get_law_text(_ctx, law_ref, opts) when is_binary(law_ref) do
+    LawMCP.call("get_law_text", %{"law_ref" => law_ref}, opts)
   end
 
   @doc """
@@ -191,23 +157,20 @@ defmodule Contract.Providers do
 
   def search_precedents(ctx, query) when is_binary(query), do: search_precedents(ctx, query, [])
 
-  def search_precedents(ctx, query, opts) when is_binary(query) do
+  def search_precedents(_ctx, query, opts) when is_binary(query) do
     args =
       %{"query" => query}
       |> maybe_put("limit", Keyword.get(opts, :limit))
 
     case LawMCP.call("search_precedents", args, opts) do
       {:ok, list} when is_list(list) ->
-        _ = capture_evidence(ctx, "law_mcp.search_precedents", args, list, opts)
         {:ok, list}
 
-      {:ok, %{"items" => items} = result} when is_list(items) ->
-        _ = capture_evidence(ctx, "law_mcp.search_precedents", args, result, opts)
+      {:ok, %{"items" => items}} when is_list(items) ->
         {:ok, items}
 
       {:ok, other} ->
         items = List.wrap(other)
-        _ = capture_evidence(ctx, "law_mcp.search_precedents", args, items, opts)
         {:ok, items}
 
       {:error, _} = err ->
@@ -228,22 +191,12 @@ defmodule Contract.Providers do
 
   def verify_citation(ctx, citation), do: verify_citation(ctx, citation, [])
 
-  def verify_citation(ctx, citation, opts) when is_binary(citation) do
-    args = %{"text" => citation}
-
-    with {:ok, items} <- LawMCP.verify_citations(citation, opts) do
-      _ = capture_evidence(ctx, "law_mcp.verify_citations", args, items, opts)
-      {:ok, items}
-    end
+  def verify_citation(_ctx, citation, opts) when is_binary(citation) do
+    LawMCP.verify_citations(citation, opts)
   end
 
-  def verify_citation(ctx, citations, opts) when is_list(citations) do
-    args = %{"text" => Enum.join(citations, "\n")}
-
-    with {:ok, items} <- LawMCP.verify_citations(citations, opts) do
-      _ = capture_evidence(ctx, "law_mcp.verify_citations", args, items, opts)
-      {:ok, items}
-    end
+  def verify_citation(_ctx, citations, opts) when is_list(citations) do
+    LawMCP.verify_citations(citations, opts)
   end
 
   # ---------------------------------------------------------------------------
@@ -302,31 +255,8 @@ defmodule Contract.Providers do
     |> Keyword.get(:upstage, Contract.IO.Upstage)
   end
 
-  defp resolve_source(%BlobRef{object_key: key}) when is_binary(key), do: fetch_r2(key)
-  defp resolve_source(%{object_key: key}) when is_binary(key), do: fetch_r2(key)
-  defp resolve_source(%{"object_key" => key}) when is_binary(key), do: fetch_r2(key)
-  defp resolve_source(%{key: key}) when is_binary(key), do: fetch_r2(key)
-  defp resolve_source(%{"key" => key}) when is_binary(key), do: fetch_r2(key)
-
-  defp resolve_source("r2://" <> rest) do
-    [_bucket, key] = String.split(rest, "/", parts: 2)
-    fetch_r2(key)
-  end
-
-  defp resolve_source(path_or_bytes) when is_binary(path_or_bytes), do: {:ok, path_or_bytes}
-  defp resolve_source(other), do: {:error, {:invalid_source, other}}
-
-  defp fetch_r2(key) do
-    case Blobs.get(nil, key) do
-      {:ok, body} -> {:ok, body}
-      {:error, _} = err -> err
-    end
-  end
-
-  # Normalizes Upstage `elements[]` to the v0.5 region shape required by
-  # `SourceDocument.regions` (SPEC §7.3): `%{kind, region_id, page,
-  # bbox, raw_text}` with the original Upstage attrs tucked into
-  # `:attrs` for downstream renderers.
+  # Normalizes Upstage `elements[]` to `%{kind, region_id, page, bbox, raw_text}`
+  # with original Upstage attrs tucked into `:attrs` for downstream renderers.
   defp elements_to_regions(elements) when is_list(elements) do
     Enum.map(elements, &element_to_region/1)
   end
@@ -370,31 +300,6 @@ defmodule Contract.Providers do
 
   defp map_category("heading" <> _), do: :heading
   defp map_category(_), do: :paragraph
-
-  defp maybe_persist_snapshot(_ctx, raw, opts) when is_map(raw) do
-    snapshot_id = Ecto.UUID.generate()
-    key = "parser-snapshots/#{snapshot_id}.json"
-
-    case Blobs.put(
-           nil,
-           key,
-           Jason.encode!(raw),
-           Keyword.put_new(opts, :content_type, "application/json")
-         ) do
-      {:ok, _} -> snapshot_id
-      _ -> nil
-    end
-  end
-
-  defp maybe_persist_snapshot(_ctx, _raw, _opts), do: nil
-
-  defp capture_evidence(ctx, provider, query, result, opts) do
-    EvidenceSnapshots.capture(ctx, provider, query, result,
-      chat_thread_id: Keyword.get(opts, :chat_thread_id),
-      document_id: Keyword.get(opts, :document_id),
-      source_document_id: Keyword.get(opts, :source_document_id)
-    )
-  end
 
   defp maybe_put(map, _key, nil), do: map
   defp maybe_put(map, key, value), do: Map.put(map, key, value)

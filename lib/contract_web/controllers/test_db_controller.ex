@@ -2,7 +2,7 @@ if Application.compile_env(:contract, :test_auth, false) do
   defmodule ContractWeb.TestDbController do
     @moduledoc """
     Playwright-only DB inspection routes. Returns JSON snapshots of Studio
-    rows (`changes`, `revoke_requests`, `documents`, `oban_jobs`) so the
+    rows (`changes`, `documents`, `oban_jobs`) so the
     Playwright runner can assert backend state from across the public sprite
     URL without standing up an Ecto connection.
 
@@ -14,15 +14,13 @@ if Application.compile_env(:contract, :test_auth, false) do
 
       * `GET /test/db/changes/:document_id`
         → list of changes for the doc, ordered by `result_revision asc`.
-      * `GET /test/db/revoke_requests/:document_id`
-        → list of revoke_request rows for the doc, ordered by `inserted_at asc`.
       * `GET /test/db/documents`
         → list of documents (may be empty if migration not yet present).
       * `GET /test/db/oban_jobs?queue=<queue>`
         → list of Oban jobs for the given queue (state, args, attempts).
 
     All endpoints tolerate missing tables (return `[]`) so the controller
-    can ship ahead of `documents`/`matters` migrations.
+    can ship ahead of `documents` migrations.
     """
 
     use ContractWeb, :controller
@@ -51,25 +49,6 @@ if Application.compile_env(:contract, :test_auth, false) do
     end
 
     @doc """
-    `GET /test/db/revoke_requests/:document_id`
-    """
-    def revoke_requests(conn, %{"document_id" => doc_id}) do
-      rows =
-        safe_query!(
-          """
-          SELECT id::text, target_change_id::text, overlap_changes::text[],
-                 status, resolution_change_id::text, inserted_at
-            FROM revoke_requests
-           WHERE document_id = $1
-           ORDER BY inserted_at ASC
-          """,
-          [cast_uuid(doc_id)]
-        )
-
-      json(conn, %{ok: true, document_id: doc_id, revoke_requests: rows})
-    end
-
-    @doc """
     `GET /test/db/documents`
 
     Returns every row from the `documents` table. The Studio Wave 3C1
@@ -82,7 +61,6 @@ if Application.compile_env(:contract, :test_auth, false) do
         safe_query!(
           """
           SELECT id::text, owner_id::text, title, type_key,
-                 parent_document_id::text, variant_of_change_id::text,
                  status, latest_revision, inserted_at
             FROM documents
            ORDER BY inserted_at DESC
@@ -163,7 +141,7 @@ if Application.compile_env(:contract, :test_auth, false) do
 
     # Executes `sql` with `params`. Returns a list of column-keyed maps so
     # the JSON encoder can emit a sensible shape. Tolerates `undefined_table`
-    # by returning `[]` — useful while `documents`/`matters` migrations are
+    # by returning `[]` — useful while `documents` migrations are
     # still in flight.
     defp safe_query!(sql, params) do
       try do

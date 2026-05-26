@@ -68,12 +68,6 @@ defmodule ContractWeb.UserLive.SettingsHub do
               icon="hero-key"
               navigate={~p"/settings/api-tokens"}
             />
-            <.quick_card
-              title={dgettext("settings", "Integrations")}
-              description={dgettext("settings", "Slack and other external service connections.")}
-              icon="hero-puzzle-piece"
-              navigate={~p"/settings/integrations"}
-            />
             <.quick_card_disabled
               title={dgettext("settings", "Appearance")}
               description={dgettext("settings", "Theme & density. Coming soon.")}
@@ -146,12 +140,6 @@ defmodule ContractWeb.UserLive.SettingsHub do
           icon="hero-key-mini"
           navigate={~p"/settings/api-tokens"}
           active?={@active_item == :api_tokens}
-        />
-        <.sidebar_item
-          label={dgettext("settings", "Integrations")}
-          icon="hero-puzzle-piece-mini"
-          navigate={~p"/settings/integrations"}
-          active?={@active_item == :integrations}
         />
         <.sidebar_item_disabled
           label={dgettext("settings", "Appearance")}

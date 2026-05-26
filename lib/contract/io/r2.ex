@@ -3,15 +3,11 @@ defmodule Contract.IO.R2 do
   Cloudflare R2 (S3-compatible) wrapper over `ex_aws_s3`.
 
   Key conventions:
-    * raw uploads → `matters/<matter_id>/sources/<artifact_id>.<ext>`
-    * snapshots → `documents/<document_id>/snapshots/<revision>.json`
-    * exports → `exports/<export_id>.<ext>`
+    * object keys are supplied by callers
+    * this module performs object I/O only
 
   See SPEC.md §22, §23.
   """
-
-  alias Contract.Types, as: T
-  alias Contract.Export
 
   @doc """
   Uploads `body` to `key`. Returns `%{key, etag}` on success.
@@ -87,51 +83,7 @@ defmodule Contract.IO.R2 do
     ExAws.S3.presigned_url(config, method, bucket, key, expires_in: expires_in)
   end
 
-  @doc """
-  Orchestrates an export: invokes the render callback (Wave 4 owns the
-  actual renderer) and uploads the rendered bytes to R2 under
-  `exports/<export_id>.<ext>`.
-
-  `render_fun` is an MFA or 1-arity fun receiving `%{document_id, format}`
-  and returning `{:ok, binary, content_type}` or `{:ok, binary}`.
-  """
-  @spec export(T.ctx(), T.document_id(), atom(), keyword()) ::
-          {:ok, Export.t()} | {:error, term()}
-  def export(_ctx, document_id, format, opts \\ []) do
-    render_fun = Keyword.get(opts, :render_fun) || (&Contract.Export.Renderer.render/1)
-    export_id = Keyword.get(opts, :export_id) || Ecto.UUID.generate()
-
-    with {:ok, body, content_type} <-
-           invoke_render(render_fun, %{document_id: document_id, format: format}),
-         ext = format_extension(format),
-         key = "exports/#{export_id}.#{ext}",
-         {:ok, _} <- put(key, body, content_type: content_type),
-         {:ok, url} <- presigned_url(key) do
-      {:ok, %Export{id: export_id, key: key, url: url, format: format}}
-    end
-  end
-
   # --- internals --------------------------------------------------------
-
-  defp invoke_render(fun, payload) when is_function(fun, 1) do
-    case fun.(payload) do
-      {:ok, body, ct} when is_binary(body) -> {:ok, body, ct}
-      {:ok, body} when is_binary(body) -> {:ok, body, "application/octet-stream"}
-      {:error, _} = err -> err
-      other -> {:error, {:bad_render_return, other}}
-    end
-  end
-
-  defp invoke_render({m, f, a}, payload),
-    do: invoke_render(fn p -> apply(m, f, [p | a]) end, payload)
-
-  defp format_extension(:pdf), do: "pdf"
-  defp format_extension(:docx), do: "docx"
-  defp format_extension(:html), do: "html"
-  defp format_extension(:md), do: "md"
-  defp format_extension(:markdown), do: "md"
-  defp format_extension(:hwpx), do: "hwpx"
-  defp format_extension(other), do: to_string(other)
 
   defp bucket!(opts) do
     Keyword.get(opts, :bucket) ||

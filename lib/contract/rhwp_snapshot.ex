@@ -237,8 +237,8 @@ defmodule Contract.RhwpSnapshot do
 
   @doc """
   Companion key for a `.hwp` or `.hwpx` snapshot key. Exposed so other callers
-  (e.g. doc.get presigning) can derive the IR key without re-reasoning
-  about the convention.
+  (e.g. snapshot manifest or IR-key consumers) can derive the IR key without
+  re-reasoning about the convention.
   """
   @spec ir_key_for(binary()) :: binary()
   def ir_key_for(snapshot_key) when is_binary(snapshot_key) do

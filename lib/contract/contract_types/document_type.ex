@@ -20,10 +20,8 @@ defmodule Contract.ContractTypes.DocumentType do
     field :name_ko, :string
     field :version, :string, default: "legacy"
     field :source, :string, default: "custom"
-    field :source_url, :string
     field :template_hwp_path, :string
     field :template_hwpx_path, :string
-    field :spec, :map, default: %{}
     field :default_matching_book, :map, default: %{}
 
     timestamps(type: :utc_datetime)
@@ -41,10 +39,8 @@ defmodule Contract.ContractTypes.DocumentType do
       :name_ko,
       :version,
       :source,
-      :source_url,
       :template_hwp_path,
       :template_hwpx_path,
-      :spec,
       :default_matching_book
     ])
     |> validate_required([:key, :family, :name_en, :version, :source])

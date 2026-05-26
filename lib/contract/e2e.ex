@@ -19,25 +19,11 @@ if Application.compile_env(:contract, :test_auth, false) do
     """
 
     @doc """
-    Deletes rows scoped to documents tagged with E2E metadata, including
-    changes, snapshots, revoke requests, and field lineage rows. This cleanup is
-    document-first and does not depend on legacy Matters.
+    Deletes rows scoped to documents tagged with E2E metadata. This cleanup is
+    document-first and skips persistence tables that have been pruned.
     """
     @spec reset!() :: :ok
     def reset! do
-      safe_query!("""
-      DELETE FROM revoke_requests
-       WHERE document_id IN (#{@e2e_documents})
-          OR target_change_id IN (SELECT id FROM changes WHERE document_id IN (#{@e2e_documents}))
-          OR resolution_change_id IN (SELECT id FROM changes WHERE document_id IN (#{@e2e_documents}))
-      """)
-
-      safe_query!("""
-      DELETE FROM field_lineages
-       WHERE document_id IN (#{@e2e_documents})
-          OR source_document_id IN (#{@e2e_documents})
-      """)
-
       safe_query!("DELETE FROM snapshots WHERE document_id IN (#{@e2e_documents})")
       safe_query!("DELETE FROM changes WHERE document_id IN (#{@e2e_documents})")
       safe_query!("DELETE FROM documents WHERE id IN (#{@e2e_documents})")

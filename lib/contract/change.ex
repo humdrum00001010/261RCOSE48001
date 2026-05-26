@@ -16,8 +16,6 @@ defmodule Contract.Change do
   schema "changes" do
     field :document_id, :binary_id
     field :chat_thread_id, :binary_id
-    field :source_document_id, :binary_id
-    field :source_claim_id, :binary_id
     field :agent_run_id, :binary_id
 
     field :command_kind, :string
@@ -52,8 +50,6 @@ defmodule Contract.Change do
     |> cast(attrs, [
       :document_id,
       :chat_thread_id,
-      :source_document_id,
-      :source_claim_id,
       :agent_run_id,
       :command_kind,
       :field_path,

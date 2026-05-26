@@ -109,7 +109,7 @@ test.describe('Scenario 6: Cmd+K palette (mobile: chat-command button)', () => {
 /**
  * Regression — Cmd+K opens the palette within 200ms of being pressed,
  * provided the hook has marked itself ready. Guards against the
- * silent-no-op race that surfaced in `export-delivery.spec.ts` (#76),
+ * silent-no-op race that surfaced in palette dispatch (#76),
  * where `pushEventTo` was being called before the LiveSocket connected.
  */
 test.describe('Cmd+K palette: global binding is hot-on-mount', () => {
