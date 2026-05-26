@@ -764,10 +764,10 @@ defmodule ContractWeb.Components.CommandPalette do
     [
       # --- Navigation
       %Command{
-        id: :nav_dashboard,
-        label: "Go to dashboard",
-        hint: "/dashboard",
-        action: {:navigate, "/dashboard"},
+        id: :nav_storage,
+        label: "Go to storage",
+        hint: "/storage",
+        action: {:navigate, "/storage"},
         group: :navigation
       },
       %Command{

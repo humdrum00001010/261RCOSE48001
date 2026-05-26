@@ -66,7 +66,6 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
       |> assign(:no_document?, no_document?(assigns.studio_state))
       |> assign(:chat_thread_title, chat_thread_title(assigns[:chat_thread]))
       |> assign(:chat_context_empty?, chat_context_empty?(assigns[:chat_thread]))
-      |> assign(:start_options, start_options())
 
     ~H"""
     <aside
@@ -155,8 +154,8 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
         />
       </div>
 
-      <%!-- Welcome panels (siblings of the stream so the stream can be a
-           pure phx-update="stream" container). Hidden via the `group/chat`
+      <%!-- Generic welcome sits outside the stream so the stream can be a
+           pure phx-update="stream" container. Hidden via the `group/chat`
            on the aside as soon as any chat-message appears in the stream. --%>
       <div
         :if={not @no_document?}
@@ -168,66 +167,6 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
           "studio",
           "에이전트에게 무엇이든 물어보세요 — 초안, 마크, 내보내기."
         )}
-      </div>
-
-      <div
-        :if={@no_document?}
-        id={"#{@id}-no-doc-welcome"}
-        data-role="chat-no-doc-welcome"
-        class="shrink-0 px-1.5 py-2 group-has-[[data-role=chat-message]]/chat:hidden flex flex-col gap-3 max-w-[88%] self-start"
-      >
-        <div
-          data-role="chat-no-doc-message"
-          class="rounded-lg rounded-tl-sm bg-base-100 border border-base-300 text-base-content text-sm px-3 py-2"
-        >
-          <p class="mb-2">{dgettext("studio", "새 문서를 시작합니다. 어떻게 시작할까요?")}</p>
-          <ol class="list-decimal list-inside space-y-1 marker:text-base-content/60">
-            <li>
-              <strong>{dgettext("studio", "최근 문서 열기")}</strong>
-              <span class="text-base-content/70">
-                {dgettext("studio", " — 최근 작업한 문서로 이동")}
-              </span>
-            </li>
-            <li>
-              <strong>{dgettext("studio", "빈 계약서 만들기")}</strong>
-              <span class="text-base-content/70">
-                {dgettext("studio", " — 처음부터 작성")}
-              </span>
-            </li>
-            <li>
-              <strong>{dgettext("studio", "논의에서 시작")}</strong>
-              <span class="text-base-content/70">
-                {dgettext("studio", " — 사실관계, 거래 배경부터 정리한 뒤 초안")}
-              </span>
-            </li>
-            <li>
-              <strong>{dgettext("studio", "다른 문서에서 변형 만들기")}</strong>
-              <span class="text-base-content/70">
-                {dgettext("studio", " — 기존 문서의 유형 변환")}
-              </span>
-            </li>
-          </ol>
-          <p class="mt-2 text-base-content/70">
-            {dgettext("studio", "무엇으로 시작할까요?")}
-          </p>
-
-          <div
-            class="flex flex-wrap gap-2 mt-3"
-            data-role="chat-no-doc-options"
-          >
-            <button
-              :for={opt <- @start_options}
-              type="button"
-              phx-click="agent_option_picked"
-              phx-value-key={opt.key}
-              data-role="chat-no-doc-option"
-              data-option-key={opt.key}
-              class="btn btn-sm btn-ghost border border-base-300 rounded-full font-normal normal-case shadow-none hover:bg-base-200"
-            >
-              {opt.label}
-            </button>
-          </div>
-        </div>
       </div>
 
       <%!-- Streamed conversation. Single scroll + stream container —
@@ -1040,27 +979,10 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
   defp chat_context_empty?(%{message_count: count}) when is_integer(count), do: count == 0
   defp chat_context_empty?(_), do: true
 
-  # ----------------------------------------------------------------------------
-  # No-document welcome — SPEC.md §10. When the LV mounts WITHOUT a selected
-  # document, the chat shows a pre-canned agent message with 5 quick-start
-  # options. Each chip emits `agent_option_picked` with a `key`, which the
-  # parent StudioLive handles uniformly.
-  # ----------------------------------------------------------------------------
-
   @doc false
   def no_document?(%Contract.Studio.State{mode: :no_document}), do: true
   def no_document?(%{mode: :no_document}), do: true
   def no_document?(_), do: false
-
-  @doc false
-  def start_options do
-    [
-      %{key: "recent", label: dgettext("studio", "최근 문서 열기")},
-      %{key: "blank", label: dgettext("studio", "빈 계약서 만들기")},
-      %{key: "draft_from_discussion", label: dgettext("studio", "논의에서 시작")},
-      %{key: "variant_from_other", label: dgettext("studio", "다른 문서에서 변형 만들기")}
-    ]
-  end
 
   # ----------------------------------------------------------------------------
   # Grill helpers — the parent decides whether the latest agent message has
