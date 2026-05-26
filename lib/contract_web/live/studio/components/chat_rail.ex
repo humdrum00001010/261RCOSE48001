@@ -9,7 +9,7 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
     * Mounts the `GrillRail` sub-LiveComponent when the latest agent
       message has unresolved `mode: "grill"` ask-marks.
     * Owns the textarea + send button input footer.
-    * Surfaces a header status pill keyed off `@studio_state.agent_run_id`.
+    * Uses agent status to switch the composer between send and stop actions.
     * Switches between a desktop right-rail layout and a mobile full-viewport
       layout depending on the `layout` attr / `viewport` assign.
 
@@ -34,6 +34,7 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
 
   attr :id, :string, required: true
   attr :studio_state, :map, required: true
+  attr :agent_document_status, :map, default: nil
   attr :chat_thread, :map, default: nil
   attr :streams, :map, required: true
   attr :current_scope, :map, required: true
@@ -56,7 +57,10 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
     assigns =
       assigns
       |> assign_new(:mobile?, fn -> assigns.layout == :mobile_full end)
-      |> assign(:agent_status, agent_status(assigns.studio_state))
+      |> assign(
+        :agent_status,
+        agent_status(assigns.studio_state, assigns[:agent_document_status])
+      )
       |> assign(:observer_mode?, observer_mode?(assigns.current_scope))
       |> assign(:grill_active?, resolve_grill_active?(assigns))
       |> assign(:no_document?, no_document?(assigns.studio_state))
@@ -78,7 +82,7 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
     >
       <div
         data-role="chat-rail-controls"
-        class="flex shrink-0 items-center justify-between gap-2 border-b border-base-300 bg-base-200/95 px-4 py-1"
+        class="flex shrink-0 items-center justify-between gap-2 border-b border-base-300 bg-base-200/95 px-2 py-1"
       >
         <h2
           data-role="chat-thread-title"
@@ -242,6 +246,7 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
           data-message-role={msg_role(msg)}
           data-message-kind={msg_kind(msg)}
           data-transient={msg_transient?(msg)}
+          hidden={msg_hidden?(msg)}
           phx-click={tool_call_toggle_js(msg)}
           phx-keydown={tool_call_toggle_js(msg)}
           phx-key={tool_call_toggle_key(msg)}
@@ -382,7 +387,7 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
                 <.icon name="hero-paper-clip" class="size-3.5" />
               </button>
             </div>
-            <%= if @agent_status.key == :responding do %>
+            <%= if @agent_status.key in [:working, :queued, :materializing] do %>
               <button
                 id={"#{@id}-send"}
                 type="button"
@@ -460,18 +465,31 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
             // Mobile (iOS Safari) regression fix: tapping the send button
             // fires `blur` on the textarea, which dismisses the keyboard.
             // With `h-[100dvh]` the layout reflows mid-tap and the `click`
-            // never lands. Calling preventDefault() on pointerdown/mousedown
-            // for the send button stops the focus shift, so the textarea
-            // stays focused, the keyboard stays open, no reflow happens,
-            // and the subsequent `click` fires cleanly.
+            // never lands. Send on pointerdown/mousedown itself, while
+            // preventDefault() keeps focus on the textarea so the mobile
+            // keyboard stays open and no form submit is needed.
             this.onFormPointerDown = (e) => {
               const btn = e.target.closest('[data-role="chat-send"]')
-              if (btn && this.form.contains(btn)) e.preventDefault()
+              if (!btn || !this.form.contains(btn)) return
+              e.preventDefault()
+              if (e.type === "mousedown" && this._sendButtonPressSent) return
+              this._sendButtonPressSent = true
+              clearTimeout(this._sendButtonPressTimer)
+              this._sendButtonPressTimer = setTimeout(() => {
+                this._sendButtonPressSent = false
+              }, 400)
+              this.send(e)
             }
 
             this.onFormClick = (e) => {
               const btn = e.target.closest('[data-role="chat-send"]')
-              if (btn && this.form.contains(btn)) this.send(e)
+              if (!btn || !this.form.contains(btn)) return
+              if (this._sendButtonPressSent) {
+                e.preventDefault()
+                this._sendButtonPressSent = false
+                return
+              }
+              this.send(e)
             }
 
             this.onFormSubmit = (e) => this.send(e)
@@ -539,10 +557,19 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
                 span.textContent = ""
                 span.dataset.placeholder = "false"
               }
-              if (span) span.appendChild(document.createTextNode(piece))
-              const details = document.querySelector(
-                `[data-role="agent-reasoning-details-text"][data-message-id="${id}"]`
+              if (span) {
+                const message = span.closest('[data-role="chat-message"]')
+                if (message) message.removeAttribute("hidden")
+                span.appendChild(document.createTextNode(piece))
+              }
+              const detailsContent = document.querySelector(
+                `[data-role="agent-reasoning-details-content"][data-message-id="${id}"]`
               )
+              const details = detailsContent
+                ? detailsContent.querySelector('[data-role="agent-reasoning-details-text"]')
+                : document.querySelector(
+                    `[data-role="agent-reasoning-details-text"][data-message-id="${id}"]`
+                  )
               if (details) details.appendChild(document.createTextNode(piece))
             }
             window.addEventListener("phx:agent_reasoning_append", this.onReasoningAppend)
@@ -587,6 +614,7 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
             this.autosize()
           },
           destroyed() {
+            clearTimeout(this._sendButtonPressTimer)
             if (this.onAppend) window.removeEventListener("phx:agent_text_append", this.onAppend)
             if (this.onReasoningAppend) window.removeEventListener("phx:agent_reasoning_append", this.onReasoningAppend)
             if (this.scrollObserver) this.scrollObserver.disconnect()
@@ -616,6 +644,13 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
       |> assign(:operation_status, operation_status(assigns.operation))
       |> assign(:operation_title, operation_title(assigns.operation))
       |> assign(:operation_summary, operation_summary(assigns.operation))
+      |> then(fn assigns ->
+        assign(
+          assigns,
+          :reasoning_message_id,
+          reasoning_message_id(assigns.operation_type, assigns.operation_id)
+        )
+      end)
 
     ~H"""
     <%= if @operation_type in ["tool_call", "reasoning"] do %>
@@ -654,7 +689,7 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
             <%= if @operation_type == "reasoning" do %>
               <span
                 data-role="agent-reasoning-text"
-                data-message-id={"chat-msg-reasoning-#{reasoning_run_id(@operation_id)}"}
+                data-message-id={@reasoning_message_id}
                 data-placeholder={reasoning_text_placeholder?(@operation_summary)}
                 title={operation_reasoning_full(@operation)}
                 class="min-w-0 truncate whitespace-nowrap"
@@ -695,13 +730,14 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
         hidden
         class="self-start w-full max-w-full"
       >
-        <div class="rounded-md border border-base-300 bg-base-100 px-3 py-2 font-mono text-[11px] leading-relaxed text-base-content/60 shadow-sm">
+        <div
+          data-role={reasoning_details_content_data_role(@operation_type)}
+          data-message-id={@reasoning_message_id}
+          class="rounded-md border border-base-300 bg-base-100 px-3 py-2 font-mono text-[11px] leading-relaxed text-base-content/60 shadow-sm"
+        >
           <pre
             data-role={reasoning_details_data_role(@operation_type)}
-            data-message-id={
-              @operation_type == "reasoning" &&
-                "chat-msg-reasoning-#{reasoning_run_id(@operation_id)}"
-            }
+            data-message-id={@reasoning_message_id}
             class="whitespace-pre-wrap break-words"
           >{operation_expanded_body(@operation_type, @operation)}</pre>
         </div>
@@ -937,15 +973,44 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
   # ----------------------------------------------------------------------------
 
   @doc false
-  def agent_status(%{agent_run_id: nil}), do: %{key: :idle, label: status_idle()}
+  def agent_status(studio_state, agent_document_status \\ nil)
 
-  def agent_status(%{agent_run_id: id}) when is_binary(id),
-    do: %{key: :responding, label: status_busy()}
+  def agent_status(_studio_state, %{current_attempt: current, queue: queue})
+      when not is_nil(current) do
+    queue_size = length(List.wrap(queue))
+    key = if queue_size > 0, do: :queued, else: :working
 
-  def agent_status(_), do: %{key: :idle, label: status_idle()}
+    %{
+      key: key,
+      label: status_busy(queue_size),
+      current_run_id: current.id,
+      queue_size: queue_size
+    }
+  end
 
-  defp status_idle, do: dgettext("studio", "대기 중")
-  defp status_busy, do: dgettext("studio", "응답 중…")
+  def agent_status(_studio_state, %{current_attempt: nil, queue: queue}) when queue != [] do
+    queue_size = length(List.wrap(queue))
+
+    %{
+      key: :materializing,
+      label: dgettext("studio", "준비 중 · %{count} 대기", count: queue_size),
+      current_run_id: nil,
+      queue_size: queue_size
+    }
+  end
+
+  def agent_status(%{agent_run_id: nil}, _status),
+    do: %{key: :idle, label: status_idle(), current_run_id: nil, queue_size: 0}
+
+  def agent_status(%{agent_run_id: id}, _status) when is_binary(id),
+    do: %{key: :working, label: status_busy(0), current_run_id: id, queue_size: 0}
+
+  def agent_status(_, _status),
+    do: %{key: :idle, label: status_idle(), current_run_id: nil, queue_size: 0}
+
+  defp status_idle, do: dgettext("studio", "대기")
+  defp status_busy(0), do: dgettext("studio", "응답 중")
+  defp status_busy(queue_size), do: dgettext("studio", "응답 중 · %{count} 대기", count: queue_size)
 
   # ----------------------------------------------------------------------------
   # Observer / persona helpers
@@ -1281,14 +1346,26 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
     not (is_nil(msg_operation(msg)) and msg_kind(msg) == "reasoning")
   end
 
+  defp msg_hidden?(msg) do
+    case msg_operation(msg) do
+      operation when is_map(operation) ->
+        operation_type(operation) == "reasoning" and
+          String.trim(operation_summary(operation)) == "" and
+          String.trim(operation_reasoning_full(operation)) == ""
+
+      _ ->
+        false
+    end
+  end
+
   defp reasoning_text_or_placeholder(summary) when is_binary(summary) do
     case String.trim(summary) do
-      "" -> dgettext("studio", "생각 중")
+      "" -> ""
       text -> text
     end
   end
 
-  defp reasoning_text_or_placeholder(_), do: dgettext("studio", "생각 중")
+  defp reasoning_text_or_placeholder(_), do: ""
 
   defp reasoning_text_placeholder?(summary) when is_binary(summary) do
     if String.trim(summary) == "", do: "true", else: "false"
@@ -1299,6 +1376,14 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
   defp reasoning_run_id("reasoning-" <> rest), do: rest
   defp reasoning_run_id(id) when is_binary(id), do: id
   defp reasoning_run_id(_), do: ""
+
+  defp reasoning_message_id("reasoning", operation_id),
+    do: "chat-msg-reasoning-#{reasoning_run_id(operation_id)}"
+
+  defp reasoning_message_id(_, _), do: nil
+
+  defp reasoning_details_content_data_role("reasoning"), do: "agent-reasoning-details-content"
+  defp reasoning_details_content_data_role(_), do: nil
 
   defp reasoning_details_data_role("reasoning"), do: "agent-reasoning-details-text"
   defp reasoning_details_data_role(_), do: nil

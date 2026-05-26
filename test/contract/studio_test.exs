@@ -106,7 +106,7 @@ defmodule Contract.StudioTest do
       assert {:ok, %Contract.Agent.Run{} = run} = Studio.command(s, command)
       assert is_binary(run.id)
 
-      _ = Contract.Agent.cancel(s, run.id)
+      _ = Contract.Agent.Document.cancel(s, run.id)
     end
 
     test "propagates Runtime errors verbatim" do
@@ -312,9 +312,9 @@ defmodule Contract.StudioTest do
       # Task #139 — the route_ref bearer is intentionally deterministic
       # per (user, doc, thread) so OpenAI's hosted MCP tools/list cache
       # (keyed by bearer) hits across turns. `agent_run_id` is no
-      # longer part of the signed payload; it's reconstructed
-      # server-side at submit_change time via
-      # `Contract.Agent.RunServer.whereis_for_scope/2`.
+      # longer part of the signed payload; doc.* calls must prove an
+      # explicit run id against the active `Contract.Agent.Document`
+      # attempt for the route_ref scope.
       s = scope()
       {:ok, doc} = Documents.create(s, %{title: "Agent route_ref"})
       run_id = Ecto.UUID.generate()

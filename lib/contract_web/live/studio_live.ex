@@ -111,25 +111,27 @@ defmodule ContractWeb.StudioLive do
           |> assign_projection(projection)
           |> assign(:current_document, current_document(scope, studio_state))
           |> assign(:chat_thread, ChatThreads.current_thread_info(scope, studio_state))
+          |> assign(:agent_document_status, nil)
           |> assign(:breadcrumbs, breadcrumbs)
           |> assign(:page_title, page_title(scope))
           |> assign(:viewport, :desktop)
           |> assign(:chat_rail_hidden?, false)
           |> assign(:other_documents, list_other_documents(scope, studio_state))
           |> then(fn s ->
-            snapshot =
-              load_rhwp_snapshot(
+            snapshot_candidates =
+              load_rhwp_snapshot_candidates(
                 studio_state.selected_document_id,
                 rhwp_snapshot_format(projection)
               )
 
-            base_rev = (snapshot && snapshot.revision) || 0
+            snapshot = List.first(snapshot_candidates)
 
             s
             |> assign(:rhwp_snapshot, snapshot)
+            |> assign(:rhwp_snapshot_candidates, snapshot_candidates)
             |> assign(
               :rhwp_text_events,
-              load_rhwp_text_events(studio_state.selected_document_id, base_rev)
+              load_rhwp_text_events(studio_state.selected_document_id, 0)
             )
           end)
           |> assign(:reconcile_modal_open?, false)
@@ -152,6 +154,7 @@ defmodule ContractWeb.StudioLive do
           |> stream_configure(:toasts, dom_id: &"toast-#{&1.id}")
           |> stream(:toasts, [])
           |> recompute_grill_assigns()
+          |> refresh_agent_document_status()
 
         {:ok, socket}
 
@@ -163,6 +166,10 @@ defmodule ContractWeb.StudioLive do
           |> assign_projection(empty_projection())
           |> assign(:current_document, nil)
           |> assign(:chat_thread, nil)
+          |> assign(:agent_document_status, nil)
+          |> assign(:rhwp_snapshot, nil)
+          |> assign(:rhwp_snapshot_candidates, [])
+          |> assign(:rhwp_text_events, [])
           |> assign(:breadcrumbs, build_breadcrumbs(scope, nil, nil))
           |> assign(:page_title, "Studio")
           |> assign(:viewport, :desktop)
@@ -224,10 +231,15 @@ defmodule ContractWeb.StudioLive do
 
     case studio_state.agent_run_id do
       run_id when is_binary(run_id) ->
-        _ = Contract.Agent.cancel(socket.assigns.current_scope, run_id)
+        _ = cancel_agent_run(socket.assigns.current_scope, studio_state, run_id)
 
-        new_state = %{studio_state | agent_run_id: nil}
-        {:noreply, assign(socket, :studio_state, new_state)}
+        socket =
+          socket
+          |> remove_agent_transient_rows(run_id)
+          |> assign(:studio_state, %{studio_state | agent_run_id: nil})
+          |> refresh_agent_document_status()
+
+        {:noreply, socket}
 
       _ ->
         {:noreply, socket}
@@ -773,16 +785,16 @@ defmodule ContractWeb.StudioLive do
 
     case Studio.command_result(scope, state, action) do
       {:ok, %Contract.Studio.State{} = new_state, result} ->
-        # If a new agent run was registered, subscribe to its topic.
-        if new_state.agent_run_id && new_state.agent_run_id != state.agent_run_id do
-          _ = Studio.subscribe_agent(scope, new_state.agent_run_id)
-        end
-
         socket
         |> assign(:studio_state, new_state)
-        |> assign(:current_document, current_document(scope, new_state))
+        |> refresh_agent_document_status()
+        |> then(fn socket ->
+          assign(socket, :current_document, current_document(scope, socket.assigns.studio_state))
+        end)
         |> apply_submit_result(action, result)
-        |> maybe_refresh_chat_messages(action, new_state)
+        |> then(fn socket ->
+          maybe_refresh_chat_messages(socket, action, socket.assigns.studio_state)
+        end)
 
       {:error, {:source_parse_failed, reason, source_document}} ->
         socket
@@ -841,8 +853,16 @@ defmodule ContractWeb.StudioLive do
 
     case state && state.agent_run_id do
       run_id when is_binary(run_id) ->
-        _ = Contract.Agent.cancel(socket.assigns.current_scope, run_id)
-        assign(socket, :studio_state, %{state | agent_run_id: nil})
+        _ =
+          Contract.Agent.Document.suspend(
+            socket.assigns.current_scope,
+            state.selected_document_id
+          )
+
+        socket
+        |> remove_agent_transient_rows(run_id)
+        |> assign(:studio_state, %{state | agent_run_id: nil})
+        |> refresh_agent_document_status()
 
       _ ->
         socket
@@ -850,6 +870,50 @@ defmodule ContractWeb.StudioLive do
   end
 
   defp maybe_cancel_in_flight_agent(socket, _action), do: socket
+
+  defp cancel_agent_run(scope, state, run_id) do
+    case Contract.Agent.Document.cancel(scope, run_id) do
+      {:error, :not_found} ->
+        Contract.Agent.Document.suspend(scope, state.selected_document_id)
+
+      result ->
+        result
+    end
+  end
+
+  defp refresh_agent_document_status(socket) do
+    status =
+      fetch_agent_document_status(
+        socket.assigns[:current_scope],
+        socket.assigns[:studio_state]
+      )
+
+    current_run_id = agent_document_current_run_id(status)
+    old_run_id = agent_document_current_run_id(socket.assigns[:agent_document_status])
+
+    if is_binary(current_run_id) and current_run_id != old_run_id do
+      _ = Studio.subscribe_agent(socket.assigns.current_scope, current_run_id)
+    end
+
+    socket
+    |> assign(:agent_document_status, status)
+    |> update(:studio_state, fn
+      %Contract.Studio.State{} = state -> %{state | agent_run_id: current_run_id}
+      state -> state
+    end)
+  end
+
+  defp fetch_agent_document_status(scope, %Contract.Studio.State{} = state) do
+    case Contract.Agent.Document.status(scope, state.selected_document_id) do
+      {:ok, status} -> status
+      {:error, _reason} -> nil
+    end
+  end
+
+  defp fetch_agent_document_status(_scope, _state), do: nil
+
+  defp agent_document_current_run_id(%{current_attempt: %{id: id}}) when is_binary(id), do: id
+  defp agent_document_current_run_id(_status), do: nil
 
   defp assign_current_chat_thread(socket) do
     assign(
@@ -1203,7 +1267,7 @@ defmodule ContractWeb.StudioLive do
   # one bubble per event — that produced 100+ empty bubbles per turn. The
   # final assistant text appears via `:agent_completed` + ChatThreads
   # refresh; tool calls via `:tool_call_*` (MCP-side broadcasts); reasoning
-  # via `:agent_reasoning_*` (classify_stream_event in RunServer). The raw
+  # via `:agent_reasoning_*` (classify_stream_event in Agent.Document). The raw
   # broadcast still flows so tests / future text-streaming UI can subscribe.
   def handle_protocol_message({:agent_stream, _agent_run_id, _stream_event}, socket),
     do: socket
@@ -1230,6 +1294,7 @@ defmodule ContractWeb.StudioLive do
 
     socket
     |> clear_agent_loading_state(agent_run_id)
+    |> maybe_remove_unfinished_reasoning(agent_run_id)
     |> update(:studio_state, fn state ->
       if state.agent_run_id == agent_run_id do
         %{state | agent_run_id: nil}
@@ -1237,14 +1302,15 @@ defmodule ContractWeb.StudioLive do
         state
       end
     end)
+    |> refresh_agent_document_status()
     |> stream_insert(:chat_messages, bubble)
     |> recompute_grill_assigns()
     |> assign_current_chat_thread()
   end
 
-  def handle_protocol_message({:agent_failed, agent_run_id, reason}, socket) do
+  def handle_protocol_message({:agent_failed, agent_run_id, :cancelled}, socket) do
     socket
-    |> clear_agent_loading_state(agent_run_id)
+    |> remove_agent_transient_rows(agent_run_id)
     |> update(:studio_state, fn state ->
       if state.agent_run_id == agent_run_id do
         %{state | agent_run_id: nil}
@@ -1252,6 +1318,21 @@ defmodule ContractWeb.StudioLive do
         state
       end
     end)
+    |> refresh_agent_document_status()
+    |> recompute_grill_assigns()
+  end
+
+  def handle_protocol_message({:agent_failed, agent_run_id, reason}, socket) do
+    socket
+    |> remove_agent_transient_rows(agent_run_id)
+    |> update(:studio_state, fn state ->
+      if state.agent_run_id == agent_run_id do
+        %{state | agent_run_id: nil}
+      else
+        state
+      end
+    end)
+    |> refresh_agent_document_status()
     |> stream_insert(:toasts, build_toast(:error, "Agent failed", inspect(reason)))
     |> recompute_grill_assigns()
   end
@@ -1308,6 +1389,8 @@ defmodule ContractWeb.StudioLive do
   end
 
   def handle_protocol_message({:agent_reasoning_done, agent_run_id, text}, socket) do
+    mark_reasoning_stream_completed(agent_run_id)
+
     body = if is_binary(text) and text != "", do: text, else: ""
 
     if String.trim(body) == "" do
@@ -1692,6 +1775,7 @@ defmodule ContractWeb.StudioLive do
           module={Components.ChatRail}
           id="chat-rail-mobile"
           studio_state={@studio_state}
+          agent_document_status={@agent_document_status}
           streams={%{chat_messages: @streams.chat_messages}}
           current_scope={@current_scope}
           layout={:mobile_full}
@@ -2118,6 +2202,7 @@ defmodule ContractWeb.StudioLive do
                   document_id={@studio_state.selected_document_id}
                   text_events={@rhwp_text_events}
                   snapshot={@rhwp_snapshot}
+                  snapshot_candidates={@rhwp_snapshot_candidates || []}
                 />
               </div>
             </article>
@@ -2216,6 +2301,7 @@ defmodule ContractWeb.StudioLive do
               module={Components.ChatRail}
               id="chat-rail"
               studio_state={@studio_state}
+              agent_document_status={@agent_document_status}
               streams={%{chat_messages: @streams.chat_messages}}
               current_scope={@current_scope}
               chat_thread={@chat_thread}
@@ -2486,8 +2572,10 @@ defmodule ContractWeb.StudioLive do
       {:ok, changes} ->
         changes
         |> Enum.filter(&(&1.command_kind == "edit_text"))
-        |> Enum.flat_map(fn %Contract.Change{payload: payload} ->
-          payload |> List.wrap() |> Enum.flat_map(&change_payload_op_to_event/1)
+        |> Enum.flat_map(fn %Contract.Change{payload: payload, result_revision: revision} ->
+          payload
+          |> List.wrap()
+          |> Enum.flat_map(&change_payload_op_to_event(&1, revision))
         end)
 
       _ ->
@@ -2495,20 +2583,47 @@ defmodule ContractWeb.StudioLive do
     end
   end
 
-  # Most recent committed rhwp native snapshot. This is the visual document
-  # source of truth; do not silently fall back to older snapshots/templates
-  # when delivery is broken.
-  defp load_rhwp_snapshot(nil, _format), do: nil
+  # Newest committed rhwp native snapshots. The first row is the preferred
+  # source, while later rows let the client recover if the latest native blob
+  # is no longer renderable.
+  defp load_rhwp_snapshot_candidates(nil, _format), do: []
 
-  defp load_rhwp_snapshot(document_id, format) do
-    case Contract.RhwpSnapshot.latest_for_document(document_id, format) do
-      %Contract.RhwpSnapshot.Record{revision: rev, format: format} ->
-        %{url: "/documents/#{document_id}/rhwp-snapshots/#{rev}.#{format}", revision: rev}
+  defp load_rhwp_snapshot_candidates(document_id, format) do
+    document_id
+    |> Contract.RhwpSnapshot.candidates_for_document(format, limit: 5)
+    |> Enum.map(&snapshot_candidate(document_id, &1))
+  end
 
-      nil ->
-        nil
+  defp snapshot_candidate(document_id, %Contract.RhwpSnapshot.Record{
+         revision: rev,
+         format: format,
+         projection: projection
+       }) do
+    %{
+      url: "/documents/#{document_id}/rhwp-snapshots/#{rev}.#{format}",
+      revision: rev,
+      lamport: snapshot_lamport(projection)
+    }
+  end
+
+  defp snapshot_lamport(projection) when is_map(projection) do
+    projection
+    |> metadata_value(:lamport_max)
+    |> normalize_snapshot_lamport()
+  end
+
+  defp snapshot_lamport(_projection), do: nil
+
+  defp normalize_snapshot_lamport(value) when is_integer(value) and value > 0, do: value
+
+  defp normalize_snapshot_lamport(value) when is_binary(value) do
+    case Integer.parse(value) do
+      {int, ""} when int > 0 -> int
+      _ -> nil
     end
   end
+
+  defp normalize_snapshot_lamport(_value), do: nil
 
   # Two shapes reach this converter:
   #   * Fresh in-memory Change from Store.append broadcast — atom keys, atom op
@@ -2516,15 +2631,22 @@ defmodule ContractWeb.StudioLive do
   # The client only sees the post-JSON shape, so we normalize args + kind to
   # strings here. Without the atom clause, the broadcast path's push_event
   # was silently skipped and remote edits never reached the canvas live.
-  defp change_payload_op_to_event(%{op: op, args: args}) when is_map(args) do
-    [args |> stringify_keys() |> Map.put("kind", to_string(op))]
+  defp change_payload_op_to_event(change_payload, revision \\ nil)
+
+  defp change_payload_op_to_event(%{op: op, args: args}, revision) when is_map(args) do
+    [args |> stringify_keys() |> Map.put("kind", to_string(op)) |> put_event_revision(revision)]
   end
 
-  defp change_payload_op_to_event(%{"op" => op, "args" => args}) when is_map(args) do
-    [Map.put(args, "kind", op)]
+  defp change_payload_op_to_event(%{"op" => op, "args" => args}, revision) when is_map(args) do
+    [args |> Map.put("kind", op) |> put_event_revision(revision)]
   end
 
-  defp change_payload_op_to_event(_), do: []
+  defp change_payload_op_to_event(_, _revision), do: []
+
+  defp put_event_revision(event, revision) when is_integer(revision),
+    do: Map.put(event, "revision", revision)
+
+  defp put_event_revision(event, _revision), do: event
 
   defp stringify_keys(map) when is_map(map) do
     Map.new(map, fn
@@ -2884,8 +3006,39 @@ defmodule ContractWeb.StudioLive do
     socket
   end
 
+  defp maybe_remove_unfinished_reasoning(socket, agent_run_id) when is_binary(agent_run_id) do
+    if reasoning_stream_completed?(agent_run_id) do
+      _ = Process.delete(reasoning_stream_completed_key(agent_run_id))
+      socket
+    else
+      stream_delete_by_dom_id(socket, :chat_messages, "chat-msg-reasoning-#{agent_run_id}")
+    end
+  end
+
+  defp maybe_remove_unfinished_reasoning(socket, _agent_run_id), do: socket
+
+  defp remove_agent_transient_rows(socket, agent_run_id) when is_binary(agent_run_id) do
+    _ = Process.delete(reasoning_stream_completed_key(agent_run_id))
+
+    socket
+    |> clear_agent_loading_state(agent_run_id)
+    |> stream_delete_by_dom_id(:chat_messages, "chat-msg-agent-#{agent_run_id}-streaming")
+    |> stream_delete_by_dom_id(:chat_messages, "chat-msg-reasoning-#{agent_run_id}")
+  end
+
+  defp remove_agent_transient_rows(socket, _agent_run_id), do: socket
+
   defp text_bubble_created_key(agent_run_id), do: {:text_bubble_created, agent_run_id}
   defp text_stream_started_key(agent_run_id), do: {:text_stream_started, agent_run_id}
+
+  defp reasoning_stream_completed_key(agent_run_id),
+    do: {:reasoning_stream_completed, agent_run_id}
+
+  defp reasoning_stream_completed?(agent_run_id),
+    do: Process.get(reasoning_stream_completed_key(agent_run_id)) == true
+
+  defp mark_reasoning_stream_completed(agent_run_id),
+    do: Process.put(reasoning_stream_completed_key(agent_run_id), true)
 
   defp insert_operation_chat(socket, id, operation, opts \\ []) do
     socket

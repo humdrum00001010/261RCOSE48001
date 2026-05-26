@@ -883,6 +883,181 @@ defmodule ContractWeb.StudioLiveTest do
       assert assigns(lv).studio_state.agent_run_id == nil
     end
 
+    test "cancel_agent cancels the Agent.Document attempt and removes transient rows",
+         %{conn: conn, user: user} do
+      scope = Contract.Context.for_user(user)
+      {:ok, doc} = Contract.Documents.create(scope, %{"title" => "중지할 문서"})
+      stub_blocking_agent_stream(self())
+      on_exit(fn -> Contract.Agent.Document.suspend(scope, doc.id) end)
+
+      {:ok, lv, _html} = live(conn, ~p"/documents/#{doc.id}")
+      _ = render_hook(lv, "chat.submit", %{"message" => "검토해줘"})
+      assert_receive {:agent_stream_started, _pid}, 1_500
+
+      assert eventually(fn -> is_binary(assigns(lv).studio_state.agent_run_id) end)
+      run_id = assigns(lv).studio_state.agent_run_id
+
+      html = render(lv)
+      assert html =~ ~s(id="chat-msg-agent-#{run_id}-streaming")
+      assert html =~ ~s(id="chat-msg-reasoning-#{run_id}")
+
+      _html =
+        lv
+        |> element(~s([data-role="chat-stop"]))
+        |> render_click()
+
+      assert assigns(lv).studio_state.agent_run_id == nil
+      assert {:ok, status} = Contract.Agent.Document.status(scope, doc.id)
+      assert status.current_attempt == nil
+      assert status.queue == []
+
+      html = render(lv)
+      refute html =~ ~s(id="chat-msg-agent-#{run_id}-streaming")
+      refute html =~ ~s(id="chat-msg-reasoning-#{run_id}")
+      refute html =~ "Agent failed"
+    end
+
+    test "chat.submit subscribes the LiveView to the new agent run PubSub topic",
+         %{conn: conn, user: user} do
+      scope = Contract.Context.for_user(user)
+      {:ok, doc} = Contract.Documents.create(scope, %{"title" => "구독할 문서"})
+      stub_blocking_agent_stream(self(), ["응답 완료"])
+      on_exit(fn -> Contract.Agent.Document.suspend(scope, doc.id) end)
+
+      {:ok, lv, _html} = live(conn, ~p"/documents/#{doc.id}")
+      _ = render_hook(lv, "chat.submit", %{"message" => "검토해줘"})
+      assert_receive {:agent_stream_started, stream_pid}, 1_500
+
+      assert eventually(fn -> is_binary(assigns(lv).studio_state.agent_run_id) end)
+      run_id = assigns(lv).studio_state.agent_run_id
+
+      send(stream_pid, :release_stream)
+
+      assert eventually(fn ->
+               html = render(lv)
+
+               assigns(lv).studio_state.agent_run_id == nil and
+                 html =~ "응답 완료" and
+                 html =~ ~s(id="chat-msg-agent-#{run_id}-streaming") and
+                 not String.contains?(html, ~s(id="chat-msg-reasoning-#{run_id}"))
+             end)
+    end
+
+    test "reasoning delta broadcast reaches the selected details body and visible thinking line",
+         %{conn: conn, user: user} do
+      scope = Contract.Context.for_user(user)
+      {:ok, doc} = Contract.Documents.create(scope, %{"title" => "생각 표시 문서"})
+      stub_blocking_agent_stream(self())
+      on_exit(fn -> Contract.Agent.Document.suspend(scope, doc.id) end)
+
+      {:ok, lv, _html} = live(conn, ~p"/documents/#{doc.id}")
+      _ = render_hook(lv, "chat.submit", %{"message" => "계약명을 봐줘"})
+      assert_receive {:agent_stream_started, _stream_pid}, 1_500
+
+      assert eventually(fn -> is_binary(assigns(lv).studio_state.agent_run_id) end)
+      run_id = assigns(lv).studio_state.agent_run_id
+      html = render(lv)
+      fragment = LazyHTML.from_fragment(html)
+      details_selector = "#tool-trace-reasoning-#{run_id}-details > div:nth-child(1)"
+
+      assert LazyHTML.attribute(
+               LazyHTML.query(fragment, "#chat-msg-reasoning-#{run_id}"),
+               "hidden"
+             ) == [""]
+
+      refute html =~ "생각 중"
+
+      details_body = LazyHTML.query(fragment, details_selector)
+      assert LazyHTML.attribute(details_body, "data-role") == ["agent-reasoning-details-content"]
+
+      assert LazyHTML.attribute(details_body, "data-message-id") == [
+               "chat-msg-reasoning-#{run_id}"
+             ]
+
+      Phoenix.PubSub.broadcast(
+        Contract.PubSub,
+        "agent:#{run_id}",
+        {:agent_reasoning_delta, run_id, "계약명을 검토 중"}
+      )
+
+      reasoning_message_id = "chat-msg-reasoning-#{run_id}"
+
+      assert_push_event(
+        lv,
+        "agent_reasoning_append",
+        %{message_id: ^reasoning_message_id, piece: "계약명을 검토 중"},
+        500
+      )
+    end
+
+    test "{:agent_failed, _, :cancelled} removes transient rows without an error toast",
+         %{conn: conn} do
+      {:ok, lv, _html} = live(conn, ~p"/studio")
+      run_id = Ecto.UUID.generate()
+
+      send_state(lv, %State{
+        agent_run_id: run_id,
+        mode: :editing,
+        last_seen_revision: 0
+      })
+
+      send(lv.pid, {:agent_text_delta, run_id, "검토 중"})
+
+      html = render(lv)
+      assert html =~ ~s(id="chat-msg-agent-#{run_id}-streaming")
+
+      send(lv.pid, {:agent_failed, run_id, :cancelled})
+      html = render(lv)
+
+      assert assigns(lv).studio_state.agent_run_id == nil
+      refute html =~ ~s(id="chat-msg-agent-#{run_id}-streaming")
+      refute html =~ "Agent failed"
+    end
+
+    test "submitting a replacement chat suspends the current Document attempt before starting the next",
+         %{conn: conn, user: user} do
+      scope = Contract.Context.for_user(user)
+      {:ok, doc} = Contract.Documents.create(scope, %{"title" => "교체할 문서"})
+      stub_blocking_agent_stream(self())
+      on_exit(fn -> Contract.Agent.Document.suspend(scope, doc.id) end)
+
+      {:ok, lv, _html} = live(conn, ~p"/documents/#{doc.id}")
+      _ = render_hook(lv, "chat.submit", %{"message" => "첫 요청"})
+      assert_receive {:agent_stream_started, _first_pid}, 1_500
+      assert eventually(fn -> is_binary(assigns(lv).studio_state.agent_run_id) end)
+      first_run_id = assigns(lv).studio_state.agent_run_id
+
+      _ = render_hook(lv, "chat.submit", %{"message" => "두 번째 요청"})
+      assert eventually(fn -> assigns(lv).studio_state.agent_run_id != first_run_id end)
+      second_run_id = assigns(lv).studio_state.agent_run_id
+
+      assert {:ok, status} = Contract.Agent.Document.status(scope, doc.id)
+      assert status.current_attempt.id == second_run_id
+      assert status.queue == []
+    end
+
+    test "chat rail keeps Agent.Document status internal to composer controls",
+         %{conn: conn, user: user} do
+      scope = Contract.Context.for_user(user)
+      {:ok, doc} = Contract.Documents.create(scope, %{"title" => "상태를 표시할 문서"})
+      stub_blocking_agent_stream(self())
+      on_exit(fn -> Contract.Agent.Document.suspend(scope, doc.id) end)
+
+      {:ok, lv, _html} = live(conn, ~p"/documents/#{doc.id}")
+      _ = render_hook(lv, "chat.submit", %{"message" => "상태 확인"})
+      assert_receive {:agent_stream_started, _pid}, 1_500
+      assert eventually(fn -> is_binary(assigns(lv).studio_state.agent_run_id) end)
+
+      run_id = assigns(lv).studio_state.agent_run_id
+
+      assert {:ok, status} = Contract.Agent.Document.status(scope, doc.id)
+      assert status.current_attempt.id == run_id
+      assert status.queue == []
+
+      refute has_element?(lv, ~s([data-role="agent-status"]))
+      assert has_element?(lv, ~s([data-role="chat-stop"]))
+    end
+
     test "tool-call protocol messages render structured operation blocks", %{conn: conn} do
       {:ok, lv, _html} = live(conn, ~p"/studio")
       run_id = Ecto.UUID.generate()
@@ -1370,6 +1545,41 @@ defmodule ContractWeb.StudioLiveTest do
     |> stub(:stream_chat, fn _params, _opts ->
       stream = [%{type: "response.output_text.delta", data: %{"delta" => payload}}]
       {:ok, %{stream: stream, task_pid: self()}}
+    end)
+  end
+
+  defp stub_blocking_agent_stream(parent, chunks \\ []) do
+    Contract.IO.OpenAIMock
+    |> stub(:stream_chat, fn _params, _opts ->
+      stream =
+        Stream.resource(
+          fn ->
+            send(parent, {:agent_stream_started, self()})
+            :running
+          end,
+          fn
+            :running ->
+              receive do
+                :release_stream ->
+                  {build_stream(chunks), :done}
+              after
+                5_000 ->
+                  {[], :running}
+              end
+
+            :done ->
+              {:halt, :done}
+          end,
+          fn _ -> :ok end
+        )
+
+      {:ok, %{stream: stream, task_pid: self()}}
+    end)
+  end
+
+  defp build_stream(chunks) do
+    Enum.map(chunks, fn chunk ->
+      %{type: "response.output_text.delta", data: %{"delta" => chunk}}
     end)
   end
 

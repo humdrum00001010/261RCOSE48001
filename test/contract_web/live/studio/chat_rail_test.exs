@@ -384,12 +384,7 @@ defmodule ContractWeb.Live.Studio.Components.ChatRailTest do
                "found #{inspect(jamo_chars)}"
     end
 
-    # The Codex-style redesign dropped the chrome-on-top status pill — the
-    # send button itself toggles between paper-airplane (idle) and stop
-    # (responding) and acts as the visible status indicator. The
-    # `data-status="idle"/"responding"` markers no longer render.
-    @tag :skip
-    test "agent status pill reflects studio_state.agent_run_id" do
+    test "agent status drives the composer action without a header status label" do
       idle_html =
         render_component(ChatRail,
           id: "chat-rail",
@@ -398,19 +393,64 @@ defmodule ContractWeb.Live.Studio.Components.ChatRailTest do
           current_scope: lawyer_scope()
         )
 
-      assert idle_html =~ ~s(data-status="idle")
+      idle_fragment = LazyHTML.from_fragment(idle_html)
+
+      assert [] =
+               idle_fragment
+               |> LazyHTML.query(~s([data-role="agent-status"]))
+               |> LazyHTML.attribute("data-role")
+
+      assert ["chat-send"] =
+               idle_fragment
+               |> LazyHTML.query(~s([data-role="chat-send"]))
+               |> LazyHTML.attribute("data-role")
+
+      refute idle_fragment
+             |> LazyHTML.query(~s([data-role="chat-rail-controls"]))
+             |> LazyHTML.text() =~
+               "대기"
 
       run_id = Ecto.UUID.generate()
+      queued_run_id = Ecto.UUID.generate()
 
       busy_html =
         render_component(ChatRail,
           id: "chat-rail",
           studio_state: %State{default_state() | agent_run_id: run_id},
+          agent_document_status: %{
+            current_attempt: %{id: run_id, status: :running},
+            queue: [%{id: queued_run_id, status: :pending}]
+          },
           streams: %{chat_messages: empty_stream()},
           current_scope: lawyer_scope()
         )
 
-      assert busy_html =~ ~s(data-status="responding")
+      busy_fragment = LazyHTML.from_fragment(busy_html)
+
+      assert [] =
+               busy_fragment
+               |> LazyHTML.query(~s([data-role="agent-status"]))
+               |> LazyHTML.attribute("data-role")
+
+      assert ["chat-stop"] =
+               busy_fragment
+               |> LazyHTML.query(~s([data-role="chat-stop"]))
+               |> LazyHTML.attribute("data-role")
+
+      refute busy_fragment
+             |> LazyHTML.query(~s([data-role="chat-rail-controls"]))
+             |> LazyHTML.text() =~
+               "응답 중"
+
+      assert %{
+               key: :queued,
+               current_run_id: ^run_id,
+               queue_size: 1
+             } =
+               ChatRail.agent_status(%State{default_state() | agent_run_id: run_id}, %{
+                 current_attempt: %{id: run_id, status: :running},
+                 queue: [%{id: queued_run_id, status: :pending}]
+               })
     end
 
     test "operation protocol messages render structured blocks with stable DOM ids" do
@@ -947,6 +987,33 @@ defmodule ContractWeb.Live.Studio.Components.ChatRailTest do
       assert_receive {:captured, "chat.submit", %{"message" => "from mobile"}}
     end
 
+    test "mobile send hook sends on pointerdown without relying on form submit or click",
+         %{conn: conn} do
+      {:ok, _lv, html} =
+        live_isolated(conn, WrapperLive,
+          session: %{
+            "scope" => lawyer_scope(),
+            "layout" => :mobile_full,
+            "test_pid" => self()
+          }
+        )
+
+      source =
+        File.read!(
+          Path.expand("../../../../lib/contract_web/live/studio/components/chat_rail.ex", __DIR__)
+        )
+
+      [_, pointerdown_block] =
+        Regex.run(
+          ~r/this\.onFormPointerDown = \(e\) => \{(?<body>.*?)\n            \}\n\n            this\.onFormClick/s,
+          source
+        )
+
+      assert pointerdown_block =~ "this.send(e)"
+
+      refute html =~ ~s(phx-submit="chat.submit")
+    end
+
     test "case 7 — GrillRail mounts when grill_active? is true", %{conn: conn} do
       {:ok, lv, html} =
         live_isolated(conn, WrapperLive, session: %{"scope" => lawyer_scope()})
@@ -1319,6 +1386,86 @@ defmodule ContractWeb.Live.Studio.Components.ChatRailTest do
       assert details_hidden == "" or details_hidden == "hidden"
       assert html =~ ~s(data-role="agent-reasoning-details-text")
       assert html =~ "Then check the effective date."
+    end
+
+    test "transient reasoning live append targets collapsed row and expanded details content" do
+      agent_run_id = "72514285-c931-4db4-abcf-e1d1c118d552"
+      operation_id = "reasoning-#{agent_run_id}"
+      message_dom_id = "chat-msg-reasoning-#{agent_run_id}"
+
+      html =
+        render_component(ChatRail,
+          id: "chat-rail",
+          studio_state: %State{default_state() | agent_run_id: agent_run_id},
+          streams: %{
+            chat_messages: [
+              {message_dom_id,
+               %{
+                 id: operation_id,
+                 role: :agent,
+                 operation: %{
+                   "id" => operation_id,
+                   "type" => "reasoning",
+                   "title" => "Thinking",
+                   "status" => "running",
+                   "summary" => "",
+                   "details" => %{"text" => ""}
+                 },
+                 transient?: true
+               }}
+            ]
+          },
+          current_scope: lawyer_scope()
+        )
+
+      fragment = LazyHTML.from_fragment(html)
+
+      assert LazyHTML.attribute(LazyHTML.query(fragment, "##{message_dom_id}"), "hidden") == [
+               ""
+             ]
+
+      refute html =~ "생각 중"
+
+      collapsed =
+        fragment
+        |> LazyHTML.query(
+          ~s([data-role="agent-reasoning-text"][data-message-id="#{message_dom_id}"])
+        )
+
+      assert LazyHTML.attribute(collapsed, "data-placeholder") == ["true"]
+
+      details_content =
+        fragment
+        |> LazyHTML.query(
+          ~s(#tool-trace-#{operation_id}-details > [data-role="agent-reasoning-details-content"][data-message-id="#{message_dom_id}"])
+        )
+
+      assert LazyHTML.attribute(details_content, "data-message-id") == [message_dom_id]
+
+      details_text =
+        fragment
+        |> LazyHTML.query(
+          ~s(#tool-trace-#{operation_id}-details [data-role="agent-reasoning-details-text"][data-message-id="#{message_dom_id}"])
+        )
+
+      assert LazyHTML.attribute(details_text, "data-message-id") == [message_dom_id]
+
+      source =
+        File.read!(
+          Path.expand("../../../../lib/contract_web/live/studio/components/chat_rail.ex", __DIR__)
+        )
+
+      [_, handler] =
+        Regex.run(
+          ~r/this\.onReasoningAppend = \(e\) => \{(?<body>.*?)\n            \}\n            window\.addEventListener\("phx:agent_reasoning_append"/s,
+          source
+        )
+
+      assert handler =~ ~s([data-role="agent-reasoning-text"][data-message-id="${id}"])
+      assert handler =~ ~s([data-role="agent-reasoning-details-content"][data-message-id="${id}"])
+      assert handler =~ ~s([data-role="agent-reasoning-details-text"])
+      assert handler =~ ~S|closest('[data-role="chat-message"]')|
+      assert handler =~ ~S|removeAttribute("hidden")|
     end
   end
 end
