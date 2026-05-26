@@ -670,6 +670,33 @@ defmodule Contract.MCPTest do
       assert changes_for(doc_id) |> Enum.map(& &1.id) == before_change_ids
     end
 
+    test "doc.edit_text rejects slot label prefix replacement that would leave old period text",
+         %{
+           owner: owner,
+           route_ref: route_ref
+         } do
+      old_period = "2025년 3월 12일부터 2026년 4월 30일까지 LONG-OLD"
+      label = " ◇ 계약기간  :  "
+      doc_id = doc_with_text(owner, label <> old_period)
+      route_ref = %{route_ref | document_id: doc_id}
+      before_change_ids = changes_for(doc_id) |> Enum.map(& &1.id)
+
+      result =
+        MCP.call_tool(owner, route_ref, "doc.edit_text", %{
+          "sec" => 0,
+          "para" => 0,
+          "off" => 0,
+          "match" => label,
+          "text" => label <> "2026년 1월 1일부터 2027년 12월 31일까지 LONG-FIELD",
+          "base_revision" => 1
+        })
+
+      assert {:error, {:invalid_params, message}} = result
+      assert message =~ "slot label prefix"
+      refute match?({:ok, %{"revision" => _, "change_id" => _}}, result)
+      assert changes_for(doc_id) |> Enum.map(& &1.id) == before_change_ids
+    end
+
     test "doc.edit_text rejects negative paragraph coordinates without committing", %{
       owner: owner,
       doc_id: doc_id,
@@ -813,6 +840,60 @@ defmodule Contract.MCPTest do
 
       # Fields surface as a compact list (id/label/kind/value tuples).
       assert is_list(payload["f"])
+    end
+
+    test "doc.get falls back to typed RHWP editables before the first snapshot", %{
+      owner: owner,
+      route_ref: route_ref
+    } do
+      doc_id =
+        create_doc(owner,
+          title: "Fresh Service Agreement",
+          type_key: "service_agreement_v1"
+        )
+
+      refute Repo.get_by(Contract.RhwpSnapshot.Record, document_id: doc_id)
+      route_ref = %{route_ref | document_id: doc_id}
+
+      assert {:ok, %{"counts" => counts, "f" => fields}} =
+               MCP.call_tool(owner, route_ref, "doc.get", %{})
+
+      assert counts["sec"] > 0
+      assert counts["para"] > 0
+
+      assert ["service_contract_start_date", "계약기간 시작일", "text_field", _] =
+               compact_field(fields, "service_contract_start_date")
+
+      assert ["service_contract_end_date", "계약기간 종료일", "text_field", _] =
+               compact_field(fields, "service_contract_end_date")
+
+      assert ["contract_period", "계약기간", "text_field", _] =
+               compact_field(fields, "contract_period")
+
+      assert {:ok,
+              %{
+                "total" => total,
+                "hits" => [[0, 12, _off, _len, _before, "계약기간", _after, "paragraph"] | _]
+              }} = MCP.call_tool(owner, route_ref, "doc.find", %{"needle" => "계약기간"})
+
+      assert total > 0
+
+      long_period = "2026년 2월 3일부터 2027년 4월 5일까지 CHAT-LONG-MCP"
+
+      assert {:ok, %{"revision" => 2}} =
+               MCP.call_tool(owner, route_ref, "doc.set_field_value", %{
+                 "id" => "contract_period",
+                 "value" => long_period,
+                 "base_revision" => 1
+               })
+
+      assert {:ok, %{"paragraphs" => [[0, 12, "paragraph", paragraph]]}} =
+               MCP.call_tool(owner, route_ref, "doc.read", %{"sec" => 0, "para" => 12})
+
+      assert paragraph =~ long_period
+      assert paragraph |> occurrences("CHAT-LONG-MCP") == 1
+      assert paragraph |> occurrences("까지") == 1
+      refute paragraph =~ "년   월"
     end
 
     test "doc.find returns positional hits with surrounding context", %{
@@ -1166,6 +1247,7 @@ defmodule Contract.MCPTest do
   defp create_doc(%Context{} = ctx, opts) do
     doc_id = Ecto.UUID.generate()
     title = Keyword.fetch!(opts, :title)
+    type_key = Keyword.get(opts, :type_key, "nda_v1")
 
     action = %Command{
       kind: :create_document,
@@ -1174,7 +1256,7 @@ defmodule Contract.MCPTest do
       actor_id: ctx.user.id,
       base_revision: 0,
       idempotency_key: "create-#{doc_id}",
-      payload: %{"title" => title, "type_key" => "nda_v1"}
+      payload: %{"title" => title, "type_key" => type_key}
     }
 
     assert {:ok, %Change{}} = Runtime.apply(ctx, action)
@@ -1494,6 +1576,13 @@ defmodule Contract.MCPTest do
       [^id | _] -> true
       _ -> false
     end)
+  end
+
+  defp occurrences(text, needle) do
+    text
+    |> String.split(needle)
+    |> length()
+    |> Kernel.-(1)
   end
 
   defp doc_mcp_route_ref(%Context{} = ctx, doc_id) do

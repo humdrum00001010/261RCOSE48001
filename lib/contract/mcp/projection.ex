@@ -58,10 +58,10 @@ defmodule Contract.MCP.Projection do
         overlay_post_snapshot_text(snapshot_ir, state.document_id, snap.revision)
 
       nil ->
-        # No rhwp snapshot has been committed yet for this document. There
-        # is no legacy IR fallback — the agent simply sees an empty body
-        # until the browser uploads its first snapshot.
-        empty_ir(state)
+        case from_template_editables(state) do
+          nil -> empty_ir(state)
+          ir -> overlay_post_snapshot_text(ir, state.document_id, 0)
+        end
     end
   end
 
@@ -206,6 +206,213 @@ defmodule Contract.MCP.Projection do
       "sections" => [],
       "fields" => []
     }
+  end
+
+  defp from_template_editables(%State{} = state) do
+    with type_key when is_binary(type_key) and type_key != "" <-
+           map_value(state.projection, "type_key") || map_value(state.projection, "contract_type"),
+         {:ok, spec} <- Contract.ContractTypes.get(type_key),
+         template_path when is_binary(template_path) and template_path != "" <-
+           template_path(spec),
+         {:ok, editables} <- load_editables(template_path),
+         fields = editables |> editable_body_fields() |> add_aggregate_editable_fields(),
+         true <- fields != [] do
+      sections = editable_body_sections(fields)
+
+      %{
+        "title" =>
+          map_value(state.projection, "title") || Contract.ContractTypes.display_name(type_key),
+        "revision" => state.revision,
+        "contract_type" => type_key,
+        "template_path" => template_path,
+        "sections" => sections,
+        "fields" => fields
+      }
+      |> refresh_field_values()
+    else
+      _ -> nil
+    end
+  end
+
+  defp template_path(%{template_hwp_path: path}) when is_binary(path) and path != "", do: path
+  defp template_path(%{template_hwpx_path: path}) when is_binary(path) and path != "", do: path
+  defp template_path(_spec), do: nil
+
+  defp load_editables(template_path) do
+    template_path
+    |> editable_spec_path()
+    |> priv_static_path()
+    |> File.read()
+    |> case do
+      {:ok, body} ->
+        with {:ok, %{"editables" => editables}} when is_list(editables) <- Jason.decode(body) do
+          {:ok, editables}
+        end
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  defp editable_spec_path(template_path) do
+    Regex.replace(~r/\.(hwp|hwpx)$/i, template_path, ".editables.json")
+  end
+
+  defp priv_static_path("/" <> path) do
+    :contract
+    |> :code.priv_dir()
+    |> to_string()
+    |> Path.join("static")
+    |> Path.join(path)
+  end
+
+  defp priv_static_path(path), do: path
+
+  defp editable_body_fields(editables) do
+    editables
+    |> Enum.flat_map(fn editable ->
+      case editable_body_field(editable) do
+        nil -> []
+        field -> [field]
+      end
+    end)
+  end
+
+  defp editable_body_field(%{} = editable) do
+    with %{} = position <- map_value(editable, "position"),
+         %{} = start_pos <- map_value(position, "start"),
+         %{} = end_pos <- map_value(position, "end"),
+         sec when is_integer(sec) <- map_value(start_pos, "sectionIndex"),
+         para when is_integer(para) <- map_value(start_pos, "paragraphIndex"),
+         off_start when is_integer(off_start) <- map_value(start_pos, "charOffset"),
+         off_end when is_integer(off_end) <- map_value(end_pos, "charOffset"),
+         id when is_binary(id) and id != "" <- map_value(editable, "id") do
+      %{
+        "id" => id,
+        "label" => map_value(editable, "label") || id,
+        "kind" => map_value(editable, "kind") || "text_field",
+        "value" => "",
+        "position" => %{
+          "sec" => sec,
+          "para" => para,
+          "off_start" => off_start,
+          "off_end" => max(off_end, off_start)
+        }
+      }
+    else
+      _ -> nil
+    end
+  end
+
+  defp editable_body_field(_editable), do: nil
+
+  defp add_aggregate_editable_fields(fields) do
+    case contract_period_pair(fields) do
+      {%{"position" => start_pos}, %{"position" => end_pos}} ->
+        if start_pos["sec"] == end_pos["sec"] and start_pos["para"] == end_pos["para"] do
+          aggregate = %{
+            "id" => "contract_period",
+            "label" => "계약기간",
+            "kind" => "text_field",
+            "value" => "",
+            "position" => %{
+              "sec" => start_pos["sec"],
+              "para" => start_pos["para"],
+              "off_start" => start_pos["off_start"],
+              "off_end" => end_pos["off_end"] + String.length("까지")
+            }
+          }
+
+          [aggregate | fields]
+        else
+          fields
+        end
+
+      _ ->
+        fields
+    end
+  end
+
+  defp editable_body_sections(fields) do
+    fields
+    |> Enum.group_by(&get_in(&1, ["position", "sec"]))
+    |> Enum.map(fn {sec, section_fields} ->
+      paragraphs =
+        section_fields
+        |> Enum.group_by(&get_in(&1, ["position", "para"]))
+        |> Enum.map(fn {para, paragraph_fields} ->
+          %{
+            "idx" => para,
+            "text" => editable_paragraph_text(paragraph_fields)
+          }
+        end)
+        |> Enum.sort_by(& &1["idx"])
+
+      %{"idx" => sec, "paragraphs" => paragraphs}
+    end)
+    |> Enum.sort_by(& &1["idx"])
+  end
+
+  defp editable_paragraph_text(fields) do
+    text =
+      fields
+      |> Enum.map(&(get_in(&1, ["position", "off_end"]) || 0))
+      |> Enum.max(fn -> 0 end)
+      |> Kernel.+(8)
+      |> blank_text()
+
+    case contract_period_pair(fields) do
+      {start_field, end_field} ->
+        start_pos = start_field["position"]
+        end_pos = end_field["position"]
+
+        text
+        |> put_text(0, " ◇ 계약기간  :")
+        |> put_text(start_pos["off_end"], "부터")
+        |> put_text(end_pos["off_end"], "까지")
+
+      nil ->
+        Enum.reduce(fields, text, fn field, acc ->
+          off =
+            max(
+              (get_in(field, ["position", "off_start"]) || 0) - String.length(field["label"]),
+              0
+            )
+
+          put_text(acc, off, field["label"])
+        end)
+    end
+  end
+
+  defp contract_period_pair(fields) do
+    start_field =
+      Enum.find(fields, fn field ->
+        field["id"] == "service_contract_start_date" or field["label"] == "계약기간 시작일"
+      end)
+
+    end_field =
+      Enum.find(fields, fn field ->
+        field["id"] == "service_contract_end_date" or field["label"] == "계약기간 종료일"
+      end)
+
+    if start_field && end_field, do: {start_field, end_field}
+  end
+
+  defp blank_text(length) when length > 0 do
+    1..length
+    |> Enum.map(fn _ -> " " end)
+    |> Enum.join()
+  end
+
+  defp blank_text(_length), do: ""
+
+  defp put_text(text, off, value) when is_binary(text) and is_integer(off) and is_binary(value) do
+    length = String.length(text)
+    off = clamp(off, 0, length)
+    value_length = String.length(value)
+
+    String.slice(text, 0, off) <>
+      value <> String.slice(text, min(off + value_length, length), length)
   end
 
   defp r2_driver do

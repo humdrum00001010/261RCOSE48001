@@ -1493,7 +1493,17 @@ defmodule Contract.MCP do
         {:error, {:invalid_params, "text must be a string"}}
 
       true ->
-        with :ok <- validate_match_at_position(state, sec, para, off, match, cell_path) do
+        with :ok <- validate_match_at_position(state, sec, para, off, match, cell_path),
+             :ok <-
+               validate_not_slot_label_prefix_replacement(
+                 state,
+                 sec,
+                 para,
+                 off,
+                 match,
+                 text,
+                 cell_path
+               ) do
           ops =
             []
             |> maybe_prepend_delete(sec, para, off, len, cell_path)
@@ -1525,6 +1535,75 @@ defmodule Contract.MCP do
       _ ->
         {:error, {:invalid_params, "paragraph not found at sec=#{sec}, para=#{para}"}}
     end
+  end
+
+  defp validate_not_slot_label_prefix_replacement(
+         _state,
+         _sec,
+         _para,
+         _off,
+         match,
+         _replacement,
+         _cell_path
+       )
+       when not is_binary(match) or match == "",
+       do: :ok
+
+  defp validate_not_slot_label_prefix_replacement(
+         _state,
+         _sec,
+         _para,
+         _off,
+         _match,
+         _replacement,
+         [_ | _cell_path]
+       ),
+       do: :ok
+
+  defp validate_not_slot_label_prefix_replacement(
+         %Runtime.State{} = state,
+         sec,
+         para,
+         off,
+         match,
+         replacement,
+         _cell_path
+       ) do
+    case Contract.MCP.Projection.read(state, sec, para: para) do
+      %{paragraphs: [[^sec, ^para, _kind, paragraph]]} when is_binary(paragraph) ->
+        if unsafe_slot_label_prefix_replacement?(paragraph, off, match, replacement) do
+          {:error,
+           {:invalid_params,
+            "unsafe slot label prefix replacement; use doc.set_field_value when a field id exists, or match the full existing value/paragraph"}}
+        else
+          :ok
+        end
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp unsafe_slot_label_prefix_replacement?(paragraph, off, match, replacement)
+       when is_binary(paragraph) and is_integer(off) and is_binary(match) and
+              is_binary(replacement) do
+    match_len = String.length(match)
+    suffix = String.slice(paragraph, off + match_len, String.length(paragraph))
+
+    slot_label_prefix?(match) and String.trim(suffix) != "" and
+      replacement_starts_with_slot_label?(replacement, match)
+  end
+
+  defp unsafe_slot_label_prefix_replacement?(_paragraph, _off, _match, _replacement), do: false
+
+  defp slot_label_prefix?(text) when is_binary(text) do
+    Regex.match?(~r/(계약\s*기간|시작\s*일|종료\s*일|날짜|일자|지급\s*기일|교부\s*일|납품\s*일자)/u, text)
+  end
+
+  defp replacement_starts_with_slot_label?(replacement, match)
+       when is_binary(replacement) and is_binary(match) do
+    String.starts_with?(replacement, match) or
+      String.starts_with?(String.trim_leading(replacement), String.trim_leading(match))
   end
 
   defp maybe_prepend_delete(ops, sec, para, off, len, cell_path),
