@@ -445,7 +445,8 @@ defmodule ContractWeb.StorageLive do
                 </span>
               </div>
             </div>
-            <div class="pointer-events-none absolute inset-x-0 bottom-0 h-[38px] bg-gradient-to-b from-transparent to-base-100"></div>
+            <div class="pointer-events-none absolute inset-x-0 bottom-0 h-[38px] bg-gradient-to-b from-transparent to-base-100">
+            </div>
         <% end %>
       </div>
 

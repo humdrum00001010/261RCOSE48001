@@ -8,8 +8,10 @@ defmodule ContractWeb.PageControllerTest do
 
   These tests pin the *intent* of the v31 design:
 
-    * Three-block right column (`프로젝트 브리프` / `StudioLive가 먼저
-      묻는 질문` / `조항과 변경 이력으로 남김`).
+    * Three conceptual blocks (`프로젝트 브리프` / `AI가 먼저 묻는 핵심
+      질문` / `조항과 변경 이력으로 남김`). Block copy is customer-facing
+      Korean only — no internal module/class names (e.g. "StudioLive")
+      may appear on this surface.
     * Three-line serif headline (`프로젝트의 맥락을` / `계약 조항으로` /
       `구체화합니다.`).
     * A primary `보관함 열기` CTA that targets `/dashboard` for
@@ -30,18 +32,47 @@ defmodule ContractWeb.PageControllerTest do
       body = conn |> get(~p"/") |> html_response(200)
       assert body =~ "계약기계는 계약서를 쓰기 전에"
       assert body =~ "프로젝트가 실제로 어떻게 진행되는지 묻습니다."
-      assert body =~ "그 답은 조항과 변경 이력으로 남습니다."
+      assert body =~ "그 답이 곧 계약 조항으로 완성됩니다."
     end
 
     test "renders the three conceptual blocks (DESIGN.md §3)", %{conn: conn} do
       body = conn |> get(~p"/") |> html_response(200)
       assert body =~ "프로젝트 브리프"
-      assert body =~ "StudioLive가 먼저 묻는 질문"
-      assert body =~ "조항과 변경 이력으로 남김"
+      assert body =~ "AI가 먼저 묻는 핵심 질문"
+      assert body =~ "답이 곧 계약 조항"
       # And the numbered eyebrows on each block.
       assert body =~ ">01<"
       assert body =~ ">02<"
       assert body =~ ">03<"
+    end
+
+    test "landing pitch is about writing the contract, not logging history", %{conn: conn} do
+      # Product positioning: convenient legal-document writing — NOT a
+      # change-history / audit tool. The "변경 이력" / "기록" /
+      # "흔적" framing belongs in-product (Studio), not on the
+      # landing surface where it confuses what the product does.
+      body = conn |> get(~p"/") |> html_response(200)
+      [_pre, body_block] = String.split(body, ~s(data-landing="v31"), parts: 2)
+      [landing_body, _post] = String.split(body_block, "</main>", parts: 2)
+
+      refute landing_body =~ "변경 이력"
+      refute landing_body =~ "흔적"
+    end
+
+    test "landing copy contains no internal product jargon", %{conn: conn} do
+      # The landing surface speaks the customer's language: no
+      # module / class / function names from the codebase. If you find
+      # yourself wanting to add one, write the customer-facing Korean
+      # phrase instead.
+      body = conn |> get(~p"/") |> html_response(200)
+      [_pre, body_block] = String.split(body, ~s(data-landing="v31"), parts: 2)
+      [landing_body, _post] = String.split(body_block, "</main>", parts: 2)
+
+      refute landing_body =~ "StudioLive"
+      refute landing_body =~ "RunServer"
+      refute landing_body =~ "agent.ask"
+      refute landing_body =~ "commit · diff"
+      refute landing_body =~ "brief.md"
     end
 
     test "renders the eyebrow + secondary CTA anchor", %{conn: conn} do
@@ -95,6 +126,7 @@ defmodule ContractWeb.PageControllerTest do
 
     test "three conceptual blocks each carry the data-landing-block marker", %{conn: conn} do
       body = conn |> get(~p"/") |> html_response(200)
+
       block_count =
         ~r/data-landing-block/
         |> Regex.scan(body)

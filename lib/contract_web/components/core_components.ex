@@ -180,7 +180,8 @@ defmodule ContractWeb.CoreComponents do
       data-status={status_dot_modifier(@status)}
       aria-hidden="true"
       {@rest}
-    ></span>
+    >
+    </span>
     """
   end
 

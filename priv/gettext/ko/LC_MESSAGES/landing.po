@@ -39,8 +39,8 @@ msgstr "계약기계는 계약서를 쓰기 전에"
 
 #: lib/contract_web/controllers/page_html/home.html.heex:83
 #, elixir-autogen, elixir-format
-msgid "StudioLive가 먼저 묻는 질문"
-msgstr "StudioLive가 먼저 묻는 질문"
+msgid "AI가 먼저 묻는 핵심 질문"
+msgstr "AI가 먼저 묻는 핵심 질문"
 
 #: lib/contract_web/controllers/page_html/home.html.heex:73
 #, elixir-autogen, elixir-format
@@ -59,13 +59,13 @@ msgstr "구체화합니다."
 
 #: lib/contract_web/controllers/page_html/home.html.heex:38
 #, elixir-autogen, elixir-format
-msgid "그 답은 조항과 변경 이력으로 남습니다."
-msgstr "그 답은 조항과 변경 이력으로 남습니다."
+msgid "그 답이 곧 계약 조항으로 완성됩니다."
+msgstr "그 답이 곧 계약 조항으로 완성됩니다."
 
 #: lib/contract_web/controllers/page_html/home.html.heex:101
 #, elixir-autogen, elixir-format
-msgid "답변은 수정 범위에 연결되어 조항으로 반영되고, 변경 이력으로 보존됩니다."
-msgstr "답변은 수정 범위에 연결되어 조항으로 반영되고, 변경 이력으로 보존됩니다."
+msgid "답한 결정이 그대로 조항으로 작성됩니다. 문장을 다듬을 필요 없이, 계약서가 완성됩니다."
+msgstr "답한 결정이 그대로 조항으로 작성됩니다. 문장을 다듬을 필요 없이, 계약서가 완성됩니다."
 
 #: lib/contract_web/controllers/page_html/home.html.heex:46
 #: lib/contract_web/controllers/page_html/home.html.heex:53
@@ -75,8 +75,8 @@ msgstr "대시보드 열기"
 
 #: lib/contract_web/controllers/page_html/home.html.heex:87
 #, elixir-autogen, elixir-format
-msgid "에이전트가 빠진 결정을 식별하고 맥락에 맞게 한 번에 하나씩 묻습니다."
-msgstr "에이전트가 빠진 결정을 식별하고 맥락에 맞게 한 번에 하나씩 묻습니다."
+msgid "빠진 결정을 식별해, 맥락에 맞춰 한 번에 하나씩 묻습니다."
+msgstr "빠진 결정을 식별해, 맥락에 맞춰 한 번에 하나씩 묻습니다."
 
 #: lib/contract_web/controllers/page_html/home.html.heex:56
 #, elixir-autogen, elixir-format
@@ -85,8 +85,8 @@ msgstr "작동 방식 보기 →"
 
 #: lib/contract_web/controllers/page_html/home.html.heex:97
 #, elixir-autogen, elixir-format
-msgid "조항과 변경 이력으로 남김"
-msgstr "조항과 변경 이력으로 남김"
+msgid "답이 곧 계약 조항"
+msgstr "답이 곧 계약 조항"
 
 #: lib/contract_web/controllers/page_html/home.html.heex:63
 #, elixir-autogen, elixir-format
