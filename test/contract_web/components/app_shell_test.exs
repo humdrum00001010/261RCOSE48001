@@ -99,13 +99,13 @@ defmodule ContractWeb.Components.AppShellTest do
 
       html =
         render_component(&AppShell.app_shell/1,
-          primary_nav_label: "프로젝트",
-          primary_nav_path: "/projects/project-id",
+          primary_nav_label: "패킷",
+          primary_nav_path: "/packets/packet-id",
           inner_block: inner_block
         )
 
-      assert html =~ ~s(href="/projects/project-id")
-      assert html =~ "프로젝트"
+      assert html =~ ~s(href="/packets/packet-id")
+      assert html =~ "패킷"
     end
 
     test "v33 icon source assets are tracked outside generated static assets" do

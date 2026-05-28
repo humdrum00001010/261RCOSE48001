@@ -77,7 +77,7 @@ defmodule ContractWeb.StudioLive do
   alias Contract.Command
   alias Contract.ContractTypes
   alias Contract.Documents
-  alias Contract.Projects
+  alias Contract.Packets
   alias Contract.Studio
   alias ContractWeb.Components.Breadcrumbs
   alias ContractWeb.Components.CommandPalette
@@ -88,7 +88,7 @@ defmodule ContractWeb.StudioLive do
   @impl true
   def mount(params, _session, socket) do
     scope = socket.assigns.current_scope
-    project_id = project_id_from_params(scope, params)
+    packet_id = packet_id_from_params(scope, params)
 
     case Studio.open(scope, params) do
       {:ok, {studio_state, projection}} ->
@@ -106,7 +106,7 @@ defmodule ContractWeb.StudioLive do
         socket =
           socket
           |> assign(:current_scope, scope)
-          |> assign(:project_id, project_id)
+          |> assign(:packet_id, packet_id)
           |> assign(:studio_state, studio_state)
           |> assign_projection(projection)
           |> assign_current_document_context(scope, studio_state)
@@ -145,11 +145,11 @@ defmodule ContractWeb.StudioLive do
         socket =
           socket
           |> put_flash(:error, "Could not load Studio: #{inspect(reason)}")
-          |> assign(:project_id, nil)
+          |> assign(:packet_id, nil)
           |> assign(:studio_state, %Contract.Studio.State{mode: :no_document})
           |> assign_projection(empty_projection())
           |> assign(:current_document, nil)
-          |> assign(:document_project, nil)
+          |> assign(:document_packet, nil)
           |> assign(:chat_thread, nil)
           |> assign(:agent_document_status, nil)
           |> assign(:rhwp_snapshot, nil)
@@ -511,7 +511,7 @@ defmodule ContractWeb.StudioLive do
             {:noreply, push_navigate(socket, to: created_document_path(socket, document_id))}
 
           {:error, _reason} ->
-            {:noreply, put_flash(socket, :error, "프로젝트에 문서를 연결할 수 없습니다.")}
+            {:noreply, put_flash(socket, :error, "패킷에 문서를 연결할 수 없습니다.")}
         end
 
       {:error, _} ->
@@ -526,12 +526,12 @@ defmodule ContractWeb.StudioLive do
   defp blank_document_title(_type_key), do: "새 계약서"
 
   defp attach_created_document(socket, document_id) do
-    case socket.assigns[:project_id] do
-      project_id when is_binary(project_id) ->
-        case Projects.attach_document(socket.assigns.current_scope, project_id, document_id, %{
+    case socket.assigns[:packet_id] do
+      packet_id when is_binary(packet_id) ->
+        case Packets.attach_document(socket.assigns.current_scope, packet_id, document_id, %{
                role: "primary"
              }) do
-          {:ok, _project_document} -> :ok
+          {:ok, _packet_document} -> :ok
           {:error, _reason} = error -> error
         end
 
@@ -541,20 +541,20 @@ defmodule ContractWeb.StudioLive do
   end
 
   defp created_document_path(socket, document_id) do
-    case socket.assigns[:project_id] do
-      project_id when is_binary(project_id) -> ~p"/documents/#{document_id}"
+    case socket.assigns[:packet_id] do
+      id when is_binary(id) -> ~p"/documents/#{document_id}"
       _ -> ~p"/studio/#{document_id}"
     end
   end
 
-  defp project_id_from_params(scope, %{"project_id" => project_id}) when is_binary(project_id) do
-    case Projects.get_project(scope, project_id) do
-      {:ok, _project} -> project_id
+  defp packet_id_from_params(scope, %{"packet_id" => packet_id}) when is_binary(packet_id) do
+    case Packets.get_packet(scope, packet_id) do
+      {:ok, _packet} -> packet_id
       _ -> nil
     end
   end
 
-  defp project_id_from_params(_scope, _params), do: nil
+  defp packet_id_from_params(_scope, _params), do: nil
 
   # ----------------------------------------------------------------------------
   # handle_info/2
@@ -1382,9 +1382,9 @@ defmodule ContractWeb.StudioLive do
     <% else %>
       <.app_shell
         current_scope={@current_scope}
-        active={app_shell_nav_label(@document_project)}
-        primary_nav_label={app_shell_nav_label(@document_project)}
-        primary_nav_path={app_shell_nav_path(@document_project)}
+        active={app_shell_nav_label(@document_packet)}
+        primary_nav_label={app_shell_nav_label(@document_packet)}
+        primary_nav_path={app_shell_nav_path(@document_packet)}
       >
         <main
           id="studio-root"
@@ -1883,28 +1883,28 @@ defmodule ContractWeb.StudioLive do
   defp assign_current_document_context(socket, scope, state) do
     socket
     |> assign(:current_document, current_document(scope, state))
-    |> assign(:document_project, project_for_current_document(scope, state))
+    |> assign(:document_packet, packet_for_current_document(scope, state))
   end
 
-  defp project_for_current_document(scope, %Contract.Studio.State{
+  defp packet_for_current_document(scope, %Contract.Studio.State{
          selected_document_id: document_id
        })
        when is_binary(document_id) do
-    case Projects.project_for_document(scope, document_id) do
-      {:ok, project} -> project
+    case Packets.packet_for_document(scope, document_id) do
+      {:ok, packet} -> packet
       _ -> nil
     end
   end
 
-  defp project_for_current_document(_scope, _state), do: nil
+  defp packet_for_current_document(_scope, _state), do: nil
 
-  defp app_shell_nav_label(%Contract.Projects.Project{}), do: "프로젝트"
-  defp app_shell_nav_label(_project), do: "보관함"
+  defp app_shell_nav_label(%Contract.Packets.Packet{}), do: "패킷"
+  defp app_shell_nav_label(_packet), do: "보관함"
 
-  defp app_shell_nav_path(%Contract.Projects.Project{id: project_id}),
-    do: ~p"/projects/#{project_id}"
+  defp app_shell_nav_path(%Contract.Packets.Packet{id: packet_id}),
+    do: ~p"/packets/#{packet_id}"
 
-  defp app_shell_nav_path(_project), do: ~p"/storage"
+  defp app_shell_nav_path(_packet), do: ~p"/storage"
 
   defp list_other_documents(scope, %{selected_document_id: current_id}) do
     scope
@@ -2847,7 +2847,7 @@ defmodule ContractWeb.StudioLive do
   # with role `"system"` so the visible rail stays empty until the agent's
   # first turn lands.
   # ---------------------------------------------------------------------------
-  @grill_seed_message "GRILL_SEED: 사용자에게 인사하고, 이 계약 문서를 한 단락으로 요약한 뒤, 프로젝트 맥락을 묻는 1-3개의 한국어 질문을 한 메시지에 담아 시작하세요."
+  @grill_seed_message "GRILL_SEED: 사용자에게 인사하고, 이 계약 문서를 한 단락으로 요약한 뒤, 패킷 맥락을 묻는 1-3개의 한국어 질문을 한 메시지에 담아 시작하세요."
 
   defp maybe_dispatch_grill_seed(socket, visible_messages) do
     if should_dispatch_grill_seed?(socket, visible_messages) do

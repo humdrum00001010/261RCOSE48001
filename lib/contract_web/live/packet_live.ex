@@ -1,33 +1,33 @@
-defmodule ContractWeb.ProjectLive do
+defmodule ContractWeb.PacketLive do
   @moduledoc """
-  Authenticated project surface.
+  Authenticated packet surface.
 
-  Projects sit above documents. This LiveView only handles project UI:
+  Packets sit above documents. This LiveView only handles packet UI:
   listing, creating, opening, and attaching/detaching existing documents.
   """
   use ContractWeb, :live_view
 
-  alias Contract.Projects
+  alias Contract.Packets
 
   @impl true
   def mount(_params, _session, socket) do
     {:ok,
      socket
-     |> assign(:project, nil)
+     |> assign(:packet, nil)
      |> assign(:attached_documents, [])
      |> assign(:deleting_document, nil)}
   end
 
   @impl true
   def handle_params(params, _uri, socket) do
-    {:noreply, load_project_detail(socket, params["project_id"])}
+    {:noreply, load_packet_detail(socket, params["packet_id"])}
   end
 
   @impl true
   def handle_event("create_document", _params, socket) do
-    project_id = field(socket.assigns.project, :id)
+    packet_id = field(socket.assigns.packet, :id)
 
-    {:noreply, push_navigate(socket, to: ~p"/studio?project_id=#{project_id}")}
+    {:noreply, push_navigate(socket, to: ~p"/studio?packet_id=#{packet_id}")}
   end
 
   def handle_event("open_document_settings", %{"id" => document_id}, socket) do
@@ -45,15 +45,15 @@ defmodule ContractWeb.ProjectLive do
   end
 
   def handle_event("delete_document", _params, socket) do
-    project_id = field(socket.assigns.project, :id)
+    packet_id = field(socket.assigns.packet, :id)
     document_id = field(socket.assigns.deleting_document, :id)
 
-    case Projects.detach_document(socket.assigns.current_scope, project_id, document_id) do
+    case Packets.detach_document(socket.assigns.current_scope, packet_id, document_id) do
       :ok ->
         {:noreply,
          socket
          |> assign(:deleting_document, nil)
-         |> load_project_detail(project_id)}
+         |> load_packet_detail(packet_id)}
 
       {:error, _reason} ->
         {:noreply, put_flash(socket, :error, "문서를 제거할 수 없습니다.")}
@@ -65,12 +65,12 @@ defmodule ContractWeb.ProjectLive do
     ~H"""
     <Layouts.app flash={@flash} current_scope={@current_scope} variant="default">
       <main
-        id="projects-root"
-        data-projects="root"
+        id="packets-root"
+        data-packets="root"
         class="flex flex-col gap-6 py-6 text-base-content sm:py-10"
       >
-        <.project_detail
-          project={@project}
+        <.packet_detail
+          packet={@packet}
           attached_documents={@attached_documents}
           deleting_document={@deleting_document}
         />
@@ -79,21 +79,21 @@ defmodule ContractWeb.ProjectLive do
     """
   end
 
-  attr :project, :any, required: true
+  attr :packet, :any, required: true
   attr :attached_documents, :list, required: true
   attr :deleting_document, :any, required: true
 
-  def project_detail(assigns) do
+  def packet_detail(assigns) do
     ~H"""
     <header class="flex items-center justify-between gap-3">
       <div class="space-y-1">
         <h1 class="m-0 text-[clamp(22px,4vw,28px)] font-semibold tracking-tight">
-          {project_title(@project)}
+          {packet_title(@packet)}
         </h1>
       </div>
 
       <button
-        id="project-new-document"
+        id="packet-new-document"
         type="button"
         phx-click="create_document"
         class="btn btn-primary btn-sm"
@@ -102,9 +102,9 @@ defmodule ContractWeb.ProjectLive do
       </button>
     </header>
 
-    <section id="project-documents-panel" class="space-y-3">
+    <section id="packet-documents-panel" class="space-y-3">
       <.table
-        id="project-documents-table"
+        id="packet-documents-table"
         rows={@attached_documents}
         row_id={fn document -> "attached-document-#{document_id(document)}" end}
         row_click={fn document -> JS.navigate(~p"/documents/#{document_id(document)}") end}
@@ -130,7 +130,7 @@ defmodule ContractWeb.ProjectLive do
 
       <p
         :if={@attached_documents == []}
-        id="project-documents-empty"
+        id="packet-documents-empty"
         class="py-6 text-center text-sm text-base-content/55"
       >
         연결된 문서가 없습니다.
@@ -159,10 +159,10 @@ defmodule ContractWeb.ProjectLive do
         </div>
 
         <p class="mt-4 text-sm text-base-content/70">
-          {document_title(@deleting_document)} 항목을 이 프로젝트에서 제거합니다.
+          {document_title(@deleting_document)} 항목을 이 패킷에서 제거합니다.
         </p>
         <p class="mt-2 text-sm text-base-content/60">
-          다른 프로젝트에 연결되어 있지 않으면 보관 처리됩니다.
+          다른 패킷에 연결되어 있지 않으면 보관 처리됩니다.
         </p>
 
         <div class="mt-5 flex items-center justify-end gap-2">
@@ -191,33 +191,33 @@ defmodule ContractWeb.ProjectLive do
     """
   end
 
-  defp load_project_detail(socket, project_id) when is_binary(project_id) do
-    case fetch_project(socket.assigns.current_scope, project_id) do
-      {:ok, project} ->
+  defp load_packet_detail(socket, packet_id) when is_binary(packet_id) do
+    case fetch_packet(socket.assigns.current_scope, packet_id) do
+      {:ok, packet} ->
         socket
-        |> assign(:page_title, project_title(project))
-        |> assign(:project, project)
-        |> assign(:attached_documents, attached_documents(project))
+        |> assign(:page_title, packet_title(packet))
+        |> assign(:packet, packet)
+        |> assign(:attached_documents, attached_documents(packet))
 
       {:error, _reason} ->
         socket
-        |> put_flash(:error, "프로젝트를 찾을 수 없습니다.")
+        |> put_flash(:error, "패킷을 찾을 수 없습니다.")
         |> push_navigate(to: ~p"/storage")
     end
   end
 
-  defp fetch_project(scope, project_id) do
-    case Projects.get_project(scope, project_id) do
-      {:ok, project} -> {:ok, project}
+  defp fetch_packet(scope, packet_id) do
+    case Packets.get_packet(scope, packet_id) do
+      {:ok, packet} -> {:ok, packet}
       {:error, reason} -> {:error, reason}
       nil -> {:error, :not_found}
-      project -> {:ok, project}
+      packet -> {:ok, packet}
     end
   end
 
-  defp attached_documents(project) do
-    project
-    |> field(:documents, field(project, :attached_documents, []))
+  defp attached_documents(packet) do
+    packet
+    |> field(:documents, field(packet, :attached_documents, []))
     |> case do
       %Ecto.Association.NotLoaded{} -> []
       documents when is_list(documents) -> documents
@@ -225,7 +225,7 @@ defmodule ContractWeb.ProjectLive do
     end
   end
 
-  defp project_title(project), do: field(project, :title, "제목 없는 프로젝트")
+  defp packet_title(packet), do: field(packet, :title, "제목 없는 패킷")
 
   defp document_id(document), do: field(document, :id)
   defp document_title(document), do: field(document, :title, "제목 없는 문서")

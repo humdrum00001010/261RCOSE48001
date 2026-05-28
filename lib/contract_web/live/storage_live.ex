@@ -1,146 +1,147 @@
 defmodule ContractWeb.StorageLive do
   @moduledoc """
-  Authenticated project library for 보관함.
+  Authenticated packet library for 보관함.
 
-  Storage is the project entry point: create/open projects. Documents remain
-  edited at `/documents/:id` and are managed from `/projects/:project_id`.
+  Storage is the packet entry point: create/open packets. Documents remain
+  edited at `/documents/:id` and are managed from `/packets/:packet_id`.
   """
   use ContractWeb, :live_view
 
-  alias Contract.Projects
+  alias Contract.Packets
+  alias Contract.Packets.Packet
 
   @impl true
   def mount(_params, _session, socket) do
     {:ok,
      socket
      |> assign(:page_title, dgettext("storage", "Storage"))
-     |> assign(:project_form, project_form())
+     |> assign(:packet_form, packet_form())
      |> assign(:show_create_modal, false)
-     |> assign(:editing_project, nil)
-     |> assign(:edit_project_form, project_form())
-     |> assign(:deleting_project, nil)
-     |> load_projects()}
+     |> assign(:editing_packet, nil)
+     |> assign(:edit_packet_form, packet_form())
+     |> assign(:deleting_packet, nil)
+     |> load_packets()}
   end
 
   @impl true
-  def handle_event("open_create_project_modal", _params, socket) do
+  def handle_event("open_create_packet_modal", _params, socket) do
     {:noreply, assign(socket, :show_create_modal, true)}
   end
 
-  def handle_event("close_create_project_modal", _params, socket) do
+  def handle_event("close_create_packet_modal", _params, socket) do
     {:noreply,
      socket
-     |> assign(:project_form, project_form())
+     |> assign(:packet_form, packet_form())
      |> assign(:show_create_modal, false)}
   end
 
-  def handle_event("validate_project", %{"project" => project_params}, socket) do
-    {:noreply, assign(socket, :project_form, project_form(project_params))}
+  def handle_event("validate_packet", %{"packet" => packet_params}, socket) do
+    {:noreply, assign(socket, :packet_form, packet_form(packet_params))}
   end
 
-  def handle_event("create_project", %{"project" => project_params}, socket) do
-    attrs = compact_blank_attrs(project_params)
+  def handle_event("create_packet", %{"packet" => packet_params}, socket) do
+    attrs = compact_blank_attrs(packet_params)
 
-    case Projects.create_project(socket.assigns.current_scope, attrs) do
-      {:ok, project} ->
-        {:noreply, push_navigate(socket, to: ~p"/projects/#{project_id(project)}")}
+    case Packets.create_packet(socket.assigns.current_scope, attrs) do
+      {:ok, packet} ->
+        {:noreply, push_navigate(socket, to: ~p"/packets/#{packet_id(packet)}")}
 
       {:error, %Ecto.Changeset{} = changeset} ->
         {:noreply,
          socket
-         |> assign(:project_form, to_form(changeset, action: :insert))
+         |> assign(:packet_form, to_form(changeset, action: :insert))
          |> assign(:show_create_modal, true)}
 
       {:error, _reason} ->
-        {:noreply, put_flash(socket, :error, "프로젝트를 만들 수 없습니다.")}
+        {:noreply, put_flash(socket, :error, "패킷을 만들 수 없습니다.")}
     end
   end
 
-  def handle_event("open_project_settings", %{"id" => project_id}, socket) do
-    case Projects.get_project(socket.assigns.current_scope, project_id) do
-      {:ok, project} ->
+  def handle_event("open_packet_settings", %{"id" => packet_id}, socket) do
+    case Packets.get_packet(socket.assigns.current_scope, packet_id) do
+      {:ok, packet} ->
         {:noreply,
          socket
-         |> assign(:editing_project, project)
-         |> assign(:edit_project_form, project_form(%{"title" => project_title(project)}))}
+         |> assign(:editing_packet, packet)
+         |> assign(:edit_packet_form, packet_form(%{"title" => packet_title(packet)}))}
 
       {:error, _reason} ->
-        {:noreply, put_flash(socket, :error, "프로젝트를 찾을 수 없습니다.")}
+        {:noreply, put_flash(socket, :error, "패킷을 찾을 수 없습니다.")}
     end
   end
 
-  def handle_event("close_project_settings", _params, socket) do
+  def handle_event("close_packet_settings", _params, socket) do
     {:noreply,
      socket
-     |> assign(:editing_project, nil)
-     |> assign(:edit_project_form, project_form())}
+     |> assign(:editing_packet, nil)
+     |> assign(:edit_packet_form, packet_form())}
   end
 
-  def handle_event("validate_edit_project", %{"project" => project_params}, socket) do
-    {:noreply, assign(socket, :edit_project_form, project_form(project_params))}
+  def handle_event("validate_edit_packet", %{"packet" => packet_params}, socket) do
+    {:noreply, assign(socket, :edit_packet_form, packet_form(packet_params))}
   end
 
-  def handle_event("update_project", %{"project" => project_params}, socket) do
-    case socket.assigns.editing_project do
-      %Contract.Projects.Project{} = project ->
-        case Projects.update_project(
+  def handle_event("update_packet", %{"packet" => packet_params}, socket) do
+    case socket.assigns.editing_packet do
+      %Packet{} = packet ->
+        case Packets.update_packet(
                socket.assigns.current_scope,
-               project,
-               project_title_attrs(project_params)
+               packet,
+               packet_title_attrs(packet_params)
              ) do
-          {:ok, _project} ->
+          {:ok, _packet} ->
             {:noreply,
              socket
-             |> assign(:editing_project, nil)
-             |> assign(:edit_project_form, project_form())
-             |> load_projects()}
+             |> assign(:editing_packet, nil)
+             |> assign(:edit_packet_form, packet_form())
+             |> load_packets()}
 
           {:error, %Ecto.Changeset{} = changeset} ->
-            {:noreply, assign(socket, :edit_project_form, to_form(changeset, action: :update))}
+            {:noreply, assign(socket, :edit_packet_form, to_form(changeset, action: :update))}
 
           {:error, _reason} ->
-            {:noreply, put_flash(socket, :error, "프로젝트를 수정할 수 없습니다.")}
+            {:noreply, put_flash(socket, :error, "패킷을 수정할 수 없습니다.")}
         end
 
       _ ->
-        {:noreply, put_flash(socket, :error, "프로젝트를 찾을 수 없습니다.")}
+        {:noreply, put_flash(socket, :error, "패킷을 찾을 수 없습니다.")}
     end
   end
 
-  def handle_event("open_delete_project", %{"id" => project_id}, socket) do
-    case Projects.get_project(socket.assigns.current_scope, project_id) do
-      {:ok, project} ->
+  def handle_event("open_delete_packet", %{"id" => packet_id}, socket) do
+    case Packets.get_packet(socket.assigns.current_scope, packet_id) do
+      {:ok, packet} ->
         {:noreply,
          socket
-         |> assign(:editing_project, nil)
-         |> assign(:edit_project_form, project_form())
-         |> assign(:deleting_project, project)}
+         |> assign(:editing_packet, nil)
+         |> assign(:edit_packet_form, packet_form())
+         |> assign(:deleting_packet, packet)}
 
       {:error, _reason} ->
-        {:noreply, put_flash(socket, :error, "프로젝트를 찾을 수 없습니다.")}
+        {:noreply, put_flash(socket, :error, "패킷을 찾을 수 없습니다.")}
     end
   end
 
-  def handle_event("close_delete_project", _params, socket) do
-    {:noreply, assign(socket, :deleting_project, nil)}
+  def handle_event("close_delete_packet", _params, socket) do
+    {:noreply, assign(socket, :deleting_packet, nil)}
   end
 
-  def handle_event("delete_project", _params, socket) do
-    case socket.assigns.deleting_project do
-      %Contract.Projects.Project{} = project ->
-        case Projects.delete_project(socket.assigns.current_scope, project) do
-          {:ok, _project} ->
+  def handle_event("delete_packet", _params, socket) do
+    case socket.assigns.deleting_packet do
+      %Packet{} = packet ->
+        case Packets.delete_packet(socket.assigns.current_scope, packet) do
+          {:ok, _packet} ->
             {:noreply,
              socket
-             |> assign(:deleting_project, nil)
-             |> load_projects()}
+             |> assign(:deleting_packet, nil)
+             |> load_packets()}
 
           {:error, _reason} ->
-            {:noreply, put_flash(socket, :error, "프로젝트를 삭제할 수 없습니다.")}
+            {:noreply, put_flash(socket, :error, "패킷을 삭제할 수 없습니다.")}
         end
 
       _ ->
-        {:noreply, put_flash(socket, :error, "프로젝트를 찾을 수 없습니다.")}
+        {:noreply, put_flash(socket, :error, "패킷을 찾을 수 없습니다.")}
     end
   end
 
@@ -158,9 +159,9 @@ defmodule ContractWeb.StorageLive do
             보관함
           </h1>
           <button
-            id="open-project-create-modal"
+            id="open-packet-create-modal"
             type="button"
-            phx-click="open_create_project_modal"
+            phx-click="open_create_packet_modal"
             class="btn btn-primary btn-sm"
           >
             생성
@@ -168,24 +169,24 @@ defmodule ContractWeb.StorageLive do
         </header>
 
         <.table
-          id="projects-table"
-          rows={@projects}
-          row_id={fn project -> "project-row-#{project_id(project)}" end}
-          row_click={fn project -> JS.navigate(~p"/projects/#{project_id(project)}") end}
+          id="packets-table"
+          rows={@packets}
+          row_id={fn packet -> "packet-row-#{packet_id(packet)}" end}
+          row_click={fn packet -> JS.navigate(~p"/packets/#{packet_id(packet)}") end}
         >
-          <:col :let={project} label="프로젝트">
-            {project_title(project)}
+          <:col :let={packet} label="패킷">
+            {packet_title(packet)}
           </:col>
-          <:col :let={project} label="수정일">{format_date(field(project, :updated_at))}</:col>
-          <:action :let={project}>
-            <div id={"project-actions-#{project_id(project)}"} class="flex items-center gap-1">
+          <:col :let={packet} label="수정일">{format_date(field(packet, :updated_at))}</:col>
+          <:action :let={packet}>
+            <div id={"packet-actions-#{packet_id(packet)}"} class="flex items-center gap-1">
               <button
-                id={"project-settings-#{project_id(project)}"}
+                id={"packet-settings-#{packet_id(packet)}"}
                 type="button"
-                phx-click="open_project_settings"
-                phx-value-id={project_id(project)}
+                phx-click="open_packet_settings"
+                phx-value-id={packet_id(packet)}
                 class="btn btn-ghost btn-xs btn-square"
-                aria-label="프로젝트 설정"
+                aria-label="패킷 설정"
               >
                 <.icon name="hero-cog-6-tooth" class="size-4" />
               </button>
@@ -194,27 +195,27 @@ defmodule ContractWeb.StorageLive do
         </.table>
 
         <p
-          :if={@projects == []}
-          id="projects-empty"
+          :if={@packets == []}
+          id="packets-empty"
           class="py-6 text-center text-sm text-base-content/55"
         >
-          아직 프로젝트가 없습니다.
+          아직 패킷이 없습니다.
         </p>
 
         <div
           :if={@show_create_modal}
-          id="project-create-modal"
+          id="packet-create-modal"
           class="modal modal-open"
-          phx-window-keydown="close_create_project_modal"
+          phx-window-keydown="close_create_packet_modal"
           phx-key="escape"
         >
           <div class="modal-box max-w-md">
             <div class="flex items-center justify-between gap-3">
-              <h2 class="text-base font-semibold">프로젝트 생성</h2>
+              <h2 class="text-base font-semibold">패킷 생성</h2>
               <button
-                id="close-project-create-modal"
+                id="close-packet-create-modal"
                 type="button"
-                phx-click="close_create_project_modal"
+                phx-click="close_create_packet_modal"
                 class="btn btn-ghost btn-sm btn-square"
                 aria-label="닫기"
               >
@@ -223,28 +224,28 @@ defmodule ContractWeb.StorageLive do
             </div>
 
             <.form
-              for={@project_form}
-              id="project-create-form"
-              phx-change="validate_project"
-              phx-submit="create_project"
+              for={@packet_form}
+              id="packet-create-form"
+              phx-change="validate_packet"
+              phx-submit="create_packet"
               class="mt-4 space-y-4"
             >
               <.input
-                field={@project_form[:title]}
+                field={@packet_form[:title]}
                 type="text"
-                label="프로젝트명"
+                label="패킷명"
                 placeholder="예: 공급계약 검토"
                 required
               />
               <div class="flex items-center justify-end gap-2">
                 <button
                   type="button"
-                  phx-click="close_create_project_modal"
+                  phx-click="close_create_packet_modal"
                   class="btn btn-ghost btn-sm"
                 >
                   취소
                 </button>
-                <button id="project-create-submit" type="submit" class="btn btn-primary btn-sm">
+                <button id="packet-create-submit" type="submit" class="btn btn-primary btn-sm">
                   생성
                 </button>
               </div>
@@ -252,7 +253,7 @@ defmodule ContractWeb.StorageLive do
           </div>
           <button
             type="button"
-            phx-click="close_create_project_modal"
+            phx-click="close_create_packet_modal"
             class="modal-backdrop"
             aria-label="닫기"
           >
@@ -261,19 +262,19 @@ defmodule ContractWeb.StorageLive do
         </div>
 
         <div
-          :if={@editing_project}
-          id="project-settings-modal"
+          :if={@editing_packet}
+          id="packet-settings-modal"
           class="modal modal-open"
-          phx-window-keydown="close_project_settings"
+          phx-window-keydown="close_packet_settings"
           phx-key="escape"
         >
           <div class="modal-box max-w-md">
             <div class="flex items-center justify-between gap-3">
-              <h2 class="text-base font-semibold">프로젝트 설정</h2>
+              <h2 class="text-base font-semibold">패킷 설정</h2>
               <button
-                id="close-project-settings-modal"
+                id="close-packet-settings-modal"
                 type="button"
-                phx-click="close_project_settings"
+                phx-click="close_packet_settings"
                 class="btn btn-ghost btn-sm btn-square"
                 aria-label="닫기"
               >
@@ -282,27 +283,27 @@ defmodule ContractWeb.StorageLive do
             </div>
 
             <.form
-              for={@edit_project_form}
-              id="project-edit-form"
-              phx-change="validate_edit_project"
-              phx-submit="update_project"
+              for={@edit_packet_form}
+              id="packet-edit-form"
+              phx-change="validate_edit_packet"
+              phx-submit="update_packet"
               class="mt-4 space-y-4"
             >
               <.input
-                field={@edit_project_form[:title]}
+                field={@edit_packet_form[:title]}
                 type="text"
-                label="프로젝트명"
+                label="패킷명"
                 required
               />
               <div class="flex items-center justify-end gap-2">
                 <button
                   type="button"
-                  phx-click="close_project_settings"
+                  phx-click="close_packet_settings"
                   class="btn btn-ghost btn-sm"
                 >
                   취소
                 </button>
-                <button id="project-edit-submit" type="submit" class="btn btn-primary btn-sm">
+                <button id="packet-edit-submit" type="submit" class="btn btn-primary btn-sm">
                   저장
                 </button>
               </div>
@@ -311,14 +312,14 @@ defmodule ContractWeb.StorageLive do
             <div class="mt-5 border-t border-base-300 pt-4">
               <h3 class="text-sm font-semibold text-error">삭제</h3>
               <p class="mt-1 text-sm text-base-content/65">
-                프로젝트만 삭제합니다. 연결된 문서는 삭제되지 않습니다.
+                패킷만 삭제합니다. 연결된 문서는 삭제되지 않습니다.
               </p>
               <div class="mt-3 flex justify-end">
                 <button
-                  id="project-settings-delete"
+                  id="packet-settings-delete"
                   type="button"
-                  phx-click="open_delete_project"
-                  phx-value-id={project_id(@editing_project)}
+                  phx-click="open_delete_packet"
+                  phx-value-id={packet_id(@editing_packet)}
                   class="btn btn-error btn-sm"
                 >
                   삭제 설정
@@ -328,7 +329,7 @@ defmodule ContractWeb.StorageLive do
           </div>
           <button
             type="button"
-            phx-click="close_project_settings"
+            phx-click="close_packet_settings"
             class="modal-backdrop"
             aria-label="닫기"
           >
@@ -337,19 +338,19 @@ defmodule ContractWeb.StorageLive do
         </div>
 
         <div
-          :if={@deleting_project}
-          id="project-delete-modal"
+          :if={@deleting_packet}
+          id="packet-delete-modal"
           class="modal modal-open"
-          phx-window-keydown="close_delete_project"
+          phx-window-keydown="close_delete_packet"
           phx-key="escape"
         >
           <div class="modal-box max-w-md">
             <div class="flex items-center justify-between gap-3">
-              <h2 class="text-base font-semibold">프로젝트 삭제</h2>
+              <h2 class="text-base font-semibold">패킷 삭제</h2>
               <button
-                id="close-project-delete-modal"
+                id="close-packet-delete-modal"
                 type="button"
-                phx-click="close_delete_project"
+                phx-click="close_delete_packet"
                 class="btn btn-ghost btn-sm btn-square"
                 aria-label="닫기"
               >
@@ -358,17 +359,17 @@ defmodule ContractWeb.StorageLive do
             </div>
 
             <p class="mt-4 text-sm text-base-content/70">
-              {project_title(@deleting_project)} 프로젝트를 삭제합니다. 연결된 문서는 삭제되지 않습니다.
+              {packet_title(@deleting_packet)} 패킷을 삭제합니다. 연결된 문서는 삭제되지 않습니다.
             </p>
 
             <div class="mt-5 flex items-center justify-end gap-2">
-              <button type="button" phx-click="close_delete_project" class="btn btn-ghost btn-sm">
+              <button type="button" phx-click="close_delete_packet" class="btn btn-ghost btn-sm">
                 취소
               </button>
               <button
-                id="project-delete-confirm"
+                id="packet-delete-confirm"
                 type="button"
-                phx-click="delete_project"
+                phx-click="delete_packet"
                 class="btn btn-error btn-sm"
               >
                 삭제
@@ -377,7 +378,7 @@ defmodule ContractWeb.StorageLive do
           </div>
           <button
             type="button"
-            phx-click="close_delete_project"
+            phx-click="close_delete_packet"
             class="modal-backdrop"
             aria-label="닫기"
           >
@@ -389,16 +390,16 @@ defmodule ContractWeb.StorageLive do
     """
   end
 
-  defp load_projects(socket) do
+  defp load_packets(socket) do
     assign(
       socket,
-      :projects,
-      Projects.list_projects_for_scope(socket.assigns.current_scope)
+      :packets,
+      Packets.list_packets_for_scope(socket.assigns.current_scope)
     )
   end
 
-  defp project_form(attrs \\ %{"title" => ""}) do
-    to_form(attrs, as: :project)
+  defp packet_form(attrs \\ %{"title" => ""}) do
+    to_form(attrs, as: :packet)
   end
 
   defp compact_blank_attrs(attrs) do
@@ -408,14 +409,14 @@ defmodule ContractWeb.StorageLive do
     |> Map.new()
   end
 
-  defp project_title_attrs(attrs) do
+  defp packet_title_attrs(attrs) do
     Map.take(attrs, ["title"])
   end
 
   defp blank?(value), do: value in [nil, ""]
 
-  defp project_id(project), do: field(project, :id)
-  defp project_title(project), do: field(project, :title, "제목 없는 프로젝트")
+  defp packet_id(packet), do: field(packet, :id)
+  defp packet_title(packet), do: field(packet, :title, "제목 없는 패킷")
 
   defp format_date(nil), do: ""
   defp format_date(%DateTime{} = t), do: Calendar.strftime(t, "%Y.%m.%d")

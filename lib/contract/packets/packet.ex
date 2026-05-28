@@ -1,30 +1,30 @@
-defmodule Contract.Projects.Project do
+defmodule Contract.Packets.Packet do
   @moduledoc """
-  Project container above documents.
+  Packet container above documents.
 
-  Documents remain the primary truth. A project owns metadata and links to
-  documents through `project_documents`.
+  Documents remain the primary truth. A packet owns metadata and links to
+  documents through `packet_documents`.
   """
 
   use Ecto.Schema
   import Ecto.Changeset
 
-  alias Contract.Projects.ProjectDocument
+  alias Contract.Packets.PacketDocument
 
   @type t :: %__MODULE__{}
 
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
 
-  schema "contract_projects" do
+  schema "contract_packets" do
     field :owner_id, :binary_id
     field :title, :string
     field :counterparty, :string
     field :status, :string, default: "active"
     field :metadata, :map, default: %{}
 
-    has_many :project_documents, ProjectDocument, foreign_key: :project_id
-    has_many :documents, through: [:project_documents, :document]
+    has_many :packet_documents, PacketDocument, foreign_key: :packet_id
+    has_many :documents, through: [:packet_documents, :document]
 
     timestamps(type: :utc_datetime)
   end
@@ -32,8 +32,8 @@ defmodule Contract.Projects.Project do
   @castable [:title, :counterparty, :status, :metadata]
 
   @spec changeset(t(), map()) :: Ecto.Changeset.t()
-  def changeset(project, attrs) do
-    project
+  def changeset(packet, attrs) do
+    packet
     |> cast(attrs, @castable)
     |> validate_required([:owner_id, :title, :status])
     |> validate_length(:title, min: 1, max: 300)

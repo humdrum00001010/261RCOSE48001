@@ -1,43 +1,43 @@
-defmodule ContractWeb.ProjectLiveTest do
+defmodule ContractWeb.PacketLiveTest do
   use ContractWeb.ConnCase, async: false
 
   import Phoenix.LiveViewTest
 
   alias Contract.Documents
   alias Contract.Documents.Document
-  alias Contract.Projects
-  alias Contract.Projects.ProjectDocument
+  alias Contract.Packets
+  alias Contract.Packets.PacketDocument
   alias Contract.Repo
 
   describe "auth gate" do
     test "redirects anonymous users to /users/log-in", %{conn: conn} do
-      assert {:error, redirect} = live(conn, ~p"/projects/#{Ecto.UUID.generate()}")
+      assert {:error, redirect} = live(conn, ~p"/packets/#{Ecto.UUID.generate()}")
       assert {:redirect, %{to: path, flash: flash}} = redirect
       assert path == ~p"/users/log-in"
       assert %{"error" => "You must log in to access this page."} = flash
     end
   end
 
-  describe "project detail" do
+  describe "packet detail" do
     setup :register_and_log_in_user
 
     test "renders attached documents and compact document actions", %{conn: conn, scope: scope} do
-      {:ok, project} =
-        Projects.create_project(scope, %{
+      {:ok, packet} =
+        Packets.create_packet(scope, %{
           "title" => "서비스 계약",
           "counterparty" => "Gamma Inc.",
           "status" => "active"
         })
 
       {:ok, document} = Documents.create(scope, %{title: "서비스계약서 원본"})
-      {:ok, _project_document} = Projects.attach_document(scope, project.id, document.id)
+      {:ok, _packet_document} = Packets.attach_document(scope, packet.id, document.id)
 
-      {:ok, lv, _html} = live(conn, ~p"/projects/#{project.id}")
+      {:ok, lv, _html} = live(conn, ~p"/packets/#{packet.id}")
 
-      assert has_element?(lv, "#projects-root h1", "서비스 계약")
-      assert has_element?(lv, "#projects-root header #project-new-document", "새 문서")
-      refute has_element?(lv, "#projects-root > header a[href='/storage']")
-      assert has_element?(lv, "table.table tbody#project-documents-table")
+      assert has_element?(lv, "#packets-root h1", "서비스 계약")
+      assert has_element?(lv, "#packets-root header #packet-new-document", "새 문서")
+      refute has_element?(lv, "#packets-root > header a[href='/storage']")
+      assert has_element?(lv, "table.table tbody#packet-documents-table")
       assert has_element?(lv, "#attached-document-#{document.id}", "서비스계약서 원본")
       assert has_element?(lv, "#attached-document-#{document.id}.hover\\:bg-base-200\\/60")
       assert has_element?(lv, "#attached-document-#{document.id} td.cursor-pointer")
@@ -52,18 +52,18 @@ defmodule ContractWeb.ProjectLiveTest do
 
       assert render(lv) =~ "/documents/#{document.id}"
       refute has_element?(lv, "table.table th", "상태")
-      refute has_element?(lv, "#projects-root table.table-zebra")
-      refute has_element?(lv, "#projects-root header p")
-      refute has_element?(lv, "#projects-root", "Gamma Inc.")
-      refute has_element?(lv, "#project-documents-panel h2")
-      refute has_element?(lv, "#projects-root", "문서들")
-      refute has_element?(lv, "#project-documents-panel h2", "연결된 문서")
-      refute has_element?(lv, "#projects-root", "상태 없음")
-      refute has_element?(lv, "#projects-root", "진행 중")
-      refute has_element?(lv, "#project-attach-panel")
-      refute has_element?(lv, "#project-reference-form")
+      refute has_element?(lv, "#packets-root table.table-zebra")
+      refute has_element?(lv, "#packets-root header p")
+      refute has_element?(lv, "#packets-root", "Gamma Inc.")
+      refute has_element?(lv, "#packet-documents-panel h2")
+      refute has_element?(lv, "#packets-root", "문서들")
+      refute has_element?(lv, "#packet-documents-panel h2", "연결된 문서")
+      refute has_element?(lv, "#packets-root", "상태 없음")
+      refute has_element?(lv, "#packets-root", "진행 중")
+      refute has_element?(lv, "#packet-attach-panel")
+      refute has_element?(lv, "#packet-reference-form")
       refute has_element?(lv, "#reference_document_id")
-      refute has_element?(lv, "#project-reference-submit")
+      refute has_element?(lv, "#packet-reference-submit")
       refute has_element?(lv, "#detach-document-#{document.id}")
       refute has_element?(lv, "#document-edit-#{document.id}")
       refute has_element?(lv, "#document-delete-#{document.id}")
@@ -73,17 +73,17 @@ defmodule ContractWeb.ProjectLiveTest do
       conn: conn,
       scope: scope
     } do
-      {:ok, project} =
-        Projects.create_project(scope, %{
-          "title" => "문서 설정 프로젝트",
+      {:ok, packet} =
+        Packets.create_packet(scope, %{
+          "title" => "문서 설정 패킷",
           "counterparty" => "Gamma Inc.",
           "status" => "active"
         })
 
       {:ok, document} = Documents.create(scope, %{title: "삭제 대상 문서"})
-      {:ok, _project_document} = Projects.attach_document(scope, project.id, document.id)
+      {:ok, _packet_document} = Packets.attach_document(scope, packet.id, document.id)
 
-      {:ok, lv, _html} = live(conn, ~p"/projects/#{project.id}")
+      {:ok, lv, _html} = live(conn, ~p"/packets/#{packet.id}")
 
       lv
       |> element("#document-settings-#{document.id}")
@@ -92,7 +92,7 @@ defmodule ContractWeb.ProjectLiveTest do
       assert has_element?(lv, "#document-settings-modal", "삭제 대상 문서")
       assert has_element?(lv, "#document-delete-confirm")
       assert has_element?(lv, "#attached-document-#{document.id}")
-      assert Repo.get_by(ProjectDocument, project_id: project.id, document_id: document.id)
+      assert Repo.get_by(PacketDocument, packet_id: packet.id, document_id: document.id)
 
       lv
       |> element("#document-delete-confirm")
@@ -100,62 +100,62 @@ defmodule ContractWeb.ProjectLiveTest do
 
       refute has_element?(lv, "#document-settings-modal")
       refute has_element?(lv, "#attached-document-#{document.id}")
-      assert Repo.get_by(ProjectDocument, project_id: project.id, document_id: document.id) == nil
+      assert Repo.get_by(PacketDocument, packet_id: packet.id, document_id: document.id) == nil
       assert %Document{status: :archived} = Repo.get!(Document, document.id)
     end
 
-    test "새 문서 opens Studio type picker with project context and creates no document yet", %{
+    test "새 문서 opens Studio type picker with packet context and creates no document yet", %{
       conn: conn,
       scope: scope
     } do
-      {:ok, project} =
-        Projects.create_project(scope, %{
-          "title" => "신규 문서 프로젝트",
+      {:ok, packet} =
+        Packets.create_packet(scope, %{
+          "title" => "신규 문서 패킷",
           "counterparty" => "Delta Inc.",
           "status" => "active"
         })
 
-      {:ok, lv, _html} = live(conn, ~p"/projects/#{project.id}")
+      {:ok, lv, _html} = live(conn, ~p"/packets/#{packet.id}")
 
       lv
-      |> element("#project-new-document")
+      |> element("#packet-new-document")
       |> render_click()
 
-      {:ok, loaded} = Projects.get_project(scope, project.id)
+      {:ok, loaded} = Packets.get_packet(scope, packet.id)
       assert loaded.documents == []
       assert Documents.list_recent_for_scope(scope, 1) == []
-      assert_redirect(lv, ~p"/studio?project_id=#{project.id}")
+      assert_redirect(lv, ~p"/studio?packet_id=#{packet.id}")
     end
 
     test "renders backend-attached reference document without reference picker", %{
       conn: conn,
       scope: scope
     } do
-      {:ok, current_project} =
-        Projects.create_project(scope, %{
-          "title" => "현재 프로젝트",
+      {:ok, current_packet} =
+        Packets.create_packet(scope, %{
+          "title" => "현재 패킷",
           "counterparty" => "Current",
           "status" => "active"
         })
 
-      {:ok, other_project} =
-        Projects.create_project(scope, %{
-          "title" => "다른 프로젝트",
+      {:ok, other_packet} =
+        Packets.create_packet(scope, %{
+          "title" => "다른 패킷",
           "counterparty" => "Other",
           "status" => "active"
         })
 
-      {:ok, reference_doc} = Documents.create(scope, %{title: "다른 프로젝트 문서"})
+      {:ok, reference_doc} = Documents.create(scope, %{title: "다른 패킷 문서"})
 
-      {:ok, _project_document} =
-        Projects.attach_document(scope, other_project.id, reference_doc.id)
+      {:ok, _packet_document} =
+        Packets.attach_document(scope, other_packet.id, reference_doc.id)
 
-      {:ok, _project_document} =
-        Projects.attach_document(scope, current_project.id, reference_doc.id, %{role: "reference"})
+      {:ok, _packet_document} =
+        Packets.attach_document(scope, current_packet.id, reference_doc.id, %{role: "reference"})
 
-      {:ok, lv, _html} = live(conn, ~p"/projects/#{current_project.id}")
+      {:ok, lv, _html} = live(conn, ~p"/packets/#{current_packet.id}")
 
-      assert has_element?(lv, "#attached-document-#{reference_doc.id}", "다른 프로젝트 문서")
+      assert has_element?(lv, "#attached-document-#{reference_doc.id}", "다른 패킷 문서")
       assert render(lv) =~ "/documents/#{reference_doc.id}"
 
       refute has_element?(
@@ -163,35 +163,35 @@ defmodule ContractWeb.ProjectLiveTest do
                ~s(#attached-document-#{reference_doc.id} a[href="/documents/#{reference_doc.id}"])
              )
 
-      {:ok, loaded} = Projects.get_project(scope, current_project.id)
+      {:ok, loaded} = Packets.get_packet(scope, current_packet.id)
       assert Enum.any?(loaded.documents, &(&1.id == reference_doc.id))
 
-      project_document =
-        Contract.Repo.get_by!(Contract.Projects.ProjectDocument,
-          project_id: current_project.id,
+      packet_document =
+        Contract.Repo.get_by!(Contract.Packets.PacketDocument,
+          packet_id: current_packet.id,
           document_id: reference_doc.id
         )
 
-      assert project_document.role == "reference"
-      refute has_element?(lv, "#project-attach-panel")
-      refute has_element?(lv, "#project-reference-form")
+      assert packet_document.role == "reference"
+      refute has_element?(lv, "#packet-attach-panel")
+      refute has_element?(lv, "#packet-reference-form")
       refute has_element?(lv, "#reference_document_id")
-      refute has_element?(lv, "#project-reference-submit")
+      refute has_element?(lv, "#packet-reference-submit")
     end
 
-    test "does not open another user's project", %{conn: conn} do
+    test "does not open another user's packet", %{conn: conn} do
       other_user = Contract.AccountsFixtures.user_fixture()
       other_scope = Contract.Context.for_user(other_user)
 
-      {:ok, project} =
-        Projects.create_project(other_scope, %{
-          "title" => "타인 프로젝트",
+      {:ok, packet} =
+        Packets.create_packet(other_scope, %{
+          "title" => "타인 패킷",
           "counterparty" => "Other",
           "status" => "active"
         })
 
       assert {:error, {:live_redirect, %{to: "/storage"}}} =
-               live(conn, ~p"/projects/#{project.id}")
+               live(conn, ~p"/packets/#{packet.id}")
     end
   end
 end

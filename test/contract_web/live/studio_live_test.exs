@@ -78,27 +78,27 @@ defmodule ContractWeb.StudioLiveTest do
       assert assigns.studio_state.selected_document_id == doc.id
     end
 
-    test "linked document topbar points back to containing project",
+    test "linked document topbar points back to containing packet",
          %{conn: conn, user: user} do
       scope = Contract.Context.for_user(user)
-      {:ok, project} = Contract.Projects.create_project(scope, %{"title" => "링크 프로젝트"})
-      {:ok, doc} = Contract.Documents.create(scope, %{title: "Project linked doc"})
-      {:ok, _project_document} = Contract.Projects.attach_document(scope, project.id, doc.id)
+      {:ok, packet} = Contract.Packets.create_packet(scope, %{"title" => "링크 패킷"})
+      {:ok, doc} = Contract.Documents.create(scope, %{title: "Packet linked doc"})
+      {:ok, _packet_document} = Contract.Packets.attach_document(scope, packet.id, doc.id)
 
       {:ok, lv, _html} = live(conn, ~p"/documents/#{doc.id}")
 
-      assert assigns(lv).document_project.id == project.id
+      assert assigns(lv).document_packet.id == packet.id
 
       assert has_element?(
                lv,
-               ~s(header ul[aria-label="계약기계"] a[href="/projects/#{project.id}"]),
-               "프로젝트"
+               ~s(header ul[aria-label="계약기계"] a[href="/packets/#{packet.id}"]),
+               "패킷"
              )
 
       assert has_element?(
                lv,
-               ~s(header ul[aria-label="계약기계"] a.font-semibold[href="/projects/#{project.id}"]),
-               "프로젝트"
+               ~s(header ul[aria-label="계약기계"] a.font-semibold[href="/packets/#{packet.id}"]),
+               "패킷"
              )
 
       refute has_element?(
@@ -308,10 +308,10 @@ defmodule ContractWeb.StudioLiveTest do
       assert_redirect(lv, "/studio/#{doc.id}")
     end
 
-    test "empty /studio with project_id keeps picker and attaches typed document to project",
+    test "empty /studio with packet_id keeps picker and attaches typed document to packet",
          %{conn: conn, user: user} do
       scope = Contract.Context.for_user(user)
-      {:ok, project} = Contract.Projects.create_project(scope, %{"title" => "프로젝트 문서"})
+      {:ok, packet} = Contract.Packets.create_packet(scope, %{"title" => "패킷 문서"})
 
       conn =
         Plug.Conn.put_session(
@@ -320,10 +320,10 @@ defmodule ContractWeb.StudioLiveTest do
           ~w(read write commit revoke export type_change agent_run)a
         )
 
-      {:ok, lv, _html} = live(conn, ~p"/studio?project_id=#{project.id}")
+      {:ok, lv, _html} = live(conn, ~p"/studio?packet_id=#{packet.id}")
 
       assert assigns(lv).studio_state.selected_document_id == nil
-      assert assigns(lv).project_id == project.id
+      assert assigns(lv).packet_id == packet.id
       assert has_element?(lv, ~s([data-role="canvas-empty-type-picker"]))
       assert Contract.Documents.list_recent_for_scope(scope, 1) == []
 
@@ -339,16 +339,16 @@ defmodule ContractWeb.StudioLiveTest do
       [doc] = Contract.Documents.list_recent_for_scope(scope, 1)
       assert doc.type_key == first_spec.key
 
-      {:ok, loaded_project} = Contract.Projects.get_project(scope, project.id)
-      assert Enum.any?(loaded_project.documents, &(&1.id == doc.id))
+      {:ok, loaded_packet} = Contract.Packets.get_packet(scope, packet.id)
+      assert Enum.any?(loaded_packet.documents, &(&1.id == doc.id))
 
-      project_document =
-        Contract.Repo.get_by!(Contract.Projects.ProjectDocument,
-          project_id: project.id,
+      packet_document =
+        Contract.Repo.get_by!(Contract.Packets.PacketDocument,
+          packet_id: packet.id,
           document_id: doc.id
         )
 
-      assert project_document.role == "primary"
+      assert packet_document.role == "primary"
       assert_redirect(lv, ~p"/documents/#{doc.id}")
     end
 

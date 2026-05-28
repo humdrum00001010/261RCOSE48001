@@ -90,20 +90,20 @@ msgstr "답이 곧 계약 조항"
 
 #: lib/contract_web/controllers/page_html/home.html.heex:63
 #, elixir-autogen, elixir-format
-msgid "프로젝트 맥락을 계약 조항으로 구체화하는 흐름"
-msgstr "프로젝트 맥락을 계약 조항으로 구체화하는 흐름"
+msgid "패킷 맥락을 계약 조항으로 구체화하는 흐름"
+msgstr "패킷 맥락을 계약 조항으로 구체화하는 흐름"
 
 #: lib/contract_web/controllers/page_html/home.html.heex:69
 #, elixir-autogen, elixir-format
-msgid "프로젝트 브리프"
-msgstr "프로젝트 브리프"
+msgid "패킷 브리프"
+msgstr "패킷 브리프"
 
 #: lib/contract_web/controllers/page_html/home.html.heex:37
 #, elixir-autogen, elixir-format
-msgid "프로젝트가 실제로 어떻게 진행되는지 묻습니다."
-msgstr "프로젝트가 실제로 어떻게 진행되는지 묻습니다."
+msgid "패킷이 실제로 어떻게 진행되는지 묻습니다."
+msgstr "패킷이 실제로 어떻게 진행되는지 묻습니다."
 
 #: lib/contract_web/controllers/page_html/home.html.heex:31
 #, elixir-autogen, elixir-format
-msgid "프로젝트의 맥락을"
-msgstr "프로젝트의 맥락을"
+msgid "패킷의 맥락을"
+msgstr "패킷의 맥락을"
