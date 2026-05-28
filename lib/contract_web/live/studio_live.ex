@@ -1681,7 +1681,7 @@ defmodule ContractWeb.StudioLive do
             <article class="relative m-0 p-0 border-0 bg-transparent shadow-none text-base-content text-[15px] leading-[1.78] overflow-hidden min-h-0 flex-1 font-sans max-sm:mx-3 max-sm:py-7 max-sm:px-5">
               <div class="relative h-full min-h-0">
                 <div
-                  :if={is_nil(@studio_state.selected_document_id)}
+                  :if={show_canvas_type_picker?(@studio_state, @projection)}
                   id="canvas-empty-type-picker"
                   data-stub="canvas-empty"
                   data-role="canvas-empty-type-picker"
@@ -1936,6 +1936,11 @@ defmodule ContractWeb.StudioLive do
   # roundtrip.
   defp projection_type_key(%{type_key: tk}) when is_binary(tk) and tk != "", do: tk
   defp projection_type_key(_), do: nil
+
+  defp show_canvas_type_picker?(%{selected_document_id: nil}, _projection), do: true
+
+  defp show_canvas_type_picker?(_studio_state, projection),
+    do: is_nil(projection_type_key(projection))
 
   defp assign_projection(socket, projection) do
     rhwp_field_values = rhwp_field_values_for_projection(projection)

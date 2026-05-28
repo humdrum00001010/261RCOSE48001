@@ -52,7 +52,7 @@ defmodule ContractWeb.ProjectLive do
 
   def project_detail(assigns) do
     ~H"""
-    <header class="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
+    <header class="flex items-center justify-between gap-3">
       <div class="space-y-2">
         <.link
           navigate={~p"/storage"}
@@ -66,24 +66,18 @@ defmodule ContractWeb.ProjectLive do
           </h1>
         </div>
       </div>
+
+      <button
+        id="project-new-document"
+        type="button"
+        phx-click="create_document"
+        class="btn btn-primary btn-sm"
+      >
+        새 문서
+      </button>
     </header>
 
     <section id="project-documents-panel" class="space-y-3">
-      <div class="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
-        <h2 class="text-sm font-semibold text-base-content/80">문서들</h2>
-
-        <div class="flex items-center gap-2">
-          <button
-            id="project-new-document"
-            type="button"
-            phx-click="create_document"
-            class="btn btn-primary btn-sm"
-          >
-            새 문서
-          </button>
-        </div>
-      </div>
-
       <.table
         id="project-documents-table"
         rows={@attached_documents}

@@ -78,6 +78,49 @@ defmodule ContractWeb.StudioLiveTest do
       assert assigns.studio_state.selected_document_id == doc.id
     end
 
+    test "selected untyped document shows canvas type picker",
+         %{conn: conn, user: user} do
+      scope = Contract.Context.for_user(user)
+      {:ok, doc} = Contract.Documents.create(scope, %{title: "Untyped draft", type_key: nil})
+
+      conn =
+        Plug.Conn.put_session(
+          conn,
+          :user_perms,
+          ~w(read write commit revoke export type_change agent_run)a
+        )
+
+      {:ok, lv, _html} = live(conn, ~p"/documents/#{doc.id}")
+
+      assert assigns(lv).studio_state.selected_document_id == doc.id
+      assert assigns(lv).current_document.type_key == nil
+      assert has_element?(lv, ~s([data-role="canvas-empty-type-picker"]))
+
+      {:ok, specs} = Contract.ContractTypes.list()
+
+      visible_specs = Enum.reject(specs, &(&1.source == :custom))
+
+      for spec <- visible_specs do
+        assert has_element?(
+                 lv,
+                 ~s([data-role="canvas-empty-type-option"][phx-value-type_key="#{spec.key}"]),
+                 Contract.ContractTypes.display_name(spec)
+               )
+      end
+
+      first_spec = hd(visible_specs)
+
+      lv
+      |> element(
+        ~s([data-role="canvas-empty-type-option"][phx-value-type_key="#{first_spec.key}"])
+      )
+      |> render_click()
+
+      assert assigns(lv).studio_state.selected_document_id == doc.id
+      assert assigns(lv).projection.type_key == first_spec.key
+      assert Contract.Repo.get!(Contract.Documents.Document, doc.id).type_key == first_spec.key
+    end
+
     test "mounts at /documents/:document_id/review (review subroute) the same way",
          %{conn: conn, user: user} do
       scope = Contract.Context.for_user(user)
