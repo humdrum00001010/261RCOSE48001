@@ -109,7 +109,7 @@ defmodule ContractWeb.StudioLive do
           |> assign(:project_id, project_id)
           |> assign(:studio_state, studio_state)
           |> assign_projection(projection)
-          |> assign(:current_document, current_document(scope, studio_state))
+          |> assign_current_document_context(scope, studio_state)
           |> assign(:chat_thread, ChatThreads.current_thread_info(scope, studio_state))
           |> assign(:agent_document_status, nil)
           |> assign(:breadcrumbs, breadcrumbs)
@@ -149,6 +149,7 @@ defmodule ContractWeb.StudioLive do
           |> assign(:studio_state, %Contract.Studio.State{mode: :no_document})
           |> assign_projection(empty_projection())
           |> assign(:current_document, nil)
+          |> assign(:document_project, nil)
           |> assign(:chat_thread, nil)
           |> assign(:agent_document_status, nil)
           |> assign(:rhwp_snapshot, nil)
@@ -599,9 +600,7 @@ defmodule ContractWeb.StudioLive do
         socket
         |> assign(:studio_state, new_state)
         |> refresh_agent_document_status()
-        |> then(fn socket ->
-          assign(socket, :current_document, current_document(scope, socket.assigns.studio_state))
-        end)
+        |> assign_current_document_context(scope, new_state)
         |> apply_submit_result(action, result)
         |> then(fn socket ->
           maybe_refresh_chat_messages(socket, action, socket.assigns.studio_state)
@@ -721,7 +720,7 @@ defmodule ContractWeb.StudioLive do
         socket
         |> assign(:studio_state, new_state)
         |> assign_projection(projection)
-        |> assign(:current_document, current_document(scope, new_state))
+        |> assign_current_document_context(scope, new_state)
 
       {:error, _reason} ->
         socket
@@ -921,7 +920,7 @@ defmodule ContractWeb.StudioLive do
           | last_seen_revision: revision || new_state.last_seen_revision
         })
         |> assign_projection(projection)
-        |> assign(:current_document, current_document(socket.assigns.current_scope, new_state))
+        |> assign_current_document_context(socket.assigns.current_scope, new_state)
         |> then(fn socket ->
           update_rhwp_materializer_editor(previous_document_id, new_state.selected_document_id)
           socket
@@ -1381,7 +1380,11 @@ defmodule ContractWeb.StudioLive do
 
       <Layouts.flash_group flash={@flash} />
     <% else %>
-      <.app_shell current_scope={@current_scope}>
+      <.app_shell
+        current_scope={@current_scope}
+        primary_nav_label={app_shell_nav_label(@document_project)}
+        primary_nav_path={app_shell_nav_path(@document_project)}
+      >
         <main
           id="studio-root"
           phx-hook=".Viewport"
@@ -1875,6 +1878,32 @@ defmodule ContractWeb.StudioLive do
   end
 
   defp current_document(_scope, _state), do: nil
+
+  defp assign_current_document_context(socket, scope, state) do
+    socket
+    |> assign(:current_document, current_document(scope, state))
+    |> assign(:document_project, project_for_current_document(scope, state))
+  end
+
+  defp project_for_current_document(scope, %Contract.Studio.State{
+         selected_document_id: document_id
+       })
+       when is_binary(document_id) do
+    case Projects.project_for_document(scope, document_id) do
+      {:ok, project} -> project
+      _ -> nil
+    end
+  end
+
+  defp project_for_current_document(_scope, _state), do: nil
+
+  defp app_shell_nav_label(%Contract.Projects.Project{}), do: "프로젝트"
+  defp app_shell_nav_label(_project), do: "보관함"
+
+  defp app_shell_nav_path(%Contract.Projects.Project{id: project_id}),
+    do: ~p"/projects/#{project_id}"
+
+  defp app_shell_nav_path(_project), do: ~p"/storage"
 
   defp list_other_documents(scope, %{selected_document_id: current_id}) do
     scope

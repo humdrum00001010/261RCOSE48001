@@ -78,6 +78,30 @@ defmodule ContractWeb.StudioLiveTest do
       assert assigns.studio_state.selected_document_id == doc.id
     end
 
+    test "linked document topbar points back to containing project",
+         %{conn: conn, user: user} do
+      scope = Contract.Context.for_user(user)
+      {:ok, project} = Contract.Projects.create_project(scope, %{"title" => "링크 프로젝트"})
+      {:ok, doc} = Contract.Documents.create(scope, %{title: "Project linked doc"})
+      {:ok, _project_document} = Contract.Projects.attach_document(scope, project.id, doc.id)
+
+      {:ok, lv, _html} = live(conn, ~p"/documents/#{doc.id}")
+
+      assert assigns(lv).document_project.id == project.id
+
+      assert has_element?(
+               lv,
+               ~s(header ul[aria-label="계약기계"] a[href="/projects/#{project.id}"]),
+               "프로젝트"
+             )
+
+      refute has_element?(
+               lv,
+               ~s(header ul[aria-label="계약기계"] a[href="/storage"]),
+               "보관함"
+             )
+    end
+
     test "selected untyped document shows canvas type picker",
          %{conn: conn, user: user} do
       scope = Contract.Context.for_user(user)

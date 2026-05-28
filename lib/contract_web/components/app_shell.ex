@@ -47,9 +47,14 @@ defmodule ContractWeb.Components.AppShell do
     doc:
       "the current Contract.Context — pass through from the LiveView/conn so the topbar can render the account menu when signed in"
 
+  attr :primary_nav_label, :string, default: "보관함"
+  attr :primary_nav_path, :string, default: nil
+
   slot :inner_block, required: true
 
   def app_shell(assigns) do
+    assigns = assign(assigns, :primary_nav_path, assigns.primary_nav_path || ~p"/storage")
+
     ~H"""
     <div class="min-h-screen pt-[60px] text-base-content bg-base-200">
       <header class="navbar fixed top-0 left-0 right-0 z-40 h-14 min-h-[60px] flex-nowrap border-b border-base-300 bg-base-200/90 supports-[backdrop-filter]:backdrop-blur-md px-7 max-md:px-4">
@@ -73,15 +78,15 @@ defmodule ContractWeb.Components.AppShell do
           <ul class="menu menu-horizontal p-0 text-[13px]" aria-label="계약기계">
             <li>
               <.link
-                navigate={~p"/storage"}
+                navigate={@primary_nav_path}
                 class={[
-                  if(@active == "보관함",
+                  if(@active == @primary_nav_label,
                     do: "text-base-content font-semibold",
                     else: "text-base-content/55 font-medium"
                   )
                 ]}
               >
-                보관함
+                {@primary_nav_label}
               </.link>
             </li>
           </ul>

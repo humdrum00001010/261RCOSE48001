@@ -89,6 +89,25 @@ defmodule ContractWeb.Components.AppShellTest do
       assert html =~ ~r/<a[^>]*href="\/"[^>]*aria-label="계약기계"/u
     end
 
+    test "renders custom primary nav target" do
+      inner_block = [
+        %{
+          __slot__: :inner_block,
+          inner_block: fn _, _ -> Phoenix.HTML.raw("") end
+        }
+      ]
+
+      html =
+        render_component(&AppShell.app_shell/1,
+          primary_nav_label: "프로젝트",
+          primary_nav_path: "/projects/project-id",
+          inner_block: inner_block
+        )
+
+      assert html =~ ~s(href="/projects/project-id")
+      assert html =~ "프로젝트"
+    end
+
     test "v33 icon source assets are tracked outside generated static assets" do
       app_root = Path.expand("../../..", __DIR__)
       icon_dir = Path.join(app_root, "priv/static/images/icons")

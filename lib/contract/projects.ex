@@ -33,6 +33,27 @@ defmodule Contract.Projects do
   def list_projects_for_scope(_scope), do: []
 
   @doc """
+  Fetch the deterministic project target for one owned document.
+  """
+  @spec project_for_document(Context.t(), T.id()) ::
+          {:ok, Project.t()} | {:error, :not_found | :forbidden}
+  def project_for_document(%Context{user: nil}, _document_id), do: {:error, :forbidden}
+
+  def project_for_document(%Context{user: %{id: user_id}} = scope, document_id)
+      when is_binary(document_id) do
+    with {:ok, %Document{}} <- Documents.get(scope, document_id) do
+      case Repo.one(project_for_document_query(user_id, document_id)) do
+        %Project{} = project -> {:ok, project}
+        nil -> {:error, :not_found}
+      end
+    end
+  rescue
+    Ecto.Query.CastError -> {:error, :not_found}
+  end
+
+  def project_for_document(_scope, _document_id), do: {:error, :not_found}
+
+  @doc """
   Fetch one project and preload linked documents.
   """
   @spec get_project(Context.t(), T.id()) ::
@@ -238,6 +259,16 @@ defmodule Contract.Projects do
   end
 
   defp fetch_project(_project_id), do: nil
+
+  defp project_for_document_query(user_id, document_id) do
+    from(p in Project,
+      join: pd in ProjectDocument,
+      on: pd.project_id == p.id,
+      where: p.owner_id == ^user_id and pd.document_id == ^document_id,
+      order_by: [desc: p.updated_at, asc: p.id],
+      limit: 1
+    )
+  end
 
   defp do_delete_project(%Context{} = scope, %Project{} = project) do
     Repo.transaction(fn ->

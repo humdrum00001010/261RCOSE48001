@@ -160,6 +160,26 @@ defmodule Contract.ProjectsTest do
       assert {:ok, 2} = Projects.document_ref_count(owner, document.id)
     end
 
+    test "project_for_document/2 returns an owned project for attached document" do
+      owner = scope()
+      other = scope()
+      project = create_project!(owner)
+      document = create_document!(owner)
+      other_document = create_document!(other)
+
+      assert {:error, :not_found} = Projects.project_for_document(owner, document.id)
+
+      {:ok, _project_document} = Projects.attach_document(owner, project.id, document.id)
+
+      assert {:ok, %Project{id: project_id}} = Projects.project_for_document(owner, document.id)
+      assert project_id == project.id
+      assert {:error, :forbidden} = Projects.project_for_document(other, document.id)
+      assert {:error, :forbidden} = Projects.project_for_document(owner, other_document.id)
+
+      assert {:error, :forbidden} =
+               Projects.project_for_document(%Context{user: nil}, document.id)
+    end
+
     test "cannot attach another owner's document" do
       owner = scope()
       other = scope()
