@@ -86,18 +86,10 @@ defmodule ContractWeb.ProjectLive do
   def project_detail(assigns) do
     ~H"""
     <header class="flex items-center justify-between gap-3">
-      <div class="space-y-2">
-        <.link
-          navigate={~p"/storage"}
-          class="inline-flex items-center gap-1 text-sm text-base-content/55 hover:text-base-content"
-        >
-          <.icon name="hero-arrow-left" class="size-4" /> 보관함
-        </.link>
-        <div class="space-y-1">
-          <h1 class="m-0 text-[clamp(22px,4vw,28px)] font-semibold tracking-tight">
-            {project_title(@project)}
-          </h1>
-        </div>
+      <div class="space-y-1">
+        <h1 class="m-0 text-[clamp(22px,4vw,28px)] font-semibold tracking-tight">
+          {project_title(@project)}
+        </h1>
       </div>
 
       <button

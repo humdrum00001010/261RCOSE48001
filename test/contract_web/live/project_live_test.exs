@@ -34,9 +34,9 @@ defmodule ContractWeb.ProjectLiveTest do
 
       {:ok, lv, _html} = live(conn, ~p"/projects/#{project.id}")
 
-      assert has_element?(lv, ~s(a[href="/storage"]))
       assert has_element?(lv, "#projects-root h1", "서비스 계약")
       assert has_element?(lv, "#projects-root header #project-new-document", "새 문서")
+      refute has_element?(lv, "#projects-root > header a[href='/storage']")
       assert has_element?(lv, "table.table tbody#project-documents-table")
       assert has_element?(lv, "#attached-document-#{document.id}", "서비스계약서 원본")
       assert has_element?(lv, "#attached-document-#{document.id}.hover\\:bg-base-200\\/60")
