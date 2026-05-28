@@ -1,7 +1,7 @@
 defmodule ContractWeb.Live.Studio.Components.Canvas.EmptyTest do
   @moduledoc """
   Canvas.Empty is currently a compatibility stub. The product empty
-  surface lives in StudioLive itself, where `/studio` renders the upload
+  surface lives in DocumentLive itself, where `/studio` renders the upload
   action and contract-type selection before navigating to `/studio/:id`.
   """
   use ContractWeb.ConnCase, async: true
@@ -67,7 +67,7 @@ defmodule ContractWeb.Live.Studio.Components.Canvas.EmptyTest do
       assert html =~ ~s(class="min-h-0")
     end
 
-    test "does not render the StudioLive-owned upload/type UI for writer personas" do
+    test "does not render the DocumentLive-owned upload/type UI for writer personas" do
       html = render_empty([])
 
       refute html =~ ~s(data-role="canvas-empty-type-picker")
@@ -77,7 +77,7 @@ defmodule ContractWeb.Live.Studio.Components.Canvas.EmptyTest do
       refute html =~ ~s(type="file")
     end
 
-    test "does not render the StudioLive-owned upload/type UI for viewer personas" do
+    test "does not render the DocumentLive-owned upload/type UI for viewer personas" do
       user = user_fixture()
       html = render_empty(current_scope: viewer_scope(user))
 
@@ -121,14 +121,14 @@ defmodule ContractWeb.Live.Studio.Components.Canvas.EmptyTest do
 
   # ---------------------------------------------------------------------------
   # Click dispatch — when wired up via a live `/studio` mount, the canvas
-  # buttons reach StudioLive.handle_event/3 and produce the right side
+  # buttons reach DocumentLive.handle_event/3 and produce the right side
   # effects. We assert the routing for `agent_option_picked` keys
   # (the existing handlers create_blank_document + open document-picker
-  # are pinned in `ContractWeb.StudioLiveTest`); here we lock the
+  # are pinned in `ContractWeb.DocumentLiveTest`); here we lock the
   # buttons fire those exact keys.
   # ---------------------------------------------------------------------------
 
-  describe "click events route through StudioLive.handle_event/3" do
+  describe "click events route through DocumentLive.handle_event/3" do
     setup %{conn: conn} do
       user = user_fixture()
       %{conn: log_in_user(conn, user), user: user}

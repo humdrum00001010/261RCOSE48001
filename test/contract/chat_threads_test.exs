@@ -301,6 +301,113 @@ defmodule Contract.ChatThreadsTest do
     end
   end
 
+  describe "append_tool_call_message/2" do
+    test "persists successful document tool calls as minimal document facts" do
+      owner_id = Ecto.UUID.generate()
+
+      {:ok, thread} =
+        Repo.insert(%ChatThread{
+          owner_id: owner_id,
+          document_id: nil,
+          title: "Discussion",
+          status: "active",
+          messages: [],
+          last_message_at: DateTime.utc_now(:second)
+        })
+
+      assert {:ok, %ChatThread{} = updated} =
+               ChatThreads.append_tool_call_message(thread.id, %{
+                 "id" => "tool-doc-get-1",
+                 "type" => "tool_call",
+                 "name" => "doc.get",
+                 "tool_name" => "doc.get",
+                 "raw_name" => "doc.get",
+                 "server_label" => "contract-doc",
+                 "title" => "doc.get",
+                 "status" => "completed",
+                 "summary" => "rev 7",
+                 "details" => %{
+                   "arguments" => %{"ignored" => true},
+                   "output" => %{
+                     "ok" => true,
+                     "change_id" => "change-nope",
+                     "revision" => 7,
+                     "d" => "NDA",
+                     "t" => "service",
+                     "read" => %{"ignored" => true},
+                     "counts" => %{"paragraphs" => 3}
+                   }
+                 }
+               })
+
+      assert [message] = updated.messages
+
+      assert message["operation"] == %{
+               "id" => "tool-doc-get-1",
+               "name" => "doc.get",
+               "output" => %{
+                 "revision" => 7,
+                 "d" => "NDA",
+                 "t" => "service",
+                 "counts" => %{"paragraphs" => 3}
+               }
+             }
+
+      encoded = Jason.encode!(message["operation"])
+
+      for forbidden <-
+            ~w(ok change_id raw_name server_label status title summary reason tool_name type details arguments read) do
+        refute encoded =~ forbidden
+      end
+    end
+
+    test "persists failed tool calls as minimal name and error" do
+      owner_id = Ecto.UUID.generate()
+
+      {:ok, thread} =
+        Repo.insert(%ChatThread{
+          owner_id: owner_id,
+          document_id: nil,
+          title: "Discussion",
+          status: "active",
+          messages: [],
+          last_message_at: DateTime.utc_now(:second)
+        })
+
+      assert {:ok, %ChatThread{} = updated} =
+               ChatThreads.append_tool_call_message(thread.id, %{
+                 "id" => "tool-doc-get-failed",
+                 "type" => "tool_call",
+                 "name" => "doc.get",
+                 "tool_name" => "doc.get",
+                 "raw_name" => "doc.get",
+                 "server_label" => "contract-doc",
+                 "title" => "doc.get",
+                 "status" => "failed",
+                 "summary" => "Failed Dependency",
+                 "details" => %{
+                   "arguments" => %{},
+                   "output" => %{"error" => "projection unavailable"}
+                 }
+               })
+
+      assert [message] = updated.messages
+
+      assert message["operation"] == %{
+               "id" => "tool-doc-get-failed",
+               "name" => "doc.get",
+               "error" => "projection unavailable"
+             }
+
+      encoded = Jason.encode!(message["operation"])
+
+      for forbidden <-
+            ~w(raw_name server_label status title summary reason tool_name type details arguments) do
+        refute encoded =~ forbidden
+      end
+    end
+  end
+
   describe "append_reasoning_message/2" do
     test "persists a reasoning operation row that rehydrates through the rail" do
       owner_id = Ecto.UUID.generate()

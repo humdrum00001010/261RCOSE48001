@@ -206,8 +206,12 @@ defmodule ContractWeb.Live.Studio.Components.ChatRailTest do
         |> LazyHTML.query(~s([data-role="chat-rail-controls"]))
         |> LazyHTML.attribute("class")
 
-      assert controls_class =~ "px-2"
-      assert controls_class =~ "py-1"
+      assert controls_class =~ "gap-1.5"
+      assert controls_class =~ "px-1.5"
+      assert controls_class =~ "py-0.5"
+      refute controls_class =~ "gap-2"
+      refute controls_class =~ "px-2"
+      refute controls_class =~ "py-1"
       refute controls_class =~ "px-3"
       refute controls_class =~ "py-2"
 
@@ -765,7 +769,7 @@ defmodule ContractWeb.Live.Studio.Components.ChatRailTest do
     end
 
     test "completed empty reasoning is not rendered as a stale thinking row" do
-      # The studio_live `:agent_reasoning_done` handler removes the
+      # The document_live `:agent_reasoning_done` handler removes the
       # reasoning bubble entirely when `text` is empty, so the chat_rail
       # only ever sees a non-empty reasoning operation. This test pins the
       # equivalent invariant at the component level: a row carrying ONLY
@@ -1006,7 +1010,7 @@ defmodule ContractWeb.Live.Studio.Components.ChatRailTest do
       # Simulate the hook firing `chat.submit` — this is the same event
       # the delegated click handler pushes — so asserting the form-level
       # wire is intact pins the contract that the rest of the system
-      # (StudioLive.event_to_command) expects.
+      # (DocumentLive.event_to_command) expects.
       lv
       |> element("#chat-rail-form")
       |> render_hook("chat.submit", %{"message" => "from mobile"})
@@ -1121,10 +1125,8 @@ defmodule ContractWeb.Live.Studio.Components.ChatRailTest do
           role: :agent,
           operation: %{
             id: "tool-hover-1",
-            type: "tool_call",
-            title: "doc.get",
-            status: "completed",
-            details: %{"since_revision" => 0}
+            name: "doc.get",
+            output: %{"revision" => 7}
           },
           transient?: false
         }
@@ -1177,7 +1179,8 @@ defmodule ContractWeb.Live.Studio.Components.ChatRailTest do
       [details_hidden] = LazyHTML.attribute(details, "hidden")
       assert details_hidden == "" or details_hidden == "hidden"
       assert html =~ ~s(data-role="tool-trace-details")
-      assert html =~ "since_revision"
+      assert html =~ "revision"
+      assert html =~ "doc.get"
 
       assert has_element?(
                lv,
@@ -1208,14 +1211,8 @@ defmodule ContractWeb.Live.Studio.Components.ChatRailTest do
           role: :agent,
           operation: %{
             id: "tool-failed-1",
-            type: "tool_call",
-            title: "doc.get",
-            status: "failed",
-            summary: "Tool failure",
-            details: %{
-              "error" => "contract-doc returned 424 Failed Dependency",
-              "tool" => "doc.get"
-            }
+            name: "doc.get",
+            error: "contract-doc returned 424 Failed Dependency"
           },
           transient?: false
         }

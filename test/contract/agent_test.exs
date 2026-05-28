@@ -126,6 +126,220 @@ defmodule Contract.AgentTest do
              ] = frame.input
     end
 
+    test "projects persisted tool-call operations to document facts only" do
+      owner_id = Ecto.UUID.generate()
+      agent_run_id = Ecto.UUID.generate()
+
+      thread =
+        Repo.insert!(%ChatThread{
+          owner_id: owner_id,
+          messages: [
+            %{"role" => "user", "content" => "Read the document."},
+            %{
+              "id" => "tool-1",
+              "role" => "agent",
+              "content" => "",
+              "agent_run_id" => agent_run_id,
+              "operation" => %{
+                "id" => "op-1",
+                "type" => "tool_call",
+                "tool_name" => "doc.get",
+                "raw_name" => "doc.get",
+                "server_label" => "contract-doc",
+                "name" => "doc.get",
+                "title" => "Document read",
+                "summary" => "rev 7",
+                "reason" => "cached",
+                "status" => "completed",
+                "details" => %{
+                  "arguments" => %{"ignored" => true},
+                  "output" => %{
+                    "ok" => true,
+                    "change_id" => "change-nope",
+                    "revision" => 7,
+                    "d" => "NDA",
+                    "t" => "service",
+                    "read" => %{"ignored" => true},
+                    "counts" => %{"paragraphs" => 3}
+                  }
+                }
+              },
+              "inserted_at" => DateTime.to_iso8601(DateTime.utc_now(:second))
+            },
+            %{
+              "id" => "tool-2",
+              "role" => "agent",
+              "content" => "",
+              "agent_run_id" => agent_run_id,
+              "operation" => %{
+                "id" => "op-2",
+                "type" => "tool_call",
+                "tool_name" => "doc.read",
+                "raw_name" => "doc.read",
+                "server_label" => "contract-doc",
+                "name" => "doc.read",
+                "title" => "Read document",
+                "summary" => "read sec 0",
+                "reason" => "cache",
+                "status" => "completed",
+                "details" => %{
+                  "arguments" => %{"sec" => 0, "at" => 0},
+                  "output" => %{
+                    "ok" => true,
+                    "change_id" => "change-nope",
+                    "revision" => 7,
+                    "sec" => 0,
+                    "at" => 0,
+                    "next_at" => 2,
+                    "items" => [
+                      %{
+                        "kind" => "paragraph",
+                        "sec" => 0,
+                        "para" => 1,
+                        "text" => "Alpha",
+                        "chars" => 5,
+                        "target" => %{"ignored" => true}
+                      }
+                    ],
+                    "details" => %{"ignored" => true}
+                  }
+                }
+              },
+              "inserted_at" => DateTime.to_iso8601(DateTime.utc_now(:second))
+            },
+            %{
+              "id" => "tool-3",
+              "role" => "agent",
+              "content" => "",
+              "agent_run_id" => agent_run_id,
+              "operation" => %{
+                "id" => "op-3",
+                "type" => "tool_call",
+                "tool_name" => "doc.write",
+                "raw_name" => "doc.write",
+                "server_label" => "contract-doc",
+                "name" => "doc.write",
+                "title" => "Write document",
+                "summary" => "rev 8",
+                "reason" => "committed",
+                "status" => "completed",
+                "details" => %{
+                  "arguments" => %{"text" => "ignored"},
+                  "output" => %{
+                    "ok" => true,
+                    "change_id" => "change-nope",
+                    "revision" => 8,
+                    "details" => %{"ignored" => true}
+                  }
+                }
+              },
+              "inserted_at" => DateTime.to_iso8601(DateTime.utc_now(:second))
+            }
+          ],
+          last_message_at: DateTime.utc_now(:second)
+        })
+
+      action = %Command{
+        kind: :chat_message,
+        actor_type: :user,
+        actor_id: owner_id,
+        chat_thread_id: thread.id,
+        message: "What did it say?"
+      }
+
+      ctx = Contract.Context.for_user(%Contract.Accounts.User{id: owner_id})
+
+      assert {:ok, frame} = Agent.build_context(ctx, action)
+
+      assert [
+               %{role: "user", content: "Read the document."},
+               %{role: "assistant", content: get_content},
+               %{role: "assistant", content: read_content},
+               %{role: "assistant", content: write_content},
+               %{role: "user", content: "What did it say?"}
+             ] = frame.input
+
+      assert get_content =~ "doc.get facts:\n"
+      get_json = String.replace_prefix(get_content, "doc.get facts:\n", "")
+
+      assert Jason.decode!(get_json) == %{
+               "revision" => 7,
+               "d" => "NDA",
+               "t" => "service",
+               "counts" => %{"paragraphs" => 3}
+             }
+
+      assert read_content =~ "doc.read facts:\n"
+      read_json = String.replace_prefix(read_content, "doc.read facts:\n", "")
+
+      assert Jason.decode!(read_json) == %{
+               "revision" => 7,
+               "sec" => 0,
+               "at" => 0,
+               "next_at" => 2,
+               "items" => [
+                 %{"sec" => 0, "para" => 1, "text" => "Alpha", "chars" => 5}
+               ]
+             }
+
+      assert write_content =~ "doc.write facts:\n"
+      write_json = String.replace_prefix(write_content, "doc.write facts:\n", "")
+      assert Jason.decode!(write_json) == %{"revision" => 8}
+
+      joined = Enum.join([get_content, read_content, write_content], "\n")
+
+      for forbidden <-
+            ~w(ok change_id raw_name server_label status title summary reason tool_name name type details arguments) do
+        refute joined =~ forbidden
+      end
+
+      refute joined =~ "Document read"
+      refute joined =~ "Read document"
+      refute joined =~ "Write document"
+      refute joined =~ "contract-doc"
+      refute joined =~ "cached"
+      refute joined =~ "ignored"
+    end
+
+    test "projects new minimal persisted tool-call operation to agent history" do
+      owner_id = Ecto.UUID.generate()
+
+      thread =
+        Repo.insert!(%ChatThread{
+          owner_id: owner_id,
+          messages: [
+            %{
+              "id" => "tool-minimal",
+              "role" => "agent",
+              "content" => "",
+              "operation" => %{
+                "id" => "tool-minimal",
+                "name" => "doc.write",
+                "output" => %{"revision" => 9}
+              }
+            }
+          ],
+          last_message_at: DateTime.utc_now(:second)
+        })
+
+      action = %Command{
+        kind: :chat_message,
+        actor_type: :user,
+        actor_id: owner_id,
+        chat_thread_id: thread.id,
+        message: "continue"
+      }
+
+      ctx = Contract.Context.for_user(%Contract.Accounts.User{id: owner_id})
+
+      assert {:ok, frame} = Agent.build_context(ctx, action)
+
+      assert [
+               %{role: "assistant", content: "doc.write facts:\n{\"revision\":9}"},
+               %{role: "user", content: "continue"}
+             ] = frame.input
+    end
+
     test "no reservoir on action — frame is unchanged" do
       action = %Command{
         kind: :chat_message,
@@ -140,9 +354,8 @@ defmodule Contract.AgentTest do
       refute user_msg.content =~ "Context Reservoir"
     end
 
-    # Task #143/#222 — the full document IR no longer ships in the
-    # instructions string. The agent uses doc.get for metadata/read hints
-    # and doc.read/doc.find for body content.
+    # Task #143/#222/#246 — the full document IR no longer ships in the
+    # instructions string. The agent uses compact doc.get/doc.read/doc.write.
     test "instructions no longer inline CURRENT_DOCUMENT_IR" do
       action = %Command{
         kind: :chat_message,
@@ -155,14 +368,21 @@ defmodule Contract.AgentTest do
       refute frame.system =~ "CURRENT_DOCUMENT_IR"
       assert frame.system =~ "doc.get"
       assert frame.system =~ "현재 문서 ID"
-      assert frame.system =~ "bounded metadata/read hints/cursors"
+      assert frame.system =~ "`doc.get`은 aggregate metadata"
+      refute frame.system =~ "doc.get(type:"
+      refute frame.system =~ "paragraph_index"
+      refute frame.system =~ "leaf_index"
+      refute frame.system =~ "bounded metadata/read hints/cursors"
+      refute frame.system =~ "doc.get`은 aggregate metadata/read contract"
+      refute frame.system =~ "cursors.outline"
       assert frame.system =~ "doc.read"
+      assert frame.system =~ "doc.write"
       refute frame.system =~ "ir_url"
       refute frame.system =~ "GET"
       refute frame.system =~ "본문 IR이 필요하면"
     end
 
-    test "instructions require doc.edit for slot edits and full-value text replacement" do
+    test "instructions require compact doc.write for match inserts and full-value text replacement" do
       action = %Command{
         kind: :chat_message,
         actor_type: :user,
@@ -173,24 +393,38 @@ defmodule Contract.AgentTest do
       assert {:ok, frame} = Agent.build_context(nil, action)
 
       assert frame.system =~ "slot-like date/period edit"
-      assert frame.system =~ "`doc.edit`"
+      assert frame.system =~ "`doc.write"
+      assert frame.system =~ "insert_after_match"
+      assert frame.system =~ "insert_before_match"
+      assert frame.system =~ "insert_at_offset"
+      assert frame.system =~ "insert_paragraph_after"
+      assert frame.system =~ "payload:{cmd,payload}"
+      assert frame.system =~ "0-based"
+      refute frame.system =~ "`doc.edit`"
+      refute frame.system =~ "doc.find"
+      refute frame.system =~ "paragraph_index"
+      refute frame.system =~ "leaf_index"
+      refute frame.system =~ "target"
+      refute frame.system =~ "cell_path"
+      refute frame.system =~ "field_id"
+      refute frame.system =~ "len"
       refute frame.system =~ "doc.edit_text"
       refute frame.system =~ "doc.insert_block"
       refute frame.system =~ "doc.delete_block"
       refute frame.system =~ "doc.edit_table"
       refute frame.system =~ "doc.set_field_value"
-      assert frame.system =~ "replace the full exact existing value or paragraph"
+      assert frame.system =~ "write the full exact existing value or paragraph"
       assert frame.system =~ "not only a label prefix"
-      assert frame.system =~ "Never put line breaks inside `replace_text.text`"
+      assert frame.system =~ "Never put line breaks inside write text"
       assert frame.system =~ "Do not replace one template paragraph with an entire contract body"
       assert frame.system =~ "전화번호"
       assert frame.system =~ "wider field"
 
       assert frame.system =~
-               "Use `doc.get` for bounded metadata, heading labels, read hints, cursors, and revision"
+               "Use `doc.get` first for aggregate metadata and revision"
 
-      assert frame.system =~ "Use `doc.read` only for small paragraph windows"
-      assert frame.system =~ "Use `doc.find` when you already know target text"
+      assert frame.system =~
+               "Use `doc.read(sec, at, size)` for concrete content/navigation windows"
     end
 
     test "instructions omit the document-context note for nil document_id" do

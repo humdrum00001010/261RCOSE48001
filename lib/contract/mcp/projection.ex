@@ -9,7 +9,7 @@ defmodule Contract.MCP.Projection do
   the native HWP/HWPX visual snapshot (`<rev>.hwp` or `<rev>.hwpx`) and the extracted agent IR
   (`<rev>.ir.json`); projection helpers read the `.ir.json` blob via the
   S3-compatible client (`Contract.IO.R2.get/2`) when deriving slices for
-  `doc.get`, `doc.read`, and `doc.find`. Postgres
+  `doc.get`, `doc.read`, and `doc.write`. Postgres
   `rhwp_snapshots.projection` stays as a hot cache that's used when R2 is
   unreachable.
 
@@ -21,8 +21,7 @@ defmodule Contract.MCP.Projection do
   Before the first rhwp snapshot for typed templates, falls back to the
   template editable spec so agents can still discover writable text slots.
 
-  Table paragraphs keep their nested cell paragraphs so agents can copy a
-  `cell_path` from `doc.read` and feed it back into `doc.edit`.
+  Table paragraphs keep nested cell paragraphs for compact read windows.
   """
 
   import Ecto.Query
@@ -32,23 +31,15 @@ defmodule Contract.MCP.Projection do
   alias Contract.Repo
   alias Contract.Runtime.State
 
-  @paragraph_window_default 3
-  @paragraph_window_max 3
-  @text_window_default 400
-  @text_window_max 1_000
-  @table_row_default 2
-  @table_col_default 2
-  @table_axis_max 3
-  @preview_chars 160
+  @text_command_kinds ~w(edit_text doc_write)
 
   @doc """
-  Build the agent-IR map used by doc.get/doc.read/doc.find. Returns a plain
+  Build the agent-IR map used by doc.get/doc.read/doc.write. Returns a plain
   map with stringified keys + the current revision baked in.
 
-  When no real rhwp snapshot row exists, this returns the legacy IR
-  projection without writing snapshot rows. `doc.get` only exposes
-  metadata/read hints derived from this IR, so a missing R2 snapshot is not a
-  reason to create a fake visual snapshot record.
+  When no real rhwp snapshot row exists, this returns an empty IR. The legacy
+  template-editables fallback is intentionally not used for agent reads because
+  it is semantic/preprocessed data, not canonical HWP positional metadata.
   """
   @spec to_agent_ir(State.t()) :: map()
   def to_agent_ir(%State{} = state) do
@@ -66,10 +57,16 @@ defmodule Contract.MCP.Projection do
         overlay_post_snapshot_text(snapshot_ir, state.document_id, snap.revision)
 
       nil ->
-        case from_template_editables(state) do
-          nil -> empty_ir(state)
-          ir -> overlay_post_snapshot_text(ir, state.document_id, 0)
-        end
+        empty_ir(state)
+    end
+  end
+
+  @doc false
+  @spec current_snapshot_revision(State.t()) :: non_neg_integer() | nil
+  def current_snapshot_revision(%State{} = state) do
+    case latest_rhwp_snapshot(state) do
+      %Contract.RhwpSnapshot.Record{revision: revision} when is_integer(revision) -> revision
+      _ -> nil
     end
   end
 
@@ -98,10 +95,10 @@ defmodule Contract.MCP.Projection do
   end
 
   @doc """
-  Target-scoped sibling for `doc.edit`.
+  Target-scoped sibling for document text writes.
 
   A stale same-revision snapshot elsewhere in the document should not block a
-  localized `doc.edit` whose target was not touched by the unmaterialized text
+  localized write whose target was not touched by the unmaterialized text
   ops.
   """
   @spec validate_text_edit_basis(State.t(), [map()]) ::
@@ -149,12 +146,12 @@ defmodule Contract.MCP.Projection do
           status in ["incomplete", "stale"] ->
             {:error,
              {:invalid_params,
-              "#{label} projection basis is #{status}; refusing doc.edit until the snapshot is complete"}}
+              "#{label} projection basis is #{status}; refusing doc.write until the snapshot is complete"}}
 
           complete? == false ->
             {:error,
              {:invalid_params,
-              "#{label} projection basis is incomplete; refusing doc.edit until the snapshot is complete"}}
+              "#{label} projection basis is incomplete; refusing doc.write until the snapshot is complete"}}
 
           true ->
             :ok
@@ -171,48 +168,94 @@ defmodule Contract.MCP.Projection do
          raw_ir
        )
        when is_binary(document_id) and is_integer(revision) do
-    case previous_rhwp_snapshot(snap) do
-      %Contract.RhwpSnapshot.Record{} = previous ->
-        ops = text_ops_between(document_id, previous.revision, revision)
+    case text_ops_between(document_id, 0, revision) do
+      [] ->
+        :ok
 
-        cond do
-          ops == [] ->
-            :ok
-
+      _ops ->
+        case materialized_from_prior_snapshot?(snap, state, raw_ir) do
           true ->
-            with {:ok, previous_raw_ir} <- snapshot_raw_ir(previous),
-                 :ok <- validate_projection_basis(previous_raw_ir, "previous") do
-              expected =
-                previous_raw_ir
-                |> from_snapshot(state)
-                |> overlay_text_ops(ops)
-
-              current = from_snapshot(raw_ir, state)
-
-              if document_text_index(expected) == document_text_index(current) do
-                :ok
-              else
-                {:error,
-                 {:invalid_params,
-                  "same-revision projection basis is stale or missing committed text ops; refusing doc.edit"}}
-              end
-            end
-        end
-
-      nil ->
-        case text_ops_between(document_id, 0, revision) do
-          [] ->
             :ok
 
-          _ops ->
+          false ->
             {:error,
              {:invalid_params,
-              "same-revision projection basis cannot be verified against committed text ops; refusing doc.edit"}}
+              "same-revision projection basis is stale or missing committed text ops; refusing doc.write"}}
         end
     end
   end
 
   defp validate_same_revision_text_basis(_snap, _state, _raw_ir), do: :ok
+
+  defp materialized_from_prior_snapshot?(
+         %Contract.RhwpSnapshot.Record{document_id: document_id, revision: revision} = snap,
+         %State{} = state,
+         raw_ir
+       )
+       when is_binary(document_id) and is_integer(revision) do
+    current = from_snapshot(raw_ir, state) |> document_text_index()
+
+    snap
+    |> prior_rhwp_snapshots()
+    |> Enum.any?(fn previous ->
+      with {:ok, previous_raw_ir} <- snapshot_raw_ir(previous),
+           :ok <- validate_projection_basis(previous_raw_ir, "previous") do
+        ops = text_ops_between(document_id, previous.revision, revision)
+
+        expected =
+          previous_raw_ir
+          |> from_snapshot(state)
+          |> overlay_text_ops(ops)
+          |> document_text_index()
+
+        keys = materialized_text_keys(ops, expected)
+        keys != MapSet.new() and Enum.all?(keys, &(Map.get(expected, &1) == Map.get(current, &1)))
+      else
+        _ -> false
+      end
+    end)
+  end
+
+  defp materialized_from_prior_snapshot?(_snap, _state, _raw_ir), do: false
+
+  defp prior_rhwp_snapshots(%Contract.RhwpSnapshot.Record{
+         document_id: document_id,
+         revision: revision,
+         format: format
+       })
+       when is_binary(document_id) and is_integer(revision) do
+    Repo.all(
+      from s in Contract.RhwpSnapshot.Record,
+        where: s.document_id == ^document_id and s.format == ^format and s.revision < ^revision,
+        order_by: [desc: s.revision]
+    )
+  end
+
+  defp prior_rhwp_snapshots(_snap), do: []
+
+  defp materialized_text_keys(ops, expected_index) when is_list(ops) and is_map(expected_index) do
+    ops
+    |> Enum.reduce(MapSet.new(), fn
+      %{kind: "insert_text", sec: sec, para: para}, keys
+      when is_integer(sec) and is_integer(para) ->
+        MapSet.put(keys, {sec, para})
+
+      %{kind: "delete_text", sec: sec, para: para}, keys
+      when is_integer(sec) and is_integer(para) ->
+        MapSet.put(keys, {sec, para})
+
+      %{kind: "insert_paragraph", sec: sec, para: para}, keys
+      when is_integer(sec) and is_integer(para) ->
+        [para, para + 1, para + 2]
+        |> Enum.filter(&Map.has_key?(expected_index, {sec, &1}))
+        |> Enum.reduce(keys, &MapSet.put(&2, {sec, &1}))
+
+      _op, keys ->
+        keys
+    end)
+  end
+
+  defp materialized_text_keys(_ops, _expected_index), do: MapSet.new()
 
   defp pending_ops_disjoint_from_unmaterialized_text?(%State{} = state, pending_ops) do
     with %Contract.RhwpSnapshot.Record{} = snap <- latest_rhwp_snapshot(state),
@@ -252,215 +295,9 @@ defmodule Contract.MCP.Projection do
       "revision" => state.revision,
       "contract_type" => Map.get(state.projection, :type_key),
       "sections" => [],
+      "pages" => [],
       "fields" => []
     }
-  end
-
-  defp from_template_editables(%State{} = state) do
-    with type_key when is_binary(type_key) and type_key != "" <-
-           map_value(state.projection, "type_key") || map_value(state.projection, "contract_type"),
-         {:ok, spec} <- Contract.ContractTypes.get(type_key),
-         template_path when is_binary(template_path) and template_path != "" <-
-           template_path(spec),
-         {:ok, editables} <- load_editables(template_path),
-         fields = editables |> editable_body_fields() |> add_aggregate_editable_fields(),
-         true <- fields != [] do
-      sections = editable_body_sections(fields)
-
-      %{
-        "title" =>
-          map_value(state.projection, "title") || Contract.ContractTypes.display_name(type_key),
-        "revision" => state.revision,
-        "contract_type" => type_key,
-        "template_path" => template_path,
-        "sections" => sections,
-        "fields" => fields
-      }
-      |> refresh_field_values()
-    else
-      _ -> nil
-    end
-  end
-
-  defp template_path(%{template_hwp_path: path}) when is_binary(path) and path != "", do: path
-  defp template_path(%{template_hwpx_path: path}) when is_binary(path) and path != "", do: path
-  defp template_path(_spec), do: nil
-
-  defp load_editables(template_path) do
-    template_path
-    |> editable_spec_path()
-    |> priv_static_path()
-    |> File.read()
-    |> case do
-      {:ok, body} ->
-        with {:ok, %{"editables" => editables}} when is_list(editables) <- Jason.decode(body) do
-          {:ok, editables}
-        end
-
-      {:error, _reason} = error ->
-        error
-    end
-  end
-
-  defp editable_spec_path(template_path) do
-    Regex.replace(~r/\.(hwp|hwpx)$/i, template_path, ".editables.json")
-  end
-
-  defp priv_static_path("/" <> path) do
-    :contract
-    |> :code.priv_dir()
-    |> to_string()
-    |> Path.join("static")
-    |> Path.join(path)
-  end
-
-  defp priv_static_path(path), do: path
-
-  defp editable_body_fields(editables) do
-    editables
-    |> Enum.flat_map(fn editable ->
-      case editable_body_field(editable) do
-        nil -> []
-        field -> [field]
-      end
-    end)
-  end
-
-  defp editable_body_field(%{} = editable) do
-    with %{} = position <- map_value(editable, "position"),
-         %{} = start_pos <- map_value(position, "start"),
-         %{} = end_pos <- map_value(position, "end"),
-         sec when is_integer(sec) <- map_value(start_pos, "sectionIndex"),
-         para when is_integer(para) <- map_value(start_pos, "paragraphIndex"),
-         off_start when is_integer(off_start) <- map_value(start_pos, "charOffset"),
-         off_end when is_integer(off_end) <- map_value(end_pos, "charOffset"),
-         id when is_binary(id) and id != "" <- map_value(editable, "id") do
-      %{
-        "id" => id,
-        "label" => map_value(editable, "label") || id,
-        "kind" => map_value(editable, "kind") || "text_field",
-        "value" => "",
-        "position" => %{
-          "sec" => sec,
-          "para" => para,
-          "off_start" => off_start,
-          "off_end" => max(off_end, off_start)
-        }
-      }
-    else
-      _ -> nil
-    end
-  end
-
-  defp editable_body_field(_editable), do: nil
-
-  defp add_aggregate_editable_fields(fields) do
-    case contract_period_pair(fields) do
-      {%{"position" => start_pos}, %{"position" => end_pos}} ->
-        if start_pos["sec"] == end_pos["sec"] and start_pos["para"] == end_pos["para"] do
-          aggregate = %{
-            "id" => "contract_period",
-            "label" => "계약기간",
-            "kind" => "text_field",
-            "value" => "",
-            "position" => %{
-              "sec" => start_pos["sec"],
-              "para" => start_pos["para"],
-              "off_start" => start_pos["off_start"],
-              "off_end" => end_pos["off_end"] + String.length("까지")
-            }
-          }
-
-          [aggregate | fields]
-        else
-          fields
-        end
-
-      _ ->
-        fields
-    end
-  end
-
-  defp editable_body_sections(fields) do
-    fields
-    |> Enum.group_by(&get_in(&1, ["position", "sec"]))
-    |> Enum.map(fn {sec, section_fields} ->
-      paragraphs =
-        section_fields
-        |> Enum.group_by(&get_in(&1, ["position", "para"]))
-        |> Enum.map(fn {para, paragraph_fields} ->
-          %{
-            "idx" => para,
-            "text" => editable_paragraph_text(paragraph_fields)
-          }
-        end)
-        |> Enum.sort_by(& &1["idx"])
-
-      %{"idx" => sec, "paragraphs" => paragraphs}
-    end)
-    |> Enum.sort_by(& &1["idx"])
-  end
-
-  defp editable_paragraph_text(fields) do
-    text =
-      fields
-      |> Enum.map(&(get_in(&1, ["position", "off_end"]) || 0))
-      |> Enum.max(fn -> 0 end)
-      |> Kernel.+(8)
-      |> blank_text()
-
-    case contract_period_pair(fields) do
-      {start_field, end_field} ->
-        start_pos = start_field["position"]
-        end_pos = end_field["position"]
-
-        text
-        |> put_text(0, " ◇ 계약기간  :")
-        |> put_text(start_pos["off_end"], "부터")
-        |> put_text(end_pos["off_end"], "까지")
-
-      nil ->
-        Enum.reduce(fields, text, fn field, acc ->
-          off =
-            max(
-              (get_in(field, ["position", "off_start"]) || 0) - String.length(field["label"]),
-              0
-            )
-
-          put_text(acc, off, field["label"])
-        end)
-    end
-  end
-
-  defp contract_period_pair(fields) do
-    start_field =
-      Enum.find(fields, fn field ->
-        field["id"] == "service_contract_start_date" or field["label"] == "계약기간 시작일"
-      end)
-
-    end_field =
-      Enum.find(fields, fn field ->
-        field["id"] == "service_contract_end_date" or field["label"] == "계약기간 종료일"
-      end)
-
-    if start_field && end_field, do: {start_field, end_field}
-  end
-
-  defp blank_text(length) when length > 0 do
-    1..length
-    |> Enum.map(fn _ -> " " end)
-    |> Enum.join()
-  end
-
-  defp blank_text(_length), do: ""
-
-  defp put_text(text, off, value) when is_binary(text) and is_integer(off) and is_binary(value) do
-    length = String.length(text)
-    off = clamp(off, 0, length)
-    value_length = String.length(value)
-
-    String.slice(text, 0, off) <>
-      value <> String.slice(text, min(off + value_length, length), length)
   end
 
   defp r2_driver do
@@ -521,8 +358,13 @@ defmodule Contract.MCP.Projection do
       "revision" => state.revision,
       "contract_type" => Map.get(snap, "contract_type") || Map.get(state.projection, :type_key),
       "sections" => normalize_sections(Map.get(snap, "sections", [])),
+      "pages" => normalize_pages(Map.get(snap, "pages", [])),
       "fields" => Map.get(snap, "fields", []) |> List.wrap()
     }
+    |> maybe_put(
+      "positional_index",
+      normalize_positional_index(Map.get(snap, "positional_index"))
+    )
   end
 
   # ---------------------------------------------------------------------------
@@ -604,48 +446,6 @@ defmodule Contract.MCP.Projection do
     end
   end
 
-  @doc """
-  Find every occurrence of `needle` across the document. Returns at most
-  `limit` hits with `context` characters of leading/trailing snippet for
-  disambiguation. Each hit carries the positional triple
-  `(sec, para, off)` and the literal `match` substring, so the caller can
-  feed them straight back into `doc.edit`.
-
-  Result: `%{total: integer(), hits: [hit]}` where
-  `hit = [sec, para, off, len, before, match, after, kind]`.
-  """
-  @spec find(map() | State.t(), String.t(), keyword()) ::
-          %{total: non_neg_integer(), hits: list()}
-  def find(%State{} = state, needle, opts), do: find(to_agent_ir(state), needle, opts)
-
-  def find(%{"sections" => sections}, needle, opts)
-      when is_binary(needle) and needle != "" and is_list(sections) do
-    limit = Keyword.get(opts, :limit, 20)
-    context = Keyword.get(opts, :context, 30)
-    len = String.length(needle)
-
-    {hits, total} =
-      Enum.reduce(sections, {[], 0}, fn section, {acc, total} ->
-        sec = section["idx"] || 0
-
-        Enum.reduce(section["paragraphs"] || [], {acc, total}, fn p, {acc2, total2} ->
-          para = p["idx"] || 0
-          entries = searchable_paragraph_entries(sec, para, p)
-
-          Enum.reduce(entries, {acc2, total2}, fn entry, {acc3, total3} ->
-            matches = grapheme_indices(entry.text, needle)
-            new_total = total3 + length(matches)
-            new_hits = append_find_hits(acc3, matches, entry, needle, len, context, limit)
-            {new_hits, new_total}
-          end)
-        end)
-      end)
-
-    %{total: total, hits: Enum.reverse(hits)}
-  end
-
-  def find(_ir, _needle, _opts), do: %{total: 0, hits: []}
-
   @doc false
   @spec paragraph_text_at(map() | State.t(), non_neg_integer(), non_neg_integer()) ::
           String.t() | nil
@@ -657,487 +457,208 @@ defmodule Contract.MCP.Projection do
 
   def paragraph_text_at(_ir, _sec, _para), do: nil
 
-  @doc false
-  @spec cell_text_at_path(map() | State.t(), non_neg_integer(), non_neg_integer(), list()) ::
-          String.t() | nil
-  def cell_text_at_path(%State{} = state, sec, para, cell_path),
-    do: cell_text_at_path(to_agent_ir(state), sec, para, cell_path)
+  @doc """
+  Compact doc.read v2 surface: section + logical leaf index window.
+  """
+  @spec read_window(map() | State.t(), non_neg_integer(), non_neg_integer(), pos_integer()) ::
+          map()
+  def read_window(%State{} = state, sec, at, size),
+    do: read_window(to_agent_ir(state), sec, at, size)
 
-  def cell_text_at_path(%{"sections" => sections}, sec, para, cell_path)
-      when is_list(cell_path) do
-    paragraph = find_paragraph(sections, sec, para)
+  def read_window(%{"sections" => sections}, sec, at, size)
+      when is_list(sections) and is_integer(at) and is_integer(size) do
+    section = Enum.find(sections, %{}, fn s -> (s["idx"] || 0) == sec end)
 
-    case paragraph do
-      %{} ->
-        paragraph_table_cells(sec, para, paragraph)
-        |> Enum.find(&(Map.get(&1, "cell_path") == cell_path))
-        |> case do
-          %{"text" => text} when is_binary(text) -> text
-          _ -> nil
-        end
+    leaves =
+      section
+      |> Map.get("paragraphs", [])
+      |> logical_read_leaves(sec)
 
-      _ ->
-        nil
-    end
-  end
+    at = max(at, 0)
+    size = max(size, 1)
+    {items, rest} = leaves |> Enum.drop(at) |> Enum.split(size)
+    next = if rest == [], do: nil, else: at + length(items)
 
-  def cell_text_at_path(_ir, _sec, _para, _cell_path), do: nil
-
-  defp searchable_paragraph_entries(sec, para, paragraph) do
-    paragraph_entry = %{
-      sec: sec,
-      para: para,
-      text: paragraph["text"] || "",
-      kind: paragraph["kind"] || "paragraph",
-      meta: nil
+    %{
+      "sec" => sec,
+      "at" => at,
+      "items" => items
     }
-
-    cell_entries =
-      for cell <- paragraph_table_cells(sec, para, paragraph) do
-        %{
-          sec: sec,
-          para: para,
-          text: cell["text"] || "",
-          kind: "cell",
-          meta:
-            Map.take(cell, [
-              "control_index",
-              "row",
-              "col",
-              "cell_index",
-              "cell_para_index",
-              "cell_path",
-              "target"
-            ])
-        }
-      end
-
-    [paragraph_entry | cell_entries]
+    |> maybe_put("next_at", next)
   end
 
-  defp append_find_hits(acc, matches, entry, needle, len, context, limit) do
-    Enum.reduce(matches, acc, fn off, hits ->
-      if length(hits) >= limit do
-        hits
-      else
-        hit = [
-          entry.sec,
-          entry.para,
-          off,
-          len,
-          context_before(entry.text, off, context),
-          needle,
-          context_after(entry.text, off + len, context),
-          entry.kind
+  def read_window(_ir, sec, at, _size),
+    do: %{"sec" => sec, "at" => max(at, 0), "items" => []}
+
+  defp logical_read_leaves(paragraphs, sec) do
+    paragraphs
+    |> List.wrap()
+    |> Enum.flat_map(fn
+      %{"kind" => "table"} = paragraph ->
+        paragraph_table_cells(sec, paragraph["idx"] || 0, paragraph)
+        |> Enum.map(fn cell ->
+          %{
+            "kind" => "cell",
+            "sec" => sec,
+            "para" => cell["target"]["para"],
+            "row" => cell["row"],
+            "col" => cell["col"],
+            "cell_para" => cell["cell_para_index"],
+            "text" => cell["text"] || "",
+            "chars" => String.length(cell["text"] || "")
+          }
+        end)
+
+      %{} = paragraph ->
+        text = paragraph["text"] || ""
+
+        [
+          %{
+            "sec" => sec,
+            "para" => paragraph["idx"] || 0,
+            "kind" => paragraph["kind"] || "paragraph",
+            "text" => text,
+            "chars" => String.length(text)
+          }
         ]
 
-        hit = if entry.meta, do: hit ++ [entry.meta], else: hit
-        [hit | hits]
-      end
+      _ ->
+        []
     end)
   end
-
-  defp grapheme_indices(haystack, needle) do
-    graphemes = String.graphemes(haystack)
-    nlen = String.length(needle)
-    max_start = length(graphemes) - nlen
-
-    if max_start < 0 do
-      []
-    else
-      Enum.reduce(0..max_start, [], fn i, acc ->
-        slice = graphemes |> Enum.slice(i, nlen) |> Enum.join()
-        if slice == needle, do: [i | acc], else: acc
-      end)
-      |> Enum.reverse()
-    end
-  end
-
-  defp context_before(text, off, ctx) do
-    start = max(0, off - ctx)
-    String.slice(text, start, off - start)
-  end
-
-  defp context_after(text, off_end, ctx), do: String.slice(text, off_end, ctx)
 
   @doc """
-  Return one small cursor window for `doc.read`.
+  HWP positional metadata for `doc.get`.
 
-  Broad paragraph ranges return paragraph previews only. Single paragraphs,
-  fields, and cells return bounded text windows plus continuation cursors.
-  Table paragraphs return row/column windows, never the full table by default.
+  This deliberately exposes only generic section/paragraph/table coordinates.
+  Semantic fields, labels, values, and preprocessed editable slots stay out of
+  the metadata page.
   """
-  @spec read(map() | State.t(), non_neg_integer(), keyword()) ::
-          map()
-  def read(%State{} = state, sec, opts), do: read(to_agent_ir(state), sec, opts)
+  @spec positional_index(map() | State.t()) :: map()
+  def positional_index(%State{} = state), do: positional_index(to_agent_ir(state))
 
-  def read(%{"sections" => sections} = ir, sec, opts) when is_list(sections) do
-    section = Enum.find(sections, %{}, fn s -> (s["idx"] || 0) == sec end)
-    paragraphs = section["paragraphs"] || []
-    fields = map_value(ir, "fields") || []
-    single = Keyword.get(opts, :para)
-
-    cond do
-      field_id = Keyword.get(opts, :field_id) ->
-        field_read(ir, field_id, opts)
-
-      is_integer(single) ->
-        case Enum.find(paragraphs, fn p -> (p["idx"] || 0) == single end) do
-          nil ->
-            %{"type" => "missing", "sec" => sec, "para" => single}
-
-          %{"kind" => "table"} = p ->
-            cond do
-              is_integer(Keyword.get(opts, :row)) and is_integer(Keyword.get(opts, :col)) ->
-                cell_read(sec, single, p, opts)
-
-              true ->
-                table_window(sec, single, p, opts)
-            end
-
-          p ->
-            paragraph_text_read(sec, p, fields, opts)
-        end
-
-      true ->
-        paragraph_window(sec, paragraphs, opts)
-    end
-  end
-
-  def read(_ir, sec, _opts), do: %{"type" => "missing", "sec" => sec}
-
-  defp paragraph_window(sec, paragraphs, opts) do
-    from = Keyword.get(opts, :from, 0)
-    to = Keyword.get(opts, :to)
-    limit = bounded(Keyword.get(opts, :limit), @paragraph_window_default, @paragraph_window_max)
-
-    candidates =
-      for p <- paragraphs, idx = p["idx"] || 0, idx >= from, is_nil(to) or idx <= to, do: p
-
-    {window, rest} = Enum.split(candidates, limit)
-    next = if rest == [], do: nil, else: hd(rest)["idx"] || 0
-
-    %{
-      "type" => "paragraph_window",
-      "sec" => sec,
-      "from" => from,
-      "limit" => limit,
-      "items" => Enum.map(window, &paragraph_preview(sec, &1))
-    }
-    |> maybe_put("next_para", next)
-  end
-
-  defp paragraph_preview(sec, %{"idx" => para} = paragraph) do
-    text = paragraph["text"] || ""
-    kind = paragraph["kind"] || "paragraph"
-    {preview, range} = text_window(text, 0, @preview_chars)
-
-    %{
-      "sec" => sec,
-      "para" => para,
-      "kind" => kind,
-      "chars" => String.length(text),
-      "preview" => preview,
-      "read" => %{"sec" => sec, "para" => para, "off" => 0, "chars" => @text_window_default}
-    }
-    |> maybe_put("next_off", range["next_off"])
-    |> maybe_put_table_hint(paragraph)
-  end
-
-  defp paragraph_text_read(sec, %{"idx" => para, "text" => text} = paragraph, fields, opts) do
-    off = max(Keyword.get(opts, :off, 0), 0)
-    chars = bounded(Keyword.get(opts, :chars), @text_window_default, @text_window_max)
-    text = text || ""
-    {snippet, range} = text_window(text, off, chars)
-
-    %{
-      "type" => "paragraph",
-      "sec" => sec,
-      "para" => para,
-      "kind" => paragraph["kind"] || "paragraph",
-      "text" => snippet,
-      "range" => range,
-      "target" => %{
-        "type" => "paragraph",
-        "sec" => sec,
-        "para" => para,
-        "off" => off,
-        "match" => snippet
-      }
-    }
-    |> maybe_put("fields", paragraph_field_hints(sec, para, fields))
-  end
-
-  defp paragraph_text_read(sec, paragraph, fields, opts) do
-    paragraph_text_read(sec, Map.put(paragraph, "text", paragraph["text"] || ""), fields, opts)
-  end
-
-  defp paragraph_field_hints(sec, para, fields) do
-    fields
-    |> List.wrap()
-    |> Enum.filter(&field_in_paragraph?(&1, sec, para))
-    |> Enum.map(fn field ->
-      pos = map_value(field, "position") || %{}
-
-      compact(%{
-        "id" => map_value(field, "id"),
-        "label" => map_value(field, "label"),
-        "kind" => map_value(field, "kind"),
-        "read" => %{"field_id" => map_value(field, "id")},
-        "position" =>
-          compact(%{
-            "sec" => sec,
-            "para" => para,
-            "off_start" => map_value(pos, "off_start"),
-            "off_end" => map_value(pos, "off_end")
-          })
+  def positional_index(%{
+        "sections" => sections,
+        "positional_index" => %{"paragraphs" => paragraphs} = index
       })
-    end)
+      when is_list(sections) and is_list(paragraphs) do
+    paragraph_refs = normalize_positional_paragraph_refs(paragraphs)
+    table_refs = normalize_positional_table_refs(Map.get(index, "tables", []))
+    pages = pages_from_positional_index(paragraph_refs, table_refs)
+    hwp_sections = positional_hwp_sections(sections)
+    {tables, cell_count} = table_index_counts(table_refs)
+
+    %{
+      "hwp_sections" => hwp_sections,
+      "pages" => pages,
+      "paragraph_refs" => paragraph_refs,
+      "table_controls" => tables,
+      "table_cell_count" => cell_count,
+      "grid_table_controls" =>
+        Enum.count(tables, fn table -> table["hwp_shape"] == "grid_control" end),
+      "single_cell_table_controls" =>
+        Enum.count(tables, fn table -> table["hwp_shape"] == "single_cell_control" end),
+      "note" =>
+        "HWP sections and table_controls are format coordinates. table_controls include layout/title/note boxes such as 1x1 controls; they are not semantic business tables."
+    }
   end
 
-  defp field_read(%{"sections" => sections, "fields" => fields}, field_id, opts) do
-    case Enum.find(List.wrap(fields), &(map_value(&1, "id") == field_id)) do
-      nil ->
-        %{"type" => "missing_field", "field_id" => field_id}
+  def positional_index(%{"sections" => sections} = ir) when is_list(sections) do
+    pages = Map.get(ir, "pages", [])
+    paragraph_refs = page_paragraph_refs(pages)
+    paragraph_pages = paragraph_page_lookup(paragraph_refs)
 
-      field ->
-        pos = map_value(field, "position") || %{}
-        sec = map_value(pos, "sec") || 0
-        para = map_value(pos, "parent_para") || map_value(pos, "para") || 0
-        paragraph = find_paragraph(sections, sec, para)
-        paragraph_text = (paragraph && paragraph["text"]) || ""
-        value = field_value_for_read(field, paragraph_text)
-        off = max(Keyword.get(opts, :off, 0), 0)
-        chars = bounded(Keyword.get(opts, :chars), @text_window_default, @text_window_max)
-        {snippet, range} = text_window(value, off, chars)
-        target_off = (map_value(pos, "off_start") || 0) + off
+    {tables, cell_count} =
+      sections
+      |> Enum.flat_map(&section_table_index/1)
+      |> Enum.map(&maybe_put(&1, "page", Map.get(paragraph_pages, {&1["sec"], &1["para"]})))
+      |> table_index_counts()
 
-        %{
-          "type" => "field",
-          "field" => %{
-            "id" => map_value(field, "id"),
-            "label" => map_value(field, "label"),
-            "kind" => map_value(field, "kind"),
-            "value" => snippet,
-            "range" => range,
-            "target" =>
-              compact(%{
-                "type" => field_target_type(pos),
-                "sec" => sec,
-                "para" => para,
-                "off" => target_off,
-                "match" => snippet,
-                "cell_path" => map_value(pos, "cell_path")
-              })
-          }
-        }
-    end
+    %{
+      "hwp_sections" => positional_hwp_sections(sections),
+      "pages" => pages,
+      "paragraph_refs" => paragraph_refs,
+      "table_controls" => tables,
+      "table_cell_count" => cell_count,
+      "grid_table_controls" =>
+        Enum.count(tables, fn table -> table["hwp_shape"] == "grid_control" end),
+      "single_cell_table_controls" =>
+        Enum.count(tables, fn table -> table["hwp_shape"] == "single_cell_control" end),
+      "note" =>
+        "HWP sections and table_controls are format coordinates. table_controls include layout/title/note boxes such as 1x1 controls; they are not semantic business tables."
+    }
   end
 
-  defp field_read(_ir, field_id, _opts), do: %{"type" => "missing_field", "field_id" => field_id}
-
-  defp field_target_type(pos) do
-    case map_value(pos, "cell_path") do
-      [_ | _] -> "cell"
-      _ -> "paragraph"
-    end
+  def positional_index(_) do
+    %{
+      "hwp_sections" => [],
+      "pages" => [],
+      "paragraph_refs" => [],
+      "table_controls" => [],
+      "table_cell_count" => 0,
+      "grid_table_controls" => 0,
+      "single_cell_table_controls" => 0,
+      "note" =>
+        "HWP sections and table_controls are format coordinates. table_controls include layout/title/note boxes such as 1x1 controls; they are not semantic business tables."
+    }
   end
 
-  defp table_window(sec, para, paragraph, opts) do
-    row_from = max(Keyword.get(opts, :row_from, 0), 0)
-    row_limit = bounded(Keyword.get(opts, :row_limit), @table_row_default, @table_axis_max)
-    col_from = max(Keyword.get(opts, :col_from, 0), 0)
-    col_limit = bounded(Keyword.get(opts, :col_limit), @table_col_default, @table_axis_max)
-    control_filter = Keyword.get(opts, :control_index)
+  defp section_table_index(section) do
+    sec = section["idx"] || 0
 
-    tables =
+    section
+    |> Map.get("paragraphs", [])
+    |> Enum.flat_map(fn paragraph ->
+      para = paragraph["idx"] || 0
+
       paragraph_tables(sec, para, paragraph)
-      |> Enum.filter(fn table ->
-        is_nil(control_filter) or table["control_index"] == control_filter
-      end)
       |> Enum.map(fn table ->
-        cells =
-          table["cells"]
-          |> Enum.filter(fn cell ->
-            cell["row"] >= row_from and cell["row"] < row_from + row_limit and
-              cell["col"] >= col_from and cell["col"] < col_from + col_limit
-          end)
-          |> Enum.map(&cell_preview/1)
-
         %{
+          "sec" => sec,
+          "para" => para,
           "control_index" => table["control_index"],
           "rows" => table["rows"],
           "cols" => table["cols"],
-          "row_from" => row_from,
-          "row_limit" => row_limit,
-          "col_from" => col_from,
-          "col_limit" => col_limit,
-          "cells" => cells
+          "hwp_shape" => table_control_shape(table),
+          "cells" => length(table["cells"] || [])
         }
       end)
-
-    %{
-      "type" => "table_window",
-      "sec" => sec,
-      "para" => para,
-      "tables" => tables
-    }
+    end)
   end
 
-  defp cell_read(sec, para, paragraph, opts) do
-    row = Keyword.get(opts, :row)
-    col = Keyword.get(opts, :col)
-    control_filter = Keyword.get(opts, :control_index)
+  defp table_control_shape(%{"rows" => 1, "cols" => 1}), do: "single_cell_control"
+  defp table_control_shape(_table), do: "grid_control"
 
-    cells =
-      paragraph_table_cells(sec, para, paragraph)
-      |> Enum.filter(fn cell ->
-        cell["row"] == row and cell["col"] == col and
-          (is_nil(control_filter) or cell["control_index"] == control_filter)
-      end)
-
-    case cells do
-      [cell | _] ->
-        off = max(Keyword.get(opts, :off, 0), 0)
-        chars = bounded(Keyword.get(opts, :chars), @text_window_default, @text_window_max)
-        text = cell["text"] || ""
-        {snippet, range} = text_window(text, off, chars)
-
-        %{
-          "type" => "cell",
-          "cell" =>
-            cell
-            |> Map.take([
-              "control_index",
-              "row",
-              "col",
-              "cell_index",
-              "cell_para_index",
-              "cell_path"
-            ])
-            |> Map.merge(%{
-              "text" => snippet,
-              "range" => range,
-              "target" => %{
-                "type" => "cell",
-                "sec" => sec,
-                "para" => para,
-                "off" => off,
-                "match" => snippet,
-                "cell_path" => cell["cell_path"]
-              }
-            })
-        }
-
-      [] ->
-        %{"type" => "missing_cell", "sec" => sec, "para" => para, "row" => row, "col" => col}
-    end
-  end
-
-  defp cell_preview(cell) do
-    text = cell["text"] || ""
-    {preview, range} = text_window(text, 0, @preview_chars)
-
-    cell
-    |> Map.take(["control_index", "row", "col", "cell_index", "cell_para_index", "cell_path"])
-    |> Map.merge(%{
-      "chars" => String.length(text),
-      "preview" => preview,
-      "read" => %{
-        "sec" => cell["target"]["sec"],
-        "para" => cell["target"]["para"],
-        "row" => cell["row"],
-        "col" => cell["col"],
-        "off" => 0,
-        "chars" => @text_window_default
+  defp positional_hwp_sections(sections) do
+    Enum.map(sections, fn section ->
+      %{
+        "sec" => section["idx"] || 0,
+        "paragraphs" => length(section["paragraphs"] || [])
       }
-    })
-    |> maybe_put("next_off", range["next_off"])
+    end)
   end
 
-  defp text_window(text, off, chars) do
-    text = text || ""
-    total = String.length(text)
-    off = min(max(off || 0, 0), total)
-    chars = bounded(chars, @text_window_default, @text_window_max)
-    snippet = String.slice(text, off, chars) || ""
-    next_off = off + String.length(snippet)
-    next_off = if next_off < total, do: next_off, else: nil
+  defp table_index_counts(tables) do
+    count =
+      Enum.reduce(tables, 0, fn table, acc ->
+        acc + table_cell_count(table)
+      end)
 
-    {snippet,
-     compact(%{
-       "off" => off,
-       "chars" => String.length(snippet),
-       "total" => total,
-       "next_off" => next_off
-     })}
+    {tables, count}
   end
 
-  defp bounded(value, default, max_value) do
-    cond do
-      not is_integer(value) -> default
-      value < 1 -> default
-      true -> min(value, max_value)
-    end
-  end
+  defp table_cell_count(%{"cells" => cells}) when is_integer(cells), do: cells
+  defp table_cell_count(%{"cell_refs" => cells}) when is_list(cells), do: length(cells)
+
+  defp table_cell_count(%{"rows" => rows, "cols" => cols})
+       when is_integer(rows) and is_integer(cols),
+       do: rows * cols
+
+  defp table_cell_count(_table), do: 0
 
   defp maybe_put(map, _key, nil), do: map
   defp maybe_put(map, _key, []), do: map
   defp maybe_put(map, key, value), do: Map.put(map, key, value)
-
-  defp maybe_put_table_hint(map, %{"kind" => "table"} = paragraph) do
-    case paragraph["tables"] do
-      [_ | _] ->
-        Map.put(map, "table", %{
-          "read" => %{
-            "sec" => map["sec"],
-            "para" => map["para"],
-            "row_from" => 0,
-            "row_limit" => @table_row_default,
-            "col_from" => 0,
-            "col_limit" => @table_col_default
-          }
-        })
-
-      _ ->
-        map
-    end
-  end
-
-  defp maybe_put_table_hint(map, _paragraph), do: map
-
-  defp find_paragraph(sections, sec, para) do
-    sections
-    |> List.wrap()
-    |> Enum.find(%{}, fn section -> (section["idx"] || 0) == sec end)
-    |> Map.get("paragraphs", [])
-    |> Enum.find(fn paragraph -> (paragraph["idx"] || 0) == para end)
-  end
-
-  defp field_in_paragraph?(field, sec, para) when is_map(field) do
-    pos = map_value(field, "position") || %{}
-    field_para = map_value(pos, "parent_para") || map_value(pos, "para")
-
-    map_value(pos, "cell_path") in [nil, []] and map_value(pos, "sec") == sec and
-      field_para == para
-  end
-
-  defp field_in_paragraph?(_field, _sec, _para), do: false
-
-  defp field_value_for_read(field, paragraph_text) do
-    value = map_value(field, "value")
-
-    cond do
-      is_binary(value) ->
-        value
-
-      true ->
-        pos = map_value(field, "position") || %{}
-        start_off = map_value(pos, "off_start") || 0
-        end_off = map_value(pos, "off_end") || start_off
-        String.slice(paragraph_text, start_off, max(end_off - start_off, 0)) || ""
-    end
-  end
 
   @doc """
   Total paragraph count across all sections — used by `doc.get` to
@@ -1175,6 +696,158 @@ defmodule Contract.MCP.Projection do
   end
 
   defp normalize_sections(_), do: []
+
+  defp normalize_positional_index(%{} = index) do
+    paragraphs = normalize_positional_paragraph_refs(map_value(index, "paragraphs") || [])
+    tables = normalize_positional_table_refs(map_value(index, "tables") || [])
+
+    %{"paragraphs" => paragraphs, "tables" => tables}
+  end
+
+  defp normalize_positional_index(_), do: nil
+
+  defp normalize_positional_paragraph_refs(refs) when is_list(refs) do
+    refs
+    |> Enum.map(&normalize_positional_paragraph_ref/1)
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp normalize_positional_paragraph_refs(_), do: []
+
+  defp normalize_positional_paragraph_ref(ref) when is_map(ref) do
+    with sec when is_integer(sec) <- int_value(ref, "sec"),
+         para when is_integer(para) <- int_value(ref, "para"),
+         page when is_integer(page) <- int_value(ref, "page") do
+      %{"page" => page, "sec" => sec, "para" => para}
+      |> maybe_put("off_start", int_value(ref, "off_start"))
+      |> maybe_put("off_end", int_value(ref, "off_end"))
+    else
+      _ -> nil
+    end
+  end
+
+  defp normalize_positional_paragraph_ref(_), do: nil
+
+  defp normalize_positional_table_refs(refs) when is_list(refs) do
+    refs
+    |> Enum.map(&normalize_positional_table_ref/1)
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp normalize_positional_table_refs(_), do: []
+
+  defp normalize_positional_table_ref(ref) when is_map(ref) do
+    with sec when is_integer(sec) <- int_value(ref, "sec"),
+         para when is_integer(para) <- int_value(ref, "para"),
+         page when is_integer(page) <- int_value(ref, "page") do
+      rows = int_value(ref, "rows") || 0
+      cols = int_value(ref, "cols") || 0
+      raw_cells = map_value(ref, "cell_refs") || map_value(ref, "cells")
+      cells = normalize_positional_table_cells(raw_cells || [])
+      cell_count = if is_integer(raw_cells), do: raw_cells, else: length(cells)
+
+      %{
+        "sec" => sec,
+        "para" => para,
+        "page" => page,
+        "control_index" => int_value(ref, "control_index") || int_value(ref, "control_idx") || 0,
+        "rows" => rows,
+        "cols" => cols,
+        "cells" => cell_count,
+        "hwp_shape" => table_control_shape(%{"rows" => rows, "cols" => cols})
+      }
+      |> maybe_put("cell_refs", cells)
+      |> maybe_put("native_shape", map_value(ref, "hwp_shape"))
+    else
+      _ -> nil
+    end
+  end
+
+  defp normalize_positional_table_ref(_), do: nil
+
+  defp normalize_positional_table_cells(cells) when is_list(cells) do
+    cells
+    |> Enum.map(&normalize_positional_table_cell/1)
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp normalize_positional_table_cells(_), do: []
+
+  defp normalize_positional_table_cell(cell) when is_map(cell) do
+    with cell_index when is_integer(cell_index) <-
+           int_value(cell, "cell_index") || int_value(cell, "cell_idx"),
+         row when is_integer(row) <- int_value(cell, "row"),
+         col when is_integer(col) <- int_value(cell, "col") do
+      %{
+        "cell_index" => cell_index,
+        "row" => row,
+        "col" => col,
+        "row_span" => int_value(cell, "row_span") || 1,
+        "col_span" => int_value(cell, "col_span") || 1
+      }
+      |> maybe_put("page", int_value(cell, "page"))
+      |> maybe_put("bbox", map_value(cell, "bbox"))
+    else
+      _ -> nil
+    end
+  end
+
+  defp normalize_positional_table_cell(_), do: nil
+
+  defp pages_from_positional_index(paragraph_refs, table_refs) do
+    pages =
+      (Enum.map(paragraph_refs, & &1["page"]) ++ Enum.map(table_refs, & &1["page"]))
+      |> Enum.filter(&is_integer/1)
+      |> Enum.uniq()
+      |> Enum.sort()
+
+    Enum.map(pages, fn page ->
+      %{
+        "page" => page,
+        "paragraph_refs" => Enum.filter(paragraph_refs, &(&1["page"] == page))
+      }
+    end)
+  end
+
+  defp normalize_pages(pages) when is_list(pages) do
+    pages
+    |> Enum.with_index()
+    |> Enum.map(fn {page, default_idx} ->
+      page_number = map_value(page, "page") || map_value(page, "idx") || default_idx + 1
+
+      %{
+        "page" => page_number,
+        "paragraph_refs" =>
+          page
+          |> map_value("paragraph_refs")
+          |> List.wrap()
+          |> Enum.map(&normalize_paragraph_ref(&1, page_number))
+          |> Enum.reject(&is_nil/1)
+      }
+    end)
+  end
+
+  defp normalize_pages(_), do: []
+
+  defp normalize_paragraph_ref(ref, page_number) when is_map(ref) do
+    with sec when is_integer(sec) <- map_value(ref, "sec"),
+         para when is_integer(para) <- map_value(ref, "para") do
+      %{"page" => page_number, "sec" => sec, "para" => para}
+    else
+      _ -> nil
+    end
+  end
+
+  defp normalize_paragraph_ref(_ref, _page_number), do: nil
+
+  defp page_paragraph_refs(pages) do
+    pages
+    |> Enum.flat_map(fn page -> Map.get(page, "paragraph_refs", []) end)
+  end
+
+  defp paragraph_page_lookup(paragraph_refs) do
+    Map.new(paragraph_refs, fn ref -> {{ref["sec"], ref["para"]}, ref["page"]} end)
+  end
 
   defp maybe_put_kind(paragraph, %{"kind" => kind}) when is_binary(kind),
     do: Map.put(paragraph, "kind", kind)
@@ -1288,10 +961,12 @@ defmodule Contract.MCP.Projection do
   end
 
   defp text_ops_after(document_id, snapshot_revision) do
+    text_command_kinds = @text_command_kinds
+
     Repo.all(
       from c in Change,
         where:
-          c.document_id == ^document_id and c.command_kind == "edit_text" and
+          c.document_id == ^document_id and c.command_kind in ^text_command_kinds and
             c.result_revision > ^snapshot_revision,
         order_by: [asc: c.result_revision, asc: c.inserted_at, asc: c.id]
     )
@@ -1300,10 +975,12 @@ defmodule Contract.MCP.Projection do
 
   defp text_ops_between(document_id, after_revision, through_revision)
        when is_binary(document_id) and is_integer(after_revision) and is_integer(through_revision) do
+    text_command_kinds = @text_command_kinds
+
     Repo.all(
       from c in Change,
         where:
-          c.document_id == ^document_id and c.command_kind == "edit_text" and
+          c.document_id == ^document_id and c.command_kind in ^text_command_kinds and
             c.result_revision > ^after_revision and c.result_revision <= ^through_revision,
         order_by: [asc: c.result_revision, asc: c.inserted_at, asc: c.id]
     )
@@ -1402,12 +1079,36 @@ defmodule Contract.MCP.Projection do
           []
         end
 
+      "insert_paragraph" ->
+        with sec when is_integer(sec) <- int_value(args, "sec"),
+             para when is_integer(para) <- int_value(args, "para"),
+             off when is_integer(off) <- int_value(args, "off") do
+          [
+            %{
+              kind: "insert_paragraph",
+              sec: sec,
+              para: para,
+              off: off,
+              cell_path: map_value(args, "cell_path")
+            }
+          ]
+        else
+          _ -> []
+        end
+
       _ ->
         []
     end
   end
 
   defp normalize_text_op(_), do: []
+
+  defp apply_text_op(ir, %{kind: "insert_paragraph", cell_path: cell_path} = op)
+       when cell_path in [nil, []] do
+    ir
+    |> Map.update("sections", [], &apply_insert_paragraph_to_sections(&1, op))
+    |> Map.update("fields", [], &apply_insert_paragraph_to_fields(&1, op))
+  end
 
   defp apply_text_op(ir, %{sec: sec, para: para, off: off} = op)
        when is_integer(sec) and is_integer(para) and is_integer(off) do
@@ -1417,6 +1118,44 @@ defmodule Contract.MCP.Projection do
   end
 
   defp apply_text_op(ir, _op), do: ir
+
+  defp apply_insert_paragraph_to_sections(sections, op) do
+    Enum.map(sections || [], fn section ->
+      if map_value(section, "idx") == op.sec do
+        Map.update(section, "paragraphs", [], &split_paragraphs(&1, op))
+      else
+        section
+      end
+    end)
+  end
+
+  defp split_paragraphs(paragraphs, %{para: para, off: off}) do
+    Enum.flat_map(paragraphs || [], fn paragraph ->
+      idx = map_value(paragraph, "idx")
+
+      cond do
+        idx == para and is_binary(map_value(paragraph, "text")) ->
+          text = map_value(paragraph, "text")
+          off = clamp(off, 0, String.length(text))
+          head = String.slice(text, 0, off)
+          tail = String.slice(text, off, String.length(text) - off)
+
+          [
+            Map.put(paragraph, "text", head),
+            paragraph
+            |> Map.put("idx", para + 1)
+            |> Map.put("text", tail)
+            |> Map.drop(["tables"])
+          ]
+
+        is_integer(idx) and idx > para ->
+          [Map.put(paragraph, "idx", idx + 1)]
+
+        true ->
+          [paragraph]
+      end
+    end)
+  end
 
   defp apply_text_op_to_sections(sections, op) do
     Enum.map(sections || [], fn section ->
@@ -1502,6 +1241,24 @@ defmodule Contract.MCP.Projection do
     Enum.map(fields || [], &apply_text_op_to_field(&1, op))
   end
 
+  defp apply_insert_paragraph_to_fields(fields, op) do
+    Enum.map(fields || [], &apply_insert_paragraph_to_field(&1, op))
+  end
+
+  defp apply_insert_paragraph_to_field(field, %{cell_path: [_ | _]}), do: field
+
+  defp apply_insert_paragraph_to_field(field, op) when is_map(field) do
+    pos = map_value(field, "position") || %{}
+
+    if map_value(pos, "cell_path") in [nil, []] and map_value(pos, "sec") == op.sec do
+      shift_field_for_paragraph_insert(field, pos, op)
+    else
+      field
+    end
+  end
+
+  defp apply_insert_paragraph_to_field(field, _op), do: field
+
   defp apply_text_op_to_field(field, %{cell_path: [_ | _]}), do: field
 
   defp apply_text_op_to_field(field, op) when is_map(field) do
@@ -1536,6 +1293,30 @@ defmodule Contract.MCP.Projection do
   end
 
   defp same_body_position?(_pos, _op), do: false
+
+  defp shift_field_for_paragraph_insert(field, pos, %{para: para, off: off}) do
+    field_para = map_value(pos, "para")
+    start_off = map_value(pos, "off_start") || 0
+    end_off = map_value(pos, "off_end") || start_off
+
+    cond do
+      is_integer(field_para) and field_para > para ->
+        pos = Map.put(pos, "para", field_para + 1)
+        Map.put(field, "position", pos)
+
+      field_para == para and start_off >= off ->
+        pos =
+          pos
+          |> Map.put("para", para + 1)
+          |> Map.put("off_start", max(start_off - off, 0))
+          |> Map.put("off_end", max(end_off - off, 0))
+
+        Map.put(field, "position", pos)
+
+      true ->
+        field
+    end
+  end
 
   defp shift_field_position(field, pos, insert_off, delta) do
     start_off = map_value(pos, "off_start") || 0
@@ -1699,12 +1480,6 @@ defmodule Contract.MCP.Projection do
       value when is_integer(value) -> value
       _ -> nil
     end
-  end
-
-  defp compact(map) when is_map(map) do
-    map
-    |> Enum.reject(fn {_key, value} -> is_nil(value) end)
-    |> Map.new()
   end
 
   defp clamp(value, min, max), do: value |> max(min) |> min(max)

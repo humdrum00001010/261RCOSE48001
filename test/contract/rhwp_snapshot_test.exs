@@ -216,4 +216,97 @@ defmodule Contract.RhwpSnapshotTest do
       assert ir["revision"] == state.revision
     end
   end
+
+  describe "Projection structural text replay" do
+    test "replays insert_paragraph before insert_text and shifts following paragraph indexes" do
+      ctx = scope()
+      doc_id = create_doc(ctx, "Split replay")
+
+      insert_rhwp_snapshot!(doc_id, 1, split_base_ir())
+      assert {:ok, %Change{result_revision: 2}} = apply_split_doc_write(ctx, doc_id)
+
+      {:ok, state} = Store.load(doc_id)
+      ir = Contract.MCP.Projection.to_agent_ir(state)
+
+      assert Contract.MCP.Projection.paragraph_text_at(ir, 0, 0) == "Alpha"
+      assert Contract.MCP.Projection.paragraph_text_at(ir, 0, 1) == "NEW Beta"
+      assert Contract.MCP.Projection.paragraph_text_at(ir, 0, 2) == "Gamma"
+    end
+
+    test "same-revision validation rejects marker text without structural paragraph split" do
+      ctx = scope()
+      doc_id = create_doc(ctx, "Bad split replay")
+
+      insert_rhwp_snapshot!(doc_id, 1, split_base_ir())
+      assert {:ok, %Change{result_revision: 2}} = apply_split_doc_write(ctx, doc_id)
+
+      insert_rhwp_snapshot!(doc_id, 2, %{
+        "title" => "Bad split replay",
+        "contract_type" => "nda_v1",
+        "sections" => [
+          %{
+            "idx" => 0,
+            "paragraphs" => [
+              %{"idx" => 0, "text" => "Alpha Beta"},
+              %{"idx" => 1, "text" => "NEW Beta"},
+              %{"idx" => 2, "text" => "Gamma"}
+            ]
+          }
+        ],
+        "fields" => []
+      })
+
+      {:ok, state} = Store.load(doc_id)
+
+      assert {:error, {:invalid_params, message}} =
+               Contract.MCP.Projection.validate_text_edit_basis(state)
+
+      assert message =~ "same-revision projection basis is stale"
+    end
+  end
+
+  defp split_base_ir do
+    %{
+      "title" => "Split replay",
+      "contract_type" => "nda_v1",
+      "sections" => [
+        %{
+          "idx" => 0,
+          "paragraphs" => [
+            %{"idx" => 0, "text" => "Alpha Beta"},
+            %{"idx" => 1, "text" => "Gamma"}
+          ]
+        }
+      ],
+      "fields" => []
+    }
+  end
+
+  defp apply_split_doc_write(ctx, doc_id) do
+    Runtime.apply(ctx, %Command{
+      kind: :doc_write,
+      document_id: doc_id,
+      actor_type: :agent,
+      actor_id: ctx.user.id,
+      base_revision: 1,
+      idempotency_key: "split-#{Ecto.UUID.generate()}",
+      payload: %{
+        "sec" => 0,
+        "para" => 0,
+        "type" => "paragraph",
+        "payload" => %{
+          "cmd" => "insert_paragraph_after",
+          "payload" => %{"text" => "NEW"}
+        },
+        "resolved" => %{"off" => 5}
+      }
+    })
+  end
+
+  defp insert_rhwp_snapshot!(doc_id, revision, ir) do
+    assert {:ok, %Record{} = snapshot} =
+             RhwpSnapshot.upload_and_commit(doc_id, revision, "hwp-#{revision}", ir, "hwp")
+
+    snapshot
+  end
 end

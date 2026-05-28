@@ -24,7 +24,7 @@ defmodule Contract.Agent do
     * 편집 요청이라도 의도가 모호하면 먼저 한두 문장의 명확화 질문을 하세요. 추측으로 편집하지 마세요.
 
   편집을 할 때:
-    * Use `doc.get` for bounded metadata, heading labels, read hints, cursors, and revision. Use `doc.read` only for small paragraph windows, paragraph text ranges, field ids, table row/column windows, or single cells. Use `doc.find` when you already know target text and need an edit position.
+    * Use `doc.get` first for aggregate metadata and revision. Use `doc.read(sec, at, size)` for concrete content/navigation windows; `size` defaults to 5. Use `doc.write(sec, para, {base_revision, type, payload:{cmd,payload}})` for edits.
     * 변경 도구에 `base_revision` 을 마지막 본 값으로 고정하세요.
     * 충돌이 나면 `doc.get` 으로 재조회 후 한 번만 재시도하세요.
     * 마치고 나서 무엇을 했는지 한두 문장으로 보고하세요 (예: "0번 단락 끝에 '[X]' 를 박았습니다.").
@@ -96,36 +96,28 @@ defmodule Contract.Agent do
   @mcp_tools_addendum """
   도구 — contract-doc MCP:
 
-    * `doc.get` — bounded metadata/navigation only (모든 단락/필드값/표셀본문 X). 반환:
-      `{revision, d (title), t (type_key), counts, outline, f, cursors, read}`.
-      `outline`/`f` 는 page 이며 더 있으면 `cursors.outline.from` / `cursors.fields.from` 으로 이어 읽으세요.
-    * `doc.find(needle, limit?, context?)` — 문자열 검색. Use `doc.find` when you already know target text.
-      paragraph hit: `[sec, para, off, len, before, match, after, "paragraph"]`.
-      table cell hit: `[sec, para, off, len, before, match, after, "cell", meta]`; `meta.target` 을 그대로 `doc.edit` target 으로 쓰세요.
-    * `doc.read(...)` — 작은 cursor/window 만 읽습니다.
-      paragraph window: `{sec, from, to?, limit?}` -> `read.type="paragraph_window"`, previews + `next_para`.
-      paragraph text: `{sec, para, off?, chars?}` -> bounded `text`, `range.next_off`, ready paragraph `target`.
-      field: `{field_id, off?, chars?}` -> bounded field `value`, ready paragraph/cell `target`.
-      table window: `{sec, para, row_from?, row_limit?, col_from?, col_limit?}` -> bounded cell previews only.
-      single cell: `{sec, para, row, col, off?, chars?}` -> bounded cell `text`, `cell_path`, ready cell `target`.
-    * `doc.edit` — paragraph/cell 안 글자 구간 교체. Shape:
-      `{op: "replace_text", target: {type: "paragraph", sec, para, off, match? | len?}, text, base_revision?}`
-      `{op: "replace_text", target: {type: "cell", sec, para, cell_path, off, match? | len?}, text, base_revision?}`
-      `{op: "insert_block", target: {type: "block", sec, para}, block: {kind: "paragraph" | "heading" | "list_item", text?, level?}, base_revision?}`
-      `{op: "delete_block", target: {type: "block", sec, para}, base_revision?}`
-      Table creation and row/column structure edits are not supported. Do not call edit_table/table_op.
-      Never put line breaks inside `replace_text.text` or `insert_block.block.text`. For multi-paragraph drafting, call `insert_block` once per paragraph with newline-free text. Do not replace one template paragraph with an entire contract body.
-      `match` (지울 원문) 권장. For a slot-like date/period edit, first use a field/cell/small paragraph read or `doc.find`; replace the full exact existing value or paragraph, not only a label prefix. For table cells, pass `target` from doc.find or a single-cell doc.read with `type: "cell"`.
+    * `doc.get` — first call for aggregate metadata only (모든 단락/필드값/표셀본문/outline/index/cursors X). 반환:
+      `{ok, revision, d (title), t (type_key), counts}`.
+      content/navigation 은 `doc.read(sec, at, size)` 로만 좁게 읽으세요.
+    * `doc.read(sec, at, size=5)` — 작은 paragraph window 만 읽습니다.
+    * `doc.write(sec, para, {base_revision, type, payload:{cmd,payload}})` — compact mutation tool.
+      `type` 은 substrate/family 입니다. Nested `payload.cmd` 는 operation 입니다. Inner `payload.payload` 는 command args 입니다.
+      paragraph command: `{type: "paragraph", payload: {cmd: "insert_after_match", payload: {match, text}}}`.
+      paragraph command: `{type: "paragraph", payload: {cmd: "insert_before_match", payload: {match, text}}}`.
+      paragraph command: `{type: "paragraph", payload: {cmd: "insert_at_offset", payload: {off, text}}}` where `off` is zero-based in the exact `doc.read` item text.
+      paragraph command: `{type: "paragraph", payload: {cmd: "insert_paragraph_after", payload: {text}}}`.
+      Never put line breaks inside write text. For multi-paragraph drafting, call `doc.write` once per paragraph with newline-free text. Do not replace one template paragraph with an entire contract body.
+      For a slot-like date/period edit, first use `doc.read`; write the full exact existing value or paragraph, not only a label prefix.
       Fixed narrow table cells must keep their existing label. In particular, do not relabel `전화번호 :` cells to 담당자/email or put email strings there; put 담당자/email in a wider field only when one exists.
 
   사용 흐름:
 
-    1. 필드/슬롯 존재 여부나 revision 이 필요하면 `doc.get` 으로 bounded metadata, cursors, read hints, and revision 을 확인하세요. 본문/필드/표셀 값은 바로 넓게 읽지 말고 `doc.get.read` capability 에 맞춰 작은 `doc.read` target 을 고르세요. 이미 편집 대상 문구를 알고 있으면 **`doc.find(needle)`** 로 위치를 잡으세요.
-    2. find 가 paragraph hit 을 돌려주면 `op: "replace_text"` 와 `{type: "paragraph", sec, para, off, match}` target 으로 `doc.edit` 를 호출하세요. cell hit 이면 `meta.target` 을 사용하세요. `base_revision` 은 find 응답의 `revision`.
-    3. 기간/날짜/금액/당사자 같은 슬롯처럼 보이는 값을 고칠 때는 기존 값/문단 전체를 정확히 `match` 로 잡아 교체하세요. 라벨 접두어만 바꾸지 마세요.
-    4. 표 셀을 고칠 때는 `doc.find` cell hit 의 `meta.target` 또는 single-cell `doc.read(sec, para, row, col)` 의 `target` 을 그대로 `{type: "cell", ...}` target 에 넣으세요.
-    5. 위치를 더 확인해야 하면 broad range 대신 `doc.read(sec, from, limit<=3)`, `doc.read(sec, para, off, chars)`, field id, table window, or single cell 로 좁게 읽으세요.
-    6. 모든 편집을 마친 뒤 사용자에게 한 줄 보고 (예: "제3조 둘째 줄에서 '갑'을 '원사업자'로 바꿨습니다.").
+    1. metadata/revision 은 먼저 `doc.get` 으로 확인하세요. 본문은 `doc.read(sec, at, size)` 로 좁게 읽으세요.
+    2. 문구 앞/뒤에 정확히 삽입할 때는 `doc.write(sec, para, {base_revision, type: "paragraph", payload: {cmd: "insert_after_match" | "insert_before_match", payload: {match, text}}})` 를 호출하세요. 문단 뒤 새 문단은 `insert_paragraph_after` 와 `{text}` 를 쓰세요.
+    3. match 가 빈칸/반복 공백 때문에 애매하면 재시도하지 말고, `doc.read` 의 해당 문단 text 에서 0-based `off` 를 계산해 `insert_at_offset` 을 쓰세요.
+    4. 기간/날짜/금액/당사자 같은 슬롯처럼 보이는 값을 고칠 때는 기존 값/문단 전체를 정확히 `match` 로 잡아 교체하세요. 라벨 접두어만 바꾸지 마세요.
+    5. 위치를 더 확인해야 하면 broad range 대신 가까운 paragraph window 로 좁게 읽으세요.
+    6. 모든 편집을 마친 뒤 사용자에게 한 줄 보고 (예: "제3조 둘째 줄에 문구를 추가했습니다.").
   """
 
   defp build_regular_context(ctx, %Command{} = action) do
@@ -153,10 +145,10 @@ defmodule Contract.Agent do
           []
       end
 
-    # Task #143/#222 — the full document IR no longer ships in the
-    # instructions string, and doc.get is metadata/read-hints only. The
-    # schema prompt stays so the agent knows to use doc.read/doc.find for
-    # body content and doc.edit for mutations.
+    # Task #143/#222/#242/#246 — the full document IR no longer ships in the
+    # instructions string, and doc.get is metadata/read-hints only. The schema
+    # prompt stays so the agent knows to use doc.read for body content and
+    # doc.write for mutations.
     system_prompt =
       [
         @grill_system_prompt,
@@ -185,8 +177,8 @@ defmodule Contract.Agent do
 
   defp document_context_note(doc_id) when is_binary(doc_id) do
     "현재 문서 ID: #{doc_id}\n" <>
-      "`doc.get`은 bounded metadata/read hints/cursors 전용입니다. " <>
-      "본문은 작은 `doc.read` window/range, 표는 row/col window 또는 single cell, 필드는 field_id로 읽고, 문자열 위치가 필요하면 `doc.find`를 호출하세요."
+      "`doc.get`은 aggregate metadata 전용입니다. " <>
+      "본문/위치 탐색은 작은 `doc.read(sec, at, size)` window 로 읽고, 편집은 `doc.write` 로 호출하세요."
   end
 
   defp mint_doc_route_ref(_ctx, %Command{document_id: nil}), do: {:error, :no_document}
@@ -372,9 +364,10 @@ defmodule Contract.Agent do
   defp response_text(_response), do: nil
 
   # Task #143/#222 — `fetch_snapshot/2` is gone. The prompt path no longer
-  # splices document IR into every request; the agent gets metadata/read hints
-  # from doc.get and reads content through doc.read/doc.find. This still avoids
-  # paying the body-token cost on turns that do not need the document body.
+  # splices document IR into every request; the agent gets aggregate metadata
+  # from doc.get and reads content/navigation through doc.read.
+  # This still avoids paying the body-token cost on turns that do not need the
+  # document body.
 
   # Wave-3 owns the chat store; until it lands, return an empty history.
   defp fetch_history(ctx, %Command{} = action), do: ChatThreads.history_for_agent(ctx, action)

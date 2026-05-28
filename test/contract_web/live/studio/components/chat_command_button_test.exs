@@ -261,7 +261,7 @@ defmodule ContractWeb.Live.Studio.Components.ChatCommandButtonTest do
 
     test "tapping the trigger flips sheet_open?", %{conn: conn, user: user} do
       # Mount the component inside a thin throwaway LiveView so we can
-      # drive its `phx-click` events without the rest of StudioLive's
+      # drive its `phx-click` events without the rest of DocumentLive's
       # plumbing.
       conn = log_in_user(conn, user)
       scope = lawyer_scope(user)

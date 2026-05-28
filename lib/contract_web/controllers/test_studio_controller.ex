@@ -25,7 +25,7 @@ if Application.compile_env(:contract, :test_auth, false) do
         tool_id = "synthetic-operation"
         operation_id = "tool-#{run_id}-#{tool_id}"
 
-        topic = ContractWeb.StudioLive.test_operation_topic(user.id)
+        topic = ContractWeb.DocumentLive.test_operation_topic(user.id)
 
         Phoenix.PubSub.broadcast(Contract.PubSub, topic, {
           :tool_call_started,

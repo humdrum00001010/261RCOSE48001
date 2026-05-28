@@ -178,7 +178,7 @@ defmodule Contract.GatewayTest do
   describe "mcp_tool/3 — tool listing and dispatch" do
     test "tool_names/0 + tools_descriptor/0 expose the agent doc.* tools" do
       names = Gateway.tool_names()
-      assert names == ["doc.get", "doc.find", "doc.read", "doc.edit"]
+      assert names == ["doc.get", "doc.read", "doc.write"]
 
       desc = Gateway.tools_descriptor()
       assert length(desc) == length(names)
@@ -199,12 +199,19 @@ defmodule Contract.GatewayTest do
       assert {:error, {:forbidden, :no_route_ref}} = Gateway.mcp_tool(@ctx, "doc.get", %{})
 
       assert {:error, {:forbidden, :no_route_ref}} =
-               Gateway.mcp_tool(@ctx, "doc.find", %{"needle" => "x"})
+               Gateway.mcp_tool(@ctx, "doc.read", %{"sec" => 0, "at" => 0})
 
       assert {:error, {:forbidden, :no_route_ref}} =
-               Gateway.mcp_tool(@ctx, "doc.read", %{"sec" => 0})
-
-      assert {:error, {:forbidden, :no_route_ref}} = Gateway.mcp_tool(@ctx, "doc.edit", %{})
+               Gateway.mcp_tool(@ctx, "doc.write", %{
+                 "sec" => 0,
+                 "para" => 0,
+                 "base_revision" => 0,
+                 "type" => "paragraph",
+                 "payload" => %{
+                   "cmd" => "insert_after_match",
+                   "payload" => %{"match" => "x", "text" => "y"}
+                 }
+               })
     end
   end
 

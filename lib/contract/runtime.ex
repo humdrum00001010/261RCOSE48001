@@ -15,6 +15,7 @@ defmodule Contract.Runtime do
       :archive_document            → ensure_session → Session.commit
       :restore_document            → ensure_session → Session.commit
       :edit_text                   → ensure_session → Session.commit
+      :doc_write                   → ensure_session → Session.commit
       :agent_change                → ensure_session → Session.commit
       :chat_message                → Contract.Agent.Document.start
   """
@@ -38,6 +39,7 @@ defmodule Contract.Runtime do
     :set_contract_type,
     :edit_document,
     :edit_text,
+    :doc_write,
     :archive_document,
     :restore_document,
     :agent_change

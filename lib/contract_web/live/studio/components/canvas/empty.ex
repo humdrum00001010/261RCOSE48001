@@ -2,7 +2,7 @@ defmodule ContractWeb.Live.Studio.Components.Canvas.Empty do
   @moduledoc """
   Compatibility stub for the no-document canvas.
 
-  The active `/studio` empty surface is owned by `ContractWeb.StudioLive`,
+  The active `/studio` empty surface is owned by `ContractWeb.DocumentLive`,
   which renders upload/type selection and routes new documents to
   `/studio/:document_id`. This component remains as a minimal contract
   for callers that still mount `Canvas.Empty`.

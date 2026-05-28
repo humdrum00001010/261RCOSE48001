@@ -1,4 +1,4 @@
-defmodule ContractWeb.StudioLiveDocumentFirstTest do
+defmodule ContractWeb.DocumentLiveDocumentFirstTest do
   use ContractWeb.ConnCase, async: false
 
   import Phoenix.LiveViewTest
@@ -7,7 +7,7 @@ defmodule ContractWeb.StudioLiveDocumentFirstTest do
   alias Contract.Context
   alias Contract.Documents
   alias Contract.Studio.State
-  alias ContractWeb.StudioLive
+  alias ContractWeb.DocumentLive
 
   setup :register_and_log_in_user
 
@@ -32,7 +32,7 @@ defmodule ContractWeb.StudioLiveDocumentFirstTest do
     # the Tailwind utility migration we pin the surface via its #studio-root
     # id and the inline phx-hook attribute.
     assert html =~ ~s(id="studio-root")
-    assert html =~ ~s(phx-hook="ContractWeb.StudioLive.Viewport")
+    assert html =~ ~s(phx-hook="ContractWeb.DocumentLive.Viewport")
     assert html =~ "Studio v33 draft"
     assert :sys.get_state(lv.pid).socket.assigns.studio_state.selected_document_id == doc.id
   end
@@ -115,7 +115,7 @@ defmodule ContractWeb.StudioLiveDocumentFirstTest do
     }
 
     assert {:ok, %Command{} = command} =
-             StudioLive.event_to_command("chat.submit", %{"message" => "Review this"}, assigns)
+             DocumentLive.event_to_command("chat.submit", %{"message" => "Review this"}, assigns)
 
     assert command.kind == :chat_message
     assert command.document_id == doc_id

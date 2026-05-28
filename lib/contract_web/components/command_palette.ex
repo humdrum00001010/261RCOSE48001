@@ -924,7 +924,7 @@ defmodule ContractWeb.Components.CommandPalette do
     </p>
     <p class="text-xs text-base-content/60">
       Run the agent from the ChatRail — the palette only ships navigation
-      and search. See SPEC §11 for the StudioLive protocol the agent
+      and search. See SPEC §11 for the DocumentLive protocol the agent
       speaks.
     </p>
     """
@@ -960,7 +960,7 @@ defmodule ContractWeb.Components.CommandPalette do
       </li>
     </ul>
     <p class="text-xs text-base-content/60">
-      The agent's StudioLive protocol is documented in SPEC §11.
+      The agent's DocumentLive protocol is documented in SPEC §11.
     </p>
     """
   end

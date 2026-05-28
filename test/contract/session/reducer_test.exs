@@ -52,9 +52,19 @@ defmodule Contract.Session.ReducerTest do
     {:ok, pre} = Reducer.preimage(input, state)
     {:ok, inv} = Reducer.inverse(input, pre)
     {:ok, refs} = Reducer.affected_refs(input, state)
-    input = %{input | preimage: pre, inverse_ops: inv, affected_refs: refs}
+    %ChangeInput{} = input = %{input | preimage: pre, inverse_ops: inv, affected_refs: refs}
     {:ok, new_state} = Reducer.apply(input, state)
     {input, new_state}
+  end
+
+  defp doc_write_payload(cmd, payload, off) do
+    %{
+      "sec" => 0,
+      "para" => 0,
+      "type" => "paragraph",
+      "payload" => %{"cmd" => cmd, "payload" => payload},
+      "resolved" => %{"off" => off}
+    }
   end
 
   # ============================================================================
@@ -1062,6 +1072,82 @@ defmodule Contract.Session.ReducerTest do
   # ============================================================================
   # Property-based tests
   # ============================================================================
+
+  describe "compile/2 — doc_write" do
+    test "lowers insert_after_match to internal insert_text at computed offset" do
+      command =
+        action(:doc_write,
+          payload: %{
+            "sec" => 0,
+            "para" => 0,
+            "type" => "paragraph",
+            "payload" => %{
+              "cmd" => "insert_after_match",
+              "payload" => %{"match" => "Beta", "text" => " inserted"}
+            },
+            "resolved" => %{"off" => 10}
+          }
+        )
+
+      assert {:ok, %ChangeInput{action_kind: :doc_write, ops: [op]}} =
+               Reducer.compile(command, new_state())
+
+      assert %Operation{
+               op: :insert_text,
+               target_type: :document,
+               args: %{sec: 0, para: 0, off: 10, text: " inserted"}
+             } = op
+    end
+
+    test "missing resolved offset fails closed before ChangeInput" do
+      command =
+        action(:doc_write,
+          payload: %{
+            "sec" => 0,
+            "para" => 0,
+            "type" => "paragraph",
+            "payload" => %{
+              "cmd" => "insert_after_match",
+              "payload" => %{"match" => "Alpha", "text" => "!"}
+            }
+          }
+        )
+
+      assert {:error, {:invalid_params, "resolved.off must be a non-negative integer"}} =
+               Reducer.compile(command, new_state())
+    end
+
+    test "lowers insert_at_offset to internal insert_text at explicit offset" do
+      command =
+        action(:doc_write,
+          payload: doc_write_payload("insert_at_offset", %{"off" => 5, "text" => "!"}, 5)
+        )
+
+      assert {:ok, %ChangeInput{action_kind: :doc_write, ops: [op]}} =
+               Reducer.compile(command, new_state())
+
+      assert %Operation{
+               op: :insert_text,
+               target_type: :document,
+               args: %{sec: 0, para: 0, off: 5, text: "!"}
+             } = op
+    end
+
+    test "lowers insert_paragraph_after through current RHWP text primitives" do
+      command =
+        action(:doc_write,
+          payload: doc_write_payload("insert_paragraph_after", %{"text" => "Next paragraph"}, 5)
+        )
+
+      assert {:ok, %ChangeInput{ops: [split, insert]}} = Reducer.compile(command, new_state())
+      assert %Operation{op: :insert_paragraph, args: %{sec: 0, para: 0, off: 5}} = split
+
+      assert %Operation{
+               op: :insert_text,
+               args: %{sec: 0, para: 1, off: 0, text: "Next paragraph"}
+             } = insert
+    end
+  end
 
   describe "properties" do
     property "apply/2 is deterministic for create_document" do

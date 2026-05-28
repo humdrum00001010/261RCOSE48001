@@ -6,7 +6,7 @@ defmodule ContractWeb.Components.AppShellTest do
   alias ContractWeb.Components.AppShell
 
   describe "app_shell/1" do
-    test "renders v33 shared topbar with brand icon + 보관함 link, and no 스튜디오 state span or upload action" do
+    test "renders v33 shared topbar with brand icon + 문서들 link, and no 스튜디오 state span or upload action" do
       inner_block = [
         %{
           __slot__: :inner_block,
@@ -16,7 +16,7 @@ defmodule ContractWeb.Components.AppShellTest do
 
       html =
         render_component(&AppShell.app_shell/1,
-          active: "보관함",
+          active: "문서들",
           inner_block: inner_block
         )
 
@@ -25,7 +25,7 @@ defmodule ContractWeb.Components.AppShellTest do
       assert html =~ ~s(src="/assets/icons/brand-mark.svg")
       assert html =~ "계약기계"
       assert html =~ ~s(href="/storage")
-      assert html =~ "보관함"
+      assert html =~ "문서들"
       # The legacy 대시보드 label was renamed to 보관함 (2026-05-18 directive).
       refute html =~ "대시보드"
       refute html =~ ~s(href="/dashboard")
@@ -53,7 +53,7 @@ defmodule ContractWeb.Components.AppShellTest do
 
       html =
         render_component(&AppShell.app_shell/1,
-          active: "보관함",
+          active: "문서들",
           current_scope: scope,
           inner_block: inner_block
         )
@@ -99,13 +99,13 @@ defmodule ContractWeb.Components.AppShellTest do
 
       html =
         render_component(&AppShell.app_shell/1,
-          primary_nav_label: "패킷",
+          primary_nav_label: "문서들",
           primary_nav_path: "/packets/packet-id",
           inner_block: inner_block
         )
 
       assert html =~ ~s(href="/packets/packet-id")
-      assert html =~ "패킷"
+      assert html =~ "문서들"
     end
 
     test "v33 icon source assets are tracked outside generated static assets" do

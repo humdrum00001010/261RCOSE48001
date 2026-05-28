@@ -1,4 +1,4 @@
-defmodule ContractWeb.StudioLiveTest do
+defmodule ContractWeb.DocumentLiveTest do
   use ContractWeb.ConnCase, async: false
 
   import Phoenix.LiveViewTest
@@ -11,7 +11,7 @@ defmodule ContractWeb.StudioLiveTest do
   alias Contract.Repo
   alias Contract.RhwpSnapshot.Record, as: RhwpSnapshotRecord
   alias Contract.Studio.State
-  alias ContractWeb.StudioLive
+  alias ContractWeb.DocumentLive
 
   setup :set_mox_from_context
   setup :verify_on_exit!
@@ -92,19 +92,19 @@ defmodule ContractWeb.StudioLiveTest do
       assert has_element?(
                lv,
                ~s(header ul[aria-label="계약기계"] a[href="/packets/#{packet.id}"]),
-               "패킷"
+               "문서들"
              )
 
       assert has_element?(
                lv,
                ~s(header ul[aria-label="계약기계"] a.font-semibold[href="/packets/#{packet.id}"]),
-               "패킷"
+               "문서들"
              )
 
       refute has_element?(
                lv,
                ~s(header ul[aria-label="계약기계"] a[href="/storage"]),
-               "보관함"
+               "문서들"
              )
     end
 
@@ -667,7 +667,7 @@ defmodule ContractWeb.StudioLiveTest do
       assigns = put_doc(assigns, doc)
 
       assert {:ok, %Command{kind: :rename_document, document_id: ^doc, actor_type: :user}} =
-               StudioLive.event_to_command("document.rename", %{"title" => "New"}, assigns)
+               DocumentLive.event_to_command("document.rename", %{"title" => "New"}, assigns)
     end
 
     test "document.type.set → :set_contract_type", %{assigns: assigns} do
@@ -675,7 +675,7 @@ defmodule ContractWeb.StudioLiveTest do
       assigns = put_doc(assigns, doc)
 
       assert {:ok, %Command{kind: :set_contract_type}} =
-               StudioLive.event_to_command("document.type.set", %{"type_key" => "nda"}, assigns)
+               DocumentLive.event_to_command("document.type.set", %{"type_key" => "nda"}, assigns)
     end
 
     test "document.metadata.update → :update_metadata", %{assigns: assigns} do
@@ -684,7 +684,7 @@ defmodule ContractWeb.StudioLiveTest do
 
       assert {:ok,
               %Command{kind: :update_metadata, document_id: ^doc, payload: %{"notes" => "review"}}} =
-               StudioLive.event_to_command(
+               DocumentLive.event_to_command(
                  "document.metadata.update",
                  %{"notes" => "review"},
                  assigns
@@ -694,14 +694,14 @@ defmodule ContractWeb.StudioLiveTest do
     test "chat.submit → :chat_message (document not required)",
          %{assigns: assigns} do
       assert {:ok, %Command{kind: :chat_message}} =
-               StudioLive.event_to_command("chat.submit", %{"message" => "hi"}, assigns)
+               DocumentLive.event_to_command("chat.submit", %{"message" => "hi"}, assigns)
     end
 
     test "document.open → :open_document", %{assigns: assigns} do
       doc = Ecto.UUID.generate()
 
       assert {:ok, %Command{kind: :open_document, document_id: ^doc}} =
-               StudioLive.event_to_command("document.open", %{"document_id" => doc}, assigns)
+               DocumentLive.event_to_command("document.open", %{"document_id" => doc}, assigns)
     end
 
     test "document.duplicate → :duplicate_document", %{assigns: assigns} do
@@ -709,12 +709,12 @@ defmodule ContractWeb.StudioLiveTest do
       assigns = put_doc(assigns, doc)
 
       assert {:ok, %Command{kind: :duplicate_document}} =
-               StudioLive.event_to_command("document.duplicate", %{}, assigns)
+               DocumentLive.event_to_command("document.duplicate", %{}, assigns)
     end
 
     test "command_palette_picked resolves to the inner kind", %{assigns: assigns} do
       assert {:ok, %Command{kind: :chat_message}} =
-               StudioLive.event_to_command(
+               DocumentLive.event_to_command(
                  "command_palette_picked",
                  %{"kind" => "chat_message", "message" => "hi"},
                  assigns
@@ -723,7 +723,7 @@ defmodule ContractWeb.StudioLiveTest do
 
     test "command_palette_picked resolves dotted document.create", %{assigns: assigns} do
       assert {:ok, %Command{kind: :create_document, payload: %{"title" => "Blank"}}} =
-               StudioLive.event_to_command(
+               DocumentLive.event_to_command(
                  "command_palette_picked",
                  %{"kind" => "document.create", "title" => "Blank"},
                  assigns
@@ -732,7 +732,7 @@ defmodule ContractWeb.StudioLiveTest do
 
     test "command_palette_picked errors on unknown kind", %{assigns: assigns} do
       assert {:error, {:unknown_palette_kind, "bogus_kind_xyz"}} =
-               StudioLive.event_to_command(
+               DocumentLive.event_to_command(
                  "command_palette_picked",
                  %{"kind" => "bogus_kind_xyz"},
                  assigns
@@ -742,26 +742,26 @@ defmodule ContractWeb.StudioLiveTest do
     test "missing document_id when required is a typed error", %{assigns: assigns} do
       # rename_document requires a doc id; nothing in state and nothing in params
       assert {:error, {:missing_document_id, :rename_document}} =
-               StudioLive.event_to_command("document.rename", %{}, assigns)
+               DocumentLive.event_to_command("document.rename", %{}, assigns)
     end
 
     test "local UI events return :local", %{assigns: assigns} do
-      assert :local = StudioLive.event_to_command("open_modal", %{}, assigns)
-      assert :local = StudioLive.event_to_command("close_modal", %{}, assigns)
-      assert :local = StudioLive.event_to_command("viewport_change", %{}, assigns)
+      assert :local = DocumentLive.event_to_command("open_modal", %{}, assigns)
+      assert :local = DocumentLive.event_to_command("close_modal", %{}, assigns)
+      assert :local = DocumentLive.event_to_command("viewport_change", %{}, assigns)
     end
 
     test "unknown event returns {:error, _}", %{assigns: assigns} do
       assert {:error, {:unknown_event, "wat"}} =
-               StudioLive.event_to_command("wat", %{}, assigns)
+               DocumentLive.event_to_command("wat", %{}, assigns)
     end
 
     test "every built Action carries a unique idempotency_key", %{assigns: assigns} do
       doc = Ecto.UUID.generate()
       assigns = put_doc(assigns, doc)
 
-      {:ok, a} = StudioLive.event_to_command("rename_document", %{"title" => "A"}, assigns)
-      {:ok, b} = StudioLive.event_to_command("rename_document", %{"title" => "B"}, assigns)
+      {:ok, a} = DocumentLive.event_to_command("rename_document", %{"title" => "A"}, assigns)
+      {:ok, b} = DocumentLive.event_to_command("rename_document", %{"title" => "B"}, assigns)
 
       assert is_binary(a.idempotency_key)
       assert is_binary(b.idempotency_key)

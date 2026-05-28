@@ -3,7 +3,7 @@ defmodule ContractWeb.Live.Studio.Components.Canvas.HwpTemplate do
   HWP/HWPX-backed standard contract canvas.
 
   This component owns the rhwp SVG preview boundary for government
-  standard-contract originals. StudioLive only chooses the current
+  standard-contract originals. DocumentLive only chooses the current
   template; this component owns the DOM that rhwp mutates.
   """
   use ContractWeb, :live_component

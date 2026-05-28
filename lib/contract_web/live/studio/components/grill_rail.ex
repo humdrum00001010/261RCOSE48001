@@ -32,14 +32,14 @@ defmodule ContractWeb.Live.Studio.Components.GrillRail do
 
   The submit button is `type="button"` (per Wave 3C1's binding rule —
   components never construct `Action`s directly) and fires
-  `phx-click="chat.submit"` to the parent `StudioLive`. The values:
+  `phx-click="chat.submit"` to the parent `DocumentLive`. The values:
 
       %{
         "grill_response" => %{"mark_id" => mark_id, "answer" => answer},
         "message" => answer
       }
 
-  `StudioLive.event_to_action/3` routes `"chat.submit"` into an
+  `DocumentLive.event_to_action/3` routes `"chat.submit"` into an
   `%Command{kind: :chat_message}` with the `grill_response` lifted into
   `payload`.
 

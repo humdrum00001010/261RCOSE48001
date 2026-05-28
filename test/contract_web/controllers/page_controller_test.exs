@@ -10,7 +10,7 @@ defmodule ContractWeb.PageControllerTest do
 
     * Three conceptual blocks (`포맷 → IR 정규화` / `AI가 먼저 묻는 핵심
       질문` / `답이 곧 계약 조항`). Block copy is customer-facing
-      Korean only — no internal module/class names (e.g. "StudioLive")
+      Korean only — no internal module/class names (e.g. "DocumentLive")
       may appear on this surface.
     * Three-line serif headline (`복잡한 문서 프로토콜을,` / `병렬 하네스로` /
       `패키지합니다.`).
@@ -68,7 +68,7 @@ defmodule ContractWeb.PageControllerTest do
       [_pre, body_block] = String.split(body, ~s(data-landing="v31"), parts: 2)
       [landing_body, _post] = String.split(body_block, "</main>", parts: 2)
 
-      refute landing_body =~ "StudioLive"
+      refute landing_body =~ "DocumentLive"
       refute landing_body =~ "RunServer"
       refute landing_body =~ "agent.ask"
       refute landing_body =~ "commit · diff"

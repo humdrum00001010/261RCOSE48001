@@ -100,9 +100,8 @@ defmodule Contract.IO.OpenAI do
 
   @contract_doc_allowed_tools ~w(
     doc.get
-    doc.find
     doc.read
-    doc.edit
+    doc.write
   )
 
   @doc """

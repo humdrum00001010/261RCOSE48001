@@ -2,12 +2,12 @@ defmodule ContractWeb.Components.AppShell do
   @moduledoc """
   Shared v33 계약기계 shell — the single global chrome wrapping the
   product surfaces (`PageController` `:home` / `/`, `StorageLive`,
-  `StudioLive`).
+  `DocumentLive`).
 
   See `docs/contract-studio-final-v33/SPEC.md` §4. The shell renders:
 
     * brand mark + "계약기계" wordmark on the left, linking to `/`
-    * topbar nav with the `보관함` link → `/storage`
+    * topbar nav with the `문서들` link → `/storage`
     * a right-side account menu when the caller passes a signed-in
       `current_scope` (delegates to `ContractWeb.Layouts.user_menu/1` so
       the same affordance appears in `Layouts.app/1`-based pages too)
@@ -20,11 +20,11 @@ defmodule ContractWeb.Components.AppShell do
 
   ## Usage
 
-      <.app_shell active="보관함" current_scope={@current_scope}>
+      <.app_shell active="문서들" current_scope={@current_scope}>
         <main class="storage-page">...</main>
       </.app_shell>
 
-  Pass `active` matching one of `"보관함"` / `"랜딩"` to set the
+  Pass `active` matching one of `"문서들"` / `"랜딩"` to set the
   active-state class. `current_scope` is optional; when nil (anonymous,
   e.g. the landing page before sign-in) the account menu is omitted and
   no error is raised.
@@ -40,14 +40,14 @@ defmodule ContractWeb.Components.AppShell do
 
   attr :active, :string,
     default: nil,
-    doc: "Current v33 surface label: 보관함 or 랜딩 (or nil for none)"
+    doc: "Current v33 surface label: 문서들 or 랜딩 (or nil for none)"
 
   attr :current_scope, :map,
     default: nil,
     doc:
       "the current Contract.Context — pass through from the LiveView/conn so the topbar can render the account menu when signed in"
 
-  attr :primary_nav_label, :string, default: "보관함"
+  attr :primary_nav_label, :string, default: "문서들"
   attr :primary_nav_path, :string, default: nil
 
   slot :inner_block, required: true

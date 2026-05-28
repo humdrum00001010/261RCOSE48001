@@ -144,10 +144,10 @@ defmodule ContractWeb.Router do
       ] do
       live "/packets/:packet_id", PacketLive, :show
       live "/storage", StorageLive
-      live "/studio", StudioLive
-      live "/studio/:document_id", StudioLive
-      live "/documents/:document_id", StudioLive
-      live "/documents/:document_id/review", StudioLive
+      live "/studio", DocumentLive
+      live "/studio/:document_id", DocumentLive
+      live "/documents/:document_id", DocumentLive
+      live "/documents/:document_id/review", DocumentLive
       live "/users/settings", UserLive.Settings, :edit
       live "/users/settings/confirm-email/:token", UserLive.Settings, :confirm_email
       live "/settings", UserLive.SettingsHub, :index

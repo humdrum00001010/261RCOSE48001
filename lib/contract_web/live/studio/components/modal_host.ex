@@ -3,7 +3,7 @@ defmodule ContractWeb.Live.Studio.Components.ModalHost do
   Studio modal host (Wave 3C1 / modal-host).
 
   Single `Phoenix.LiveComponent` that owns every modal-style overlay in
-  Studio. The parent `ContractWeb.StudioLive` toggles flags on
+  Studio. The parent `ContractWeb.DocumentLive` toggles flags on
   `@studio_state` (or local component state); this
   component renders the matching dialog, debounces Esc / backdrop close
   via colocated JS, and emits the Studio event vocabulary back to the

@@ -114,22 +114,29 @@ defmodule Contract.Session.Reducer do
   end
 
   def compile(%Command{} = command, %Runtime.State{} = state) do
-    {ops, marks, metadata} = build_ops_and_marks(command, state)
+    with {:ok, ops, marks, metadata} <- build_ops_and_marks_result(command, state) do
+      {:ok,
+       %ChangeInput{
+         action_kind: command.kind,
+         document_id: command.document_id || state.document_id,
+         base_revision: command.base_revision,
+         idempotency_key: command.idempotency_key,
+         actor_type: command.actor_type || :user,
+         actor_id: command.actor_id,
+         agent_run_id: command.agent_run_id,
+         ops: ops,
+         marks: marks,
+         message: command.message,
+         metadata: metadata
+       }}
+    end
+  end
 
-    {:ok,
-     %ChangeInput{
-       action_kind: command.kind,
-       document_id: command.document_id || state.document_id,
-       base_revision: command.base_revision,
-       idempotency_key: command.idempotency_key,
-       actor_type: command.actor_type || :user,
-       actor_id: command.actor_id,
-       agent_run_id: command.agent_run_id,
-       ops: ops,
-       marks: marks,
-       message: command.message,
-       metadata: metadata
-     }}
+  defp build_ops_and_marks_result(%Command{} = command, %Runtime.State{} = state) do
+    case build_ops_and_marks(command, state) do
+      {:error, _reason} = error -> error
+      {ops, marks, metadata} -> {:ok, ops, marks, metadata}
+    end
   end
 
   # ----------------------------------------------------------------------------
@@ -1089,6 +1096,12 @@ defmodule Contract.Session.Reducer do
     {ops, marks, %{}}
   end
 
+  defp build_ops_and_marks(%Command{kind: :doc_write} = command, state) do
+    with {:ok, ops} <- doc_write_ops(command, state) do
+      {ops, [], %{}}
+    end
+  end
+
   defp build_ops_and_marks(%Command{kind: :edit_text} = command, _state) do
     payload = normalize_payload(command.payload)
 
@@ -1104,6 +1117,92 @@ defmodule Contract.Session.Reducer do
   defp build_ops_and_marks(%Command{kind: kind}, _state) do
     raise ArgumentError,
           "Contract.Session.Reducer: unhandled Command.kind=#{inspect(kind)} in build_ops_and_marks/2"
+  end
+
+  defp doc_write_ops(%Command{} = command, %Runtime.State{}) do
+    payload = normalize_payload(command.payload)
+    type = Map.get(payload, :type)
+    sec = Map.get(payload, :sec)
+    para = Map.get(payload, :para)
+    write_payload = normalize_payload(Map.get(payload, :payload))
+    cmd = Map.get(write_payload, :cmd)
+    args = normalize_payload(Map.get(write_payload, :payload))
+    resolved = normalize_payload(Map.get(payload, :resolved))
+
+    cond do
+      type != "paragraph" ->
+        {:error, {:not_supported, "doc_write type=#{inspect(type)} is not supported"}}
+
+      not (is_integer(sec) and sec >= 0 and is_integer(para) and para >= 0) ->
+        {:error, {:invalid_params, "sec and para must be non-negative integers"}}
+
+      true ->
+        paragraph_doc_write_ops(command.document_id, sec, para, cmd, args, resolved)
+    end
+  end
+
+  defp paragraph_doc_write_ops(document_id, sec, para, cmd, args, resolved)
+       when cmd in ["insert_after_match", "insert_before_match", "insert_at_offset"] do
+    with {:ok, off} <- resolved_off(resolved),
+         {:ok, text} <- required_payload_string(args, :text),
+         :ok <- validate_single_paragraph_text(text) do
+      {:ok,
+       [
+         %Operation{
+           op: :insert_text,
+           target_type: :document,
+           target_id: document_id,
+           args: %{sec: sec, para: para, off: off, text: text}
+         }
+       ]}
+    end
+  end
+
+  defp paragraph_doc_write_ops(document_id, sec, para, "insert_paragraph_after", args, resolved) do
+    with {:ok, off} <- resolved_off(resolved),
+         {:ok, text} <- required_payload_string(args, :text),
+         :ok <- validate_single_paragraph_text(text) do
+      {:ok,
+       [
+         %Operation{
+           op: :insert_paragraph,
+           target_type: :document,
+           target_id: document_id,
+           args: %{sec: sec, para: para, off: off}
+         },
+         %Operation{
+           op: :insert_text,
+           target_type: :document,
+           target_id: document_id,
+           args: %{sec: sec, para: para + 1, off: 0, text: text}
+         }
+       ]}
+    end
+  end
+
+  defp paragraph_doc_write_ops(_document_id, _sec, _para, cmd, _args, _resolved),
+    do: {:error, {:invalid_params, "unsupported doc_write command #{inspect(cmd)}"}}
+
+  defp resolved_off(resolved) do
+    case Map.get(resolved, :off) do
+      off when is_integer(off) and off >= 0 -> {:ok, off}
+      _ -> {:error, {:invalid_params, "resolved.off must be a non-negative integer"}}
+    end
+  end
+
+  defp required_payload_string(args, key) do
+    case Map.get(args, key) do
+      value when is_binary(value) and value != "" -> {:ok, value}
+      _ -> {:error, {:invalid_params, "#{key} must be a non-empty string"}}
+    end
+  end
+
+  defp validate_single_paragraph_text(text) when is_binary(text) do
+    if String.contains?(text, ["\n", "\r"]) do
+      {:error, {:invalid_params, "text must be a single paragraph"}}
+    else
+      :ok
+    end
   end
 
   defp document_attr_op(document_id, key, value) do

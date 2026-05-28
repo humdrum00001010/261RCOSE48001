@@ -54,10 +54,9 @@ defmodule Contract.IO.OpenAITest do
 
       tool = OpenAI.contract_doc_mcp_tool("route-ref-token")
 
-      assert "doc.get" in tool.allowed_tools
-      assert "doc.find" in tool.allowed_tools
-      assert "doc.read" in tool.allowed_tools
-      assert "doc.edit" in tool.allowed_tools
+      assert tool.allowed_tools == ["doc.get", "doc.read", "doc.write"]
+      refute "doc.find" in tool.allowed_tools
+      refute "doc.edit" in tool.allowed_tools
       refute "doc.edit_text" in tool.allowed_tools
       refute "doc.insert_block" in tool.allowed_tools
       refute "doc.delete_block" in tool.allowed_tools

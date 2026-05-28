@@ -35,6 +35,7 @@ defmodule Contract.Application do
       # ETS table owner for the /mcp per-bearer rate limiter. Starts before
       # the endpoint so the table exists by the time the first request lands.
       ContractWeb.Plug.RateLimitMCP.Bucket,
+      Contract.RhwpSnapshot.Materializer,
       ContractWeb.Endpoint,
       # Agent runtime: one process per document scope, with per-run lookup
       # for PubSub/cancel/MCP handoff.

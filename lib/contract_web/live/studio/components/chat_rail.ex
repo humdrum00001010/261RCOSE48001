@@ -81,7 +81,7 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
     >
       <div
         data-role="chat-rail-controls"
-        class="flex shrink-0 items-center justify-between gap-2 border-b border-base-300 bg-base-200/95 px-2 py-1"
+        class="flex shrink-0 items-center justify-between gap-1.5 border-b border-base-300 bg-base-200/95 px-1.5 py-0.5"
       >
         <h2
           data-role="chat-thread-title"
@@ -361,7 +361,7 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
               if (!ta) return
               const value = ta.value
               if (!value || !value.trim()) return
-              // chat.submit is handled by the parent StudioLive — pushEvent
+              // chat.submit is handled by the parent DocumentLive — pushEvent
               // from a LiveComponent-hosted hook still routes to the root LV.
               this.pushEvent("chat.submit", { message: value })
               ta.value = ""
@@ -1031,11 +1031,29 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
   end
 
   defp operation_id(operation), do: operation_value(operation, "id") || Ecto.UUID.generate()
-  defp operation_type(operation), do: operation_value(operation, "type") || "operation"
-  defp operation_status(operation), do: operation_value(operation, "status") || "pending"
+
+  defp operation_type(operation) do
+    operation_value(operation, "type") ||
+      if(
+        operation_value(operation, "name") || operation_value(operation, "output") ||
+          operation_value(operation, "error"),
+        do: "tool_call",
+        else: "operation"
+      )
+  end
+
+  defp operation_status(operation) do
+    operation_value(operation, "status") ||
+      cond do
+        operation_value(operation, "error") -> "failed"
+        operation_value(operation, "output") -> "completed"
+        true -> "pending"
+      end
+  end
 
   defp operation_title(operation) do
-    operation_value(operation, "title") || operation_label(operation_type(operation))
+    operation_value(operation, "title") || operation_value(operation, "name") ||
+      operation_label(operation_type(operation))
   end
 
   defp operation_summary(operation) do
@@ -1053,7 +1071,12 @@ defmodule ContractWeb.Live.Studio.Components.ChatRail do
     do: Map.new(map, fn {key, value} -> {to_string(key), value} end)
 
   defp operation_details(operation) do
-    details = operation_value(operation, "details") || operation
+    details =
+      operation_value(operation, "details") || operation_value(operation, "output") ||
+        case operation_value(operation, "error") do
+          nil -> operation
+          error -> %{"error" => error}
+        end
 
     case Jason.encode(details, pretty: true) do
       {:ok, encoded} -> encoded

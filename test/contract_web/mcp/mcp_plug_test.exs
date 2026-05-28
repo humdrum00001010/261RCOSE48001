@@ -132,7 +132,7 @@ defmodule ContractWeb.MCP.MCPPlugTest do
 
       tools = env["result"]["tools"]
       assert is_list(tools)
-      assert Enum.map(tools, & &1["name"]) == ~w(doc.get doc.find doc.read doc.edit)
+      assert Enum.map(tools, & &1["name"]) == ~w(doc.get doc.read doc.write)
 
       Enum.each(tools, fn t ->
         assert is_binary(t["name"])
@@ -188,6 +188,7 @@ defmodule ContractWeb.MCP.MCPPlugTest do
             Enum.with_index(
               ~w(studio.get_document studio.submit_action studio.search_documents
                  studio.get_change_history studio.list_marks studio.search_law
+                 doc.find doc.edit
                  studio.verify_citations doc.edit_text doc.insert_block
                  doc.delete_block doc.edit_table doc.set_field_value),
               1

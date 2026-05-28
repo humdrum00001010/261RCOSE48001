@@ -3,7 +3,7 @@ defmodule Contract.Studio do
   Product façade for the one big LiveView. Orchestrates open, select, command,
   sync, subscribe, route_ref. See SPEC.md §10.
 
-  Studio is the thin product seam between `ContractWeb.StudioLive` and
+  Studio is the thin product seam between `ContractWeb.DocumentLive` and
   `Contract.Runtime`. It does **not** own document truth — `Store` is truth.
   It only:
 
@@ -185,7 +185,7 @@ defmodule Contract.Studio do
     Runtime.apply(ctx, command)
   end
 
-  # Internal helper used by `ContractWeb.StudioLive.dispatch/2`. Submits a
+  # Internal helper used by `ContractWeb.DocumentLive.dispatch/2`. Submits a
   # command and folds any new `agent_run_id` back into the LV's state. Public
   # callers should use `command/2` and update state themselves.
   @doc false

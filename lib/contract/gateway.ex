@@ -24,8 +24,8 @@ defmodule Contract.Gateway do
   ## MCP tool dispatch
 
   `mcp_tool/3` is the single entrypoint that the inbound
-  `ContractWeb.MCP.MCPPlug` calls. The gateway now exposes only the
-  agent document surface: `doc.get`, `doc.find`, `doc.read`, and `doc.edit`.
+  `ContractWeb.MCP.MCPPlug` calls. The gateway exposes only the compact
+  agent document surface: `doc.get`, `doc.read`, and `doc.write`.
   """
 
   alias Contract.Context

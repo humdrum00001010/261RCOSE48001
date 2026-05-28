@@ -5,8 +5,8 @@ defmodule ContractWeb.Live.Studio.Components.GrillRailTest do
   Strategy: all cases hit `render_component/2` directly and assert
   against the produced HTML. The `chat.submit` event binding is
   verified by inspecting the rendered `phx-click` / `phx-value-*`
-  attributes; the matching `event_to_action/3` clause in `StudioLive`
-  is already covered by `test/contract_web/live/studio_live_test.exs`.
+  attributes; the matching `event_to_action/3` clause in `DocumentLive`
+  is already covered by `test/contract_web/live/document_live_test.exs`.
   """
   use ContractWeb.ConnCase, async: true
 
@@ -116,7 +116,7 @@ defmodule ContractWeb.Live.Studio.Components.GrillRailTest do
   # Wave 3C1 binding contract: the submit button is `phx-click="chat.submit"`
   # with NO `phx-target` (event bubbles to parent LV), `type="button"` (form
   # never auto-submits), and the grill_response payload is JSON-encoded in a
-  # `phx-value-*` attribute that round-trips through `StudioLive.event_to_action`.
+  # `phx-value-*` attribute that round-trips through `DocumentLive.event_to_action`.
   describe "submit-button binding" do
     test "submit button is type=button, bubbles chat.submit with grill_response payload" do
       marks = [ask_mark("ask-123", "Why?")]

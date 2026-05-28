@@ -1,4 +1,4 @@
-defmodule ContractWeb.StudioLive do
+defmodule ContractWeb.DocumentLive do
   @moduledoc """
   The one big LiveView. Disposable UI process. Does NOT own document truth.
 
@@ -1898,8 +1898,8 @@ defmodule ContractWeb.StudioLive do
 
   defp packet_for_current_document(_scope, _state), do: nil
 
-  defp app_shell_nav_label(%Contract.Packets.Packet{}), do: "패킷"
-  defp app_shell_nav_label(_packet), do: "보관함"
+  defp app_shell_nav_label(%Contract.Packets.Packet{}), do: "문서들"
+  defp app_shell_nav_label(_packet), do: "문서들"
 
   defp app_shell_nav_path(%Contract.Packets.Packet{id: packet_id}),
     do: ~p"/packets/#{packet_id}"

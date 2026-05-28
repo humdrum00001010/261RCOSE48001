@@ -9,43 +9,32 @@ defmodule Contract.Agent.Prompt.IRRenderer do
     - p body : [sec, para, text]
     - p table: [sec, para, "T", control_idx, rows, cols, [[row, col, cell_idx, cell_para_idx, text], ...]]
     - f      : [id, label, kind, pos, value]
-                pos = [sec, para, parent_para, cell_path, off_start, off_end]
-                cell_path = [[controlIndex, cellIndex, cellParaIndex], ...] or null
+                pos is internal projection data; not part of agent tool args.
 
   `render/1` 은 dynamic 컨텐츠(JSON) 만 반환. schema(`schema_prompt/0`) 는 static —
   prompt cache 친화.
   """
 
   @schema_prompt """
-  쪽 IR 인코딩 (doc.find / doc.read / doc.get / doc.edit):
-    doc.get → {revision, d (title), t (type_key), counts, outline, f, cursors, read}
-              outline/f are bounded pages; use cursors.outline.from / cursors.fields.from if present.
-              outline: [[sec, para, level, heading_label], ...]  (heading label 만)
-              level: 0=title row (para=-1), 1=장/절, 2=조, 3=항
-              f entries do not include field values.
+  쪽 IR 인코딩 (doc.get / doc.read / doc.write):
+    doc.get → {ok, revision, d (title), t (type_key), counts}
+              aggregate metadata only. No outline/index/cursors/pages arrays,
+              read contract, paragraph_refs, table_controls arrays, cell_refs, bbox,
+              heading labels, body text, field values, or table cell text.
+              content/navigation comes from doc.read only.
 
-    doc.find → {revision, total, hits}
-              paragraph hits: [[sec, para, off, len, before, match, after, "paragraph"], ...]
-              cell hits: [[sec, para, off, len, before, match, after, "cell", {cell_path, target}], ...]
-              cell hit target can be passed directly to doc.edit.
+    doc.read(sec, at, size=5) → {revision, read}
+              paragraph_window: read={type, sec, items, next_para?}; items are previews only.
 
-    doc.read → {revision, read}
-              paragraph_window: read={type, sec, from, limit, items, next_para?}; items are previews only.
-              paragraph: read={type, sec, para, kind, text, range, target, fields?}; text is bounded by off/chars.
-              field: read={type, field:{id,label,kind,value,range,target}}; value is bounded by off/chars.
-              table_window: read={type, sec, para, tables}; table cells are row/col-window previews only.
-              cell: read={type, cell:{row,col,text,range,cell_path,target}}; text is bounded by off/chars.
+    doc.write(sec, para, {base_revision, type, payload:{cmd,payload}}) → compact mutation
+              type is substrate/family. payload.cmd is operation. payload.payload is command args.
+              paragraph insert_after_match: payload.payload={match,text}
+              paragraph insert_before_match: payload.payload={match,text}
+              paragraph insert_at_offset: payload.payload={off,text}; off is zero-based in doc.read item text.
+              paragraph insert_paragraph_after: payload.payload={text}
+              text must be single-paragraph strings with no line breaks.
 
-    doc.edit → {op, target, text?, block?, base_revision?}
-              replace_text paragraph target: {type: "paragraph", sec, para, off, match? | len?}
-              replace_text cell target: {type: "cell", sec, para, cell_path, off, match? | len?}
-              insert_block target: {type: "block", sec, para}, block: {kind: "paragraph" | "heading" | "list_item", text?, level?}
-              delete_block target: {type: "block", sec, para}
-              text/block.text must be single-paragraph strings with no line breaks.
-              table creation and row/column structure edits are not supported.
-
-    f (field read hints):
-      [id, label, kind, {sec, para, off_start?, off_end?, cell_path?}]
+    doc.get never returns semantic field hints or values. Concrete text/values come from doc.read.
   """
 
   @spec schema_prompt() :: String.t()
@@ -62,28 +51,8 @@ defmodule Contract.Agent.Prompt.IRRenderer do
       "d" => ir["title"],
       "r" => ir["revision"],
       "t" => ir["contract_type"],
-      "f" => Enum.map(ir["fields"] || [], &compact_field/1),
       "p" => compact_paragraphs(ir["sections"] || [])
     }
-  end
-
-  defp compact_field(f) do
-    [f["id"], f["label"], f["kind"], compact_position(f["position"] || %{}), f["value"] || ""]
-  end
-
-  defp compact_position(pos) do
-    cell_path =
-      case pos["cell_path"] do
-        [_ | _] = path ->
-          Enum.map(path, fn step ->
-            [step["controlIndex"], step["cellIndex"], step["cellParaIndex"]]
-          end)
-
-        _ ->
-          nil
-      end
-
-    [pos["sec"], pos["para"], pos["parent_para"], cell_path, pos["off_start"], pos["off_end"]]
   end
 
   defp compact_paragraphs(sections) do

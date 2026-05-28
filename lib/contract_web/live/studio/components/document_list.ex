@@ -30,7 +30,7 @@ defmodule ContractWeb.Live.Studio.Components.DocumentList do
   ## Events emitted
 
     * `phx-click="open_modal"` with `phx-value-modal="new_document"`
-      → opens the new-document modal (handled by `StudioLive`).
+      → opens the new-document modal (handled by `DocumentLive`).
     * `phx-click="document.open"` with `phx-value-document_id={id}`
       -> routed through the dispatch funnel as the open-document Command.
   """

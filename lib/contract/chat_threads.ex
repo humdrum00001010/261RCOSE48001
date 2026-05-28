@@ -63,12 +63,14 @@ defmodule Contract.ChatThreads do
       when is_binary(thread_id) and is_map(operation) do
     case Repo.get(ChatThread, thread_id) do
       %ChatThread{} = thread ->
+        persisted_operation = operation_for_persistence(operation)
+
         message = %{
-          "id" => operation["id"] || Ecto.UUID.generate(),
+          "id" => persisted_operation["id"] || Ecto.UUID.generate(),
           "role" => "agent",
           "content" => "",
           "agent_run_id" => operation["agent_run_id"],
-          "operation" => operation,
+          "operation" => persisted_operation,
           "inserted_at" => DateTime.to_iso8601(utc_now())
         }
 
@@ -281,19 +283,7 @@ defmodule Contract.ChatThreads do
     case get_thread_for_command(ctx, command) do
       {:ok, %ChatThread{messages: messages}} ->
         messages
-        |> Enum.flat_map(fn message ->
-          role = normalize_history_role(read(message, "role") || read(message, :role))
-
-          content =
-            read(message, "content") || read(message, :content) || read(message, "body") ||
-              read(message, :body)
-
-          if role && is_binary(content) && content != "" do
-            [%{role: role, content: content}]
-          else
-            []
-          end
-        end)
+        |> Enum.flat_map(&history_message_for_agent/1)
 
       {:error, _} ->
         []
@@ -515,6 +505,246 @@ defmodule Contract.ChatThreads do
   end
 
   defp rehydrate_operation(_ctx, operation), do: operation
+
+  defp operation_for_persistence(%{} = operation) do
+    base =
+      %{
+        "id" => read(operation, "id") || read(operation, :id) || Ecto.UUID.generate()
+      }
+      |> put_if_present("name", operation_tool_kind(operation) || operation_tool_name(operation))
+
+    cond do
+      operation_failed?(operation) ->
+        base
+        |> put_if_present("error", operation_error(operation))
+
+      output = operation_output(operation) ->
+        base
+        |> put_if_present("output", tool_output_facts(operation_tool_kind(operation), output))
+
+      true ->
+        base
+    end
+  end
+
+  defp operation_failed?(%{} = operation) do
+    operation_status_failed?(operation) or
+      operation_has_error_output?(operation)
+  end
+
+  defp operation_status_failed?(%{} = operation),
+    do: (read(operation, "status") || read(operation, :status)) == "failed"
+
+  defp operation_error(%{} = operation) do
+    output = operation_output(operation)
+
+    cond do
+      is_binary(read(operation, "error")) ->
+        read(operation, "error")
+
+      is_binary(read(operation, :error)) ->
+        read(operation, :error)
+
+      is_map(output) and is_binary(read(output, "error")) ->
+        read(output, "error")
+
+      is_map(output) and is_binary(read(output, :error)) ->
+        read(output, :error)
+
+      operation_status_failed?(operation) and is_binary(read(operation, "reason")) ->
+        read(operation, "reason")
+
+      operation_status_failed?(operation) and is_binary(read(operation, :reason)) ->
+        read(operation, :reason)
+
+      operation_status_failed?(operation) and is_binary(read(operation, "summary")) ->
+        read(operation, "summary")
+
+      operation_status_failed?(operation) and is_binary(read(operation, :summary)) ->
+        read(operation, :summary)
+
+      true ->
+        nil
+    end
+  end
+
+  defp operation_has_error_output?(%{} = operation) do
+    output = operation_output(operation)
+
+    is_binary(read(operation, "error")) or is_binary(read(operation, :error)) or
+      (is_map(output) and (is_binary(read(output, "error")) or is_binary(read(output, :error))))
+  end
+
+  defp history_message_for_agent(%{} = message) do
+    operation = read(message, "operation") || read(message, :operation)
+
+    case operation_history_content(operation) do
+      nil -> text_history_message_for_agent(message)
+      content -> [%{role: "assistant", content: content}]
+    end
+  end
+
+  defp history_message_for_agent(_message), do: []
+
+  defp text_history_message_for_agent(%{} = message) do
+    role = normalize_history_role(read(message, "role") || read(message, :role))
+
+    content =
+      read(message, "content") || read(message, :content) || read(message, "body") ||
+        read(message, :body)
+
+    if role && is_binary(content) && content != "" do
+      [%{role: role, content: content}]
+    else
+      []
+    end
+  end
+
+  defp operation_history_content(%{} = operation) do
+    if completed_tool_operation?(operation) do
+      output = operation_output(operation)
+
+      case tool_output_facts(operation_tool_kind(operation), output) do
+        nil -> nil
+        facts -> tool_output_history_content(operation_tool_kind(operation), facts)
+      end
+    end
+  end
+
+  defp operation_history_content(_operation), do: nil
+
+  defp completed_tool_operation?(%{} = operation) do
+    type = read(operation, "type") || read(operation, :type)
+    status = read(operation, "status") || read(operation, :status)
+
+    (is_nil(type) or type == "tool_call") and
+      (is_nil(status) or status == "completed") and
+      not operation_failed?(operation) and
+      is_map(operation_output(operation))
+  end
+
+  defp operation_details(%{} = operation),
+    do: read(operation, "details") || read(operation, :details)
+
+  defp operation_details(_operation), do: nil
+
+  defp operation_output(%{} = operation) do
+    read(operation, "output") || read(operation, :output) ||
+      operation |> operation_details() |> then(&(read(&1, "output") || read(&1, :output)))
+  end
+
+  defp operation_tool_kind(%{} = operation) do
+    operation
+    |> operation_tool_candidates()
+    |> Enum.find_value(fn
+      "doc.get" ->
+        "doc.get"
+
+      "doc.read" ->
+        "doc.read"
+
+      "doc.write" ->
+        "doc.write"
+
+      value when is_binary(value) ->
+        cond do
+          String.ends_with?(value, ".doc.get") -> "doc.get"
+          String.ends_with?(value, ".doc.read") -> "doc.read"
+          String.ends_with?(value, ".doc.write") -> "doc.write"
+          true -> nil
+        end
+
+      _ ->
+        nil
+    end)
+  end
+
+  defp operation_tool_candidates(%{} = operation) do
+    [
+      read(operation, "tool_name"),
+      read(operation, :tool_name),
+      read(operation, "name"),
+      read(operation, :name),
+      read(operation, "raw_name"),
+      read(operation, :raw_name),
+      read(operation, "title"),
+      read(operation, :title)
+    ]
+  end
+
+  defp operation_tool_name(%{} = operation) do
+    operation
+    |> operation_tool_candidates()
+    |> Enum.find(&is_binary/1)
+  end
+
+  defp tool_output_facts("doc.get", %{} = output) do
+    %{}
+    |> put_if_present("revision", output, "revision")
+    |> put_if_present("d", output, "d")
+    |> put_if_present("t", output, "t")
+    |> put_if_present("counts", output, "counts")
+    |> non_empty_map()
+  end
+
+  defp tool_output_facts("doc.read", %{} = output) do
+    %{}
+    |> put_if_present("revision", output, "revision")
+    |> put_if_present("sec", output, "sec")
+    |> put_if_present("at", output, "at")
+    |> put_if_present("items", sanitize_read_items(read(output, "items") || read(output, :items)))
+    |> put_if_present("next_at", output, "next_at")
+    |> non_empty_map()
+  end
+
+  defp tool_output_facts("doc.write", %{} = output) do
+    %{}
+    |> put_if_present("revision", output, "revision")
+    |> non_empty_map()
+  end
+
+  defp tool_output_facts(_tool, _output), do: nil
+
+  defp sanitize_read_items(items) when is_list(items) do
+    Enum.map(items, fn
+      %{} = item ->
+        %{}
+        |> put_if_present("sec", item, "sec")
+        |> put_if_present("para", item, "para")
+        |> put_if_present("row", item, "row")
+        |> put_if_present("col", item, "col")
+        |> put_if_present("text", item, "text")
+        |> put_if_present("chars", item, "chars")
+
+      _ ->
+        %{}
+    end)
+  end
+
+  defp sanitize_read_items(_items), do: nil
+
+  defp put_if_present(map, key, source, source_key) when is_map(source) do
+    case read(source, source_key) do
+      nil -> map
+      value -> Map.put(map, key, value)
+    end
+  end
+
+  defp put_if_present(map, _key, nil), do: map
+  defp put_if_present(map, key, value), do: Map.put(map, key, value)
+
+  defp non_empty_map(map) when map == %{}, do: nil
+  defp non_empty_map(map), do: map
+
+  defp tool_output_history_content(tool, facts) do
+    encoded =
+      case Jason.encode(facts) do
+        {:ok, json} -> json
+        {:error, _} -> inspect(facts)
+      end
+
+    "#{tool} facts:\n#{encoded}"
+  end
 
   defp rail_role("user"), do: :user
   defp rail_role(role) when role in ["assistant", "agent"], do: :agent
