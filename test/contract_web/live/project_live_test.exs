@@ -41,6 +41,7 @@ defmodule ContractWeb.ProjectLiveTest do
       assert has_element?(lv, "#attached-document-#{document.id}", "서비스계약서 원본")
       assert has_element?(lv, "#attached-document-#{document.id}.hover\\:bg-base-200\\/60")
       assert has_element?(lv, "#attached-document-#{document.id} td.cursor-pointer")
+      assert has_element?(lv, "#attached-document-#{document.id} td[data-table-action]")
       assert has_element?(lv, "#document-settings-#{document.id}[aria-label=\"문서 설정\"]")
       refute has_element?(lv, "#attached-document-#{document.id}.cursor-pointer")
 

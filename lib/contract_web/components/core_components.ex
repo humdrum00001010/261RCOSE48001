@@ -475,7 +475,7 @@ defmodule ContractWeb.CoreComponents do
         <tr
           :for={row <- @rows}
           id={@row_id && @row_id.(row)}
-          class="transition-colors hover:bg-base-200/60"
+          class="transition-colors hover:bg-base-200/60 [&:has(td[data-table-action]:hover)]:!bg-transparent"
         >
           <td
             :for={col <- @col}
@@ -484,7 +484,7 @@ defmodule ContractWeb.CoreComponents do
           >
             {render_slot(col, @row_item.(row))}
           </td>
-          <td :if={@action != []} class="w-0 font-semibold">
+          <td :if={@action != []} class="w-0 font-semibold" data-table-action>
             <div class="flex gap-4">
               <%= for action <- @action do %>
                 {render_slot(action, @row_item.(row))}
