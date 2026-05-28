@@ -76,8 +76,8 @@ defmodule Contract.Projects do
   def update_project(_scope, _project, _attrs), do: {:error, :forbidden}
 
   @doc """
-  Delete an owned project. Linked documents remain; project membership rows
-  are removed by the database foreign key.
+  Delete an owned project. Project membership rows are removed by the database
+  foreign key. Documents that lose their final project reference are archived.
   """
   @spec delete_project(Context.t(), T.id() | Project.t()) ::
           {:ok, Project.t()} | {:error, term()}
@@ -85,17 +85,41 @@ defmodule Contract.Projects do
 
   def delete_project(%Context{} = scope, %Project{} = project) do
     with :ok <- authorize_owner(scope, project) do
-      Repo.delete(project)
+      do_delete_project(scope, project)
     end
   end
 
   def delete_project(%Context{} = scope, project_id) when is_binary(project_id) do
     with {:ok, %Project{} = project} <- get_owned_project(scope, project_id) do
-      Repo.delete(project)
+      do_delete_project(scope, project)
     end
   end
 
   def delete_project(_scope, _project), do: {:error, :not_found}
+
+  @doc """
+  Count project references for one owned document.
+  """
+  @spec document_ref_count(Context.t(), T.id()) ::
+          {:ok, non_neg_integer()} | {:error, :not_found | :forbidden}
+  def document_ref_count(%Context{user: nil}, _document_id), do: {:error, :forbidden}
+
+  def document_ref_count(%Context{user: %{id: user_id}} = scope, document_id)
+      when is_binary(document_id) do
+    with {:ok, %Document{}} <- Documents.get(scope, document_id) do
+      count =
+        from(pd in ProjectDocument,
+          join: p in Project,
+          on: p.id == pd.project_id,
+          where: pd.document_id == ^document_id and p.owner_id == ^user_id
+        )
+        |> Repo.aggregate(:count)
+
+      {:ok, count}
+    end
+  end
+
+  def document_ref_count(_scope, _document_id), do: {:error, :not_found}
 
   @doc """
   Attach one owned document to one owned project.
@@ -134,12 +158,26 @@ defmodule Contract.Projects do
   def detach_document(%Context{} = scope, project_id, document_id)
       when is_binary(project_id) and is_binary(document_id) do
     with {:ok, %Project{} = project} <- get_owned_project(scope, project_id) do
-      from(pd in ProjectDocument,
-        where: pd.project_id == ^project.id and pd.document_id == ^document_id
-      )
-      |> Repo.delete_all()
+      Repo.transaction(fn ->
+        {deleted_count, _} =
+          from(pd in ProjectDocument,
+            where: pd.project_id == ^project.id and pd.document_id == ^document_id
+          )
+          |> Repo.delete_all()
 
-      :ok
+        if deleted_count > 0 do
+          case archive_document_if_unreferenced(scope, document_id) do
+            :ok -> :ok
+            {:error, reason} -> Repo.rollback(reason)
+          end
+        else
+          :ok
+        end
+      end)
+      |> case do
+        {:ok, :ok} -> :ok
+        {:error, reason} -> {:error, reason}
+      end
     end
   rescue
     Ecto.Query.CastError -> {:error, :not_found}
@@ -156,6 +194,8 @@ defmodule Contract.Projects do
   def list_available_documents(%Context{user: %{id: user_id}} = scope, project_id)
       when is_binary(project_id) do
     with {:ok, %Project{} = project} <- get_owned_project(scope, project_id) do
+      archived_status = :archived
+
       attached_document_ids =
         from(pd in ProjectDocument,
           where: pd.project_id == ^project.id,
@@ -164,6 +204,7 @@ defmodule Contract.Projects do
 
       from(d in Document,
         where: d.owner_id == ^user_id,
+        where: d.status != ^archived_status,
         where: d.id not in subquery(attached_document_ids),
         order_by: [desc: d.updated_at]
       )
@@ -197,6 +238,62 @@ defmodule Contract.Projects do
   end
 
   defp fetch_project(_project_id), do: nil
+
+  defp do_delete_project(%Context{} = scope, %Project{} = project) do
+    Repo.transaction(fn ->
+      document_ids = attached_document_ids(project.id)
+
+      case Repo.delete(project) do
+        {:ok, deleted_project} ->
+          case archive_orphaned_documents(scope, document_ids) do
+            :ok -> deleted_project
+            {:error, reason} -> Repo.rollback(reason)
+          end
+
+        {:error, reason} ->
+          Repo.rollback(reason)
+      end
+    end)
+  end
+
+  defp attached_document_ids(project_id) do
+    from(pd in ProjectDocument,
+      where: pd.project_id == ^project_id,
+      select: pd.document_id
+    )
+    |> Repo.all()
+  end
+
+  defp archive_orphaned_documents(%Context{} = scope, document_ids) do
+    document_ids
+    |> Enum.uniq()
+    |> Enum.reduce_while(:ok, fn document_id, :ok ->
+      case archive_document_if_unreferenced(scope, document_id) do
+        :ok -> {:cont, :ok}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+  end
+
+  defp archive_document_if_unreferenced(%Context{} = scope, document_id) do
+    case document_ref_count(scope, document_id) do
+      {:ok, 0} ->
+        case Documents.archive(scope, document_id) do
+          {:ok, %Document{}} -> :ok
+          {:error, :not_found} -> :ok
+          {:error, reason} -> {:error, reason}
+        end
+
+      {:ok, _count} ->
+        :ok
+
+      {:error, :not_found} ->
+        :ok
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
 
   defp preload_project(%Project{} = project) do
     Repo.preload(project, [:documents, project_documents: :document])

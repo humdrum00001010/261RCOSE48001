@@ -74,19 +74,39 @@ defmodule Contract.ProjectsTest do
   end
 
   describe "delete_project/2" do
-    test "deletes owned project and memberships without deleting documents" do
+    test "deletes owned project and archives documents with no remaining project refs" do
       owner = scope()
       project = create_project!(owner)
       document = create_document!(owner)
       {:ok, _project_document} = Projects.attach_document(owner, project.id, document.id)
 
+      assert {:ok, 1} = Projects.document_ref_count(owner, document.id)
       assert {:ok, %Project{id: deleted_id}} = Projects.delete_project(owner, project.id)
       assert deleted_id == project.id
 
       assert {:error, :not_found} = Projects.get_project(owner, project.id)
-      assert {:ok, %Document{id: document_id}} = Documents.get(owner, document.id)
-      assert document_id == document.id
+      assert %Document{status: :archived} = Repo.get!(Document, document.id)
+      assert {:ok, 0} = Projects.document_ref_count(owner, document.id)
       assert Repo.get_by(ProjectDocument, project_id: project.id, document_id: document.id) == nil
+    end
+
+    test "deleting one project leaves documents active when another project still references them" do
+      owner = scope()
+      first = create_project!(owner)
+      second = create_project!(owner)
+      document = create_document!(owner)
+
+      {:ok, _project_document} = Projects.attach_document(owner, first.id, document.id)
+      {:ok, _project_document} = Projects.attach_document(owner, second.id, document.id)
+
+      assert {:ok, 2} = Projects.document_ref_count(owner, document.id)
+      assert {:ok, %Project{id: deleted_id}} = Projects.delete_project(owner, first.id)
+      assert deleted_id == first.id
+
+      assert %Document{status: :draft} = Repo.get!(Document, document.id)
+      assert {:ok, 1} = Projects.document_ref_count(owner, document.id)
+      assert Repo.get_by(ProjectDocument, project_id: first.id, document_id: document.id) == nil
+      assert Repo.get_by(ProjectDocument, project_id: second.id, document_id: document.id)
     end
 
     test "delete_project/2 enforces owner ACL" do
@@ -137,6 +157,7 @@ defmodule Contract.ProjectsTest do
         |> Repo.aggregate(:count)
 
       assert count == 2
+      assert {:ok, 2} = Projects.document_ref_count(owner, document.id)
     end
 
     test "cannot attach another owner's document" do
@@ -167,7 +188,24 @@ defmodule Contract.ProjectsTest do
       assert Repo.aggregate(ProjectDocument, :count) == 1
     end
 
-    test "detach removes membership and available docs excludes attached docs" do
+    test "document_ref_count/2 is owner scoped" do
+      owner = scope()
+      other = scope()
+      project = create_project!(owner)
+      document = create_document!(owner)
+      other_document = create_document!(other)
+
+      assert {:ok, 0} = Projects.document_ref_count(owner, document.id)
+      {:ok, _project_document} = Projects.attach_document(owner, project.id, document.id)
+      assert {:ok, 1} = Projects.document_ref_count(owner, document.id)
+
+      assert {:error, :forbidden} = Projects.document_ref_count(other, document.id)
+      assert {:error, :forbidden} = Projects.document_ref_count(owner, other_document.id)
+      assert {:error, :forbidden} = Projects.document_ref_count(%Context{user: nil}, document.id)
+      assert {:error, :not_found} = Projects.document_ref_count(owner, Ecto.UUID.generate())
+    end
+
+    test "detach removes last membership and archives orphaned document" do
       owner = scope()
       project = create_project!(owner)
       attached = create_document!(owner, %{title: "Attached"})
@@ -179,9 +217,28 @@ defmodule Contract.ProjectsTest do
       assert available_document_ids(owner, project.id) == [available.id]
 
       assert :ok = Projects.detach_document(owner, project.id, attached.id)
-      assert available_document_ids(owner, project.id) == Enum.sort([available.id, attached.id])
+      assert %Document{status: :archived} = Repo.get!(Document, attached.id)
+      assert {:ok, 0} = Projects.document_ref_count(owner, attached.id)
+      assert available_document_ids(owner, project.id) == [available.id]
 
       assert :ok = Projects.detach_document(owner, project.id, attached.id)
+    end
+
+    test "detach from one of two projects leaves shared document active" do
+      owner = scope()
+      first = create_project!(owner)
+      second = create_project!(owner)
+      document = create_document!(owner)
+
+      {:ok, _project_document} = Projects.attach_document(owner, first.id, document.id)
+      {:ok, _project_document} = Projects.attach_document(owner, second.id, document.id)
+
+      assert :ok = Projects.detach_document(owner, first.id, document.id)
+
+      assert %Document{status: :draft} = Repo.get!(Document, document.id)
+      assert {:ok, 1} = Projects.document_ref_count(owner, document.id)
+      assert available_document_ids(owner, first.id) == [document.id]
+      assert available_document_ids(owner, second.id) == []
     end
   end
 
