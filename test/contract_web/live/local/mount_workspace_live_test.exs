@@ -1147,6 +1147,23 @@ defmodule ContractWeb.Local.MountWorkspaceLiveTest do
     assert [_candidate | _rest] = local_rhwp_editable_spec_candidates(lv)
   end
 
+  test "local rhwp matching book hook does not restart workspace LiveView", %{conn: conn} do
+    {:ok, lv, _html} =
+      live(
+        conn,
+        ~p"/workspace?#{[path: LocalWorkspaceAdapterStub.valid_path(), document: "employment_v1.hwp"]}"
+      )
+
+    assert has_element?(lv, "#local-rhwp-save-state")
+
+    render_hook(lv, "rhwp.matching_book.changed", %{
+      "contract_type_key" => "employment_v1",
+      "matching_book" => %{"indexesById" => %{}}
+    })
+
+    assert has_element?(lv, "#local-rhwp-save-state")
+  end
+
   test "local rhwp events load bytes, checkpoint, save, and reload saved revision", %{conn: conn} do
     root = LocalWorkspaceAdapterStub.valid_path()
     relative_path = "drafts/service.hwpx"

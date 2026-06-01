@@ -207,6 +207,17 @@ defmodule ContractWeb.Local.WorkspaceLive do
      |> push_patch(to: workspace_document_path(socket, path))}
   end
 
+  def handle_event(
+        "rhwp.matching_book.changed",
+        %{"contract_type_key" => type_key, "matching_book" => matching_book},
+        socket
+      )
+      when is_binary(type_key) and is_map(matching_book) do
+    {:noreply, socket}
+  end
+
+  def handle_event("rhwp.matching_book.changed", _params, socket), do: {:noreply, socket}
+
   def handle_event("rhwp.local.load", %{"document_id" => document_id}, socket) do
     with :ok <- verify_active_document(socket, document_id),
          {:ok, response} <- RhwpAdapter.load(document_id) do
