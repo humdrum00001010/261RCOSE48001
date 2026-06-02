@@ -46,7 +46,7 @@ defmodule ContractWeb.Live.Studio.Components.Canvas.HwpTemplate do
       </p>
       <div
         data-role="standard-hwp-svg"
-        class="flex min-h-full w-full flex-col bg-white"
+        class="rhwp-document-stack"
       >
       </div>
     </div>
