@@ -4,7 +4,6 @@ defmodule Ecrits.Local.Agent.DocumentTools do
   """
 
   alias Ecrits.Local.Document
-  alias Ecrits.Rhwp.Runtime
 
   @find_default_size 10
   @find_max_size 50
@@ -12,7 +11,7 @@ defmodule Ecrits.Local.Agent.DocumentTools do
   @doc "Read active local document text through the native runtime."
   def read(target, args) when is_map(args) do
     with {:ok, %Document{} = document} <- document(target),
-         {:ok, result} <- with_runtime_document(document, &Runtime.read(&1, [])) do
+         {:ok, result} <- with_runtime_document(document, &Ehwp.read(&1, [])) do
       {:ok,
        document_metadata(document)
        |> Map.put("text", normalize_text(result))
@@ -27,7 +26,7 @@ defmodule Ecrits.Local.Agent.DocumentTools do
     with {:ok, %Document{} = document} <- document(target),
          {:ok, pattern} <- required_string(args, "pattern"),
          {:ok, result} <-
-           with_runtime_document(document, &Runtime.find(&1, pattern, find_opts(args))) do
+           with_runtime_document(document, &Ehwp.find(&1, pattern, find_opts(args))) do
       matches =
         result
         |> decode_matches()
@@ -60,7 +59,7 @@ defmodule Ecrits.Local.Agent.DocumentTools do
          :ok <- verify_base_revision(document, args),
          {:ok, _result} <-
            with_runtime_document(document, fn handle ->
-             Runtime.write(handle, {:replace_one, query, replacement}, write_opts(args))
+             Ehwp.write(handle, {:replace_one, query, replacement}, write_opts(args))
            end) do
       {:error,
        {:not_supported,
@@ -76,11 +75,11 @@ defmodule Ecrits.Local.Agent.DocumentTools do
   defp document(target), do: Document.document(target)
 
   defp with_runtime_document(%Document{} = document, fun) when is_function(fun, 1) do
-    with {:ok, handle, _metadata} <- Runtime.open(document.path) do
+    with {:ok, handle, _metadata} <- Ehwp.open(document.path) do
       try do
         fun.(handle)
       after
-        Runtime.close(handle)
+        Ehwp.close(handle)
       end
     end
   end
