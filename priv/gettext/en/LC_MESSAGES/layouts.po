@@ -11,92 +11,92 @@ msgstr ""
 "Language: en\n"
 "Plural-Forms: nplurals=2; plural=(n != 1);\n"
 
-#: lib/contract_web/components/layouts.ex:176
+#: lib/ecrits_web/components/layouts.ex:176
 #, elixir-autogen, elixir-format
 msgid "Account"
 msgstr ""
 
-#: lib/contract_web/components/layouts.ex:266
-#: lib/contract_web/components/layouts.ex:278
+#: lib/ecrits_web/components/layouts.ex:266
+#: lib/ecrits_web/components/layouts.ex:278
 #, elixir-autogen, elixir-format
 msgid "Attempting to reconnect"
 msgstr ""
 
-#: lib/contract_web/components/layouts.ex:210
+#: lib/ecrits_web/components/layouts.ex:210
 #, elixir-autogen, elixir-format
 msgid "Changelog"
 msgstr ""
 
-#: lib/contract_web/components/layouts.ex:73
-#: lib/contract_web/components/layouts.ex:168
+#: lib/ecrits_web/components/layouts.ex:73
+#: lib/ecrits_web/components/layouts.ex:168
 #, elixir-autogen, elixir-format
 msgid "Close menu"
 msgstr ""
 
-#: lib/contract_web/components/layouts.ex:112
+#: lib/ecrits_web/components/layouts.ex:112
 #, elixir-autogen, elixir-format
-msgid "Contract Studio home"
+msgid "Ecrits home"
 msgstr ""
 
-#: lib/contract_web/components/layouts.ex:317
+#: lib/ecrits_web/components/layouts.ex:317
 #, elixir-autogen, elixir-format
 msgid "Dark theme"
 msgstr ""
 
-#: lib/contract_web/components/layouts.ex:182
+#: lib/ecrits_web/components/layouts.ex:182
 #, elixir-autogen, elixir-format
 msgid "Storage"
 msgstr ""
 
-#: lib/contract_web/components/layouts.ex:207
+#: lib/ecrits_web/components/layouts.ex:207
 #, elixir-autogen, elixir-format
 msgid "Docs"
 msgstr ""
 
-#: lib/contract_web/components/layouts.ex:308
+#: lib/ecrits_web/components/layouts.ex:308
 #, elixir-autogen, elixir-format
 msgid "Light theme"
 msgstr ""
 
-#: lib/contract_web/components/layouts.ex:135
-#: lib/contract_web/components/layouts.ex:216
+#: lib/ecrits_web/components/layouts.ex:135
+#: lib/ecrits_web/components/layouts.ex:216
 #, elixir-autogen, elixir-format
 msgid "Log in"
 msgstr ""
 
-#: lib/contract_web/components/layouts.ex:128
-#: lib/contract_web/components/layouts.ex:198
+#: lib/ecrits_web/components/layouts.ex:128
+#: lib/ecrits_web/components/layouts.ex:198
 #, elixir-autogen, elixir-format
 msgid "Log out"
 msgstr ""
 
-#: lib/contract_web/components/layouts.ex:141
-#: lib/contract_web/components/layouts.ex:219
+#: lib/ecrits_web/components/layouts.ex:141
+#: lib/ecrits_web/components/layouts.ex:219
 #, elixir-autogen, elixir-format
 msgid "Register"
 msgstr ""
 
-#: lib/contract_web/components/layouts.ex:188
+#: lib/ecrits_web/components/layouts.ex:188
 #, elixir-autogen, elixir-format
 msgid "Settings"
 msgstr ""
 
-#: lib/contract_web/components/layouts.ex:273
+#: lib/ecrits_web/components/layouts.ex:273
 #, elixir-autogen, elixir-format
 msgid "Something went wrong!"
 msgstr ""
 
-#: lib/contract_web/components/layouts.ex:185
+#: lib/ecrits_web/components/layouts.ex:185
 #, elixir-autogen, elixir-format
 msgid "Studio"
 msgstr ""
 
-#: lib/contract_web/components/layouts.ex:299
+#: lib/ecrits_web/components/layouts.ex:299
 #, elixir-autogen, elixir-format
 msgid "System theme"
 msgstr ""
 
-#: lib/contract_web/components/layouts.ex:261
+#: lib/ecrits_web/components/layouts.ex:261
 #, elixir-autogen, elixir-format
 msgid "We can't find the internet"
 msgstr ""

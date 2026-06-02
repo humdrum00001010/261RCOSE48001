@@ -1,4 +1,4 @@
-defmodule Contract.Repo.Migrations.CreateBlobRefs do
+defmodule Ecrits.LegacyRepo.Migrations.CreateBlobRefs do
   @moduledoc """
   SPEC.md v0.5 §19 — BlobRef.
 

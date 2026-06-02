@@ -1,4 +1,4 @@
-defmodule Contract.Repo.Migrations.AddWriteCompletedToDocuments do
+defmodule Ecrits.LegacyRepo.Migrations.AddWriteCompletedToDocuments do
   use Ecto.Migration
 
   def change do

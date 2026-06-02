@@ -1,4 +1,4 @@
-# Imagery manifest for `mix contract.imagegen`.
+# Imagery manifest for `mix ecrits.imagegen`.
 #
 # Wave 3C0-E pared this down to TWO images: a tiny accompaniment for
 # the landing body and a dashboard empty-state.

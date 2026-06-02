@@ -1,9 +1,9 @@
 {
-  "name": "contract-e2e",
+  "name": "ecrits-e2e",
   "private": true,
   "version": "0.0.0",
   "type": "module",
-  "description": "Playwright e2e harness for Contract Studio. Drives a real Chromium against the public sprite URL (https://contract-studio-v7zk.sprites.app/). NOT localhost.",
+  "description": "Playwright e2e harness for ecrits. Drives a real Chromium against the public sprite URL (https://ecrits-studio-v7zk.sprites.app/). NOT localhost.",
   "scripts": {
     "test": "playwright test",
     "test:headed": "playwright test --headed",

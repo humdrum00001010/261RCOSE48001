@@ -1,0 +1,277 @@
+<Layouts.app flash={@flash} current_scope={@current_scope} variant="default" chrome="landing">
+  <%!--
+    DESIGN.md §3 landing surface — Korean-primary, Linear.app-flavored hero
+    with a clause+diff product visual, then a 3-block "how it works"
+    section. Style stays in Tailwind utilities; the only CSS that still
+    applies is the daisyUI palette tokens, --cs-* tokens, and the font
+    registrations. Tests locate this surface via data-landing="v31" and
+    each block via data-landing-block.
+
+    Westlaw-silhouette guard (test/.../page_controller_test.exs):
+      • banned utilities: rounded-2xl, shadow-xl, text-6xl, font-black
+      • banned literal in landing body: "transform" / "Transform"
+      • banned site copy: "Powered by AI", "revolutionize", "seamless"
+      • CTA must be `btn btn-primary`; `btn-ghost` is forbidden here.
+  --%>
+  <main
+    data-landing="v31"
+    class="relative isolate overflow-hidden mx-auto max-w-[1280px] px-4 pt-10 pb-16 sm:px-6 sm:pt-16 sm:pb-24 lg:pt-24 text-base-content"
+  >
+    <%!-- Dotted-grid backdrop, masked to fade into the page edges.
+         currentColor lets the pattern follow the active theme's ink.
+         The grid carries the ambient detail by itself — no colored
+         halo (Linear's hero is restrained, not glowing). --%>
+    <div
+      aria-hidden="true"
+      class="pointer-events-none absolute inset-0 -z-20 text-base-content/[0.07] [background-image:radial-gradient(currentColor_1px,transparent_1px)] [background-size:22px_22px] [mask-image:radial-gradient(ellipse_at_50%_30%,black_40%,transparent_75%)] [-webkit-mask-image:radial-gradient(ellipse_at_50%_30%,black_40%,transparent_75%)]"
+    >
+    </div>
+
+    <%!-- ─── HERO ─────────────────────────────────────────────────── --%>
+    <section class="mx-auto max-w-3xl pt-6 text-center sm:pt-10">
+      <h1 class="m-0 font-serif font-medium leading-[1.06] tracking-[-0.025em] text-base-content break-keep text-[clamp(36px,6.8vw,72px)]">
+        {dgettext("landing", "복잡한 문서 프로토콜을,")}<br />
+        {dgettext("landing", "병렬 하네스로")}<br />
+        <span class="bg-gradient-to-r from-primary via-primary to-secondary bg-clip-text text-transparent">
+          {dgettext("landing", "패키지합니다.")}
+        </span>
+      </h1>
+
+      <p class="m-0 mx-auto mt-7 max-w-[36em] text-[15px] leading-7 text-base-content/65 break-keep sm:text-base sm:leading-[1.75]">
+        {dgettext("landing", "한국어 계약서를 손볼 때,")}<br class="hidden sm:inline" /> {dgettext(
+          "landing",
+          "AI 에이전트가 먼저 필요한 조건을 묻고"
+        )}<br class="hidden sm:inline" /> {dgettext(
+          "landing",
+          "그 답을 그대로 조항으로 옮겨 적습니다."
+        )}
+      </p>
+
+      <div class="mt-9 flex flex-wrap items-center justify-center gap-5">
+        <.link
+          :if={@current_scope}
+          navigate={~p"/storage"}
+          class="btn btn-primary gap-1.5"
+        >
+          {dgettext("landing", "보관함 열기")}
+          <.icon name="hero-arrow-right-micro" class="size-3.5" />
+        </.link>
+        <.link
+          :if={!@current_scope}
+          navigate={~p"/users/log-in"}
+          class="btn btn-primary gap-1.5"
+        >
+          {dgettext("landing", "보관함 열기")}
+          <.icon name="hero-arrow-right-micro" class="size-3.5" />
+        </.link>
+
+        <a
+          href="#how-it-works"
+          class="link link-hover text-sm text-base-content/75 underline-offset-4"
+        >
+          {dgettext("landing", "작동 방식 보기 →")}
+        </a>
+      </div>
+    </section>
+
+    <%!-- ─── HERO VISUAL: clause card with redline diff + AI bubble ── --%>
+    <div class="relative mx-auto mt-20 max-w-3xl px-1 sm:mt-24 sm:px-0">
+      <%!-- Stacked back-card to add depth (Linear-style layered card). --%>
+      <div
+        aria-hidden="true"
+        class="absolute inset-x-8 top-3 -z-10 h-full rounded-xl border border-base-300/60 bg-base-100/50"
+      >
+      </div>
+
+      <article class="relative overflow-hidden rounded-xl border border-base-300 bg-base-100 shadow-2xl ring-1 ring-base-content/[0.04]">
+        <%!-- Studio editor chrome — mirrors the real
+             `#studio-document-header` strip: title input pill + chevron
+             document-picker + document-type chip. Same heights (h-7),
+             same border treatment, same min-h-11 header bar. See
+             lib/ecrits_web/live/document_live.ex render/1 (the
+             "<header id=\"studio-document-header\">" block). --%>
+        <header class="flex items-center gap-2.5 min-h-11 border-b border-base-300 bg-base-100 px-5">
+          <div class="inline-flex items-center">
+            <div class="relative z-10 inline-flex h-7 w-[12rem] items-center leading-none rounded-l-md rounded-r-none border border-base-300 bg-base-100 px-1.5 text-[13px] font-medium text-base-content">
+              용역 위탁계약서
+            </div>
+            <span
+              aria-hidden="true"
+              class="relative -ml-px inline-flex h-7 w-7 items-center justify-center rounded-r-md border border-base-300 bg-base-100 text-base-content/60"
+            >
+              <.icon name="hero-chevron-down" class="size-4" />
+            </span>
+          </div>
+
+          <span class="inline-flex h-7 items-center gap-1 rounded-md border border-base-300 px-2 text-[13px] font-medium text-base-content/70">
+            용역 위탁계약 <.icon name="hero-chevron-down" class="size-3" />
+          </span>
+        </header>
+
+        <%!-- Editor body — same typography as the real Editor.render/1:
+             outer body is `font-mono text-[15px] leading-[1.65]`,
+             headings are `font-serif font-semibold mb-3 mt-6`,
+             paragraphs `mb-3`, lists `ml-4 mb-4`. Multiple node kinds
+             (heading + paragraph + list_item) so the surface reads as
+             a real document, not a curated single-clause demo. See
+             lib/ecrits_web/live/studio/components/canvas/editor.ex. --%>
+        <div class="px-8 py-7 text-left font-mono text-[15px] leading-[1.65] text-base-content">
+          <h3 class="m-0 mt-0 mb-3 font-serif text-lg font-semibold tracking-tight">
+            제3조 (당사자의 의무)
+          </h3>
+
+          <p class="m-0 mb-3">
+            ① 갑은 본 계약상의 의무를 신의성실의 원칙에 따라 이행한다.
+          </p>
+
+          <p class="m-0 mb-3">
+            ② 을은 다음 사항을 준수한다.
+          </p>
+
+          <ul class="m-0 mb-4 ml-4 list-disc space-y-1 marker:text-base-content/40">
+            <li>갑이 정한 보안 정책의 준수</li>
+            <li>본 계약 종료 후에도 비밀정보를 누설하지 않을 의무</li>
+            <li>결과물의 저작권 일체를 갑에게 양도</li>
+          </ul>
+
+          <%!-- This paragraph carries `data-recently-authored="agent"` —
+               the same attribute the real editor sets after the agent
+               commits an edit. The settled state (left rule + soft
+               tint) is what the editor leaves once the typing-reveal
+               keyframes finish; see the @keyframes block in
+               editor.ex. --%>
+          <p
+            data-recently-authored="agent"
+            class="m-0 mb-3 -mx-3 rounded-md border-l-2 border-primary/70 bg-primary/[0.06] px-3 py-1"
+          >
+            ③ 양 당사자는 본 계약과 관련하여 알게 된 상대방의 영업비밀을 상대방의 사전 서면 동의 없이는 제3자에게 공개하지 아니한다.
+          </p>
+        </div>
+      </article>
+    </div>
+
+    <%!-- ─── HOW IT WORKS: 3-block grid ──────────────────────────── --%>
+    <section
+      id="how-it-works"
+      aria-label={dgettext("landing", "패킷 맥락을 계약 조항으로 구체화하는 흐름")}
+      class="relative mx-auto mt-32 max-w-5xl sm:mt-36"
+    >
+      <header class="mb-10 flex flex-col items-start gap-4 sm:mb-14 sm:flex-row sm:items-end sm:justify-between">
+        <div>
+          <p class="m-0 font-mono text-[11px] font-semibold uppercase tracking-[0.24em] text-base-content/55">
+            Ecrits 작업 흐름
+          </p>
+          <h2 class="m-0 mt-3 font-serif text-3xl font-medium tracking-tight text-base-content break-keep sm:text-[34px]">
+            계약서를 다듬는 순서.
+          </h2>
+        </div>
+        <p class="m-0 max-w-sm text-sm leading-6 text-base-content/65 break-keep">
+          질문을 받고, 답을 듣고, 그 답을 조항에 반영합니다.
+        </p>
+      </header>
+
+      <div class="grid grid-cols-1 gap-4 md:grid-cols-3 md:gap-5">
+        <article
+          data-landing-block
+          class="group relative flex flex-col overflow-hidden rounded-xl border border-base-300 bg-base-100 p-6 transition-colors duration-200 hover:border-base-content/20 sm:p-7"
+        >
+          <span
+            aria-hidden="true"
+            class="pointer-events-none absolute inset-x-0 -top-px h-px bg-gradient-to-r from-transparent via-primary/50 to-transparent opacity-0 transition-opacity duration-300 group-hover:opacity-100"
+          >
+          </span>
+          <p
+            data-eyebrow="01"
+            class="m-0 font-mono text-[11px] font-semibold tracking-[0.24em] text-base-content/55"
+          >
+            {"01"}
+          </p>
+          <h3 class="m-0 mt-4 text-lg font-semibold leading-snug text-base-content break-keep">
+            {dgettext("landing", "포맷 → IR 정규화")}
+          </h3>
+          <p class="m-0 mt-3 text-[13.5px] leading-[1.7] text-base-content/65 break-keep">
+            {dgettext(
+              "landing",
+              "HWPX, DOCX 같은 원본을 비손실 IR로 변환합니다. 노드 단위로 편집 가능합니다."
+            )}
+          </p>
+          <p class="m-0 mt-5 flex items-center gap-2 font-mono text-[11px] tracking-[0.05em] text-base-content/45">
+            <.icon name="hero-document-text-micro" class="size-3.5" /> .hwpx → ir.json
+          </p>
+        </article>
+
+        <article
+          data-landing-block
+          class="group relative flex flex-col overflow-hidden rounded-xl border border-base-300 bg-base-100 p-6 transition-colors duration-200 hover:border-base-content/20 sm:p-7"
+        >
+          <span
+            aria-hidden="true"
+            class="pointer-events-none absolute inset-x-0 -top-px h-px bg-gradient-to-r from-transparent via-primary/50 to-transparent opacity-0 transition-opacity duration-300 group-hover:opacity-100"
+          >
+          </span>
+          <p
+            data-eyebrow="02"
+            class="m-0 font-mono text-[11px] font-semibold tracking-[0.24em] text-base-content/55"
+          >
+            {"02"}
+          </p>
+          <h3 class="m-0 mt-4 text-lg font-semibold leading-snug text-base-content break-keep">
+            {dgettext("landing", "AI가 먼저 묻는 핵심 질문")}
+          </h3>
+          <p class="m-0 mt-3 text-[13.5px] leading-[1.7] text-base-content/65 break-keep">
+            {dgettext(
+              "landing",
+              "빠진 결정을 식별해, 맥락에 맞춰 한 번에 하나씩 묻습니다."
+            )}
+          </p>
+          <p class="m-0 mt-5 flex items-center gap-2 text-[11px] tracking-[0.05em] text-base-content/45">
+            <.icon name="hero-chat-bubble-left-micro" class="size-3.5" /> 한 번에 하나씩
+          </p>
+        </article>
+
+        <article
+          data-landing-block
+          class="group relative flex flex-col overflow-hidden rounded-xl border border-base-300 bg-base-100 p-6 transition-colors duration-200 hover:border-base-content/20 sm:p-7"
+        >
+          <span
+            aria-hidden="true"
+            class="pointer-events-none absolute inset-x-0 -top-px h-px bg-gradient-to-r from-transparent via-primary/50 to-transparent opacity-0 transition-opacity duration-300 group-hover:opacity-100"
+          >
+          </span>
+          <p
+            data-eyebrow="03"
+            class="m-0 font-mono text-[11px] font-semibold tracking-[0.24em] text-base-content/55"
+          >
+            {"03"}
+          </p>
+          <h3 class="m-0 mt-4 text-lg font-semibold leading-snug text-base-content break-keep">
+            {dgettext("landing", "답이 곧 계약 조항")}
+          </h3>
+          <p class="m-0 mt-3 text-[13.5px] leading-[1.7] text-base-content/65 break-keep">
+            {dgettext(
+              "landing",
+              "답한 결정이 그대로 조항으로 작성됩니다. 문장을 다듬을 필요 없이, 계약서가 완성됩니다."
+            )}
+          </p>
+          <p class="m-0 mt-5 flex items-center gap-2 text-[11px] tracking-[0.05em] text-base-content/45">
+            <.icon name="hero-check-circle-micro" class="size-3.5" /> 조항으로 완성
+          </p>
+        </article>
+      </div>
+    </section>
+
+    <%!-- ─── BETA FOOTNOTE ──────────────────────────────────────── --%>
+    <section class="relative mx-auto mt-24 max-w-5xl">
+      <div class="flex flex-col items-start justify-between gap-3 border-t border-base-300 pt-6 text-xs text-base-content/55 sm:flex-row sm:items-center">
+        <p class="m-0 inline-flex items-center gap-2">
+          <span class="inline-block size-1.5 rounded-full bg-success motion-safe:animate-pulse">
+          </span>
+          {dgettext("landing", "비공개 베타. 초청제로 운영합니다.")}
+        </p>
+        <p class="m-0 tracking-tight text-base-content/40">
+          © 2026 Ecrits
+        </p>
+      </div>
+    </section>
+  </main>
+</Layouts.app>

@@ -28,6 +28,6 @@ for (const persona of PERSONAS) {
 
     // Assert the URL is still on the public sprite host (no off-host redirect).
     const url = new URL(page.url());
-    expect(url.host).toBe('contract-studio-v7zk.sprites.app');
+    expect(url.host).toBe('ecrits-studio-v7zk.sprites.app');
   });
 }

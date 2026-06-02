@@ -1,4 +1,4 @@
-defmodule Contract.Repo.Migrations.PurgeArchivedDocuments do
+defmodule Ecrits.LegacyRepo.Migrations.PurgeArchivedDocuments do
   use Ecto.Migration
 
   def up do

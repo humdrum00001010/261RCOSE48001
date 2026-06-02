@@ -1,4 +1,4 @@
-defmodule Contract.Repo.Migrations.CreateFieldLineages do
+defmodule Ecrits.LegacyRepo.Migrations.CreateFieldLineages do
   use Ecto.Migration
 
   def change do

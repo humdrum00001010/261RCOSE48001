@@ -27,7 +27,7 @@ import * as fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 const BASE_URL =
-  process.env.E2E_BASE_URL ?? 'https://contract-studio-v7zk.sprites.app';
+  process.env.E2E_BASE_URL ?? 'https://ecrits-studio-v7zk.sprites.app';
 const SUFFIX = process.env.SHOT_SUFFIX ?? 'before';
 
 // Resolve relative to this file so invocation from any cwd works. This

@@ -1,14 +1,14 @@
 import Config
 
 # Playwright e2e: enables the `/test/personas/:p/sign_in` + `/test/reset`
-# routes (gated by `Application.compile_env(:contract, :test_auth)`).
+# routes (gated by `Application.compile_env(:ecrits, :test_auth)`).
 # Mirrored in `:dev`; explicitly `false` in `:prod`.
-config :contract, :test_auth, true
+config :ecrits, :test_auth, true
 
 # Tests assert on English msgid (source-of-truth) — override the
 # config.exs Korean default so `mix test` matches the literal English
 # strings embedded in gen.auth tests + dashboard / settings_hub tests.
-config :contract, :ui_locale, "en"
+config :ecrits, :ui_locale, "en"
 
 # Only in tests, remove the complexity from the password hashing algorithm
 config :bcrypt_elixir, :log_rounds, 1
@@ -16,10 +16,14 @@ config :bcrypt_elixir, :log_rounds, 1
 # Wallaby drives a real browser against the test endpoint, so the HTTP
 # server must be running for `:browser`-tagged feature tests. Plain ConnTest
 # / LiveViewTest cases don't need the server but tolerate `server: true`.
-config :contract, ContractWeb.Endpoint,
+config :ecrits, EcritsWeb.Endpoint,
   http: [ip: {127, 0, 0, 1}, port: 4002],
   secret_key_base: "fdSwy2CndhpkOt1n+miKuBzwIMBkBxzGfg7azoR3klip6hL9cvK0cL69X7pnOQLF",
   server: true
+
+config :ecrits, Ecrits.Repo,
+  database: Path.join(System.tmp_dir!(), "ecrits-test/ecrits.sqlite3"),
+  pool_size: 1
 
 # Wallaby driver + Chromium.
 #   * `:path`   — chromedriver executable. Wallaby PATH-resolves this, so
@@ -42,11 +46,11 @@ config :wallaby,
            System.find_executable("google-chrome") ||
            "/usr/local/bin/chromium")
   ],
-  otp_app: :contract,
+  otp_app: :ecrits,
   base_url: "http://localhost:4002"
 
 # In test we don't send emails
-config :contract, Contract.Mailer, adapter: Swoosh.Adapters.Test
+config :ecrits, Ecrits.Mailer, adapter: Swoosh.Adapters.Test
 
 # Disable swoosh api client as it is only required for production adapters
 config :swoosh, :api_client, false
@@ -66,28 +70,28 @@ config :phoenix,
   sort_verified_routes_query_params: true
 
 # Provider stubs / fake credentials so config-time fetches succeed.
-config :contract, :upstage,
+config :ecrits, :upstage,
   endpoint: "http://localhost:0/v1/document-ai/document-parse",
   api_key: "test-upstage-key"
 
-config :contract, :openai,
+config :ecrits, :openai,
   api_key: "test-openai-key",
   base_url: "http://localhost:0/v1",
   default_model: "gpt-5-mini",
   reasoning_effort: "high"
 
-config :contract, :law_mcp,
+config :ecrits, :law_mcp,
   endpoint: "http://localhost:0/mcp",
   oc: "openapi"
 
 # Mox-based OpenAI driver for the Agent runtime tests.
-config :contract, :io_drivers,
-  http: Contract.IO.HTTP.Req,
-  openai: Contract.IO.OpenAIMock,
-  upstage: Contract.IO.Upstage,
-  law_mcp: Contract.IO.LawMCP
+config :ecrits, :io_drivers,
+  http: Ecrits.IO.HTTP.Req,
+  openai: Ecrits.IO.OpenAIMock,
+  upstage: Ecrits.IO.Upstage,
+  law_mcp: Ecrits.IO.LawMCP
 
-# External HWPX validator — used by `test/contract/export/hwpx_external_validator_test.exs`
+# External HWPX validator — used by `test/ecrits/export/hwpx_external_validator_test.exs`
 # (tag `:external_hwpx`, excluded from the default suite).
 #
 # `pyhwpxlib` is a third-party Python CLI for parsing/validating HWPX files;
@@ -98,6 +102,6 @@ config :contract, :io_drivers,
 #     python3 -m venv ~/.venvs/hwpx && ~/.venvs/hwpx/bin/pip install pyhwpxlib
 #
 # Override via `HWPX_VALIDATOR_CMD=/path/to/pyhwpxlib`.
-config :contract,
+config :ecrits,
        :hwpx_validator,
        System.get_env("HWPX_VALIDATOR_CMD", "/home/sprite/.venvs/hwpx/bin/pyhwpxlib")

@@ -16,88 +16,88 @@ msgstr ""
 "Language: ko\n"
 "Plural-Forms: nplurals=1; plural=0;\n"
 
-#: lib/contract_web/live/storage_live.ex:37
+#: lib/ecrits_web/live/storage_live.ex:37
 #, elixir-autogen, elixir-format
 msgid "Storage"
 msgstr "보관함"
 
-#: lib/contract_web/live/storage_live.ex:255
+#: lib/ecrits_web/live/storage_live.ex:255
 #, elixir-autogen, elixir-format
 msgid "가져오는 중"
 msgstr "가져오는 중"
 
-#: lib/contract_web/live/storage_live.ex:257
+#: lib/ecrits_web/live/storage_live.ex:257
 #, elixir-autogen, elixir-format
 msgid "검토 대기"
 msgstr "검토 대기"
 
-#: lib/contract_web/live/storage_live.ex:101
-#: lib/contract_web/live/storage_live.ex:130
+#: lib/ecrits_web/live/storage_live.ex:101
+#: lib/ecrits_web/live/storage_live.ex:130
 #, elixir-autogen, elixir-format
 msgid "모든 문서"
 msgstr "모든 문서"
 
-#: lib/contract_web/live/storage_live.ex:220
+#: lib/ecrits_web/live/storage_live.ex:220
 #, elixir-autogen, elixir-format
 msgid "문서 메뉴"
 msgstr "문서 메뉴"
 
-#: lib/contract_web/live/storage_live.ex:259
+#: lib/ecrits_web/live/storage_live.ex:259
 #, elixir-autogen, elixir-format
 msgid "보관"
 msgstr "보관"
 
-#: lib/contract_web/live/storage_live.ex:110
+#: lib/ecrits_web/live/storage_live.ex:110
 #, elixir-autogen, elixir-format
 msgid "새 문서"
 msgstr "새 문서"
 
-#: lib/contract_web/live/storage_live.ex:187
+#: lib/ecrits_web/live/storage_live.ex:187
 #, elixir-autogen, elixir-format
 msgid "수정일"
 msgstr "수정일"
 
-#: lib/contract_web/live/storage_live.ex:258
+#: lib/ecrits_web/live/storage_live.ex:258
 #, elixir-autogen, elixir-format
 msgid "완료"
 msgstr "완료"
 
-#: lib/contract_web/live/storage_live.ex:143
+#: lib/ecrits_web/live/storage_live.ex:143
 #, elixir-autogen, elixir-format
 msgid "즐겨찾기"
 msgstr "즐겨찾기"
 
-#: lib/contract_web/live/storage_live.ex:158
+#: lib/ecrits_web/live/storage_live.ex:158
 #, elixir-autogen, elixir-format
 msgid "즐겨찾기한 문서가 아직 없습니다."
 msgstr "즐겨찾기한 문서가 아직 없습니다."
 
-#: lib/contract_web/live/storage_live.ex:256
+#: lib/ecrits_web/live/storage_live.ex:256
 #, elixir-autogen, elixir-format
 msgid "진행 중"
 msgstr "진행 중"
 
-#: lib/contract_web/live/storage_live.ex:254
+#: lib/ecrits_web/live/storage_live.ex:254
 #, elixir-autogen, elixir-format
 msgid "초안"
 msgstr "초안"
 
-#: lib/contract_web/live/storage_live.ex:188
+#: lib/ecrits_web/live/storage_live.ex:188
 #, elixir-autogen, elixir-format
 msgid "메뉴"
 msgstr "메뉴"
 
-#: lib/contract_web/live/storage_live.ex:185
+#: lib/ecrits_web/live/storage_live.ex:185
 #, elixir-autogen, elixir-format
 msgid "문서명"
 msgstr "문서명"
 
-#: lib/contract_web/live/storage_live.ex:186
+#: lib/ecrits_web/live/storage_live.ex:186
 #, elixir-autogen, elixir-format
 msgid "상태"
 msgstr "상태"
 
-#: lib/contract_web/live/storage_live.ex:195
+#: lib/ecrits_web/live/storage_live.ex:195
 #, elixir-autogen, elixir-format
 msgid "아직 문서가 없습니다."
 msgstr "아직 문서가 없습니다."

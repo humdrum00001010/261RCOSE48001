@@ -1,4 +1,4 @@
-defmodule Contract.Repo.Migrations.CreateChatThreads do
+defmodule Ecrits.LegacyRepo.Migrations.CreateChatThreads do
   @moduledoc """
   SPEC.md v0.5 §7.2 — ChatThread.
 

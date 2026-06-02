@@ -22,7 +22,7 @@ import "phoenix_html"
 // Establish Phoenix Socket and LiveView configuration.
 import {Socket} from "phoenix"
 import {LiveSocket} from "phoenix_live_view"
-import {hooks as colocatedHooks} from "phoenix-colocated/contract"
+import {hooks as colocatedHooks} from "phoenix-colocated/ecrits"
 import topbar from "../vendor/topbar"
 import {Rhwp} from "./rhwp"
 
@@ -116,6 +116,7 @@ const LocalChatRailResizer = {
     this.fileTreeCollapsedWidth = 40
     this.editorMinWidth = 360
     this.desktopMinWidth = 1024
+    this.mobilePane = "chat"
     this.dragging = false
     this.dragKind = null
 
@@ -135,28 +136,41 @@ const LocalChatRailResizer = {
 
     this.onPointerDown = event => this.startDragFromEvent(event)
     this.onClick = event => this.handleLayoutClick(event)
-    this.onFocusIn = event => this.handleModelConfigFocus(event)
     this.onPointerMove = event => this.drag(event)
     this.onPointerUp = () => this.stopDrag()
-    this.onResize = () => this.normalizeLayout()
+    this.onDocumentClick = event => this.handleAgentMenuDocumentClick(event)
+    this.onDocumentFocusIn = event => this.closeAgentOptionMenus(event.target)
+    this.onResize = () => {
+      this.normalizeLayout()
+      this.applyMobilePane(this.mobilePane)
+    }
+    this.onLocalAgentTextAppend = event => this.appendLocalAgentText(event)
+    this.onLocalAgentReasoningAppend = event => this.appendLocalAgentReasoning(event)
 
     this.el.addEventListener("pointerdown", this.onPointerDown)
     this.el.addEventListener("click", this.onClick)
-    this.el.addEventListener("focusin", this.onFocusIn)
+    document.addEventListener("click", this.onDocumentClick)
+    document.addEventListener("focusin", this.onDocumentFocusIn)
     window.addEventListener("resize", this.onResize)
+    window.addEventListener("phx:local_agent_text_append", this.onLocalAgentTextAppend)
+    window.addEventListener("phx:local_agent_reasoning_append", this.onLocalAgentReasoningAppend)
   },
 
   updated() {
     this.refreshWorkspaceRefs()
     this.applyFileTreeCollapsed(this.fileTreeCollapsed, {persist: false})
     this.normalizeLayout()
+    this.applyMobilePane(this.mobilePane)
   },
 
   destroyed() {
     this.el.removeEventListener("pointerdown", this.onPointerDown)
     this.el.removeEventListener("click", this.onClick)
-    this.el.removeEventListener("focusin", this.onFocusIn)
+    document.removeEventListener("click", this.onDocumentClick)
+    document.removeEventListener("focusin", this.onDocumentFocusIn)
     window.removeEventListener("resize", this.onResize)
+    window.removeEventListener("phx:local_agent_text_append", this.onLocalAgentTextAppend)
+    window.removeEventListener("phx:local_agent_reasoning_append", this.onLocalAgentReasoningAppend)
     this.detachDragEvents()
     document.body.removeAttribute("data-chat-rail-dragging")
   },
@@ -170,11 +184,23 @@ const LocalChatRailResizer = {
     this.fileTreeRestore = this.el.querySelector('[data-role="file-tree-restore"]')
     this.fileTreeHide = this.el.querySelector('[data-role="file-tree-hide"]')
     this.fileTreeShow = this.el.querySelector('[data-role="file-tree-show"]')
+    this.editorShell = this.el.querySelector('[data-local-editor-shell="true"]')
+    this.mobileOpenDocument = this.el.querySelector('[data-role="mobile-open-document"]')
+    this.mobileOpenChat = this.el.querySelector('[data-role="mobile-open-chat"]')
   },
 
   handleLayoutClick(event) {
-    if (this.opensModelConfig(event.target)) {
-      this.pushEvent("open_local_agent_model_modal", {})
+    const openDocument = event.target.closest('[data-role="mobile-open-document"]')
+    if (openDocument && this.el.contains(openDocument)) {
+      event.preventDefault()
+      this.applyMobilePane("document", {focus: true})
+      return
+    }
+
+    const openChat = event.target.closest('[data-role="mobile-open-chat"]')
+    if (openChat && this.el.contains(openChat)) {
+      event.preventDefault()
+      this.applyMobilePane("chat", {focus: true})
       return
     }
 
@@ -202,15 +228,54 @@ const LocalChatRailResizer = {
     }
   },
 
-  handleModelConfigFocus(event) {
-    if (this.opensModelConfig(event.target)) {
-      this.pushEvent("open_local_agent_model_modal", {})
+  handleAgentMenuDocumentClick(event) {
+    const target = event.target
+    if (target.closest?.('[data-role="agent-model-option"], [data-role="provider-reasoning-option"], [data-role="agent-access-option"], [data-role="agent-provider-config-open"]')) {
+      this.closeAgentOptionMenus()
+      return
     }
+
+    this.closeAgentOptionMenus(target)
   },
 
-  opensModelConfig(target) {
-    const select = target.closest?.("#local-agent-model-select")
-    return select && this.el.contains(select)
+  closeAgentOptionMenus(target = null) {
+    const activeMenu = target?.closest?.('[data-role="provider-options"] details')
+    this.el.querySelectorAll('[data-role="provider-options"] details[open]').forEach(details => {
+      if (details !== activeMenu) details.removeAttribute("open")
+    })
+  },
+
+  appendLocalAgentText(event) {
+    const id = event.detail?.message_id
+    const piece = event.detail?.piece
+    if (!id || !piece) return
+
+    const body = document.querySelector(
+      `[data-role="agent-text-body"][data-message-id="${id}"]`
+    )
+    if (!body) return
+
+    const container = body.closest('[data-role="agent-text"]')
+    const indicator = container?.querySelector('[data-role="agent-loading"]')
+    if (indicator) indicator.remove()
+
+    body.appendChild(document.createTextNode(piece))
+  },
+
+  appendLocalAgentReasoning(event) {
+    const id = event.detail?.message_id
+    const piece = event.detail?.piece
+    if (!id || !piece) return
+
+    const summary = document.querySelector(
+      `[data-role="agent-reasoning-text"][data-message-id="${id}"]`
+    )
+    if (summary) summary.appendChild(document.createTextNode(piece))
+
+    const details = document.querySelector(
+      `[data-role="agent-reasoning-details-text"][data-message-id="${id}"]`
+    )
+    if (details) details.appendChild(document.createTextNode(piece))
   },
 
   startDragFromEvent(event) {
@@ -326,6 +391,32 @@ const LocalChatRailResizer = {
 
     const width = collapsed ? this.fileTreeCollapsedWidth : this.currentFileTreeWidth()
     this.root.style.setProperty("--local-file-tree-width", `${width}px`)
+  },
+
+  applyMobilePane(pane, {focus = false} = {}) {
+    this.mobilePane = pane === "document" ? "document" : "chat"
+    this.el.setAttribute("data-mobile-pane", this.mobilePane)
+
+    const showingDocument = this.mobilePane === "document"
+    const mobile = window.innerWidth < this.desktopMinWidth
+
+    if (mobile) {
+      this.fileTreePanel?.classList.add("max-lg:hidden")
+      this.editorShell?.classList.toggle("max-lg:hidden", !showingDocument)
+      this.chatRail?.classList.toggle("max-lg:hidden", showingDocument)
+    } else {
+      this.fileTreePanel?.classList.remove("max-lg:hidden")
+      this.editorShell?.classList.remove("max-lg:hidden")
+      this.chatRail?.classList.remove("max-lg:hidden")
+    }
+
+    this.mobileOpenDocument?.setAttribute("aria-pressed", String(showingDocument))
+    this.mobileOpenChat?.setAttribute("aria-pressed", String(!showingDocument))
+
+    if (focus && mobile) {
+      const target = showingDocument ? this.mobileOpenChat : this.mobileOpenDocument
+      target?.focus({preventScroll: true})
+    }
   },
 
   applyFileTreeWidth(width) {

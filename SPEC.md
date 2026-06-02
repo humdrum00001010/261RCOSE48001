@@ -1,7 +1,7 @@
 ## Revision history
 - 2026-05-15: Pivot from Matter-primary to Document-primary product framing. Document is now the primary user-facing object; document routes and sessions are document-first.
 - 2026-05-16: Remove the persistent Context Reservoir from the product surface; left-rail context becomes optional outline / related-docs UI.
-- 2026-05-16 (v0.5): Substantial revision. Rename Action → Command. Move Engine → Session.Reducer (internal). REMOVE Matter entirely (Document.owner_id replaces it). Add new persistent schemas: ChatThread, SourceDocument, SourceClaim, EvidenceSnapshot, AgentRun, ToolCall, BlobRef. Replace Contract.IO with Contract.Blobs + Contract.Providers. Expand Contract.MCP to full resource+tool surface (20 tools, 16 resources). Add Lawyer packet as export format. StudioLive handle_event names switch to dotted notation ("document.edit", "chat.submit", "source_claim.confirm", ...). Context Reservoir REMOVED from this draft — left rail becomes optional outline / related-docs.
+- 2026-05-16 (v0.5): Substantial revision. Rename Action → Command. Move Engine → Session.Reducer (internal). REMOVE Matter entirely (Document.owner_id replaces it). Add new persistent schemas: ChatThread, SourceDocument, SourceClaim, EvidenceSnapshot, AgentRun, ToolCall, BlobRef. Replace Ecrits.IO with Ecrits.Blobs + Ecrits.Providers. Expand Ecrits.MCP to full resource+tool surface (20 tools, 16 resources). Add Lawyer packet as export format. StudioLive handle_event names switch to dotted notation ("document.edit", "chat.submit", "source_claim.confirm", ...). Context Reservoir REMOVED from this draft — left rail becomes optional outline / related-docs.
 
 ---
 
@@ -618,19 +618,19 @@ Use LiveView for normal product behavior.
 
 No browser /api routes are needed for regular document actions.
 
-defmodule ContractWeb.Router do
-  use ContractWeb, :router
-  scope "/", ContractWeb do
+defmodule EcritsWeb.Router do
+  use EcritsWeb, :router
+  scope "/", EcritsWeb do
     pipe_through [:browser, :authenticated]
     live "/studio", StudioLive
     live "/documents/:document_id", StudioLive
     get "/exports/:export_id/download", ExportDownloadController, :show
   end
-  scope "/mcp", ContractWeb.MCP do
+  scope "/mcp", EcritsWeb.MCP do
     pipe_through [:mcp]
     forward "/", MCPPlug
   end
-  scope "/slack", ContractWeb do
+  scope "/slack", EcritsWeb do
     pipe_through [:slack]
     post "/events", SlackController, :events
     post "/actions", SlackController, :actions
@@ -642,9 +642,9 @@ end
 
 6. Shared Types
 
-defmodule Contract.Types do
+defmodule Ecrits.Types do
   @type id :: Ecto.UUID.t()
-  @type ctx :: Contract.Context.t()
+  @type ctx :: Ecrits.Context.t()
   @type result(value) :: {:ok, value} | {:error, term()}
   @type tenant_id :: id()
   @type user_id :: id()
@@ -678,7 +678,7 @@ end
 
 Document is the primary user-facing object.
 
-defmodule Contract.Document do
+defmodule Ecrits.Document do
   use Ecto.Schema
   import Ecto.Changeset
   @primary_key {:id, :binary_id, autogenerate: true}
@@ -693,10 +693,10 @@ defmodule Contract.Document do
       default: :draft
     field :current_revision, :integer, default: 0
     field :state_snapshot, :map, default: %{}
-    has_many :changes, Contract.Change
-    has_many :marks, Contract.Mark
-    has_many :source_documents, Contract.SourceDocument
-    has_many :exports, Contract.Export
+    has_many :changes, Ecrits.Change
+    has_many :marks, Ecrits.Mark
+    has_many :source_documents, Ecrits.SourceDocument
+    has_many :exports, Ecrits.Export
     timestamps()
   end
   def changeset(document, attrs)
@@ -715,7 +715,7 @@ A ChatThread is conversation.
 
 It may exist before a Document.
 
-defmodule Contract.ChatThread do
+defmodule Ecrits.ChatThread do
   use Ecto.Schema
   import Ecto.Changeset
   @primary_key {:id, :binary_id, autogenerate: true}
@@ -760,7 +760,7 @@ Not examples:
 * plain chat,
 * Slack text.
 
-defmodule Contract.SourceDocument do
+defmodule Ecrits.SourceDocument do
   use Ecto.Schema
   import Ecto.Changeset
   @primary_key {:id, :binary_id, autogenerate: true}
@@ -776,7 +776,7 @@ defmodule Contract.SourceDocument do
       default: :uploaded
     field :regions, {:array, :map}, default: []
     field :metadata, :map, default: %{}
-    has_many :claims, Contract.SourceClaim
+    has_many :claims, Ecrits.SourceClaim
     timestamps()
   end
   def changeset(source_document, attrs)
@@ -793,7 +793,7 @@ A SourceClaim is a supervised interpretation of a SourceDocument.
 
 It is visible and correctable.
 
-defmodule Contract.SourceClaim do
+defmodule Ecrits.SourceClaim do
   use Ecto.Schema
   import Ecto.Changeset
   @primary_key {:id, :binary_id, autogenerate: true}
@@ -838,7 +838,7 @@ Command is the only incoming intent shape.
 
 Use embedded_schema.
 
-defmodule Contract.Command do
+defmodule Ecrits.Command do
   use Ecto.Schema
   import Ecto.Changeset
   @primary_key false
@@ -905,7 +905,7 @@ Commands may come from:
 
 Change is the durable reversible result of a Command.
 
-defmodule Contract.Change do
+defmodule Ecrits.Change do
   use Ecto.Schema
   import Ecto.Changeset
   @primary_key {:id, :binary_id, autogenerate: true}
@@ -959,7 +959,7 @@ Mark is the durable soft annotation layer.
 
 It may be renamed to Annotation, but this spec uses Mark.
 
-defmodule Contract.Mark do
+defmodule Ecrits.Mark do
   use Ecto.Schema
   import Ecto.Changeset
   @primary_key {:id, :binary_id, autogenerate: true}
@@ -1016,7 +1016,7 @@ It does not mutate contract text.
 
 Legal MCP outputs become immutable evidence snapshots.
 
-defmodule Contract.EvidenceSnapshot do
+defmodule Ecrits.EvidenceSnapshot do
   use Ecto.Schema
   import Ecto.Changeset
   @primary_key {:id, :binary_id, autogenerate: true}
@@ -1044,7 +1044,7 @@ EvidenceSnapshots are immutable after creation.
 
 7.9 AgentRun and ToolCall
 
-defmodule Contract.AgentRun do
+defmodule Ecrits.AgentRun do
   use Ecto.Schema
   import Ecto.Changeset
   schema "agent_runs" do
@@ -1065,7 +1065,7 @@ defmodule Contract.AgentRun do
   end
   def changeset(run, attrs)
 end
-defmodule Contract.ToolCall do
+defmodule Ecrits.ToolCall do
   use Ecto.Schema
   import Ecto.Changeset
   schema "tool_calls" do
@@ -1095,7 +1095,7 @@ Tool calls may be persisted for:
 
 7.10 Export
 
-defmodule Contract.Export do
+defmodule Ecrits.Export do
   use Ecto.Schema
   import Ecto.Changeset
   schema "exports" do
@@ -1118,38 +1118,38 @@ end
 
 Only these are public core modules:
 
-ContractWeb.StudioLive
-Contract.Studio
-Contract.Session
-Contract.Store
-Contract.Agent
-Contract.MCP
-Contract.Slack
-Contract.Blobs
-Contract.Providers
+EcritsWeb.StudioLive
+Ecrits.Studio
+Ecrits.Session
+Ecrits.Store
+Ecrits.Agent
+Ecrits.MCP
+Ecrits.Slack
+Ecrits.Blobs
+Ecrits.Providers
 
 Internal helpers:
 
-Contract.Session.Reducer
-Contract.Session.Lease
-Contract.Session.Revocation
-Contract.Studio.Import
-Contract.Studio.Export
+Ecrits.Session.Reducer
+Ecrits.Session.Lease
+Ecrits.Session.Revocation
+Ecrits.Studio.Import
+Ecrits.Studio.Export
 
 Schemas/data:
 
-Contract.Document
-Contract.ChatThread
-Contract.SourceDocument
-Contract.SourceClaim
-Contract.Command
-Contract.Change
-Contract.Mark
-Contract.EvidenceSnapshot
-Contract.AgentRun
-Contract.ToolCall
-Contract.Export
-Contract.BlobRef
+Ecrits.Document
+Ecrits.ChatThread
+Ecrits.SourceDocument
+Ecrits.SourceClaim
+Ecrits.Command
+Ecrits.Change
+Ecrits.Mark
+Ecrits.EvidenceSnapshot
+Ecrits.AgentRun
+Ecrits.ToolCall
+Ecrits.Export
+Ecrits.BlobRef
 
 ⸻
 
@@ -1159,8 +1159,8 @@ StudioLive is the only primary UI surface.
 
 Use handle_info/2 directly. Do not hide the protocol behind vague modules.
 
-defmodule ContractWeb.StudioLive do
-  use ContractWeb, :live_view
+defmodule EcritsWeb.StudioLive do
+  use EcritsWeb, :live_view
   # Boot
   def mount(params, session, socket)
   # Client events → Command
@@ -1241,7 +1241,7 @@ Only committed Change updates document projection.
 
 Studio is the product façade.
 
-defmodule Contract.Studio do
+defmodule Ecrits.Studio do
   def open(ctx, params)
   def command(ctx, command)
   def sync(ctx, document_id, from_revision)
@@ -1262,7 +1262,7 @@ export command → Providers.render_export + Blobs
 
 One live coordinator per active Document.
 
-defmodule Contract.Session do
+defmodule Ecrits.Session do
   use GenServer
   def ensure(ctx, document_id)
   def command(document_id, command)
@@ -1281,7 +1281,7 @@ Session is not truth.
 
 Store is durable truth.
 
-defmodule Contract.Store do
+defmodule Ecrits.Store do
   def load(document_id)
   def append(document_id, change, fencing_token)
   def changes_since(document_id, revision)
@@ -1298,7 +1298,7 @@ end
 These are internal helpers.
 Do not promote them to top-level architecture.
 
-defmodule Contract.Session.Reducer do
+defmodule Ecrits.Session.Reducer do
   def compile(command, document_state)
   def validate(input, document_state)
   def preimage(input, document_state)
@@ -1307,13 +1307,13 @@ defmodule Contract.Session.Reducer do
   def apply(input, document_state)
   def build_change(command, input, document_state)
 end
-defmodule Contract.Session.Lease do
+defmodule Ecrits.Session.Lease do
   def acquire(document_id, owner_ref)
   def renew(document_id, owner_ref, fencing_token)
   def release(document_id, owner_ref, fencing_token)
   def assert_current!(document_id, fencing_token)
 end
-defmodule Contract.Session.Revocation do
+defmodule Ecrits.Session.Revocation do
   def revoke(ctx, document_state, change_id, opts)
   def clean_revoke(ctx, document_state, change)
   def request_reconciliation(ctx, document_state, change, overlaps)
@@ -1326,7 +1326,7 @@ end
 
 Agent performs semantic work and returns Commands.
 
-defmodule Contract.Agent do
+defmodule Ecrits.Agent do
   def start(ctx, command)
   def cancel(ctx, agent_run_id)
   def run_skill(ctx, skill_key, input, opts)
@@ -1387,11 +1387,11 @@ stale final command → reject or rebase
 
 16. MCP
 
-Contract.MCP is the external agent tool/resource layer.
+Ecrits.MCP is the external agent tool/resource layer.
 
 It must capture behavior, not just list functions.
 
-defmodule Contract.MCP do
+defmodule Ecrits.MCP do
   def initialize(conn_or_payload)
   def list_resources(ctx, route_ref)
   def read_resource(ctx, route_ref, uri)
@@ -1580,7 +1580,7 @@ Blobs is object storage only.
 
 It handles S3/R2/MinIO/local storage.
 
-defmodule Contract.Blobs do
+defmodule Ecrits.Blobs do
   def put(ctx, binary, opts)
   def put_upload(ctx, upload, opts)
   def get(ctx, blob_ref)
@@ -1601,7 +1601,7 @@ law evidence raw payload if large
 
 Providers is external API calls only.
 
-defmodule Contract.Providers do
+defmodule Ecrits.Providers do
   def parse_document(ctx, blob_ref, opts)
   def stream_agent(ctx, request, handler, opts)
   def search_law(ctx, query, opts)
@@ -1717,7 +1717,7 @@ Command(:request_export)
 
 ⸻
 
-23. Contract Type and Conversion
+23. Ecrits Type and Conversion
 
 Document.type_key is selected contract type.
 

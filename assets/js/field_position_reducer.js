@@ -7,7 +7,7 @@
 //
 // ─── 입력 ─────────────────────────────────────────────
 //
-// position 두 가지 shape (rhwp.js의 fieldHighlights[*].position):
+// position 두 가지 shape (document/caret positions):
 //   A. text_field: {start: {sectionIndex, paragraphIndex, charOffset,
 //                          parentParaIndex?, controlIndex?, cellIndex?,
 //                          cellParaIndex?, row?, col?},

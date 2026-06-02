@@ -1,4 +1,4 @@
-defmodule Contract.IO.R2Stub do
+defmodule Ecrits.IO.R2Stub do
   @moduledoc """
   In-memory legacy object-store stand-in used by DB-backed Store/Session tests
   so they do not hit retired cloud storage.

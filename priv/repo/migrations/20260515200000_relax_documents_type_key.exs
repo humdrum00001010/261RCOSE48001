@@ -1,4 +1,4 @@
-defmodule Contract.Repo.Migrations.RelaxDocumentsTypeKey do
+defmodule Ecrits.LegacyRepo.Migrations.RelaxDocumentsTypeKey do
   @moduledoc """
   Per SPEC.md §18: contract type is a key that is set AFTER document
   creation, either by the user via Cmd+K or by the agent once it

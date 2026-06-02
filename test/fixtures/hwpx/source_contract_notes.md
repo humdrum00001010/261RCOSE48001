@@ -1,4 +1,4 @@
-# Source Contract: `real_contract.hwpx`
+# Source Ecrits: `real_contract.hwpx`
 
 ## Provenance
 

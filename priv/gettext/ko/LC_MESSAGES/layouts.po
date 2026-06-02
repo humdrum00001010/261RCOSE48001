@@ -14,186 +14,186 @@ msgstr ""
 "Language: ko\n"
 "Plural-Forms: nplurals=1; plural=0;\n"
 
-#: lib/contract_web/components/layouts.ex:334
+#: lib/ecrits_web/components/layouts.ex:334
 #, elixir-autogen, elixir-format
 msgid "About"
 msgstr "소개"
 
-#: lib/contract_web/components/layouts.ex:237
-#: lib/contract_web/components/layouts.ex:397
+#: lib/ecrits_web/components/layouts.ex:237
+#: lib/ecrits_web/components/layouts.ex:397
 #, elixir-autogen, elixir-format
 msgid "Account"
 msgstr "계정"
 
-#: lib/contract_web/components/layouts.ex:419
-#: lib/contract_web/components/layouts.ex:431
+#: lib/ecrits_web/components/layouts.ex:419
+#: lib/ecrits_web/components/layouts.ex:431
 #, elixir-autogen, elixir-format
 msgid "Attempting to reconnect"
 msgstr "재연결을 시도하는 중입니다"
 
-#: lib/contract_web/components/layouts.ex:134
-#: lib/contract_web/components/layouts.ex:271
-#: lib/contract_web/components/layouts.ex:318
+#: lib/ecrits_web/components/layouts.ex:134
+#: lib/ecrits_web/components/layouts.ex:271
+#: lib/ecrits_web/components/layouts.ex:318
 #, elixir-autogen, elixir-format
 msgid "Changelog"
 msgstr "변경 이력"
 
-#: lib/contract_web/components/layouts.ex:73
-#: lib/contract_web/components/layouts.ex:229
+#: lib/ecrits_web/components/layouts.ex:73
+#: lib/ecrits_web/components/layouts.ex:229
 #, elixir-autogen, elixir-format
 msgid "Close menu"
 msgstr "메뉴 닫기"
 
-#: lib/contract_web/components/layouts.ex:330
+#: lib/ecrits_web/components/layouts.ex:330
 #, elixir-autogen, elixir-format
 msgid "Company"
 msgstr "회사"
 
-#: lib/contract_web/components/layouts.ex:337
+#: lib/ecrits_web/components/layouts.ex:337
 #, elixir-autogen, elixir-format
 msgid "Contact"
 msgstr "문의"
 
-#: lib/contract_web/components/layouts.ex:121
+#: lib/ecrits_web/components/layouts.ex:121
 #, elixir-autogen, elixir-format
-msgid "Contract Studio home"
-msgstr "계약기계 홈"
+msgid "Ecrits home"
+msgstr "Ecrits 홈"
 
-#: lib/contract_web/components/layouts.ex:470
+#: lib/ecrits_web/components/layouts.ex:470
 #, elixir-autogen, elixir-format
 msgid "Dark theme"
 msgstr "다크 테마"
 
-#: lib/contract_web/components/layouts.ex:143
-#: lib/contract_web/components/layouts.ex:178
-#: lib/contract_web/components/layouts.ex:243
+#: lib/ecrits_web/components/layouts.ex:143
+#: lib/ecrits_web/components/layouts.ex:178
+#: lib/ecrits_web/components/layouts.ex:243
 #, elixir-autogen, elixir-format
 msgid "Dashboard"
 msgstr "대시보드"
 
-#: lib/contract_web/components/layouts.ex:131
-#: lib/contract_web/components/layouts.ex:268
+#: lib/ecrits_web/components/layouts.ex:131
+#: lib/ecrits_web/components/layouts.ex:268
 #, elixir-autogen, elixir-format
 msgid "Docs"
 msgstr "문서"
 
-#: lib/contract_web/components/layouts.ex:313
+#: lib/ecrits_web/components/layouts.ex:313
 #, elixir-autogen, elixir-format
 msgid "Documentation"
 msgstr "문서"
 
-#: lib/contract_web/components/layouts.ex:351
+#: lib/ecrits_web/components/layouts.ex:351
 #, elixir-autogen, elixir-format
 msgid "Language"
 msgstr "언어"
 
-#: lib/contract_web/components/layouts.ex:356
+#: lib/ecrits_web/components/layouts.ex:356
 #, elixir-autogen, elixir-format
 msgid "Language switcher (placeholder)"
 msgstr "언어 전환 (임시)"
 
-#: lib/contract_web/components/layouts.ex:461
+#: lib/ecrits_web/components/layouts.ex:461
 #, elixir-autogen, elixir-format
 msgid "Light theme"
 msgstr "라이트 테마"
 
-#: lib/contract_web/components/layouts.ex:196
-#: lib/contract_web/components/layouts.ex:277
+#: lib/ecrits_web/components/layouts.ex:196
+#: lib/ecrits_web/components/layouts.ex:277
 #, elixir-autogen, elixir-format
 msgid "Log in"
 msgstr "로그인"
 
-#: lib/contract_web/components/layouts.ex:186
-#: lib/contract_web/components/layouts.ex:259
+#: lib/ecrits_web/components/layouts.ex:186
+#: lib/ecrits_web/components/layouts.ex:259
 #, elixir-autogen, elixir-format
 msgid "Log out"
 msgstr "로그아웃"
 
-#: lib/contract_web/components/layouts.ex:112
+#: lib/ecrits_web/components/layouts.ex:112
 #, elixir-autogen, elixir-format
 msgid "Open menu"
 msgstr "메뉴 열기"
 
-#: lib/contract_web/components/layouts.ex:380
+#: lib/ecrits_web/components/layouts.ex:380
 #, elixir-autogen, elixir-format
 msgid "Privacy"
 msgstr "개인정보"
 
-#: lib/contract_web/components/layouts.ex:308
+#: lib/ecrits_web/components/layouts.ex:308
 #, elixir-autogen, elixir-format
 msgid "Product"
 msgstr "제품"
 
-#: lib/contract_web/components/layouts.ex:202
-#: lib/contract_web/components/layouts.ex:280
+#: lib/ecrits_web/components/layouts.ex:202
+#: lib/ecrits_web/components/layouts.ex:280
 #, elixir-autogen, elixir-format
 msgid "Register"
 msgstr "회원가입"
 
-#: lib/contract_web/components/layouts.ex:323
+#: lib/ecrits_web/components/layouts.ex:323
 #, elixir-autogen, elixir-format
 msgid "Security"
 msgstr "보안"
 
-#: lib/contract_web/components/layouts.ex:344
+#: lib/ecrits_web/components/layouts.ex:344
 #, elixir-autogen, elixir-format
 msgid "Security & Privacy"
 msgstr "보안 및 개인정보"
 
-#: lib/contract_web/components/layouts.ex:181
-#: lib/contract_web/components/layouts.ex:249
+#: lib/ecrits_web/components/layouts.ex:181
+#: lib/ecrits_web/components/layouts.ex:249
 #, elixir-autogen, elixir-format
 msgid "Settings"
 msgstr "설정"
 
-#: lib/contract_web/components/layouts.ex:174
+#: lib/ecrits_web/components/layouts.ex:174
 #, elixir-autogen, elixir-format
 msgid "Signed in as"
 msgstr "로그인 계정"
 
-#: lib/contract_web/components/layouts.ex:426
+#: lib/ecrits_web/components/layouts.ex:426
 #, elixir-autogen, elixir-format
 msgid "Something went wrong!"
 msgstr "문제가 발생했습니다."
 
-#: lib/contract_web/components/layouts.ex:340
-#: lib/contract_web/components/layouts.ex:382
+#: lib/ecrits_web/components/layouts.ex:340
+#: lib/ecrits_web/components/layouts.ex:382
 #, elixir-autogen, elixir-format
 msgid "Status"
 msgstr "상태"
 
-#: lib/contract_web/components/layouts.ex:146
-#: lib/contract_web/components/layouts.ex:246
+#: lib/ecrits_web/components/layouts.ex:146
+#: lib/ecrits_web/components/layouts.ex:246
 #, elixir-autogen, elixir-format
 msgid "Studio"
 msgstr "스튜디오"
 
-#: lib/contract_web/components/layouts.ex:452
+#: lib/ecrits_web/components/layouts.ex:452
 #, elixir-autogen, elixir-format
 msgid "System theme"
 msgstr "시스템 테마"
 
-#: lib/contract_web/components/layouts.ex:378
+#: lib/ecrits_web/components/layouts.ex:378
 #, elixir-autogen, elixir-format
 msgid "Terms"
 msgstr "이용약관"
 
-#: lib/contract_web/components/layouts.ex:414
+#: lib/ecrits_web/components/layouts.ex:414
 #, elixir-autogen, elixir-format
 msgid "We can't find the internet"
 msgstr "인터넷 연결을 찾을 수 없습니다"
 
-#: lib/contract_web/components/layouts.ex:373
+#: lib/ecrits_web/components/layouts.ex:373
 #, elixir-autogen, elixir-format
-msgid "© %{year} Contract Studio. All rights reserved."
-msgstr "© %{year} 계약기계. 모든 권리 보유."
+msgid "© %{year} Ecrits. All rights reserved."
+msgstr "© %{year} Ecrits. 모든 권리 보유."
 
-#: lib/contract_web/components/layouts.ex:366
+#: lib/ecrits_web/components/layouts.ex:366
 #, elixir-autogen, elixir-format
 msgid "한국어 UI · English fallback"
 msgstr "한국어 UI · English fallback"
 
-#: lib/contract_web/components/layouts.ex:300
+#: lib/ecrits_web/components/layouts.ex:300
 #, elixir-autogen, elixir-format
-msgid "A contract studio for small-business operators. Built to be precise, auditable, and quiet."
+msgid "A Ecrits for small-business operators. Built to be precise, auditable, and quiet."
 msgstr "사업 계약을 위한 문서 스튜디오. 정확하고, 추적 가능하며, 과묵하게 동작합니다."

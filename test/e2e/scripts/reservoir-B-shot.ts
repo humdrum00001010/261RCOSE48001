@@ -1,7 +1,7 @@
 import { chromium } from '@playwright/test';
 
-const BASE_URL = 'https://contract-studio-v7zk.sprites.app';
-const OUT_DIR = '/home/sprite/work/contract/docs/reservoir-B/2026-05-16';
+const BASE_URL = 'https://ecrits-studio-v7zk.sprites.app';
+const OUT_DIR = '/home/sprite/work/ecrits/docs/reservoir-B/2026-05-16';
 
 async function main() {
   await import('node:fs/promises').then((fs) => fs.mkdir(OUT_DIR, { recursive: true }));

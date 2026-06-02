@@ -1,4 +1,4 @@
-defmodule Contract.Repo.Migrations.RenameProjectsToPackets do
+defmodule Ecrits.LegacyRepo.Migrations.RenameProjectsToPackets do
   use Ecto.Migration
 
   def up do

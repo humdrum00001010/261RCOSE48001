@@ -1,9 +1,9 @@
-defmodule Contract.IO.UpstageStub do
+defmodule Ecrits.IO.UpstageStub do
   @moduledoc """
-  In-memory stand-in for `Contract.IO.Upstage` used by `FtcSeedJob`
+  In-memory stand-in for `Ecrits.IO.Upstage` used by `FtcSeedJob`
   tests so we don't hit the Upstage Document Parse API.
 
-  Mirrors the `parse/2` shape exposed by `Contract.IO.Upstage`. The
+  Mirrors the `parse/2` shape exposed by `Ecrits.IO.Upstage`. The
   caller pre-loads a canned response via `set_response/1` (or fails
   the next call via `fail_next/1`); each `parse/2` invocation pops
   the recorded call so tests can assert on it.
@@ -11,7 +11,7 @@ defmodule Contract.IO.UpstageStub do
   Implementation note: `Mox` would be the cleaner answer, but
   Wave 5's worker reads its driver out of `:io_drivers` (the same
   Application-env swap used by legacy object-store stubs — Mox needs
-  `Contract.IO.Upstage` to grow a `@behaviour`, which the Wave-5
+  `Ecrits.IO.Upstage` to grow a `@behaviour`, which the Wave-5
   hard constraint "DON'T touch Engine/IO module bodies" forbids.
   """
 
@@ -56,7 +56,7 @@ defmodule Contract.IO.UpstageStub do
   end
 
   # ------------------------------------------------------------------
-  # Driver surface — matches Contract.IO.Upstage.parse/2
+  # Driver surface — matches Ecrits.IO.Upstage.parse/2
   # ------------------------------------------------------------------
 
   def parse(file_or_path, opts \\ []) do
@@ -76,7 +76,7 @@ defmodule Contract.IO.UpstageStub do
     end
   end
 
-  def normalize_elements(list), do: Contract.IO.Upstage.normalize_elements(list)
+  def normalize_elements(list), do: Ecrits.IO.Upstage.normalize_elements(list)
 
   defp record_call(call) do
     idx = :erlang.unique_integer([:monotonic])

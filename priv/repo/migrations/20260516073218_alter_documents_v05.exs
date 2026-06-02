@@ -1,4 +1,4 @@
-defmodule Contract.Repo.Migrations.AlterDocumentsV05 do
+defmodule Ecrits.LegacyRepo.Migrations.AlterDocumentsV05 do
   @moduledoc """
   SPEC.md v0.5 §7.1 — add `state_snapshot` and `current_revision` to the
   `documents` table.

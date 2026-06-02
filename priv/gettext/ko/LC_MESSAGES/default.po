@@ -11,12 +11,12 @@ msgstr ""
 "Language: ko\n"
 "Plural-Forms: nplurals=1; plural=0;\n"
 
-#: lib/contract_web/components/core_components.ex:375
+#: lib/ecrits_web/components/core_components.ex:375
 #, elixir-autogen, elixir-format
 msgid "Actions"
 msgstr ""
 
-#: lib/contract_web/components/core_components.ex:81
+#: lib/ecrits_web/components/core_components.ex:81
 #, elixir-autogen, elixir-format
 msgid "close"
 msgstr ""

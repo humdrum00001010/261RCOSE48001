@@ -1,4 +1,4 @@
-defmodule Contract.Repo.Migrations.DocumentOwnerAcl do
+defmodule Ecrits.LegacyRepo.Migrations.DocumentOwnerAcl do
   @moduledoc """
   SPEC.md v0.5: Document is the primary user-facing object.
 

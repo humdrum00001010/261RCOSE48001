@@ -1,7 +1,7 @@
 # Wave 5 — FTC standard contract template seed manifest.
 #
-# Each entry is enqueued as a `Contract.Workers.FtcSeedJob` by the
-# `mix contract.seed.ftc` task. The worker downloads the source bytes,
+# Each entry is enqueued as a `Ecrits.Workers.FtcSeedJob` by the
+# `mix ecrits.seed.ftc` task. The worker downloads the source bytes,
 # parses them via Upstage, normalizes via Engine, and persists a
 # `status: :template` Document in the system "FTC 표준약관" matter.
 #
@@ -35,7 +35,7 @@
 #   1. A browser session to harvest the per-attachment `atchFileId` +
 #      `fileSn` query params (the FTC site relies on JS-rendered
 #      tables we cannot scrape from curl alone).
-#   2. Running `mix contract.seed.ftc` with `UPSTAGE_API_KEY` set; the
+#   2. Running `mix ecrits.seed.ftc` with `UPSTAGE_API_KEY` set; the
 #      worker streams the HWP through Upstage Document Parse.
 #
 # Live URL TODO: the `:source_url` values below point to the FTC

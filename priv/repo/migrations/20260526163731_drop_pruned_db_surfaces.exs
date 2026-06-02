@@ -1,4 +1,4 @@
-defmodule Contract.Repo.Migrations.DropPrunedDbSurfaces do
+defmodule Ecrits.LegacyRepo.Migrations.DropPrunedDbSurfaces do
   use Ecto.Migration
 
   def up do

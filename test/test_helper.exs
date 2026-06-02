@@ -38,11 +38,11 @@ browser_included? =
     _ -> false
   end)
 
-if browser_included? and Process.whereis(ContractWeb.Endpoint) do
+if browser_included? and Process.whereis(EcritsWeb.Endpoint) do
   {:ok, _} = Application.ensure_all_started(:wallaby)
 end
 
 # Mox definitions for IO drivers. The test config swaps in
-# `Contract.IO.OpenAIMock` for the OpenAI driver.
-Mox.defmock(Contract.IO.OpenAIMock, for: Contract.IO.OpenAI.Behaviour)
+# `Ecrits.IO.OpenAIMock` for the OpenAI driver.
+Mox.defmock(Ecrits.IO.OpenAIMock, for: Ecrits.IO.OpenAI.Behaviour)
 Mox.set_mox_global()

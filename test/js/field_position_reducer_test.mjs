@@ -240,7 +240,7 @@ test("ParagraphDeleted on the table's paragraph invalidates cell fields", () => 
 //      모르지만, paragraph/cell 인덱스가 정확히 유지되어야 다음 단계에서
 //      WASM 재렌더가 새 페이지를 정확히 그릴 수 있다. ─────────
 
-test("matchingBook preserved: 5 consecutive line deletes above body field", () => {
+test("position preserved: 5 consecutive line deletes above body field", () => {
   // 본문 field 가 paragraph 50 에 있고, 그 위 paragraph 10,11,12,13,14 가
   // 순차적으로 mergeWithPrev 로 사라짐 (= 5번의 ParagraphMerged 이벤트).
   // 결과: 최종 paragraph 인덱스는 50 - 5 = 45.
@@ -257,7 +257,7 @@ test("matchingBook preserved: 5 consecutive line deletes above body field", () =
   assert.deepEqual(r, {sectionIndex: 0, paragraphIndex: 45, charOffset: 12})
 })
 
-test("matchingBook preserved: cell field's parentParaIndex shifts with body line deletes above the table", () => {
+test("position preserved: cell field's parentParaIndex shifts with body line deletes above the table", () => {
   // 표가 들어있는 paragraph 가 16 인데 그 위 본문 paragraph 들을 3번 합치면
   // parentParaIndex 가 13 으로 시프트. 셀 안 cellPath/charOffset 은 무관.
   const f = {sectionIndex: 0, parentParaIndex: 16, controlIndex: 0, cellIndex: 11,
@@ -276,7 +276,7 @@ test("matchingBook preserved: cell field's parentParaIndex shifts with body line
   assert.equal(r.col, 1)
 })
 
-test("matchingBook preserved: range field with start/end both shift across multi-page reflow", () => {
+test("position preserved: range field with start/end both shift across multi-page reflow", () => {
   // text_field range 양쪽 모두 같은 paragraph 라면 일관 시프트.
   const start = {
     start: {sectionIndex: 0, paragraphIndex: 30, charOffset: 5},
@@ -294,7 +294,7 @@ test("matchingBook preserved: range field with start/end both shift across multi
   assert.equal(r.end.charOffset, 12)
 })
 
-test("matchingBook preserved: deletes above, inserts below — multiple fields independently tracked", () => {
+test("position preserved: deletes above, inserts below — multiple fields independently tracked", () => {
   // 여러 fields 가 다른 페이지에 있는 상황 시뮬레이션 (배열 적용으로 모킹).
   // 위쪽 paragraph 7 삭제 + paragraph 20 위치에 새 줄 추가 → 위치별 시프트 검증.
   const fields = [

@@ -1,11 +1,11 @@
-defmodule Contract.Repo.Migrations.CreateSlackTokens do
+defmodule Ecrits.LegacyRepo.Migrations.CreateSlackTokens do
   use Ecto.Migration
 
   @moduledoc """
   Wave 6: per-user Slack OAuth tokens for the Slack-hosted MCP outbound
   surface. The `access_token` column stores the ciphertext produced by
   `Plug.Crypto.encrypt/4` keyed by the endpoint's `secret_key_base` plus a
-  fixed salt (see `Contract.Integrations.Slack`). Plaintext xoxp-tokens
+  fixed salt (see `Ecrits.Integrations.Slack`). Plaintext xoxp-tokens
   never touch the column.
 
   Uniqueness is on `(user_id, slack_team_id)` — a user may install the

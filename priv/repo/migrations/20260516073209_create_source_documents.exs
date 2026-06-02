@@ -1,4 +1,4 @@
-defmodule Contract.Repo.Migrations.CreateSourceDocuments do
+defmodule Ecrits.LegacyRepo.Migrations.CreateSourceDocuments do
   @moduledoc """
   SPEC.md v0.5 §7.3 — SourceDocument.
 

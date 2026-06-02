@@ -2,9 +2,9 @@ import { APIRequestContext, Page, expect } from '@playwright/test';
 
 /**
  * Shared Studio helpers for the Wave 3C1 scenario specs. These wrap the
- * test-only HTTPS endpoints exposed by `ContractWeb.TestDbController`
+ * test-only HTTPS endpoints exposed by `EcritsWeb.TestDbController`
  * (`/test/db/*`) and the test-only auth + reset routes from
- * `ContractWeb.TestAuthController`.
+ * `EcritsWeb.TestAuthController`.
  *
  * Every helper returns a normal Promise — no Playwright fixtures, no
  * test.use() magic — so individual specs can decide whether to reset

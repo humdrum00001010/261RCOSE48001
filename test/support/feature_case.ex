@@ -1,4 +1,4 @@
-defmodule ContractWeb.FeatureCase do
+defmodule EcritsWeb.FeatureCase do
   @moduledoc """
   ExUnit case template for Wallaby browser tests.
 
@@ -16,10 +16,10 @@ defmodule ContractWeb.FeatureCase do
     quote do
       use Wallaby.Feature
 
-      import Contract.PersonaFactory
-      import ContractWeb.FeatureCase
+      import Ecrits.PersonaFactory
+      import EcritsWeb.FeatureCase
 
-      alias Contract.PersonaFactory
+      alias Ecrits.PersonaFactory
       alias Wallaby.Query
     end
   end

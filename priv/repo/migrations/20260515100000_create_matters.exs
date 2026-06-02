@@ -1,4 +1,4 @@
-defmodule Contract.Repo.Migrations.CreateMatters do
+defmodule Ecrits.LegacyRepo.Migrations.CreateMatters do
   use Ecto.Migration
 
   def change do

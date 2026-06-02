@@ -1,11 +1,11 @@
-defmodule Contract.AccountsFixtures do
+defmodule Ecrits.AccountsFixtures do
   @moduledoc """
   This module defines test helpers for creating
-  entities via the `Contract.Accounts` context.
+  entities via the `Ecrits.Accounts` context.
   """
 
-  alias Contract.Accounts
-  alias Contract.Context, as: Scope
+  alias Ecrits.Accounts
+  alias Ecrits.Context, as: Scope
 
   def unique_user_email, do: "user#{System.unique_integer()}@example.com"
   def valid_user_password, do: "hello world!"

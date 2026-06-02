@@ -13,12 +13,12 @@
  *   8. Re-read <html data-theme>
  *   9. Print everything
  *
- *   sprite x -s contract-studio -- bash -lc 'cd ~/work/contract/test/e2e && pnpm tsx scripts/theme-toggle-diagnose.ts'
+ *   sprite x -s ecrits-studio -- bash -lc 'cd ~/work/ecrits/test/e2e && pnpm tsx scripts/theme-toggle-diagnose.ts'
  */
 import { chromium, type Browser } from '@playwright/test';
 
 const BASE_URL =
-  process.env.E2E_BASE_URL ?? 'https://contract-studio-v7zk.sprites.app';
+  process.env.E2E_BASE_URL ?? 'https://ecrits-studio-v7zk.sprites.app';
 
 async function run(): Promise<void> {
   const browser: Browser = await chromium.launch({ headless: true });

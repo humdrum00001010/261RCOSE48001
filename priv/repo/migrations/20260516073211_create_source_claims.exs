@@ -1,4 +1,4 @@
-defmodule Contract.Repo.Migrations.CreateSourceClaims do
+defmodule Ecrits.LegacyRepo.Migrations.CreateSourceClaims do
   @moduledoc """
   SPEC.md v0.5 §7.4 — SourceClaim.
 

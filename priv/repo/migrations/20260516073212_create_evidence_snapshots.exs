@@ -1,4 +1,4 @@
-defmodule Contract.Repo.Migrations.CreateEvidenceSnapshots do
+defmodule Ecrits.LegacyRepo.Migrations.CreateEvidenceSnapshots do
   @moduledoc """
   SPEC.md v0.5 §7.8 — EvidenceSnapshot.
 

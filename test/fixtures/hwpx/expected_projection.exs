@@ -1,7 +1,7 @@
 # Expected projection derived from `real_contract.hwpx`.
 #
-# This file is loaded by `Contract.Export.HWPXRealContractTest` via
-# `Code.eval_file/1`. It returns a `%Contract.Runtime.State{}` whose
+# This file is loaded by `Ecrits.Export.HWPXRealContractTest` via
+# `Code.eval_file/1`. It returns a `%Ecrits.Runtime.State{}` whose
 # projection mirrors the structural skeleton of the source HWPX:
 #
 #   * Title  ("전력기술관리법 운영요령")
@@ -12,7 +12,7 @@
 #     with column widths in source HWPX units.
 #
 # Paragraph IDs are deterministic ("p001", "p002", …) so two evals of this
-# file produce byte-identical bytes after `Contract.Export.HWPX.render/1`.
+# file produce byte-identical bytes after `Ecrits.Export.HWPX.render/1`.
 #
 # Source paragraph indices (in `Contents/section0.xml`):
 #   p001 = index 9   (blank — drop, fold whitespace)
@@ -22,7 +22,7 @@
 #
 # See `source_contract_notes.md` for the analysis that produced this slice.
 
-alias Contract.Runtime.State
+alias Ecrits.Runtime.State
 
 # ----- table data (source: section0.xml paragraph index 394, 5×3) ----------
 # Column widths in HWP units (1/100 mm). Source widths: [6156, 10684, 27947].

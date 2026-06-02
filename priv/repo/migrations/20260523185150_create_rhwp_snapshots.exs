@@ -1,4 +1,4 @@
-defmodule Contract.Repo.Migrations.CreateRhwpSnapshots do
+defmodule Ecrits.LegacyRepo.Migrations.CreateRhwpSnapshots do
   use Ecto.Migration
 
   def up do

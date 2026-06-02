@@ -1,4 +1,4 @@
-defmodule Contract.Repo.Migrations.CreateDocumentTypes do
+defmodule Ecrits.LegacyRepo.Migrations.CreateDocumentTypes do
   use Ecto.Migration
 
   def up do

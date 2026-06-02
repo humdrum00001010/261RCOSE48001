@@ -1,4 +1,4 @@
-defmodule Contract.Repo.Migrations.CreateToolCalls do
+defmodule Ecrits.LegacyRepo.Migrations.CreateToolCalls do
   @moduledoc """
   SPEC.md v0.5 §7.9 — ToolCall.
 

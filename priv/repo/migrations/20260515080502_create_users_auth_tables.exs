@@ -1,4 +1,4 @@
-defmodule Contract.Repo.Migrations.CreateUsersAuthTables do
+defmodule Ecrits.LegacyRepo.Migrations.CreateUsersAuthTables do
   use Ecto.Migration
 
   def change do

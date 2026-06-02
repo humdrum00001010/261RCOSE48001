@@ -1,5 +1,5 @@
-defmodule ContractWeb.LocalAgentAdapterStub do
-  @behaviour Contract.Local.Agent.Adapter
+defmodule EcritsWeb.LocalAgentAdapterStub do
+  @behaviour Ecrits.Local.Agent.Adapter
 
   @impl true
   def stream_turn(turn, opts \\ []) do

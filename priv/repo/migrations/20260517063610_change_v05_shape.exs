@@ -1,4 +1,4 @@
-defmodule Contract.Repo.Migrations.ChangeV05Shape do
+defmodule Ecrits.LegacyRepo.Migrations.ChangeV05Shape do
   use Ecto.Migration
 
   def up do

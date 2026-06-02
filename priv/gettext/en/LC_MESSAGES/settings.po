@@ -11,341 +11,341 @@ msgstr ""
 "Language: en\n"
 "Plural-Forms: nplurals=2; plural=(n != 1);\n"
 
-#: lib/contract_web/live/user_live/settings.ex:171
+#: lib/ecrits_web/live/user_live/settings.ex:171
 #, elixir-autogen, elixir-format
 msgid "A link to confirm your email change has been sent to the new address."
 msgstr ""
 
-#: lib/contract_web/live/user_live/api_tokens.ex:46
-#: lib/contract_web/live/user_live/api_tokens.ex:97
-#: lib/contract_web/live/user_live/settings_hub.ex:66
-#: lib/contract_web/live/user_live/settings_hub.ex:145
+#: lib/ecrits_web/live/user_live/api_tokens.ex:46
+#: lib/ecrits_web/live/user_live/api_tokens.ex:97
+#: lib/ecrits_web/live/user_live/settings_hub.ex:66
+#: lib/ecrits_web/live/user_live/settings_hub.ex:145
 #, elixir-autogen, elixir-format
 msgid "API tokens"
 msgstr ""
 
-#: lib/contract_web/live/user_live/api_tokens.ex:208
-#: lib/contract_web/live/user_live/settings.ex:14
-#: lib/contract_web/live/user_live/settings_hub.ex:60
-#: lib/contract_web/live/user_live/settings_hub.ex:139
+#: lib/ecrits_web/live/user_live/api_tokens.ex:208
+#: lib/ecrits_web/live/user_live/settings.ex:14
+#: lib/ecrits_web/live/user_live/settings_hub.ex:60
+#: lib/ecrits_web/live/user_live/settings_hub.ex:139
 #, elixir-autogen, elixir-format
 msgid "Account"
 msgstr ""
 
-#: lib/contract_web/live/user_live/settings_hub.ex:78
-#: lib/contract_web/live/user_live/settings_hub.ex:157
+#: lib/ecrits_web/live/user_live/settings_hub.ex:78
+#: lib/ecrits_web/live/user_live/settings_hub.ex:157
 #, elixir-autogen, elixir-format
 msgid "Appearance"
 msgstr ""
 
-#: lib/contract_web/live/user_live/api_tokens.ex:224
+#: lib/ecrits_web/live/user_live/api_tokens.ex:224
 #, elixir-autogen, elixir-format
 msgid "Cancel"
 msgstr ""
 
-#: lib/contract_web/live/user_live/settings.ex:48
+#: lib/ecrits_web/live/user_live/settings.ex:48
 #, elixir-autogen, elixir-format
 msgid "Change Email"
 msgstr ""
 
-#: lib/contract_web/live/user_live/settings.ex:47
+#: lib/ecrits_web/live/user_live/settings.ex:47
 #, elixir-autogen, elixir-format
 msgid "Changing..."
 msgstr ""
 
-#: lib/contract_web/live/user_live/api_tokens.ex:185
+#: lib/ecrits_web/live/user_live/api_tokens.ex:185
 #, elixir-autogen, elixir-format
 msgid "Close"
 msgstr ""
 
-#: lib/contract_web/live/user_live/api_tokens.ex:236
+#: lib/ecrits_web/live/user_live/api_tokens.ex:236
 #, elixir-autogen, elixir-format
 msgid "Close modal"
 msgstr ""
 
-#: lib/contract_web/live/user_live/settings.ex:91
+#: lib/ecrits_web/live/user_live/settings.ex:91
 #, elixir-autogen, elixir-format
 msgid "Confirm new password"
 msgstr ""
 
-#: lib/contract_web/live/user_live/settings.ex:42
+#: lib/ecrits_web/live/user_live/settings.ex:42
 #, elixir-autogen, elixir-format
 msgid "Email"
 msgstr ""
 
-#: lib/contract_web/live/user_live/settings.ex:27
+#: lib/ecrits_web/live/user_live/settings.ex:27
 #, elixir-autogen, elixir-format
 msgid "Email address"
 msgstr ""
 
-#: lib/contract_web/live/user_live/settings_hub.ex:61
+#: lib/ecrits_web/live/user_live/settings_hub.ex:61
 #, elixir-autogen, elixir-format
 msgid "Email address, password, and login methods."
 msgstr ""
 
-#: lib/contract_web/live/user_live/settings.ex:122
+#: lib/ecrits_web/live/user_live/settings.ex:122
 #, elixir-autogen, elixir-format
 msgid "Email change link is invalid or it has expired."
 msgstr ""
 
-#: lib/contract_web/live/user_live/settings.ex:116
+#: lib/ecrits_web/live/user_live/settings.ex:116
 #, elixir-autogen, elixir-format
 msgid "Email changed successfully."
 msgstr ""
 
-#: lib/contract_web/live/user_live/settings.ex:104
+#: lib/ecrits_web/live/user_live/settings.ex:104
 #, elixir-autogen, elixir-format
 msgid "Email support"
 msgstr ""
 
-#: lib/contract_web/live/user_live/api_tokens.ex:144
+#: lib/ecrits_web/live/user_live/api_tokens.ex:144
 #, elixir-autogen, elixir-format
 msgid "Expires %{at}"
 msgstr ""
 
-#: lib/contract_web/live/user_live/api_tokens.ex:227
+#: lib/ecrits_web/live/user_live/api_tokens.ex:227
 #, elixir-autogen, elixir-format
 msgid "Generate"
 msgstr ""
 
-#: lib/contract_web/live/user_live/api_tokens.ex:172
+#: lib/ecrits_web/live/user_live/api_tokens.ex:172
 #, elixir-autogen, elixir-format
 msgid "Generate API token"
 msgstr ""
 
-#: lib/contract_web/live/user_live/api_tokens.ex:115
+#: lib/ecrits_web/live/user_live/api_tokens.ex:115
 #, elixir-autogen, elixir-format
 msgid "Generate a token to authenticate MCP requests from external clients."
 msgstr ""
 
-#: lib/contract_web/live/user_live/api_tokens.ex:126
+#: lib/ecrits_web/live/user_live/api_tokens.ex:126
 #, elixir-autogen, elixir-format
 msgid "Generate token"
 msgstr ""
 
-#: lib/contract_web/live/user_live/api_tokens.ex:76
+#: lib/ecrits_web/live/user_live/api_tokens.ex:76
 #, elixir-autogen, elixir-format
 msgid "Generated: <hidden> — persistence ships in a later wave."
 msgstr ""
 
-#: lib/contract_web/live/user_live/settings_hub.ex:67
+#: lib/ecrits_web/live/user_live/settings_hub.ex:67
 #, elixir-autogen, elixir-format
 msgid "Issue and revoke MCP route_ref tokens."
 msgstr ""
 
-#: lib/contract_web/live/user_live/settings.ex:18
+#: lib/ecrits_web/live/user_live/settings.ex:18
 #, elixir-autogen, elixir-format
 msgid "Manage your email address and password. Sensitive changes require a fresh login."
 msgstr ""
 
-#: lib/contract_web/live/user_live/settings.ex:102
+#: lib/ecrits_web/live/user_live/settings.ex:102
 #, elixir-autogen, elixir-format
 msgid "Need help?"
 msgstr ""
 
-#: lib/contract_web/live/user_live/settings.ex:83
+#: lib/ecrits_web/live/user_live/settings.ex:83
 #, elixir-autogen, elixir-format
 msgid "New password"
 msgstr ""
 
-#: lib/contract_web/live/user_live/api_tokens.ex:113
+#: lib/ecrits_web/live/user_live/api_tokens.ex:113
 #, elixir-autogen, elixir-format
 msgid "No API tokens yet"
 msgstr ""
 
-#: lib/contract_web/live/user_live/settings_hub.ex:165
+#: lib/ecrits_web/live/user_live/settings_hub.ex:165
 #, elixir-autogen, elixir-format
 msgid "Notifications"
 msgstr ""
 
-#: lib/contract_web/live/user_live/settings.ex:57
+#: lib/ecrits_web/live/user_live/settings.ex:57
 #, elixir-autogen, elixir-format
 msgid "Optional — you can keep using magic links. If you set a password, both methods work."
 msgstr ""
 
-#: lib/contract_web/live/user_live/settings.ex:55
+#: lib/ecrits_web/live/user_live/settings.ex:55
 #, elixir-autogen, elixir-format
 msgid "Password"
 msgstr ""
 
-#: lib/contract_web/live/user_live/settings_hub.ex:51
+#: lib/ecrits_web/live/user_live/settings_hub.ex:51
 #, elixir-autogen, elixir-format
 msgid "Pick a category on the left, or jump in below."
 msgstr ""
 
-#: lib/contract_web/live/user_live/api_tokens.ex:202
+#: lib/ecrits_web/live/user_live/api_tokens.ex:202
 #, elixir-autogen, elixir-format
 msgid "Purpose"
 msgstr ""
 
-#: lib/contract_web/live/user_live/api_tokens.ex:153
+#: lib/ecrits_web/live/user_live/api_tokens.ex:153
 #, elixir-autogen, elixir-format
 msgid "Revoke"
 msgstr ""
 
-#: lib/contract_web/live/user_live/api_tokens.ex:100
+#: lib/ecrits_web/live/user_live/api_tokens.ex:100
 #, elixir-autogen, elixir-format
-msgid "Route-ref tokens grant access to Contract Studio's MCP endpoint. Tokens are signed; revoke any time by deleting."
+msgid "Route-ref tokens grant access to the Ecrits MCP endpoint. Tokens are signed; revoke any time by deleting."
 msgstr ""
 
-#: lib/contract_web/live/user_live/settings.ex:96
+#: lib/ecrits_web/live/user_live/settings.ex:96
 #, elixir-autogen, elixir-format
 msgid "Save Password"
 msgstr ""
 
-#: lib/contract_web/live/user_live/settings.ex:95
+#: lib/ecrits_web/live/user_live/settings.ex:95
 #, elixir-autogen, elixir-format
 msgid "Saving..."
 msgstr ""
 
-#: lib/contract_web/live/user_live/api_tokens.ex:175
+#: lib/ecrits_web/live/user_live/api_tokens.ex:175
 #, elixir-autogen, elixir-format
 msgid "Scoped MCP route-ref. Stored signed; copy the token once after creation."
 msgstr ""
 
-#: lib/contract_web/live/user_live/settings.ex:16
-#: lib/contract_web/live/user_live/settings_hub.ex:30
-#: lib/contract_web/live/user_live/settings_hub.ex:44
-#: lib/contract_web/live/user_live/settings_hub.ex:135
+#: lib/ecrits_web/live/user_live/settings.ex:16
+#: lib/ecrits_web/live/user_live/settings_hub.ex:30
+#: lib/ecrits_web/live/user_live/settings_hub.ex:44
+#: lib/ecrits_web/live/user_live/settings_hub.ex:135
 #, elixir-autogen, elixir-format
 msgid "Settings"
 msgstr ""
 
-#: lib/contract_web/live/user_live/settings_hub.ex:131
+#: lib/ecrits_web/live/user_live/settings_hub.ex:131
 #, elixir-autogen, elixir-format
 msgid "Settings navigation"
 msgstr ""
 
-#: lib/contract_web/live/user_live/api_tokens.ex:94
+#: lib/ecrits_web/live/user_live/api_tokens.ex:94
 #, elixir-autogen, elixir-format
 msgid "Settings · API tokens"
 msgstr ""
 
-#: lib/contract_web/live/user_live/settings_hub.ex:50
+#: lib/ecrits_web/live/user_live/settings_hub.ex:50
 #, elixir-autogen, elixir-format
 msgid "Signed in as"
 msgstr ""
 
-#: lib/contract_web/live/user_live/settings_hub.ex:213
-#: lib/contract_web/live/user_live/settings_hub.ex:262
+#: lib/ecrits_web/live/user_live/settings_hub.ex:213
+#: lib/ecrits_web/live/user_live/settings_hub.ex:262
 #, elixir-autogen, elixir-format
 msgid "Soon"
 msgstr ""
 
-#: lib/contract_web/live/user_live/api_tokens.ex:215
+#: lib/ecrits_web/live/user_live/api_tokens.ex:215
 #, elixir-autogen, elixir-format
 msgid "TTL (hours)"
 msgstr ""
 
-#: lib/contract_web/live/user_live/settings_hub.ex:84
+#: lib/ecrits_web/live/user_live/settings_hub.ex:84
 #, elixir-autogen, elixir-format
 msgid "Document defaults. Coming soon."
 msgstr ""
 
-#: lib/contract_web/live/user_live/settings_hub.ex:79
+#: lib/ecrits_web/live/user_live/settings_hub.ex:79
 #, elixir-autogen, elixir-format
 msgid "Theme & density. Coming soon."
 msgstr ""
 
-#: lib/contract_web/live/user_live/api_tokens.ex:83
+#: lib/ecrits_web/live/user_live/api_tokens.ex:83
 #, elixir-autogen, elixir-format
 msgid "Token revoked."
 msgstr ""
 
-#: lib/contract_web/live/user_live/settings.ex:29
+#: lib/ecrits_web/live/user_live/settings.ex:29
 #, elixir-autogen, elixir-format
 msgid "Used for login, magic links, and audit-log attribution."
 msgstr ""
 
-#: lib/contract_web/live/user_live/settings_hub.ex:83
-#: lib/contract_web/live/user_live/settings_hub.ex:161
+#: lib/ecrits_web/live/user_live/settings_hub.ex:83
+#: lib/ecrits_web/live/user_live/settings_hub.ex:161
 #, elixir-autogen, elixir-format
 msgid "Documents"
 msgstr ""
 
-#: lib/contract_web/live/user_live/settings_hub.ex:47
+#: lib/ecrits_web/live/user_live/settings_hub.ex:47
 #, elixir-autogen, elixir-format
 msgid "Your account"
 msgstr ""
 
-#: lib/contract_web/live/user_live/api_tokens.ex:238
+#: lib/ecrits_web/live/user_live/api_tokens.ex:238
 #, elixir-autogen, elixir-format
 msgid "close"
 msgstr ""
 
-#: lib/contract_web/live/user_live/api_tokens.ex:203
+#: lib/ecrits_web/live/user_live/api_tokens.ex:203
 #, elixir-autogen, elixir-format
 msgid "e.g. mcp-cli, slack-bridge"
 msgstr ""
 
-#: lib/contract_web/live/user_live/integrations.ex:26
-#: lib/contract_web/live/user_live/settings_hub.ex:72
-#: lib/contract_web/live/user_live/settings_hub.ex:151
+#: lib/ecrits_web/live/user_live/integrations.ex:26
+#: lib/ecrits_web/live/user_live/settings_hub.ex:72
+#: lib/ecrits_web/live/user_live/settings_hub.ex:151
 #, elixir-autogen, elixir-format
 msgid "Integrations"
 msgstr ""
 
-#: lib/contract_web/live/user_live/integrations.ex:56
+#: lib/ecrits_web/live/user_live/integrations.ex:56
 #, elixir-autogen, elixir-format, fuzzy
 msgid "Settings · Integrations"
 msgstr ""
 
-#: lib/contract_web/live/user_live/settings_hub.ex:73
+#: lib/ecrits_web/live/user_live/settings_hub.ex:73
 #, elixir-autogen, elixir-format
 msgid "Slack and other external service connections."
 msgstr ""
 
-#: lib/contract_web/live/user_live/integrations.ex:62
+#: lib/ecrits_web/live/user_live/integrations.ex:62
 #, elixir-autogen, elixir-format
 msgid "Slack 등 외부 서비스 연결을 관리합니다. 연결된 도구는 에이전트가 검색 및 응답에 사용할 수 있습니다."
 msgstr ""
 
-#: lib/contract_web/live/user_live/integrations.ex:149
+#: lib/ecrits_web/live/user_live/integrations.ex:149
 #, elixir-autogen, elixir-format
 msgid "Slack 연결"
 msgstr ""
 
-#: lib/contract_web/live/user_live/integrations.ex:140
+#: lib/ecrits_web/live/user_live/integrations.ex:140
 #, elixir-autogen, elixir-format
 msgid "Slack 연결 해제"
 msgstr ""
 
-#: lib/contract_web/live/user_live/integrations.ex:81
+#: lib/ecrits_web/live/user_live/integrations.ex:81
 #, elixir-autogen, elixir-format
 msgid "Slack 워크스페이스를 연결하면 에이전트가 메시지 검색, 이모지 목록 등을 활용할 수 있습니다."
 msgstr ""
 
-#: lib/contract_web/live/user_live/integrations.ex:108
+#: lib/ecrits_web/live/user_live/integrations.ex:108
 #, elixir-autogen, elixir-format
 msgid "권한 (%{count})"
 msgstr ""
 
-#: lib/contract_web/live/user_live/integrations.ex:100
+#: lib/ecrits_web/live/user_live/integrations.ex:100
 #, elixir-autogen, elixir-format
 msgid "사용자"
 msgstr ""
 
-#: lib/contract_web/live/user_live/integrations.ex:121
+#: lib/ecrits_web/live/user_live/integrations.ex:121
 #, elixir-autogen, elixir-format
 msgid "연결 안 됨"
 msgstr ""
 
-#: lib/contract_web/live/user_live/integrations.ex:93
+#: lib/ecrits_web/live/user_live/integrations.ex:93
 #, elixir-autogen, elixir-format
 msgid "연결됨"
 msgstr ""
 
-#: lib/contract_web/live/user_live/integrations.ex:59
+#: lib/ecrits_web/live/user_live/integrations.ex:59
 #, elixir-autogen, elixir-format
 msgid "외부 통합"
 msgstr ""
 
-#: lib/contract_web/live/user_live/integrations.ex:96
+#: lib/ecrits_web/live/user_live/integrations.ex:96
 #, elixir-autogen, elixir-format
 msgid "팀"
 msgstr ""
 
-#: lib/contract_web/live/user_live/api_tokens.ex:206
+#: lib/ecrits_web/live/user_live/api_tokens.ex:206
 #, elixir-autogen, elixir-format
 msgid "Scope"
 msgstr ""

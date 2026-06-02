@@ -1,4 +1,4 @@
-defmodule Contract.DataCase do
+defmodule Ecrits.DataCase do
   @moduledoc """
   This module defines common helpers for data-shaped tests.
 
@@ -18,14 +18,14 @@ defmodule Contract.DataCase do
       import Ecto
       import Ecto.Changeset
       import Ecto.Query
-      import Contract.DataCase
+      import Ecrits.DataCase
 
-      alias Contract.Repo
+      alias Ecrits.LegacyRepo, as: Repo
     end
   end
 
   setup tags do
-    Contract.DataCase.setup_sandbox(tags)
+    Ecrits.DataCase.setup_sandbox(tags)
     :ok
   end
 

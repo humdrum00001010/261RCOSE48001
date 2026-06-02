@@ -1,7 +1,7 @@
 import { defineConfig, devices } from '@playwright/test';
 
 /**
- * Playwright config for Contract Studio e2e tests.
+ * Playwright config for ecrits e2e tests.
  *
  * `E2E_BASE_URL` defaults to the public sprite URL — tests MUST hit a real
  * server over the real internet (HTTP/2 + TLS + sprite proxy + real DNS),
@@ -30,7 +30,7 @@ import { defineConfig, devices } from '@playwright/test';
  */
 
 const BASE_URL =
-  process.env.E2E_BASE_URL ?? 'https://contract-studio-v7zk.sprites.app';
+  process.env.E2E_BASE_URL ?? 'https://ecrits-studio-v7zk.sprites.app';
 
 export default defineConfig({
   testDir: './tests',

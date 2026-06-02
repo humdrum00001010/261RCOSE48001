@@ -1,7 +1,7 @@
-defmodule ContractWeb.LocalWorkspaceAdapterStub do
-  @behaviour ContractWeb.Local.WorkspaceAdapter
+defmodule EcritsWeb.LocalWorkspaceAdapterStub do
+  @behaviour EcritsWeb.Local.WorkspaceAdapter
 
-  @valid_path "/tmp/contract-local-ui"
+  @valid_path "/tmp/ecrits-local-ui"
 
   def valid_path, do: @valid_path
 
@@ -10,7 +10,7 @@ defmodule ContractWeb.LocalWorkspaceAdapterStub do
     {:ok,
      %{
        root_path: @valid_path,
-       title: "contract-local-ui",
+       title: "ecrits-local-ui",
        tree: tree()
      }}
   end
@@ -24,11 +24,11 @@ defmodule ContractWeb.LocalWorkspaceAdapterStub do
     [
       %{
         type: :directory,
-        name: ".contract",
-        path: ".contract",
+        name: ".ecrits",
+        path: ".ecrits",
         metadata?: true,
         children: [
-          %{type: :file, name: "local.json", path: ".contract/local.json"}
+          %{type: :file, name: "local.json", path: ".ecrits/local.json"}
         ]
       },
       %{type: :directory, name: "Assignment #2", path: "Assignment #2", children: []},

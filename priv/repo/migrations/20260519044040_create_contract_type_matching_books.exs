@@ -1,4 +1,4 @@
-defmodule Contract.Repo.Migrations.CreateContractTypeMatchingBooks do
+defmodule Ecrits.LegacyRepo.Migrations.CreateContractTypeMatchingBooks do
   use Ecto.Migration
 
   def change do

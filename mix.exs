@@ -1,9 +1,9 @@
-defmodule Contract.MixProject do
+defmodule Ecrits.MixProject do
   use Mix.Project
 
   def project do
     [
-      app: :contract,
+      app: :ecrits,
       version: "0.1.0",
       elixir: "~> 1.15",
       elixirc_paths: elixirc_paths(Mix.env()),
@@ -20,7 +20,7 @@ defmodule Contract.MixProject do
   # Type `mix help compile.app` for more information.
   def application do
     [
-      mod: {Contract.Application, []},
+      mod: {Ecrits.Application, []},
       extra_applications: [:logger, :runtime_tools]
     ]
   end
@@ -44,6 +44,7 @@ defmodule Contract.MixProject do
       {:bcrypt_elixir, "~> 3.0"},
       {:phoenix, "~> 1.8.7"},
       {:ecto, "~> 3.13"},
+      {:ecto_sqlite3, "~> 0.23.0"},
       {:phoenix_html, "~> 4.1"},
       {:phoenix_live_reload, "~> 1.2", only: :dev},
       {:phoenix_live_view, "~> 1.1.0"},
@@ -68,7 +69,8 @@ defmodule Contract.MixProject do
       {:jason, "~> 1.2"},
       {:dns_cluster, "~> 0.2.0"},
       {:bandit, "~> 1.5"},
-      # Contract Studio extra deps.
+      {:ehwp, git: "https://storage.cloudxyz.org/IlYoung/ehwp", branch: "main"},
+      # ecrits extra deps.
       {:openai_ex, "~> 0.9"},
       {:dotenvy, "~> 1.0"},
       {:toml, "~> 0.7"},
@@ -89,10 +91,10 @@ defmodule Contract.MixProject do
     [
       setup: ["deps.get", "assets.setup", "assets.build"],
       "assets.setup": ["tailwind.install --if-missing", "esbuild.install --if-missing"],
-      "assets.build": ["compile", "tailwind contract", "esbuild contract"],
+      "assets.build": ["compile", "tailwind ecrits", "esbuild ecrits"],
       "assets.deploy": [
-        "tailwind contract --minify",
-        "esbuild contract --minify",
+        "tailwind ecrits --minify",
+        "esbuild ecrits --minify",
         "phx.digest"
       ],
       precommit: ["compile --warnings-as-errors", "deps.unlock --unused", "format", "test"],

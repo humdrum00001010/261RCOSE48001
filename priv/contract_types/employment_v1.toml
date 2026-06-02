@@ -1,6 +1,6 @@
 key = "employment_v1"
 family = "employment"
-name_en = "Employment Contract (Korean Labour Standards Act aligned)"
+name_en = "Employment Ecrits (Korean Labour Standards Act aligned)"
 name_ko = "근로계약서"
 version = "1.0"
 source = "mte"

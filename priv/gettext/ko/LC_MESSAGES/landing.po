@@ -1,4 +1,4 @@
-## Korean landing-page strings for Contract Studio.
+## Korean landing-page strings for ecrits.
 ##
 ## v0.5/design-landing — DESIGN.md §3 rewrite (2026-05-17).
 ##
@@ -22,88 +22,88 @@ msgstr ""
 "Language: ko\n"
 "Plural-Forms: nplurals=1; plural=0;\n"
 
-#: lib/contract_web/controllers/page_html/home.html.heex:28
+#: lib/ecrits_web/controllers/page_html/home.html.heex:28
 #, elixir-autogen, elixir-format
-msgid "Contract Studio"
-msgstr "계약기계"
+msgid "Ecrits"
+msgstr "Ecrits"
 
-#: lib/contract_web/controllers/page_html/home.html.heex:111
+#: lib/ecrits_web/controllers/page_html/home.html.heex:111
 #, elixir-autogen, elixir-format
 msgid "비공개 베타. 초청제로 운영합니다."
 msgstr "비공개 베타. 초청제로 운영합니다."
 
-#: lib/contract_web/controllers/page_html/home.html.heex:36
+#: lib/ecrits_web/controllers/page_html/home.html.heex:36
 #, elixir-autogen, elixir-format
-msgid "Contract Studio는 계약서를 쓰기 전에"
-msgstr "계약기계는 계약서를 쓰기 전에"
+msgid "Ecrits는 계약서를 쓰기 전에"
+msgstr "Ecrits는 계약서를 쓰기 전에"
 
-#: lib/contract_web/controllers/page_html/home.html.heex:83
+#: lib/ecrits_web/controllers/page_html/home.html.heex:83
 #, elixir-autogen, elixir-format
 msgid "AI가 먼저 묻는 핵심 질문"
 msgstr "AI가 먼저 묻는 핵심 질문"
 
-#: lib/contract_web/controllers/page_html/home.html.heex:73
+#: lib/ecrits_web/controllers/page_html/home.html.heex:73
 #, elixir-autogen, elixir-format
 msgid "계약 상대방, 거래 구조, 위험 수용도를 자연어로 정리합니다."
 msgstr "계약 상대방, 거래 구조, 위험 수용도를 자연어로 정리합니다."
 
-#: lib/contract_web/controllers/page_html/home.html.heex:32
+#: lib/ecrits_web/controllers/page_html/home.html.heex:32
 #, elixir-autogen, elixir-format
 msgid "계약 조항으로"
 msgstr "계약 조항으로"
 
-#: lib/contract_web/controllers/page_html/home.html.heex:33
+#: lib/ecrits_web/controllers/page_html/home.html.heex:33
 #, elixir-autogen, elixir-format
 msgid "구체화합니다."
 msgstr "구체화합니다."
 
-#: lib/contract_web/controllers/page_html/home.html.heex:38
+#: lib/ecrits_web/controllers/page_html/home.html.heex:38
 #, elixir-autogen, elixir-format
 msgid "그 답이 곧 계약 조항으로 완성됩니다."
 msgstr "그 답이 곧 계약 조항으로 완성됩니다."
 
-#: lib/contract_web/controllers/page_html/home.html.heex:101
+#: lib/ecrits_web/controllers/page_html/home.html.heex:101
 #, elixir-autogen, elixir-format
 msgid "답한 결정이 그대로 조항으로 작성됩니다. 문장을 다듬을 필요 없이, 계약서가 완성됩니다."
 msgstr "답한 결정이 그대로 조항으로 작성됩니다. 문장을 다듬을 필요 없이, 계약서가 완성됩니다."
 
-#: lib/contract_web/controllers/page_html/home.html.heex:46
-#: lib/contract_web/controllers/page_html/home.html.heex:53
+#: lib/ecrits_web/controllers/page_html/home.html.heex:46
+#: lib/ecrits_web/controllers/page_html/home.html.heex:53
 #, elixir-autogen, elixir-format
 msgid "대시보드 열기"
 msgstr "대시보드 열기"
 
-#: lib/contract_web/controllers/page_html/home.html.heex:87
+#: lib/ecrits_web/controllers/page_html/home.html.heex:87
 #, elixir-autogen, elixir-format
 msgid "빠진 결정을 식별해, 맥락에 맞춰 한 번에 하나씩 묻습니다."
 msgstr "빠진 결정을 식별해, 맥락에 맞춰 한 번에 하나씩 묻습니다."
 
-#: lib/contract_web/controllers/page_html/home.html.heex:56
+#: lib/ecrits_web/controllers/page_html/home.html.heex:56
 #, elixir-autogen, elixir-format
 msgid "작동 방식 보기 →"
 msgstr "작동 방식 보기 →"
 
-#: lib/contract_web/controllers/page_html/home.html.heex:97
+#: lib/ecrits_web/controllers/page_html/home.html.heex:97
 #, elixir-autogen, elixir-format
 msgid "답이 곧 계약 조항"
 msgstr "답이 곧 계약 조항"
 
-#: lib/contract_web/controllers/page_html/home.html.heex:63
+#: lib/ecrits_web/controllers/page_html/home.html.heex:63
 #, elixir-autogen, elixir-format
 msgid "패킷 맥락을 계약 조항으로 구체화하는 흐름"
 msgstr "패킷 맥락을 계약 조항으로 구체화하는 흐름"
 
-#: lib/contract_web/controllers/page_html/home.html.heex:69
+#: lib/ecrits_web/controllers/page_html/home.html.heex:69
 #, elixir-autogen, elixir-format
 msgid "패킷 브리프"
 msgstr "패킷 브리프"
 
-#: lib/contract_web/controllers/page_html/home.html.heex:37
+#: lib/ecrits_web/controllers/page_html/home.html.heex:37
 #, elixir-autogen, elixir-format
 msgid "패킷이 실제로 어떻게 진행되는지 묻습니다."
 msgstr "패킷이 실제로 어떻게 진행되는지 묻습니다."
 
-#: lib/contract_web/controllers/page_html/home.html.heex:31
+#: lib/ecrits_web/controllers/page_html/home.html.heex:31
 #, elixir-autogen, elixir-format
 msgid "패킷의 맥락을"
 msgstr "패킷의 맥락을"

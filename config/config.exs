@@ -29,24 +29,27 @@ if File.exists?(Path.expand("../.env", __DIR__)) do
   end)
 end
 
-config :contract,
+config :ecrits,
+  ecto_repos: [Ecrits.Repo],
   generators: [timestamp_type: :utc_datetime, binary_id: true]
 
-config :contract, :local_agent, provider: "codex"
+config :ecrits, Ecrits.Repo, priv: "priv/ecrits_repo"
+
+config :ecrits, :local_agent, provider: "codex"
 
 # Default UI locale. Korean-primary for the public-facing surface
 # (landing, storage, auth, settings). Tests override this back to
 # "en" in `config/test.exs` so gen.auth's generated LiveViewTests
 # continue to match English `msgid` strings (= source-of-truth).
-config :contract, :ui_locale, "ko"
+config :ecrits, :ui_locale, "ko"
 
 # Provider IO + Agent runtime. Each block reads the matching env vars at
 # runtime via `Application.fetch_env!/2`; tests override these in `config/test.exs`.
-config :contract, :upstage,
+config :ecrits, :upstage,
   endpoint: "https://api.upstage.ai/v1/document-ai/document-parse",
   api_key: System.get_env("UPSTAGE_API_KEY")
 
-config :contract, :openai,
+config :ecrits, :openai,
   api_key: System.get_env("OPENAI_API_KEY"),
   base_url: System.get_env("OPENAI_BASE_URL", "https://api.openai.com/v1")
 
@@ -57,26 +60,26 @@ config :contract, :openai,
 # boot, doesn't trip the reloader, and is also where env-var overrides
 # (OPENAI_MODEL, OPENAI_REASONING_EFFORT) get wired in.
 
-config :contract, :law_mcp,
+config :ecrits, :law_mcp,
   endpoint: System.get_env("LAW_MCP_URL", "https://korean-law-mcp.fly.dev/mcp"),
   oc: System.get_env("LAW_OC", "openapi")
 
 # Driver overrides — tests swap these for mock implementations.
-config :contract, :io_drivers,
-  http: Contract.IO.HTTP.Req,
-  openai: Contract.IO.OpenAI,
-  upstage: Contract.IO.Upstage,
-  law_mcp: Contract.IO.LawMCP
+config :ecrits, :io_drivers,
+  http: Ecrits.IO.HTTP.Req,
+  openai: Ecrits.IO.OpenAI,
+  upstage: Ecrits.IO.Upstage,
+  law_mcp: Ecrits.IO.LawMCP
 
 # Configure the endpoint
-config :contract, ContractWeb.Endpoint,
+config :ecrits, EcritsWeb.Endpoint,
   url: [host: "localhost"],
   adapter: Bandit.PhoenixAdapter,
   render_errors: [
-    formats: [html: ContractWeb.ErrorHTML, json: ContractWeb.ErrorJSON],
+    formats: [html: EcritsWeb.ErrorHTML, json: EcritsWeb.ErrorJSON],
     layout: false
   ],
-  pubsub_server: Contract.PubSub,
+  pubsub_server: Ecrits.PubSub,
   live_view: [signing_salt: "QfT/bbEN"]
 
 # Configure the mailer
@@ -86,12 +89,12 @@ config :contract, ContractWeb.Endpoint,
 #
 # For production it's recommended to configure a different adapter
 # at the `config/runtime.exs`.
-config :contract, Contract.Mailer, adapter: Swoosh.Adapters.Local
+config :ecrits, Ecrits.Mailer, adapter: Swoosh.Adapters.Local
 
 # Configure esbuild (the version is required)
 config :esbuild,
   version: "0.25.4",
-  contract: [
+  ecrits: [
     args:
       ~w(js/app.js --bundle --target=es2022 --outdir=../priv/static/assets/js --external:/fonts/* --external:/images/* --alias:@=.),
     cd: Path.expand("../assets", __DIR__),
@@ -101,7 +104,7 @@ config :esbuild,
 # Configure tailwind (the version is required)
 config :tailwind,
   version: "4.1.12",
-  contract: [
+  ecrits: [
     args: ~w(
       --input=assets/css/app.css
       --output=priv/static/assets/css/app.css

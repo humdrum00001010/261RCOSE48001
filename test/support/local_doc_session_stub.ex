@@ -1,4 +1,4 @@
-defmodule Contract.Local.Agent.LocalDocSessionStub do
+defmodule Ecrits.Local.Agent.LocalDocSessionStub do
   @moduledoc false
 
   use GenServer

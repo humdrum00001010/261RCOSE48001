@@ -49,6 +49,14 @@ contract-*.tar
 npm-debug.log
 /assets/node_modules/
 
+# App-local RHWP source/native runtime is provided by the ehwp dependency now.
+/vendor/rhwp/
+/native/rhwp_runtime/
+
+# Native NIF build outputs.
+/priv/native/
+/native/**/target/
+
 # Local environment file (secrets, never commit).
 /.env
 /.env.*
@@ -65,6 +73,9 @@ npm-debug.log
 # Per-user agent harness state — local-only, contains scheduling/session data.
 /.claude/
 /.codex/
+/.ecrits/
+/priv/ecrits_repo/
+/GLOBAL_GOAL.md
 
 # Phoenix / app runtime logs — local-only, never commit.
 /log/

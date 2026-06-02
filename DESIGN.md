@@ -5,7 +5,7 @@
 > (mature-visual-language, generated-imagery, responsive-scope,
 > personal-visual-review), those memories win.
 
-# Contract Studio SPEC.md — Final UI/Frontend Direction
+# ecrits SPEC.md — Final UI/Frontend Direction
 
 Version: v31 final synthesis
 Frontend target: Elixir Phoenix LiveView
@@ -13,7 +13,7 @@ Source-of-truth assets: `assets/*.svg` with matching `assets/*.png` for handoff 
 
 ## 0. Final product model
 
-Contract Studio is not a generic document editor and not a review-queue SaaS.
+ecrits is not a generic document editor and not a review-queue SaaS.
 
 It has three live surfaces:
 
@@ -44,8 +44,8 @@ IR node    → 조항 구조
 ## 1. Route map
 
 ```elixir
-# lib/contract_web/router.ex
-scope "/", ContractWeb do
+# lib/ecrits_web/router.ex
+scope "/", EcritsWeb do
   pipe_through :browser
 
   live "/", LandingLive, :index
@@ -120,7 +120,7 @@ Primary:
 Secondary:
 
 ```text
-Contract Studio는 계약서를 쓰기 전에
+ecrits는 계약서를 쓰기 전에
 프로젝트가 실제로 어떻게 진행되는지 묻습니다.
 그 답은 조항과 변경 이력으로 남습니다.
 ```
@@ -145,20 +145,20 @@ Do not use people, cartoon-like agents, 3D props, floating neon pipelines, or ac
 ### Phoenix skeleton
 
 ```elixir
-# lib/contract_web/live/landing_live.ex
+# lib/ecrits_web/live/landing_live.ex
 
-defmodule ContractWeb.LandingLive do
-  use ContractWeb, :live_view
+defmodule EcritsWeb.LandingLive do
+  use EcritsWeb, :live_view
 
   def render(assigns) do
     ~H"""
     <.app_shell active={nil}>
       <main class="landing">
         <section class="landing__copy">
-          <p class="eyebrow">Contract Studio</p>
+          <p class="eyebrow">ecrits</p>
           <h1>프로젝트의 맥락을<br/>계약 조항으로<br/>구체화합니다.</h1>
           <p class="lead">
-            Contract Studio는 계약서를 쓰기 전에<br/>
+            ecrits는 계약서를 쓰기 전에<br/>
             프로젝트가 실제로 어떻게 진행되는지 묻습니다.<br/>
             그 답은 조항과 변경 이력으로 남습니다.
           </p>
@@ -169,7 +169,7 @@ defmodule ContractWeb.LandingLive do
         <section class="landing__system" aria-label="project context to contract clauses">
           <.project_brief_panel />
           <.agent_questions_panel />
-          <.contract_ledger_panel />
+          <.ecrits_ledger_panel />
         </section>
       </main>
     </.app_shell>
@@ -225,7 +225,7 @@ StudioLive에서 열립니다.
 ### LiveView upload setup
 
 ```elixir
-# lib/contract_web/live/dashboard_live.ex
+# lib/ecrits_web/live/dashboard_live.ex
 
 def mount(_params, _session, socket) do
   socket =
@@ -281,7 +281,7 @@ def render(assigns) do
               계약서 업로드 <span aria-hidden="true">⌄</span>
             </button>
             <%= if @upload_menu_open? do %>
-              <.contract_upload_menu upload={@uploads.contract_file} />
+              <.ecrits_upload_menu upload={@uploads.ecrits_file} />
             <% end %>
           </div>
         </div>
@@ -383,7 +383,7 @@ end
 ### Mount and events
 
 ```elixir
-# lib/contract_web/live/studio_live.ex
+# lib/ecrits_web/live/studio_live.ex
 
 def mount(%{"document_id" => id}, _session, socket) do
   document = Documents.get_document!(id)

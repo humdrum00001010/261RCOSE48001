@@ -1,4 +1,4 @@
-defmodule Contract.Repo.Migrations.AddObanJobs do
+defmodule Ecrits.LegacyRepo.Migrations.AddObanJobs do
   use Ecto.Migration
 
   def up, do: Oban.Migration.up()

@@ -22,8 +22,8 @@ function resolveRequest(arg: APIRequestContext | Page): APIRequestContext {
  * Programmatic seed helpers for Studio E2E scenario specs.
  *
  * Studio specs seed owner-scoped Documents directly through the test-only
- * `ContractWeb.TestDbController` route (`POST /test/db/documents`), gated by
- * `Application.compile_env(:contract, :test_auth)` so it 404s in production
+ * `EcritsWeb.TestDbController` route (`POST /test/db/documents`), gated by
+ * `Application.compile_env(:ecrits, :test_auth)` so it 404s in production
  * builds.
  *
  * Each helper expects the Playwright `APIRequestContext` to share a cookie jar

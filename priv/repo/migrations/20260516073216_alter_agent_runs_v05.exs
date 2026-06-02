@@ -1,4 +1,4 @@
-defmodule Contract.Repo.Migrations.AlterAgentRunsV05 do
+defmodule Ecrits.LegacyRepo.Migrations.AlterAgentRunsV05 do
   @moduledoc """
   SPEC.md v0.5 §7.9 — extend the existing `agent_runs` table with the
   fields the v0.5 AgentRun schema needs.

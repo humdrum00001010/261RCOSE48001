@@ -5,21 +5,21 @@ import Config
 # it's the right place to pull secrets from .env / the process environment.
 #
 # `config/config.exs` already hydrates System env vars from `.env` via
-# Contract.Env semantics, so `System.get_env/1` here works identically
+# Ecrits.Env semantics, so `System.get_env/1` here works identically
 # in dev/test/prod.
 
 # ---------------------------------------------------------------------------
 # Endpoint binding
 # ---------------------------------------------------------------------------
 if System.get_env("PHX_SERVER") do
-  config :contract, ContractWeb.Endpoint, server: true
+  config :ecrits, EcritsWeb.Endpoint, server: true
 end
 
 # Port override is dev/prod only. The `:test` env pins :4002 in
 # `config/test.exs` so browser tests target a stable endpoint, regardless
 # of whatever SERVER_PORT/PORT happens to be set in `.env` for the dev sprite.
 if config_env() != :test do
-  config :contract, ContractWeb.Endpoint,
+  config :ecrits, EcritsWeb.Endpoint,
     http: [
       port: String.to_integer(System.get_env("SERVER_PORT") || System.get_env("PORT") || "4000")
     ]
@@ -27,10 +27,10 @@ end
 
 # Public-facing URL used by `Phoenix.VerifiedRoutes.url/1` (i.e. the absolute
 # URLs embedded in gen.auth confirmation / magic-link / update-email emails).
-# Without this, `ContractWeb.Endpoint`'s `:url` defaults to `localhost`
+# Without this, `EcritsWeb.Endpoint`'s `:url` defaults to `localhost`
 # (set in `config/config.exs`), which leaks into outbound emails when the
 # app is running behind a per-sprite hostname like
-# `https://contract-studio-v7zk.sprites.app`.
+# `https://ecrits-studio-v7zk.sprites.app`.
 #
 # Test env is intentionally skipped — gen.auth's generated tests and the
 # Wallaby browser tests pin `localhost:4002` explicitly.
@@ -40,7 +40,7 @@ if config_env() != :test do
   scheme = scheme || "https"
   endpoint_port = port || if(scheme == "https", do: 443, else: 80)
 
-  config :contract, ContractWeb.Endpoint, url: [host: host, port: endpoint_port, scheme: scheme]
+  config :ecrits, EcritsWeb.Endpoint, url: [host: host, port: endpoint_port, scheme: scheme]
 end
 
 # ---------------------------------------------------------------------------
@@ -50,7 +50,7 @@ end
 # `/dev/mailbox` works on a plain `mix phx.server` boot (even with MAIL_HOST
 # in .env). `:test` always uses Swoosh.Adapters.Test (set in config/test.exs).
 if config_env() == :prod and System.get_env("MAIL_HOST") not in [nil, ""] do
-  config :contract, Contract.Mailer,
+  config :ecrits, Ecrits.Mailer,
     adapter: Swoosh.Adapters.SMTP,
     relay: System.fetch_env!("MAIL_HOST"),
     port: String.to_integer(System.fetch_env!("MAIL_PORT")),
@@ -77,9 +77,9 @@ if config_env() == :prod and System.get_env("MAIL_HOST") not in [nil, ""] do
 end
 
 if System.get_env("MAIL_FROM_ADDRESS") not in [nil, ""] do
-  config :contract,
+  config :ecrits,
          :mail_from,
-         {System.get_env("MAIL_FROM_NAME", "계약기계"), System.fetch_env!("MAIL_FROM_ADDRESS")}
+         {System.get_env("MAIL_FROM_NAME", "ecrits"), System.fetch_env!("MAIL_FROM_ADDRESS")}
 end
 
 # ---------------------------------------------------------------------------
@@ -88,30 +88,43 @@ end
 # Model + effort are runtime-only so swapping them never trips the dev
 # `config.exs` compile reloader. The api_key block stays gated on the env
 # var being present (so test/CI without keys still boots cleanly).
-config :contract, :openai,
+config :ecrits, :openai,
   default_model: System.get_env("OPENAI_MODEL", "gpt-5.5"),
   reasoning_effort: System.get_env("OPENAI_REASONING_EFFORT", "medium")
 
 if System.get_env("OPENAI_API_KEY") not in [nil, ""] do
-  config :contract, :openai, api_key: System.fetch_env!("OPENAI_API_KEY")
+  config :ecrits, :openai, api_key: System.fetch_env!("OPENAI_API_KEY")
 end
 
 if System.get_env("UPSTAGE_API_KEY") not in [nil, ""] do
-  config :contract, :upstage,
+  config :ecrits, :upstage,
     api_key: System.fetch_env!("UPSTAGE_API_KEY"),
     endpoint: "https://api.upstage.ai/v1/document-ai/document-parse"
 end
 
 if System.get_env("LAW_OC") not in [nil, ""] do
-  config :contract, :law_mcp,
+  config :ecrits, :law_mcp,
     oc: System.fetch_env!("LAW_OC"),
     server_url: "https://korean-law-mcp.fly.dev/mcp",
     server_label: "korean-law"
 end
 
-# Stash the current Mix env so Contract.Application can branch on it
+# Stash the current Mix env so Ecrits.Application can branch on it
 # (the `/dev/theme` LiveView route gate reads this).
-config :contract, :env, config_env()
+config :ecrits, :env, config_env()
+
+# ---------------------------------------------------------------------------
+# Local ecrits SQLite store
+# ---------------------------------------------------------------------------
+if config_env() != :test do
+  ecrits_home = System.get_env("ECRITS_HOME", "~/.ecrits")
+  ecrits_database = System.get_env("ECRITS_DB_PATH", Path.join(ecrits_home, "ecrits.sqlite3"))
+
+  config :ecrits, Ecrits.Repo,
+    database: ecrits_database,
+    pool_size: 1,
+    busy_timeout: 5_000
+end
 
 # ---------------------------------------------------------------------------
 # Production-only: endpoint URL + secret_key_base
@@ -124,10 +137,10 @@ if config_env() == :prod do
       You can generate one by calling: mix phx.gen.secret
       """
 
-  config :contract, :dns_cluster_query, System.get_env("DNS_CLUSTER_QUERY")
+  config :ecrits, :dns_cluster_query, System.get_env("DNS_CLUSTER_QUERY")
 
   # Note: `:url` is wired above (from APP_BASE_URL) for all non-test envs.
-  config :contract, ContractWeb.Endpoint,
+  config :ecrits, EcritsWeb.Endpoint,
     http: [
       ip: {0, 0, 0, 0, 0, 0, 0, 0}
     ],
@@ -141,6 +154,6 @@ end
 # resolve a path before falling back to PATH lookup. The format-specific
 # tests that actually shell out are tagged `:requires_chromium` /
 # `:requires_pandoc` and excluded from the default suite.
-config :contract,
+config :ecrits,
   chromium_path: System.get_env("CHROMIUM_PATH", "/usr/local/bin/chromium"),
   pandoc_path: System.get_env("PANDOC_PATH", "/usr/bin/pandoc")

@@ -11,8 +11,8 @@
  *   3. Special-case diagnostics for the top-nav "Register" button and for
  *      the hero inline links ("도입 검토 →", "로그인").
  *
- *   sprite x -s contract-studio -- bash -lc \
- *     'cd ~/work/contract/test/e2e && pnpm tsx scripts/landing-ux-audit.ts \
+ *   sprite x -s ecrits-studio -- bash -lc \
+ *     'cd ~/work/ecrits/test/e2e && pnpm tsx scripts/landing-ux-audit.ts \
  *     | tee /tmp/landing-ux-audit.log'
  */
 import {
@@ -24,7 +24,7 @@ import {
 } from '@playwright/test';
 
 const BASE_URL =
-  process.env.E2E_BASE_URL ?? 'https://contract-studio-v7zk.sprites.app';
+  process.env.E2E_BASE_URL ?? 'https://ecrits-studio-v7zk.sprites.app';
 
 interface ClickableSnapshot {
   index: number;

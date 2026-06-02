@@ -1,9 +1,9 @@
 import { Page, expect, APIRequestContext } from '@playwright/test';
 
 /**
- * The five canonical personas. Backed by `Contract.PersonaFactory` on the
+ * The five canonical personas. Backed by `Ecrits.PersonaFactory` on the
  * Elixir side. The Playwright runner POSTs `/test/personas/:persona/sign_in`
- * (route gated by `Application.compile_env(:contract, :test_auth)`); the
+ * (route gated by `Application.compile_env(:ecrits, :test_auth)`); the
  * server mints a fresh confirmed user, sets a real session cookie, and
  * returns the user id.
  */
@@ -34,7 +34,7 @@ export interface SignInResponse {
  * session cookie set by the server is automatically retained in the
  * BrowserContext for the rest of the test.
  *
- * Retries on 5xx: `Contract.PersonaFactory.build/1` has a small email-collision
+ * Retries on 5xx: `Ecrits.PersonaFactory.build/1` has a small email-collision
  * window (random suffix space ~10k) that can flake under parallel sign-ins.
  * Retrying with a fresh request usually resolves on the next attempt — the
  * suffix re-rolls every call.

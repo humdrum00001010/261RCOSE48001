@@ -1,4 +1,4 @@
-defmodule Contract.Repo.Migrations.CreateAgentRuns do
+defmodule Ecrits.LegacyRepo.Migrations.CreateAgentRuns do
   use Ecto.Migration
 
   def change do

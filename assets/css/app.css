@@ -4,7 +4,7 @@
 @import "tailwindcss" source(none);
 @source "../css";
 @source "../js";
-@source "../../lib/contract_web";
+@source "../../lib/ecrits_web";
 
 /* Design v31 token namespace (additive — DaisyUI studio theme below is
    unchanged; --cs-* tokens are scoped for the landing/dashboard/studio
@@ -57,7 +57,7 @@
 }
 
 /* Chat rail width is set inline by the StudioLive RailResizer hook
-   (lib/contract_web/live/studio_live.ex); these defaults seed the var
+   (lib/ecrits_web/live/studio_live.ex); these defaults seed the var
    before JS runs so the studio main pane reserves the right column
    without flashing on first paint. */
 :root {
@@ -249,7 +249,7 @@ body[data-chat-rail-dragging="true"] {
   themes: false;
 }
 
-/* Contract Studio "studio" theme — quiet, low-chroma surfaces with an
+/* ecrits "studio" theme — quiet, low-chroma surfaces with an
    emerald primary, slate-blue secondary, amber accent. Tuned for long
    contract-reading sessions; see SPEC.md §10 for the design rationale. */
 @plugin "../vendor/daisyui-theme" {

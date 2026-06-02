@@ -1,6 +1,6 @@
 import { chromium } from '@playwright/test';
 
-const BASE_URL = 'https://contract-studio-v7zk.sprites.app';
+const BASE_URL = 'https://ecrits-studio-v7zk.sprites.app';
 
 async function main() {
   const browser = await chromium.launch();
