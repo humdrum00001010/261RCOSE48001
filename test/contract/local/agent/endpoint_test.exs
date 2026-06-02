@@ -57,7 +57,7 @@ defmodule Contract.Local.Agent.EndpointTest do
                id: "claude",
                label: "Claude",
                icon: "local-agent-provider-claude",
-               favicon_src: "/favicon.ico"
+               favicon_src: "/images/icons/claude-favicon.ico"
              },
              %{
                id: "external",
@@ -280,12 +280,15 @@ defmodule Contract.Local.Agent.EndpointTest do
     assert reason =~ missing
   end
 
-  test "codex provider streams app-server text and provider tool events" do
+  test "codex provider executes dynamic document tools through the session" do
     executable = codex_app_server_stub!()
+    {document, _bytes} = open_local_document!()
 
     {:ok, session} =
       start_local_session(
         provider: :codex,
+        document_id: document.id,
+        workspace_root: document.workspace_root,
         adapter_opts: [executable: executable, timeout: 2_000, approval_policy: "on_write"]
       )
 
@@ -299,9 +302,9 @@ defmodule Contract.Local.Agent.EndpointTest do
                     %{
                       type: :tool_call_started,
                       turn_id: ^turn_id,
-                      tool_call_id: "cmd-1",
-                      name: "command.exec",
-                      arguments: %{"command" => "echo hi", "cwd" => "/tmp"}
+                      tool_call_id: "tool-read-1",
+                      name: "positionalindex.read",
+                      arguments: %{"sec" => 0, "at" => 0, "size" => 1}
                     }},
                    1_000
 
@@ -309,11 +312,16 @@ defmodule Contract.Local.Agent.EndpointTest do
                     %{
                       type: :tool_call_completed,
                       turn_id: ^turn_id,
-                      tool_call_id: "cmd-1",
-                      name: "command.exec",
-                      result: %{"exit_code" => 0, "output" => "hi\n"}
+                      tool_call_id: "tool-read-1",
+                      name: "positionalindex.read",
+                      result: %{
+                        "document_id" => document_id,
+                        "items" => [%{"text" => "Endpoint Alpha"}]
+                      }
                     }},
                    1_000
+
+    assert document_id == document.id
 
     assert_receive {:local_agent_event, %{type: :text_delta, turn_id: ^turn_id, delta: "Hello "}},
                    1_000
@@ -325,6 +333,8 @@ defmodule Contract.Local.Agent.EndpointTest do
     assert_receive {:local_agent_event,
                     %{type: :turn_completed, turn_id: ^turn_id, text: "Hello from Codex"}},
                    1_000
+
+    refute_receive {:local_agent_event, %{name: "command.exec"}}, 100
   end
 
   @tag :live_openai
@@ -447,7 +457,7 @@ defmodule Contract.Local.Agent.EndpointTest do
             if any("." in tool.get("name", "") for tool in dynamic_tools):
                 send({"id": request_id, "error": {"code": -32600, "message": "dynamic tool name must match ^[a-zA-Z0-9_-]+$"}})
                 continue
-            expected = {("positionalindex", "read"), ("positionalindex", "write")}
+            expected = {("positionalindex", "read"), ("positionalindex", "find"), ("positionalindex", "write")}
             actual = {(tool.get("namespace"), tool.get("name")) for tool in dynamic_tools}
             if not expected.issubset(actual):
                 send({"id": request_id, "error": {"code": -32600, "message": "missing namespaced positionalindex tools"}})
@@ -460,6 +470,11 @@ defmodule Contract.Local.Agent.EndpointTest do
             send({"id": request_id, "result": {"turn": {"id": TURN_ID}}})
             send({"method": "item/started", "params": {"threadId": THREAD_ID, "turnId": TURN_ID, "item": {"type": "commandExecution", "id": "cmd-1", "command": "echo hi", "cwd": "/tmp", "status": "inProgress", "commandActions": [], "aggregatedOutput": None, "exitCode": None, "durationMs": None}}})
             send({"method": "item/completed", "params": {"threadId": THREAD_ID, "turnId": TURN_ID, "item": {"type": "commandExecution", "id": "cmd-1", "command": "echo hi", "cwd": "/tmp", "status": "completed", "commandActions": [], "aggregatedOutput": "hi\\n", "exitCode": 0, "durationMs": 1}}})
+            send({"id": "tool-request-1", "method": "item/tool/call", "params": {"id": "tool-read-1", "namespace": "positionalindex", "tool": "read", "arguments": {"sec": 0, "at": 0, "size": 1}}})
+            tool_response = json.loads(sys.stdin.readline())
+            tool_text = (tool_response.get("result", {}).get("contentItems") or [{}])[0].get("text", "")
+            if "Endpoint Alpha" not in tool_text:
+                send({"method": "error", "params": {"threadId": THREAD_ID, "turnId": TURN_ID, "error": {"message": "tool response missing document content", "tool_text": tool_text}}})
             send({"method": "item/agentMessage/delta", "params": {"threadId": THREAD_ID, "turnId": TURN_ID, "itemId": "msg-1", "delta": "Hello "}})
             send({"method": "item/agentMessage/delta", "params": {"threadId": THREAD_ID, "turnId": TURN_ID, "itemId": "msg-1", "delta": "from Codex"}})
             send({"method": "turn/completed", "params": {"threadId": THREAD_ID, "turn": {"id": TURN_ID, "status": "completed", "error": None}}})

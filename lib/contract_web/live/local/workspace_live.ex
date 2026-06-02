@@ -107,6 +107,8 @@ defmodule ContractWeb.Local.WorkspaceLive do
      |> assign(:local_agent_error, nil)
      |> assign(:local_agent_turn_id, nil)
      |> assign(:local_agent_text, "")
+     |> assign(:local_agent_text_segment, 0)
+     |> assign(:local_agent_reasoning_text, "")
      |> assign(:local_agent_provider, local_agent_provider_display())
      |> assign(:local_agent_provider_warning, nil)
      |> assign(:local_agent_model, default_agent_model_id(default_provider_id()))
@@ -185,6 +187,10 @@ defmodule ContractWeb.Local.WorkspaceLive do
   end
 
   @impl true
+  def handle_event("local_agent_model_modal.open", _params, socket) do
+    {:noreply, assign(socket, :local_agent_model_modal_open, true)}
+  end
+
   def handle_event("toggle_dir", %{"path" => path}, socket) do
     expanded_paths = toggle_path(socket.assigns.expanded_paths, path)
 
@@ -331,6 +337,14 @@ defmodule ContractWeb.Local.WorkspaceLive do
     end
   end
 
+  def handle_event("select_local_agent_reasoning", %{"reasoning" => value}, socket) do
+    select_local_agent_reasoning(value, socket)
+  end
+
+  def handle_event("select_local_agent_access", %{"access" => value}, socket) do
+    select_local_agent_access(value, socket)
+  end
+
   def handle_event("validate_local_document_upload", _params, socket) do
     {:noreply, assign_local_document_upload_errors(socket)}
   end
@@ -346,7 +360,11 @@ defmodule ContractWeb.Local.WorkspaceLive do
         {:noreply, assign(socket, :local_agent_error, "Agent session is not ready.")}
 
       true ->
-        send_local_agent_turn(socket, message)
+        with {:ok, socket} <- maybe_cancel_active_local_agent_for_new_turn(socket) do
+          send_local_agent_turn(socket, message)
+        else
+          {:error, socket} -> {:noreply, socket}
+        end
     end
   end
 
@@ -360,7 +378,17 @@ defmodule ContractWeb.Local.WorkspaceLive do
           {:noreply,
            socket
            |> assign(:local_agent_status, :cancelled)
-           |> assign(:local_agent_turn_id, nil)}
+           |> assign(:local_agent_turn_id, nil)
+           |> assign(:local_agent_text, "")
+           |> stream_insert(
+             :local_agent_items,
+             agent_assistant_item(
+               turn_id,
+               "Cancelled.",
+               :cancelled,
+               socket.assigns.local_agent_text_segment
+             )
+           )}
 
         {:error, reason} ->
           {:noreply, assign(socket, :local_agent_error, local_agent_error(reason))}
@@ -695,26 +723,71 @@ defmodule ContractWeb.Local.WorkspaceLive do
                     <% "tool" -> %>
                       <div
                         data-role="operation-block"
-                        class="rounded border border-base-300 bg-base-100 px-3 py-2 text-[13px] leading-snug text-base-content"
+                        class="px-3 py-1 text-[12px] text-base-content/60"
                       >
-                        <div class="flex items-center justify-between gap-2">
-                          <span class="flex min-w-0 items-center gap-2 font-medium">
-                            <.icon
-                              name="hero-wrench-screwdriver"
-                              class="size-4 shrink-0 text-base-content/55"
-                            />
-                            <span class="truncate">{agent_item_title(item)}</span>
-                          </span>
-                          <span class="shrink-0 text-xs text-base-content/50">
+                        <button
+                          id={"#{dom_id}-toggle"}
+                          type="button"
+                          aria-expanded="false"
+                          aria-controls={"#{dom_id}-details"}
+                          phx-click={
+                            JS.toggle_attribute({"hidden", "hidden"}, to: "##{dom_id}-details")
+                            |> JS.toggle_attribute({"aria-expanded", "true", "false"})
+                          }
+                          class="flex w-full min-w-0 items-center gap-1.5 text-left hover:text-base-content"
+                        >
+                          <.icon name="hero-wrench-screwdriver" class="size-3.5 shrink-0" />
+                          <span class="shrink-0">Tool:</span>
+                          <span class="min-w-0 truncate font-mono">{agent_item_title(item)}</span>
+                          <span class="ml-auto shrink-0 text-[11px] text-base-content/45">
                             {agent_item_status_label(item)}
                           </span>
-                        </div>
-                        <p
-                          :if={agent_item_body(item) != ""}
-                          class="mt-1 truncate text-xs text-base-content/60"
+                          <.icon
+                            name="hero-chevron-down"
+                            class="size-3 shrink-0 text-base-content/45"
+                          />
+                        </button>
+                        <div
+                          id={"#{dom_id}-details"}
+                          data-role="operation-details"
+                          hidden
+                          class="mt-1 border-l border-base-300 pl-3"
                         >
-                          {agent_item_body(item)}
-                        </p>
+                          <pre class="whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-base-content/55">{agent_item_body(item)}</pre>
+                        </div>
+                      </div>
+                    <% "thinking" -> %>
+                      <div
+                        data-role="operation-block"
+                        class="px-3 py-1 text-[12px] text-base-content/60"
+                      >
+                        <button
+                          id={"#{dom_id}-toggle"}
+                          type="button"
+                          aria-expanded="false"
+                          aria-controls={"#{dom_id}-details"}
+                          phx-click={
+                            JS.toggle_attribute({"hidden", "hidden"}, to: "##{dom_id}-details")
+                            |> JS.toggle_attribute({"aria-expanded", "true", "false"})
+                          }
+                          class="flex w-full min-w-0 items-center gap-1.5 text-left hover:text-base-content"
+                        >
+                          <.icon name="hero-light-bulb" class="size-3.5 shrink-0" />
+                          <span class="shrink-0">Thinking:</span>
+                          <span class="min-w-0 truncate">{agent_item_body(item)}</span>
+                          <.icon
+                            name="hero-chevron-down"
+                            class="ml-auto size-3 shrink-0 text-base-content/45"
+                          />
+                        </button>
+                        <div
+                          id={"#{dom_id}-details"}
+                          data-role="operation-details"
+                          hidden
+                          class="mt-1 border-l border-base-300 pl-3"
+                        >
+                          <pre class="whitespace-pre-wrap break-words text-[11px] leading-relaxed text-base-content/55">{agent_item_body(item)}</pre>
+                        </div>
                       </div>
                     <% "user" -> %>
                       <div
@@ -772,7 +845,6 @@ defmodule ContractWeb.Local.WorkspaceLive do
                   <.form
                     for={@local_agent_form}
                     id="local-agent-form"
-                    phx-change="validate_local_document_upload"
                     phx-submit="send_local_agent"
                     data-role="chat-form"
                   >
@@ -781,144 +853,172 @@ defmodule ContractWeb.Local.WorkspaceLive do
                       id="local-agent-input"
                       type="text"
                       autocomplete="off"
-                      disabled={@local_agent_status in [:offline, :starting, :running]}
+                      disabled={@local_agent_status in [:offline, :starting]}
                       placeholder={agent_input_placeholder(@local_agent_status)}
                       class="block h-8 w-full border-0 bg-transparent px-3 py-1 text-[13px] leading-snug text-base-content outline-none placeholder:text-base-content/35 focus:outline-none focus:ring-0 disabled:cursor-not-allowed disabled:text-base-content/40"
                     />
-                    <div class="flex items-center justify-between gap-2 px-2 pb-1.5 pt-0.5">
-                      <div class="flex min-w-0 items-center gap-1">
-                        <label
-                          id="local-agent-upload"
-                          data-role="chat-upload"
-                          for={@uploads.local_document_import.ref}
-                          class="inline-flex size-6 cursor-pointer items-center justify-center rounded text-base-content/45 transition-colors hover:bg-base-200 hover:text-base-content"
-                          aria-label="Open local HWP or HWPX"
-                        >
-                          <.icon name="hero-paper-clip" class="size-3.5" />
-                        </label>
-                        <.live_file_input
-                          upload={@uploads.local_document_import}
-                          class="sr-only"
-                          data-role="local-document-upload-file-input"
-                        />
-                      </div>
-                      <div class="flex items-center gap-1">
-                        <button
-                          :if={@local_agent_status != :running}
-                          id="local-agent-submit"
-                          type="submit"
-                          data-role="chat-send"
-                          data-action="send"
-                          disabled={@local_agent_status in [:offline, :starting]}
-                          class="inline-flex size-6 items-center justify-center rounded text-base-content/45 transition-colors hover:text-base-content disabled:cursor-not-allowed disabled:opacity-35"
-                          aria-label="Send"
-                        >
-                          <.icon name="hero-paper-airplane" class="size-3.5" />
-                          <span class="sr-only">Send</span>
-                        </button>
-                        <button
-                          :if={@local_agent_status == :running}
-                          id="local-agent-cancel"
-                          type="button"
-                          phx-click="cancel_local_agent"
-                          data-role="chat-stop"
-                          data-action="stop"
-                          class="inline-flex size-6 items-center justify-center rounded bg-base-content text-base-100 transition-colors hover:bg-base-content/80"
-                          aria-label="Cancel agent turn"
-                        >
-                          <.icon name="hero-stop" class="size-3.5" />
-                        </button>
-                      </div>
+                    <div class="flex items-center justify-end gap-1 px-2 pb-1.5 pt-0.5">
+                      <label
+                        id="local-agent-upload"
+                        data-role="chat-upload"
+                        for={@uploads.local_document_import.ref}
+                        class="inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded text-base-content/45 transition-colors hover:text-base-content"
+                        aria-label="Open local HWP or HWPX"
+                      >
+                        <.icon name="hero-paper-clip" class="size-3.5" />
+                      </label>
+                      <button
+                        id="local-agent-submit"
+                        type="submit"
+                        data-role="chat-send"
+                        data-action="send"
+                        disabled={@local_agent_status in [:offline, :starting]}
+                        class="inline-flex size-6 items-center justify-center rounded text-base-content/45 transition-colors hover:text-base-content disabled:cursor-not-allowed disabled:opacity-35"
+                        aria-label="Send"
+                      >
+                        <.icon name="hero-paper-airplane" class="size-3.5" />
+                        <span class="sr-only">Send</span>
+                      </button>
+                      <button
+                        :if={@local_agent_status == :running}
+                        id="local-agent-cancel"
+                        type="button"
+                        phx-click="cancel_local_agent"
+                        data-role="chat-stop"
+                        data-action="stop"
+                        class="inline-flex size-6 items-center justify-center rounded bg-base-content text-base-100 transition-colors hover:bg-base-content/80"
+                        aria-label="Cancel agent turn"
+                      >
+                        <.icon name="hero-stop" class="size-3.5" />
+                      </button>
                     </div>
                   </.form>
 
                   <.form
                     for={@local_agent_options_form}
                     id="local-agent-provider-options"
+                    phx-change="validate_local_document_upload"
                     data-role="provider-options"
                     data-selected-provider={@local_agent_provider.key}
                     data-selected-model={@local_agent_model}
                     data-selected-reasoning={@local_agent_reasoning_effort}
                     data-selected-access={@local_agent_access_control}
-                    class="grid grid-cols-[minmax(0,1.35fr)_minmax(112px,0.65fr)] gap-1 border-t border-base-300 px-2 py-1.5 text-[11px] leading-5 text-base-content/60 max-sm:grid-cols-1"
+                    class="flex items-center gap-1 border-t border-base-300 px-2 py-1.5 text-[11px] leading-5 text-base-content/60"
                   >
                     <label
                       for="local-agent-model-select"
-                      class="col-span-2 block min-w-0 max-sm:col-span-1"
+                      class="block shrink-0"
                     >
                       <span class="sr-only">Model</span>
-                      <select
+                      <button
                         id="local-agent-model-select"
-                        name="model"
-                        phx-click="open_local_agent_model_modal"
-                        phx-focus="open_local_agent_model_modal"
-                        phx-change="select_local_agent_model"
+                        type="button"
+                        phx-click="local_agent_model_modal.open"
+                        phx-focus="local_agent_model_modal.open"
                         data-role="agent-model-select"
                         data-selected-provider={@local_agent_provider.key}
                         data-selected-model={@local_agent_model}
-                        aria-label="Model"
-                        aria-controls="local-agent-model-modal"
+                        aria-haspopup="dialog"
                         aria-expanded={to_string(@local_agent_model_modal_open)}
-                        disabled={@local_agent_status == :starting}
-                        class="h-7 w-full rounded border border-base-300 bg-base-100 px-2 text-[12px] text-base-content outline-none transition-colors focus:border-base-content/45 focus:ring-1 focus:ring-base-content/15 disabled:cursor-not-allowed disabled:opacity-50"
+                        class="inline-flex h-7 w-auto items-center justify-between gap-1 rounded border border-base-300 bg-base-100 px-1.5 text-left text-[11px] text-base-content hover:border-base-content/25"
                       >
-                        <option
-                          :for={model <- local_agent_models()}
-                          id={"local-agent-model-#{model.id}"}
-                          value={model.id}
-                          selected={model.id == @local_agent_model}
-                          data-provider={model.provider}
-                          data-model={model.id}
-                          title={model.description}
-                        >
-                          {model.label}
-                        </option>
-                      </select>
+                        <span class="whitespace-nowrap">
+                          {local_agent_selected_model_label(@local_agent_model)}
+                        </span>
+                        <.icon
+                          name="hero-chevron-down"
+                          class="size-3 shrink-0 text-base-content/50"
+                        />
+                      </button>
                     </label>
-                    <label for="local-agent-reasoning-select" class="block min-w-0">
-                      <span class="sr-only">Reasoning</span>
-                      <select
-                        id="local-agent-reasoning-select"
-                        name="reasoning"
-                        phx-change="select_local_agent_option"
-                        data-role="provider-reasoning-select"
-                        data-selected-reasoning={@local_agent_reasoning_effort}
-                        aria-label="Reasoning token usage"
-                        class="h-7 w-full rounded border border-base-300 bg-base-100 px-2 text-[12px] text-base-content outline-none transition-colors focus:border-base-content/45 focus:ring-1 focus:ring-base-content/15"
-                      >
-                        <option
+                    <.live_file_input
+                      upload={@uploads.local_document_import}
+                      class="sr-only"
+                      data-role="local-document-upload-file-input"
+                    />
+                    <details
+                      id="local-agent-reasoning-select"
+                      data-role="provider-reasoning-select"
+                      data-selected-reasoning={@local_agent_reasoning_effort}
+                      class="group relative shrink-0"
+                    >
+                      <summary class="inline-flex h-6 cursor-pointer list-none items-center justify-between gap-1 rounded border border-base-300 bg-base-100 px-1.5 text-[11px] text-base-content transition-colors hover:border-base-content/25 marker:hidden">
+                        <span class="whitespace-nowrap">
+                          {local_agent_reasoning_short_label(@local_agent_reasoning_effort)}
+                        </span>
+                        <.icon
+                          name="hero-chevron-down"
+                          class="size-2.5 shrink-0 text-base-content/45"
+                        />
+                      </summary>
+                      <div class="absolute bottom-7 right-0 z-20 w-52 rounded border border-base-300 bg-base-100 py-1 text-xs shadow-sm">
+                        <button
                           :for={effort <- local_agent_reasoning_efforts(@local_agent_provider.key)}
                           id={"local-agent-inline-reasoning-#{effort}"}
-                          value={effort}
-                          selected={@local_agent_reasoning_effort == effort}
+                          type="button"
+                          phx-click="select_local_agent_reasoning"
+                          phx-value-reasoning={effort}
+                          data-role="provider-reasoning-option"
+                          data-value={effort}
+                          data-selected={to_string(@local_agent_reasoning_effort == effort)}
                           title={local_agent_reasoning_title(effort)}
+                          class={[
+                            "flex h-8 w-full items-center justify-between gap-2 px-2 text-left transition-colors hover:bg-base-200/70",
+                            if(@local_agent_reasoning_effort == effort,
+                              do: "text-base-content",
+                              else: "text-base-content/70"
+                            )
+                          ]}
                         >
-                          {local_agent_reasoning_label(effort)}
-                        </option>
-                      </select>
-                    </label>
-                    <label for="local-agent-access-select" class="block min-w-0">
-                      <span class="sr-only">Access</span>
-                      <select
-                        id="local-agent-access-select"
-                        name="access"
-                        phx-change="select_local_agent_option"
-                        data-role="agent-access-control"
-                        data-selected-access={@local_agent_access_control}
-                        aria-label="Access control"
-                        class="h-7 w-full rounded border border-base-300 bg-base-100 px-2 text-[12px] text-base-content outline-none transition-colors focus:border-base-content/45 focus:ring-1 focus:ring-base-content/15"
-                      >
-                        <option
+                          <span class="whitespace-nowrap">{local_agent_reasoning_label(effort)}</span>
+                          <.icon
+                            :if={@local_agent_reasoning_effort == effort}
+                            name="hero-check"
+                            class="size-3.5 shrink-0 text-base-content/65"
+                          />
+                        </button>
+                      </div>
+                    </details>
+                    <details
+                      id="local-agent-access-select"
+                      data-role="agent-access-control"
+                      data-selected-access={@local_agent_access_control}
+                      class="group relative shrink-0"
+                    >
+                      <summary class="inline-flex h-7 cursor-pointer list-none items-center justify-between gap-1 rounded border border-base-300 bg-base-100 px-1.5 text-xs text-base-content transition-colors hover:border-base-content/25 marker:hidden">
+                        <span class="whitespace-nowrap">
+                          {local_agent_access_control(@local_agent_access_control).label}
+                        </span>
+                        <.icon name="hero-chevron-down" class="size-3 shrink-0 text-base-content/45" />
+                      </summary>
+                      <div class="absolute bottom-8 right-0 z-20 w-40 rounded border border-base-300 bg-base-100 py-1 text-xs shadow-sm">
+                        <button
                           :for={access <- local_agent_access_controls()}
                           id={"local-agent-inline-access-#{access.id}"}
-                          value={access.id}
-                          selected={@local_agent_access_control == access.id}
+                          type="button"
+                          phx-click="select_local_agent_access"
+                          phx-value-access={access.id}
+                          data-role="agent-access-option"
+                          data-access={access.id}
+                          data-selected={to_string(@local_agent_access_control == access.id)}
                           title={local_agent_access_title(access)}
+                          class={[
+                            "flex h-8 w-full items-center justify-between gap-2 px-2 text-left transition-colors hover:bg-base-200/70",
+                            if(@local_agent_access_control == access.id,
+                              do: "text-base-content",
+                              else: "text-base-content/70"
+                            )
+                          ]}
                         >
-                          {access.label}
-                        </option>
-                      </select>
-                    </label>
+                          <span class="whitespace-nowrap">{access.label}</span>
+                          <.icon
+                            :if={@local_agent_access_control == access.id}
+                            name="hero-check"
+                            class="size-3.5 shrink-0 text-base-content/65"
+                          />
+                        </button>
+                      </div>
+                    </details>
                   </.form>
                 </div>
               </div>
@@ -961,31 +1061,65 @@ defmodule ContractWeb.Local.WorkspaceLive do
                     id="local-agent-modal-options-form"
                     class="grid gap-3 border-b border-base-300 px-3 py-3"
                   >
-                    <label for="local-agent-modal-model-select" class="block min-w-0">
+                    <div class="block min-w-0">
                       <span class="block text-xs text-base-content/55">Model</span>
-                      <select
+                      <details
                         id="local-agent-modal-model-select"
-                        name="model"
-                        phx-change="select_local_agent_model"
-                        data-role="agent-model-modal-select"
+                        data-role="agent-model-modal-dropdown"
                         data-selected-provider={@local_agent_provider.key}
                         data-selected-model={@local_agent_model}
-                        aria-label="Model"
-                        class="mt-1 h-8 w-full rounded border border-base-300 bg-base-100 px-2 text-sm text-base-content outline-none transition-colors focus:border-base-content/45 focus:ring-1 focus:ring-base-content/15"
+                        class="group/model relative mt-1"
                       >
-                        <option
-                          :for={model <- local_agent_models()}
-                          id={"local-agent-model-modal-#{model.id}"}
-                          value={model.id}
-                          selected={model.id == @local_agent_model}
-                          data-provider={model.provider}
-                          data-model={model.id}
-                          title={model.description}
+                        <summary
+                          id="local-agent-modal-model-trigger"
+                          role="button"
+                          aria-label="Model"
+                          class="flex h-8 w-full cursor-pointer list-none items-center justify-between gap-2 rounded border border-base-300 bg-base-100 px-2 text-sm text-base-content outline-none transition-colors hover:border-base-content/25 focus-visible:border-base-content/45 focus-visible:ring-1 focus-visible:ring-base-content/15 [&::-webkit-details-marker]:hidden"
                         >
-                          {model.label}
-                        </option>
-                      </select>
-                    </label>
+                          <span class="min-w-0 truncate">
+                            {local_agent_selected_model_label(@local_agent_model)}
+                          </span>
+                          <.icon
+                            name="hero-chevron-down"
+                            class="size-3.5 shrink-0 text-base-content/45 transition-transform group-open/model:rotate-180"
+                          />
+                        </summary>
+                        <div
+                          id="local-agent-modal-model-options"
+                          role="listbox"
+                          aria-label="Model"
+                          class="absolute left-0 right-0 z-20 mt-1 max-h-56 overflow-y-auto rounded border border-base-300 bg-base-100 py-1 shadow-sm"
+                        >
+                          <button
+                            :for={model <- local_agent_models()}
+                            id={"local-agent-model-modal-#{model.id}"}
+                            type="button"
+                            role="option"
+                            phx-click="select_local_agent_model"
+                            phx-value-model={model.id}
+                            aria-selected={to_string(model.id == @local_agent_model)}
+                            data-provider={model.provider}
+                            data-model={model.id}
+                            data-selected={to_string(model.id == @local_agent_model)}
+                            title={model.description}
+                            class={[
+                              "flex h-8 w-full items-center justify-between gap-2 px-2 text-left text-sm transition-colors hover:bg-base-200/70",
+                              if(model.id == @local_agent_model,
+                                do: "text-base-content",
+                                else: "text-base-content/70"
+                              )
+                            ]}
+                          >
+                            <span class="min-w-0 truncate">{model.label}</span>
+                            <.icon
+                              :if={model.id == @local_agent_model}
+                              name="hero-check"
+                              class="size-3.5 shrink-0 text-base-content/65"
+                            />
+                          </button>
+                        </div>
+                      </details>
+                    </div>
 
                     <label for="local-agent-modal-reasoning-select" class="block min-w-0">
                       <span class="block text-xs text-base-content/55">Reasoning / token usage</span>
@@ -1039,13 +1173,21 @@ defmodule ContractWeb.Local.WorkspaceLive do
                     </label>
                   </.form>
                   <div class="divide-y divide-base-300 px-3 py-1">
-                    <div
+                    <button
                       :for={provider <- local_agent_provider_details(@local_agent_integrations)}
                       id={"local-agent-model-detail-#{provider.id}"}
+                      type="button"
+                      phx-click="select_local_agent_provider"
+                      phx-value-provider={provider.id}
                       data-provider={provider.id}
                       data-selected={to_string(provider.id == @local_agent_provider.key)}
                       data-status={to_string(provider.status)}
-                      class="flex items-center justify-between gap-3 py-2 text-sm"
+                      aria-pressed={to_string(provider.id == @local_agent_provider.key)}
+                      class={[
+                        "flex w-full items-center justify-between gap-3 py-2 text-left text-sm transition-colors hover:bg-base-200/60 focus:outline-none focus-visible:ring-1 focus-visible:ring-base-content/25",
+                        provider.id == @local_agent_provider.key && "text-base-content",
+                        provider.id != @local_agent_provider.key && "text-base-content/75"
+                      ]}
                     >
                       <div class="flex min-w-0 items-center gap-2">
                         <img
@@ -1061,7 +1203,7 @@ defmodule ContractWeb.Local.WorkspaceLive do
                       <p class="shrink-0 text-xs text-base-content/60" title={provider.detail}>
                         {provider.status_label}
                       </p>
-                    </div>
+                    </button>
                   </div>
                 </div>
               </div>
@@ -1190,6 +1332,8 @@ defmodule ContractWeb.Local.WorkspaceLive do
     |> assign(:local_agent_session_id, nil)
     |> assign(:local_agent_turn_id, nil)
     |> assign(:local_agent_text, "")
+    |> assign(:local_agent_text_segment, 0)
+    |> assign(:local_agent_reasoning_text, "")
     |> assign(:local_agent_form, local_agent_form())
     |> stream(:local_agent_items, [], reset: true)
     |> start_local_agent_session()
@@ -1229,6 +1373,44 @@ defmodule ContractWeb.Local.WorkspaceLive do
 
   defp maybe_cancel_active_local_agent(_socket), do: :ok
 
+  defp maybe_cancel_active_local_agent_for_new_turn(
+         %{
+           assigns: %{local_agent_session_id: session_id, local_agent_turn_id: turn_id}
+         } = socket
+       )
+       when is_binary(session_id) and is_binary(turn_id) do
+    case ACP.cancel(nil, session_id, turn_id) do
+      {:ok, _turn} ->
+        {:ok,
+         socket
+         |> assign(:local_agent_turn_id, nil)
+         |> assign(:local_agent_text, "")
+         |> assign(:local_agent_reasoning_text, "")
+         |> stream_insert(
+           :local_agent_items,
+           agent_assistant_item(
+             turn_id,
+             "Cancelled.",
+             :cancelled,
+             socket.assigns.local_agent_text_segment
+           )
+         )}
+
+      {:error, :no_current_turn} ->
+        {:ok, assign(socket, :local_agent_turn_id, nil)}
+
+      {:error, reason} ->
+        {:error,
+         assign(
+           socket,
+           :local_agent_error,
+           local_agent_error(reason)
+         )}
+    end
+  end
+
+  defp maybe_cancel_active_local_agent_for_new_turn(socket), do: {:ok, socket}
+
   defp send_local_agent_turn(socket, message) do
     session_id = socket.assigns.local_agent_session_id
 
@@ -1237,9 +1419,12 @@ defmodule ContractWeb.Local.WorkspaceLive do
         {:noreply,
          socket
          |> stream_insert(:local_agent_items, agent_user_item(turn_id, message))
-         |> stream_insert(:local_agent_items, agent_assistant_item(turn_id, "", :running))
+         |> stream_insert(:local_agent_items, agent_reasoning_item(turn_id, "", :pending))
+         |> stream_insert(:local_agent_items, agent_assistant_item(turn_id, "", :running, 0))
          |> assign(:local_agent_turn_id, turn_id)
          |> assign(:local_agent_text, "")
+         |> assign(:local_agent_text_segment, 0)
+         |> assign(:local_agent_reasoning_text, "")
          |> assign(:local_agent_status, :running)
          |> assign(:local_agent_error, nil)
          |> assign(:local_agent_form, local_agent_form())}
@@ -1258,10 +1443,20 @@ defmodule ContractWeb.Local.WorkspaceLive do
   defp apply_local_agent_event(socket, %{type: :text_delta, turn_id: turn_id, delta: delta})
        when is_binary(delta) do
     text = socket.assigns.local_agent_text <> delta
+    segment = socket.assigns.local_agent_text_segment
 
     socket
     |> assign(:local_agent_text, text)
-    |> stream_insert(:local_agent_items, agent_assistant_item(turn_id, text, :running))
+    |> stream_insert(:local_agent_items, agent_assistant_item(turn_id, text, :running, segment))
+  end
+
+  defp apply_local_agent_event(socket, %{type: :reasoning_delta, turn_id: turn_id, delta: delta})
+       when is_binary(delta) do
+    text = socket.assigns.local_agent_reasoning_text <> delta
+
+    socket
+    |> assign(:local_agent_reasoning_text, text)
+    |> stream_insert(:local_agent_items, agent_reasoning_item(turn_id, text, :running))
   end
 
   defp apply_local_agent_event(socket, %{
@@ -1270,10 +1465,12 @@ defmodule ContractWeb.Local.WorkspaceLive do
          name: name,
          arguments: arguments
        }) do
-    stream_insert(
-      socket,
+    socket
+    |> close_local_agent_text_segment()
+    |> maybe_remove_empty_agent_placeholder()
+    |> stream_insert(
       :local_agent_items,
-      agent_tool_item(tool_call_id, name, :running, inspect(arguments))
+      agent_tool_item(tool_call_id, name, :running, agent_tool_payload(arguments))
     )
   end
 
@@ -1286,7 +1483,7 @@ defmodule ContractWeb.Local.WorkspaceLive do
     stream_insert(
       socket,
       :local_agent_items,
-      agent_tool_item(tool_call_id, name, :completed, inspect(result))
+      agent_tool_item(tool_call_id, name, :completed, agent_tool_payload(result))
     )
   end
 
@@ -1310,9 +1507,9 @@ defmodule ContractWeb.Local.WorkspaceLive do
          arguments: arguments
        }) do
     stream_insert(
-      socket,
+      socket |> maybe_remove_empty_agent_placeholder(),
       :local_agent_items,
-      agent_tool_item(tool_call_id, name, :approval_required, inspect(arguments))
+      agent_tool_item(tool_call_id, name, :approval_required, agent_tool_payload(arguments))
     )
   end
 
@@ -1323,15 +1520,9 @@ defmodule ContractWeb.Local.WorkspaceLive do
     |> assign(:local_agent_turn_id, nil)
     |> assign(:local_agent_text, "")
     |> assign(:local_agent_status, :idle)
-    |> stream_insert(:local_agent_items, agent_assistant_item(turn_id, text, :completed))
-  end
-
-  defp apply_local_agent_event(socket, %{type: :turn_cancelled, turn_id: turn_id}) do
-    socket
-    |> assign(:local_agent_turn_id, nil)
-    |> assign(:local_agent_text, "")
-    |> assign(:local_agent_status, :cancelled)
-    |> stream_insert(:local_agent_items, agent_assistant_item(turn_id, "Cancelled.", :cancelled))
+    |> maybe_remove_empty_reasoning(turn_id)
+    |> assign(:local_agent_reasoning_text, "")
+    |> maybe_stream_final_agent_text(turn_id, text)
   end
 
   defp apply_local_agent_event(socket, %{type: :turn_failed, turn_id: turn_id, reason: reason}) do
@@ -1340,8 +1531,33 @@ defmodule ContractWeb.Local.WorkspaceLive do
     |> assign(:local_agent_text, "")
     |> assign(:local_agent_status, :failed)
     |> assign(:local_agent_error, local_agent_error(reason))
+    |> maybe_remove_empty_reasoning(turn_id)
+    |> assign(:local_agent_reasoning_text, "")
     |> stream_insert(:local_agent_items, agent_assistant_item(turn_id, "Agent failed.", :failed))
   end
+
+  defp apply_local_agent_event(%{assigns: %{local_agent_turn_id: turn_id}} = socket, %{
+         type: :turn_cancelled,
+         turn_id: turn_id
+       }) do
+    socket
+    |> assign(:local_agent_turn_id, nil)
+    |> assign(:local_agent_text, "")
+    |> assign(:local_agent_status, :cancelled)
+    |> maybe_remove_empty_reasoning(turn_id)
+    |> assign(:local_agent_reasoning_text, "")
+    |> stream_insert(
+      :local_agent_items,
+      agent_assistant_item(
+        turn_id,
+        "Cancelled.",
+        :cancelled,
+        socket.assigns.local_agent_text_segment
+      )
+    )
+  end
+
+  defp apply_local_agent_event(socket, %{type: :turn_cancelled}), do: socket
 
   defp apply_local_agent_event(socket, _event), do: socket
 
@@ -2090,6 +2306,13 @@ defmodule ContractWeb.Local.WorkspaceLive do
   defp model_param_invalid?(nil), do: false
   defp model_param_invalid?(model_id), do: is_nil(local_agent_model(model_id))
 
+  defp local_agent_selected_model_label(model_id) do
+    case Enum.find(@local_agent_models, &(&1.id == model_id)) do
+      %{label: label} -> label
+      _missing -> "Model"
+    end
+  end
+
   defp default_reasoning_effort do
     :contract
     |> Application.get_env(:local_agent, [])
@@ -2126,6 +2349,13 @@ defmodule ContractWeb.Local.WorkspaceLive do
   defp local_agent_reasoning_label("high"), do: "High - deeper reasoning, more tokens"
   defp local_agent_reasoning_label("xhigh"), do: "XHigh - maximum reasoning/tokens"
   defp local_agent_reasoning_label(reasoning), do: reasoning
+
+  defp local_agent_reasoning_short_label("minimal"), do: "Minimal"
+  defp local_agent_reasoning_short_label("low"), do: "Low"
+  defp local_agent_reasoning_short_label("medium"), do: "Medium"
+  defp local_agent_reasoning_short_label("high"), do: "High"
+  defp local_agent_reasoning_short_label("xhigh"), do: "XHigh"
+  defp local_agent_reasoning_short_label(reasoning), do: reasoning
 
   defp local_agent_reasoning_title("minimal"),
     do: "Fastest responses with the smallest token budget."
@@ -2242,13 +2472,89 @@ defmodule ContractWeb.Local.WorkspaceLive do
     }
   end
 
-  defp agent_assistant_item(turn_id, body, status) do
+  defp agent_assistant_item(turn_id, body, status, segment \\ 0) do
     %{
-      dom_id: "local-agent-assistant-#{turn_id}",
+      dom_id: "local-agent-assistant-#{turn_id}-#{segment}",
       role: :agent,
       status: status,
       body: body
     }
+  end
+
+  defp agent_reasoning_item(turn_id, body, status) do
+    %{
+      dom_id: "local-agent-thinking-#{turn_id}",
+      role: :thinking,
+      status: status,
+      title: "Thinking",
+      body: body
+    }
+  end
+
+  defp close_local_agent_text_segment(socket) do
+    case socket.assigns.local_agent_text do
+      text when is_binary(text) and text != "" ->
+        turn_id = socket.assigns.local_agent_turn_id
+        segment = socket.assigns.local_agent_text_segment
+
+        socket
+        |> stream_insert(:local_agent_items, agent_assistant_item(turn_id, text, :sent, segment))
+        |> assign(:local_agent_text, "")
+        |> assign(:local_agent_text_segment, segment + 1)
+
+      _empty ->
+        socket
+    end
+  end
+
+  defp maybe_remove_empty_reasoning(socket, turn_id) do
+    case socket.assigns.local_agent_reasoning_text do
+      "" -> stream_delete(socket, :local_agent_items, agent_reasoning_item(turn_id, "", :pending))
+      _text -> socket
+    end
+  end
+
+  defp maybe_remove_empty_agent_placeholder(socket) do
+    case socket.assigns.local_agent_text do
+      "" ->
+        stream_delete(
+          socket,
+          :local_agent_items,
+          agent_assistant_item(
+            socket.assigns.local_agent_turn_id,
+            "",
+            :running,
+            socket.assigns.local_agent_text_segment
+          )
+        )
+
+      _text ->
+        socket
+    end
+  end
+
+  defp maybe_stream_final_agent_text(socket, turn_id, text) when is_binary(text) and text != "" do
+    stream_insert(
+      socket,
+      :local_agent_items,
+      agent_assistant_item(turn_id, text, :sent, socket.assigns.local_agent_text_segment)
+    )
+  end
+
+  defp maybe_stream_final_agent_text(socket, _turn_id, _text), do: socket
+
+  defp agent_display_tool_name("positionalindex.read"), do: "doc.read"
+  defp agent_display_tool_name("positionalindex.write"), do: "doc.write"
+  defp agent_display_tool_name("positionalindex." <> rest), do: "doc." <> rest
+  defp agent_display_tool_name(name), do: name
+
+  defp agent_tool_payload(payload) when is_binary(payload), do: payload
+
+  defp agent_tool_payload(payload) do
+    case Jason.encode(payload, pretty: true) do
+      {:ok, json} -> json
+      {:error, _reason} -> inspect(payload, pretty: true)
+    end
   end
 
   defp agent_tool_item(tool_call_id, name, status, body) do
@@ -2262,6 +2568,7 @@ defmodule ContractWeb.Local.WorkspaceLive do
   end
 
   defp agent_item_data_role(%{role: :tool}), do: "local-agent-tool"
+  defp agent_item_data_role(%{role: :thinking}), do: "local-agent-thinking"
   defp agent_item_data_role(_item), do: "local-agent-message"
 
   defp agent_item_role(%{role: role}), do: to_string(role)
@@ -2270,7 +2577,7 @@ defmodule ContractWeb.Local.WorkspaceLive do
   defp agent_item_status(%{status: status}), do: to_string(status)
   defp agent_item_status(_item), do: "idle"
 
-  defp agent_item_title(%{title: title}) when is_binary(title), do: title
+  defp agent_item_title(%{title: title}) when is_binary(title), do: agent_display_tool_name(title)
   defp agent_item_title(_item), do: "Tool"
 
   defp agent_item_body(%{body: body}) when is_binary(body), do: body
@@ -2291,6 +2598,10 @@ defmodule ContractWeb.Local.WorkspaceLive do
     "group/message relative flex w-full flex-col items-stretch gap-0.5"
   end
 
+  defp agent_item_class(%{role: :thinking, status: :pending}) do
+    "hidden"
+  end
+
   defp agent_item_class(%{role: :system}) do
     "group/message relative flex w-full flex-col items-stretch gap-0.5 text-base-content/65"
   end
@@ -2308,7 +2619,6 @@ defmodule ContractWeb.Local.WorkspaceLive do
 
   defp agent_input_placeholder(:offline), do: "Agent unavailable"
   defp agent_input_placeholder(:starting), do: "Starting agent"
-  defp agent_input_placeholder(:running), do: "Agent is responding"
   defp agent_input_placeholder(_status), do: "Ask about this workspace"
 
   defp local_agent_error({:codex_executable_missing, candidates}) do

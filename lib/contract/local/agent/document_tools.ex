@@ -10,6 +10,8 @@ defmodule Contract.Local.Agent.DocumentTools do
 
   @read_default_size 5
   @read_max_size 10
+  @find_default_size 10
+  @find_max_size 50
   @materializer_timeout 15_000
 
   @doc "Read a compact positional paragraph window from the active local document."
@@ -41,6 +43,44 @@ defmodule Contract.Local.Agent.DocumentTools do
   end
 
   def read(target, _args), do: read(target, %{})
+
+  @doc "Regex search active local document paragraphs with grapheme offsets."
+  def find(target, args) when is_map(args) do
+    with {:ok, %Document{} = document} <- document(target),
+         {:ok, ir} <- current_ir(document, args),
+         {:ok, pattern} <- required_string(args, "pattern"),
+         case_sensitive <- bool_arg(args, "case_sensitive", false),
+         {:ok, regex} <- compile_find_regex(pattern, case_sensitive) do
+      index = Projection.positional_index(ir)
+      at = int_arg(args, "at", 0)
+      size = args |> int_arg("size", @find_default_size) |> bounded_limit(@find_max_size)
+      sec = optional_int_arg(args, "sec")
+      matches = find_regex_matches(ir, index, regex, sec)
+      total = length(matches)
+      {window, rest} = matches |> Enum.drop(at) |> Enum.split(size)
+      next = if rest == [], do: nil, else: at + length(window)
+
+      result =
+        %{
+          "document_id" => document.id,
+          "relative_path" => document.relative_path,
+          "format" => document.format,
+          "revision" => document.revision,
+          "pattern" => pattern,
+          "case_sensitive" => case_sensitive,
+          "at" => at,
+          "size" => size,
+          "total" => total,
+          "matches" => window
+        }
+        |> maybe_put("sec", sec)
+        |> maybe_put("next_at", next)
+
+      {:ok, result}
+    end
+  end
+
+  def find(target, _args), do: find(target, %{})
 
   @doc "Apply a text edit through the active local document's live RHWP positional index."
   def write(target, args) when is_map(args) do
@@ -147,6 +187,95 @@ defmodule Contract.Local.Agent.DocumentTools do
       end
     end)
   end
+
+  defp compile_find_regex(pattern, case_sensitive) do
+    opts = if case_sensitive, do: "u", else: "iu"
+
+    case Regex.compile(pattern, opts) do
+      {:ok, regex} ->
+        {:ok, regex}
+
+      {:error, {reason, at}} ->
+        {:error,
+         {:invalid_params, "pattern is invalid regex at #{at}: #{List.to_string(reason)}"}}
+    end
+  end
+
+  defp find_regex_matches(%{"sections" => sections}, index, regex, sec_filter)
+       when is_list(sections) do
+    refs_by_paragraph =
+      index
+      |> Map.get("paragraph_refs", [])
+      |> Enum.group_by(&{Map.get(&1, "sec"), Map.get(&1, "para")})
+
+    Enum.flat_map(sections, fn section ->
+      sec = Map.get(section, "idx") || 0
+
+      if is_nil(sec_filter) or sec == sec_filter do
+        section
+        |> Map.get("paragraphs", [])
+        |> List.wrap()
+        |> Enum.flat_map(&paragraph_regex_matches(sec, &1, regex, refs_by_paragraph))
+      else
+        []
+      end
+    end)
+  end
+
+  defp find_regex_matches(_ir, _index, _regex, _sec_filter), do: []
+
+  defp paragraph_regex_matches(sec, %{} = paragraph, regex, refs_by_paragraph) do
+    para = Map.get(paragraph, "idx") || 0
+    text = Map.get(paragraph, "text") || ""
+    kind = Map.get(paragraph, "kind") || "paragraph"
+    refs = Map.get(refs_by_paragraph, {sec, para}, [])
+
+    text
+    |> regex_grapheme_ranges(regex)
+    |> Enum.map(fn {off, count, matched_text} ->
+      ref = paragraph_ref_for_offset(refs, off)
+
+      %{
+        "sec" => sec,
+        "para" => para,
+        "off" => off,
+        "count" => count,
+        "text" => matched_text,
+        "paragraph" => text,
+        "kind" => kind
+      }
+      |> maybe_put("page", Map.get(ref || %{}, "page"))
+      |> maybe_put("off_start", Map.get(ref || %{}, "off_start"))
+      |> maybe_put("off_end", Map.get(ref || %{}, "off_end"))
+    end)
+  end
+
+  defp paragraph_regex_matches(_sec, _paragraph, _regex, _refs_by_paragraph), do: []
+
+  defp regex_grapheme_ranges(text, regex) do
+    regex
+    |> Regex.scan(text, return: :index, capture: :first)
+    |> Enum.flat_map(fn
+      [{byte_start, byte_count}] when byte_count > 0 ->
+        matched_text = binary_part(text, byte_start, byte_count)
+        prefix = binary_part(text, 0, byte_start)
+        [{String.length(prefix), String.length(matched_text), matched_text}]
+
+      _match ->
+        []
+    end)
+  end
+
+  defp paragraph_ref_for_offset([first | _] = refs, off) do
+    Enum.find(refs, first, fn ref ->
+      start_off = Map.get(ref, "off_start")
+      end_off = Map.get(ref, "off_end")
+
+      is_integer(start_off) and is_integer(end_off) and off >= start_off and off < end_off
+    end)
+  end
+
+  defp paragraph_ref_for_offset([], _off), do: nil
 
   defp normalize_write_args(args) do
     with {:ok, sec} <- required_int(args, "sec"),
@@ -377,6 +506,20 @@ defmodule Contract.Local.Agent.DocumentTools do
   defp int_arg(args, key, default) do
     case Map.get(args, key) do
       value when is_integer(value) and value >= 0 -> value
+      _ -> default
+    end
+  end
+
+  defp optional_int_arg(args, key) do
+    case Map.get(args, key) do
+      value when is_integer(value) and value >= 0 -> value
+      _ -> nil
+    end
+  end
+
+  defp bool_arg(args, key, default) do
+    case Map.get(args, key) do
+      value when is_boolean(value) -> value
       _ -> default
     end
   end

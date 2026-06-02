@@ -101,11 +101,16 @@ defmodule ContractWeb.Local.MountWorkspaceLiveTest do
     refute html =~ "You must log in"
   end
 
-  test "codex provider favicon is served from static assets", %{conn: conn} do
+  test "provider favicons are served from static assets", %{conn: conn} do
     conn = get(conn, "/images/icons/openai-blossom.svg")
 
     assert response(conn, 200) =~ "<svg"
     assert get_resp_header(conn, "content-type") == ["image/svg+xml"]
+
+    conn = get(recycle(conn), "/images/icons/claude-favicon.ico")
+
+    assert byte_size(response(conn, 200)) > 0
+    assert get_resp_header(conn, "content-type") != []
   end
 
   test "invalid mount path renders inline error", %{conn: conn} do
@@ -244,62 +249,28 @@ defmodule ContractWeb.Local.MountWorkspaceLiveTest do
 
     assert has_element?(
              workspace_lv,
-             "form#local-agent-provider-options[data-selected-provider='codex'][data-selected-model='gpt-5.5'][data-selected-reasoning='medium'][data-selected-access='read-only'] select#local-agent-model-select[data-role='agent-model-select'][name='model'][data-selected-provider='codex'][data-selected-model='gpt-5.5']"
-           )
-
-    assert has_element?(
-             workspace_lv,
-             "#local-agent-model-select option[value='gpt-5.5'][data-provider='codex'][selected]",
+             "form#local-agent-provider-options[data-selected-provider='codex'][data-selected-model='gpt-5.5'][data-selected-reasoning='medium'][data-selected-access='read-only'] button#local-agent-model-select[data-role='agent-model-select'][data-selected-provider='codex'][data-selected-model='gpt-5.5']",
              "GPT-5.5"
            )
 
-    assert has_element?(
-             workspace_lv,
-             "#local-agent-model-select option[value='gpt-5.4'][data-provider='codex']",
-             "GPT-5.4"
-           )
-
-    assert has_element?(
-             workspace_lv,
-             "#local-agent-model-select option[value='gpt-5.4-mini'][data-provider='codex']",
-             "GPT-5.4 mini"
-           )
-
-    assert has_element?(
-             workspace_lv,
-             "#local-agent-model-select option[value='gpt-5.3-codex'][data-provider='codex']",
-             "GPT-5.3 Codex"
-           )
-
-    assert has_element?(
-             workspace_lv,
-             "#local-agent-model-select option[value='gpt-5.3-codex-spark'][data-provider='codex']",
-             "GPT-5.3 Codex Spark"
-           )
-
-    assert has_element?(
-             workspace_lv,
-             "#local-agent-model-select option[value='claude-default'][data-provider='claude']",
-             "Claude"
-           )
-
-    refute has_element?(workspace_lv, "#local-agent-model-select option[value='fake']")
-    refute has_element?(workspace_lv, "#local-agent-model-select option[value='external']")
+    refute has_element?(workspace_lv, "#local-agent-model-select option")
     refute has_element?(workspace_lv, "#local-agent-provider-options option[value='fake']")
     refute has_element?(workspace_lv, "#local-agent-provider-options option[value='external']")
-    refute has_element?(workspace_lv, "#local-agent-provider-options button")
 
     assert has_element?(
              workspace_lv,
-             "form#local-agent-provider-options select#local-agent-reasoning-select[name='reasoning'][data-selected-reasoning='medium'] option[value='medium'][selected]",
+             "form#local-agent-provider-options details#local-agent-reasoning-select[data-role='provider-reasoning-select'][data-selected-reasoning='medium'] button#local-agent-inline-reasoning-medium[data-selected='true']",
              "Medium - balanced reasoning/tokens"
            )
 
     assert has_element?(
              workspace_lv,
-             "form#local-agent-provider-options select#local-agent-access-select[name='access'][data-selected-access='read-only'] option[value='read-only'][selected]",
+             "form#local-agent-provider-options details#local-agent-access-select[data-role='agent-access-control'][data-selected-access='read-only'] button#local-agent-inline-access-read-only[data-selected='true']",
              "Read only"
            )
+
+    refute has_element?(workspace_lv, "select#local-agent-reasoning-select")
+    refute has_element?(workspace_lv, "select#local-agent-access-select")
 
     refute has_element?(workspace_lv, "#local-agent-provider-picker")
     refute has_element?(workspace_lv, "#local-agent-provider-integrations")
@@ -324,17 +295,27 @@ defmodule ContractWeb.Local.MountWorkspaceLiveTest do
              "Claude"
            )
 
+    assert has_element?(
+             workspace_lv,
+             ~s(#local-agent-model-modal #local-agent-model-detail-claude img[src="/images/icons/claude-favicon.ico"])
+           )
+
+    assert has_element?(
+             workspace_lv,
+             "#local-agent-model-modal button#local-agent-model-detail-claude[phx-click='select_local_agent_provider'][phx-value-provider='claude']"
+           )
+
     refute has_element?(workspace_lv, "#local-agent-model-modal [data-provider='fake']")
 
     assert has_element?(
              workspace_lv,
-             "#local-agent-model-modal #local-agent-modal-model-select[data-role='agent-model-modal-select'][name='model'][data-selected-provider='codex'][data-selected-model='gpt-5.5'] option[value='gpt-5.5'][selected]",
+             ~s(#local-agent-model-modal #local-agent-modal-model-select[data-role='agent-model-modal-dropdown'][data-selected-provider='codex'][data-selected-model='gpt-5.5'] button[id="local-agent-model-modal-gpt-5.5"][data-selected='true']),
              "GPT-5.5"
            )
 
     assert has_element?(
              workspace_lv,
-             "#local-agent-model-modal #local-agent-modal-model-select option[value='claude-default'][data-provider='claude']",
+             "#local-agent-model-modal #local-agent-modal-model-select button#local-agent-model-modal-claude-default[data-provider='claude']",
              "Claude"
            )
 
@@ -377,10 +358,8 @@ defmodule ContractWeb.Local.MountWorkspaceLiveTest do
              "#local-agent-model-modal button[data-role='agent-access-option']"
            )
 
-    refute has_element?(
-             workspace_lv,
-             "#local-agent-model-modal button[data-provider]"
-           )
+    refute has_element?(workspace_lv, "#local-agent-model-modal button[data-provider='fake']")
+    refute has_element?(workspace_lv, "#local-agent-model-modal button[data-provider='external']")
 
     workspace_lv
     |> element("#local-agent-model-modal-close")
@@ -402,7 +381,7 @@ defmodule ContractWeb.Local.MountWorkspaceLiveTest do
 
     assert has_element?(
              workspace_lv,
-             ~s(#local-agent-form input[type="file"][name="local_document_import"][data-role="local-document-upload-file-input"])
+             ~s(#local-agent-provider-options input[type="file"][name="local_document_import"][data-role="local-document-upload-file-input"])
            )
 
     assert has_element?(workspace_lv, "#local-agent-submit", "Send")
@@ -421,7 +400,7 @@ defmodule ContractWeb.Local.MountWorkspaceLiveTest do
 
     assert has_element?(
              lv,
-             "#local-agent-provider-options #local-agent-reasoning-select option[value='minimal']",
+             "#local-agent-provider-options #local-agent-reasoning-select button#local-agent-inline-reasoning-minimal",
              "Minimal - fastest, least tokens"
            )
 
@@ -444,8 +423,8 @@ defmodule ContractWeb.Local.MountWorkspaceLiveTest do
            )
 
     lv
-    |> element("#local-agent-reasoning-select")
-    |> render_change(%{"reasoning" => "high"})
+    |> element("#local-agent-inline-reasoning-high")
+    |> render_click()
 
     assert_patch(
       lv,
@@ -459,7 +438,7 @@ defmodule ContractWeb.Local.MountWorkspaceLiveTest do
            )
   end
 
-  test "workspace chat rail model select switches provider", %{conn: conn} do
+  test "workspace chat rail provider detail switches provider", %{conn: conn} do
     {:ok, lv, _html} =
       live(
         conn,
@@ -471,8 +450,8 @@ defmodule ContractWeb.Local.MountWorkspaceLiveTest do
     |> render_focus()
 
     lv
-    |> element("#local-agent-modal-model-select")
-    |> render_change(%{"model" => "claude-default"})
+    |> element("#local-agent-model-detail-claude")
+    |> render_click()
 
     assert_patch(
       lv,
@@ -481,11 +460,11 @@ defmodule ContractWeb.Local.MountWorkspaceLiveTest do
 
     assert has_element?(
              lv,
-             "#local-agent-provider-options[data-selected-provider='claude'][data-selected-model='claude-default'] #local-agent-model-select[data-selected-provider='claude'][data-selected-model='claude-default'] option[value='claude-default'][selected]",
+             "#local-agent-provider-options[data-selected-provider='claude'][data-selected-model='claude-default'] #local-agent-model-select[data-selected-provider='claude'][data-selected-model='claude-default']",
              "Claude"
            )
 
-    refute has_element?(lv, "#local-agent-model-select option[value='fake']")
+    refute has_element?(lv, "#local-agent-model-select option")
   end
 
   test "workspace chat rail submits selected inline options to the local agent", %{conn: conn} do
@@ -499,25 +478,32 @@ defmodule ContractWeb.Local.MountWorkspaceLiveTest do
 
     assert has_element?(
              lv,
-             "form#local-agent-provider-options select#local-agent-model-select[name='model']"
+             "form#local-agent-provider-options button#local-agent-model-select[data-role='agent-model-select']"
            )
 
     assert has_element?(
              lv,
-             "form#local-agent-provider-options select#local-agent-reasoning-select[name='reasoning']"
+             "form#local-agent-provider-options details#local-agent-reasoning-select[data-role='provider-reasoning-select']"
            )
 
     assert has_element?(
              lv,
-             "form#local-agent-provider-options select#local-agent-access-select[name='access']"
+             "form#local-agent-provider-options details#local-agent-access-select[data-role='agent-access-control']"
            )
+
+    refute has_element?(lv, "select#local-agent-reasoning-select")
+    refute has_element?(lv, "select#local-agent-access-select")
 
     refute has_element?(lv, "form#local-agent-provider-options option[value='fake']")
     refute has_element?(lv, "form#local-agent-provider-options option[value='external']")
 
     lv
     |> element("#local-agent-model-select")
-    |> render_change(%{"model" => "gpt-5.3-codex-spark"})
+    |> render_focus()
+
+    lv
+    |> element(~s([id="local-agent-model-modal-gpt-5.3-codex-spark"]))
+    |> render_click()
 
     assert_patch(
       lv,
@@ -525,8 +511,8 @@ defmodule ContractWeb.Local.MountWorkspaceLiveTest do
     )
 
     lv
-    |> element("#local-agent-reasoning-select")
-    |> render_change(%{"reasoning" => "xhigh"})
+    |> element("#local-agent-inline-reasoning-xhigh")
+    |> render_click()
 
     assert_patch(
       lv,
@@ -534,8 +520,8 @@ defmodule ContractWeb.Local.MountWorkspaceLiveTest do
     )
 
     lv
-    |> element("#local-agent-access-select")
-    |> render_change(%{"access" => "full-workspace"})
+    |> element("#local-agent-inline-access-full-workspace")
+    |> render_click()
 
     assert_patch(
       lv,
@@ -568,7 +554,7 @@ defmodule ContractWeb.Local.MountWorkspaceLiveTest do
 
     assert has_element?(
              lv,
-             ~s([data-role="local-agent-message"][data-message-role="agent"][data-message-status="completed"]),
+             ~s([data-role="local-agent-message"][data-message-role="agent"][data-message-status="sent"]),
              "model=gpt-5.3-codex-spark"
            )
   end
@@ -840,8 +826,8 @@ defmodule ContractWeb.Local.MountWorkspaceLiveTest do
     sync_liveview(lv)
 
     assert has_element?(lv, "#local-rhwp-save-state", "Saved revision 3")
-    assert has_element?(lv, "#local-agent-tool-tool-write-employer", "positionalindex.write")
-    assert has_element?(lv, "#local-agent-tool-tool-write-worker", "positionalindex.write")
+    assert has_element?(lv, "#local-agent-tool-tool-write-employer", "doc.write")
+    assert has_element?(lv, "#local-agent-tool-tool-write-worker", "doc.write")
 
     assert {:ok, %Document{revision: 3} = document} = Document.document(document_id)
 
@@ -1055,7 +1041,7 @@ defmodule ContractWeb.Local.MountWorkspaceLiveTest do
     {:ok, lv, _html} = live(conn, ~p"/workspace?#{[path: root, provider: "codex"]}")
 
     upload =
-      file_input(lv, "#local-agent-form", :local_document_import, [
+      file_input(lv, "#local-agent-provider-options", :local_document_import, [
         %{
           name: upload_name,
           content: upload_bytes,
@@ -1457,7 +1443,7 @@ defmodule ContractWeb.Local.MountWorkspaceLiveTest do
 
     assert has_element?(
              lv,
-             ~s(#local-agent-form input[type="file"][name="local_document_import"][class="sr-only"][data-role="local-document-upload-file-input"])
+             ~s(#local-agent-provider-options input[type="file"][name="local_document_import"][class="sr-only"][data-role="local-document-upload-file-input"])
            )
 
     assert has_element?(lv, "#local-agent-submit[data-role='chat-send'][data-action='send']")
@@ -1469,6 +1455,18 @@ defmodule ContractWeb.Local.MountWorkspaceLiveTest do
     use_test_agent_adapter!(
       adapter_opts: [
         script: [
+          %{type: :reasoning_delta, delta: "checking document access"},
+          %{
+            type: :tool_call_completed,
+            id: "tool-ui-json-read",
+            name: "positionalindex.read",
+            result: %{
+              "items" => [
+                %{"index" => 1, "text" => "사업주: 주식회사 한빛"}
+              ],
+              "revision" => 3
+            }
+          },
           %{
             type: :tool_call_failed,
             id: "tool-ui-read",
@@ -1491,6 +1489,14 @@ defmodule ContractWeb.Local.MountWorkspaceLiveTest do
 
     assert_receive {:local_agent_event,
                     %{
+                      type: :tool_call_completed,
+                      session_id: ^session_id,
+                      tool_call_id: "tool-ui-json-read"
+                    }},
+                   1_000
+
+    assert_receive {:local_agent_event,
+                    %{
                       type: :tool_call_failed,
                       session_id: ^session_id,
                       tool_call_id: "tool-ui-read"
@@ -1502,12 +1508,48 @@ defmodule ContractWeb.Local.MountWorkspaceLiveTest do
     assert has_element?(
              lv,
              "#local-agent-tool-tool-ui-read[data-role='local-agent-tool'][data-message-status='failed']",
-             "positionalindex.read"
+             "doc.read"
            )
 
     assert has_element?(
              lv,
              "#local-agent-tool-tool-ui-read[data-chat-role='chat-message'] [data-role='operation-block']"
+           )
+
+    assert has_element?(
+             lv,
+             "#local-agent-tool-tool-ui-json-read-details[hidden][data-role='operation-details']",
+             ~s("items")
+           )
+
+    assert has_element?(
+             lv,
+             "#local-agent-tool-tool-ui-json-read-details[hidden][data-role='operation-details']",
+             ~s("revision": 3)
+           )
+
+    refute has_element?(
+             lv,
+             "#local-agent-tool-tool-ui-json-read-details[hidden][data-role='operation-details']",
+             "%{"
+           )
+
+    refute has_element?(
+             lv,
+             "#local-agent-tool-tool-ui-json-read-details[hidden][data-role='operation-details']",
+             "=>"
+           )
+
+    assert has_element?(
+             lv,
+             "[data-role='local-agent-thinking'] [data-role='operation-block']",
+             "Thinking:"
+           )
+
+    assert has_element?(
+             lv,
+             "#local-agent-tool-tool-ui-read-details[hidden][data-role='operation-details']",
+             "missing document session"
            )
   end
 
@@ -1534,6 +1576,15 @@ defmodule ContractWeb.Local.MountWorkspaceLiveTest do
 
     assert has_element?(lv, "#local-agent-sidebar[data-agent-status='running']")
     assert has_element?(lv, "#local-agent-cancel")
+    assert has_element?(lv, "#local-agent-submit[data-role='chat-send'][data-action='send']")
+    assert has_element?(lv, "#local-agent-input:not([disabled])")
+    assert has_element?(lv, ~s(#local-agent-input[placeholder="Ask about this workspace"]))
+    refute render(lv) =~ "Agent is responding"
+
+    assert has_element?(
+             lv,
+             ~s([data-role="local-agent-message"][data-message-role="agent"][data-message-status="running"] [data-role="agent-loading"])
+           )
 
     lv
     |> element("#local-agent-cancel")
@@ -1551,6 +1602,59 @@ defmodule ContractWeb.Local.MountWorkspaceLiveTest do
              ~s([data-role="local-agent-message"][data-message-role="agent"][data-message-status="cancelled"]),
              "Cancelled."
            )
+  end
+
+  test "agent sidebar submit during running cancels current turn and starts new turn", %{
+    conn: conn
+  } do
+    use_test_agent_adapter!(
+      adapter_opts: [
+        test_pid: self(),
+        wait_for: :release_local_agent_ui,
+        script: [{:text_delta, "done"}]
+      ]
+    )
+
+    {:ok, lv, _html} =
+      live(conn, ~p"/workspace?#{[path: LocalWorkspaceAdapterStub.valid_path()]}")
+
+    session_id = subscribe_agent(lv)
+
+    lv
+    |> form("#local-agent-form", agent: %{message: "first"})
+    |> render_submit()
+
+    assert_receive {:local_agent_adapter_waiting, _first_stream_pid}, 1_000
+    sync_liveview(lv)
+
+    assert has_element?(lv, "#local-agent-sidebar[data-agent-status='running']")
+    assert has_element?(lv, "#local-agent-input:not([disabled])")
+    assert has_element?(lv, "#local-agent-submit:not([disabled])")
+
+    lv
+    |> form("#local-agent-form", agent: %{message: "second"})
+    |> render_submit()
+
+    assert_receive {:local_agent_event, %{type: :turn_cancelled, session_id: ^session_id}}, 1_000
+    assert_receive {:local_agent_adapter_waiting, second_stream_pid}, 1_000
+
+    sync_liveview(lv)
+
+    assert has_element?(lv, "#local-agent-sidebar[data-agent-status='running']")
+
+    assert has_element?(
+             lv,
+             ~s([data-role="local-agent-message"][data-message-role="user"]),
+             "second"
+           )
+
+    refute has_element?(lv, "#local-agent-error", "turn_in_progress")
+
+    send(second_stream_pid, :release_local_agent_ui)
+
+    assert_receive {:local_agent_event,
+                    %{type: :turn_completed, session_id: ^session_id, text: "done"}},
+                   1_000
   end
 
   defp use_test_agent_adapter!(opts) do

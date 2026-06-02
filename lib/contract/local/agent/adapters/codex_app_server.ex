@@ -9,11 +9,10 @@ defmodule Contract.Local.Agent.Adapters.CodexAppServer do
 
   @behaviour Contract.Local.Agent.Adapter
 
-  alias Contract.Local.Agent.ToolRegistry
-
   @default_executable_candidates ["codex-acp", "codex"]
   @default_timeout 120_000
   @turn_start_request_id 3
+  @local_tool_timeout 30_000
 
   @impl true
   def stream_turn(turn, opts \\ []) do
@@ -57,7 +56,7 @@ defmodule Contract.Local.Agent.Adapters.CodexAppServer do
                  method: "turn/start",
                  params: turn_params(thread_id, turn, cwd, opts)
                }) do
-          {:ok, turn_stream(port, thread_id, timeout, turn)}
+          {:ok, turn_stream(port, thread_id, timeout, turn, opts)}
         end
 
       case result do
@@ -104,7 +103,7 @@ defmodule Contract.Local.Agent.Adapters.CodexAppServer do
     end
   end
 
-  defp turn_stream(port, thread_id, timeout, turn) do
+  defp turn_stream(port, thread_id, timeout, turn, opts) do
     Stream.resource(
       fn ->
         %{
@@ -114,7 +113,9 @@ defmodule Contract.Local.Agent.Adapters.CodexAppServer do
           deadline: deadline(timeout),
           saw_delta?: false,
           last_error: nil,
-          turn: turn
+          turn: turn,
+          tool_executor: Keyword.get(opts, :local_tool_executor),
+          tool_timeout: Keyword.get(opts, :local_tool_timeout, @local_tool_timeout)
         }
       end,
       &next_turn_event/1,
@@ -230,6 +231,45 @@ defmodule Contract.Local.Agent.Adapters.CodexAppServer do
        do: turn_id
 
   defp event_turn_id(_message, _thread_id), do: nil
+
+  defp codex_event(
+         %{
+           "method" => "item/agentReasoning/delta",
+           "params" => %{"threadId" => thread_id, "turnId" => turn_id, "delta" => delta}
+         },
+         thread_id,
+         turn_id,
+         state
+       )
+       when is_binary(delta) and delta != "" do
+    {:event, %{type: :reasoning_delta, delta: delta}, state}
+  end
+
+  defp codex_event(
+         %{
+           "method" => "item/reasoning/delta",
+           "params" => %{"threadId" => thread_id, "turnId" => turn_id, "delta" => delta}
+         },
+         thread_id,
+         turn_id,
+         state
+       )
+       when is_binary(delta) and delta != "" do
+    {:event, %{type: :reasoning_delta, delta: delta}, state}
+  end
+
+  defp codex_event(
+         %{
+           "method" => "item/thinking/delta",
+           "params" => %{"threadId" => thread_id, "turnId" => turn_id, "delta" => delta}
+         },
+         thread_id,
+         turn_id,
+         state
+       )
+       when is_binary(delta) and delta != "" do
+    {:event, %{type: :reasoning_delta, delta: delta}, state}
+  end
 
   defp codex_event(
          %{
@@ -351,7 +391,7 @@ defmodule Contract.Local.Agent.Adapters.CodexAppServer do
          state
        )
        when is_map(params) do
-    response = dynamic_tool_response(state.turn, params)
+    response = dynamic_tool_response(state, request_id, params)
 
     case send_json(state.port, %{id: request_id, result: response}) do
       :ok -> {:handled, state}
@@ -361,11 +401,33 @@ defmodule Contract.Local.Agent.Adapters.CodexAppServer do
 
   defp handle_server_request(_message, _state), do: :not_server_request
 
-  defp dynamic_tool_response(turn, params) do
-    name = join_tool_name(Map.get(params, "namespace"), Map.get(params, "tool"))
+  defp dynamic_tool_response(
+         %{tool_executor: executor, tool_timeout: timeout, turn: turn},
+         request_id,
+         params
+       )
+       when is_pid(executor) do
+    name =
+      join_tool_name(
+        Map.get(params, "namespace"),
+        Map.get(params, "tool") || Map.get(params, "name")
+      )
+
     arguments = Map.get(params, "arguments") || %{}
 
-    case ToolRegistry.call(Map.get(turn, :tool_context, %{}), name, arguments) do
+    tool_call_id =
+      Map.get(params, "id") ||
+        Map.get(params, "tool_call_id") ||
+        Map.get(params, "toolCallId") ||
+        Map.get(params, "callId") ||
+        Map.get(params, "itemId") ||
+        "tool-#{request_id}"
+
+    case GenServer.call(
+           executor,
+           {:execute_adapter_tool_call, turn.id, tool_call_id, name, arguments},
+           timeout
+         ) do
       {:ok, result} ->
         %{
           success: true,
@@ -380,17 +442,16 @@ defmodule Contract.Local.Agent.Adapters.CodexAppServer do
     end
   end
 
-  defp provider_tool_started(%{"type" => "commandExecution", "id" => id} = item) do
+  defp dynamic_tool_response(_state, _request_id, _params) do
     %{
-      type: :tool_call_started,
-      tool_call_id: id,
-      name: "command.exec",
-      arguments: %{
-        "command" => Map.get(item, "command"),
-        "cwd" => Map.get(item, "cwd")
-      }
+      success: false,
+      contentItems: [
+        %{type: "inputText", text: "local tool executor unavailable"}
+      ]
     }
   end
+
+  defp provider_tool_started(%{"type" => "commandExecution"}), do: nil
 
   defp provider_tool_started(%{"type" => "mcpToolCall", "id" => id} = item) do
     server = Map.get(item, "server")
@@ -404,47 +465,11 @@ defmodule Contract.Local.Agent.Adapters.CodexAppServer do
     }
   end
 
-  defp provider_tool_started(%{"type" => "dynamicToolCall", "id" => id} = item) do
-    namespace = Map.get(item, "namespace")
-    tool = Map.get(item, "tool")
-
-    %{
-      type: :tool_call_started,
-      tool_call_id: id,
-      name: join_tool_name(namespace, tool),
-      arguments: Map.get(item, "arguments") || %{}
-    }
-  end
+  defp provider_tool_started(%{"type" => "dynamicToolCall"}), do: nil
 
   defp provider_tool_started(_item), do: nil
 
-  defp provider_tool_completed(%{"type" => "commandExecution", "id" => id} = item) do
-    name = "command.exec"
-
-    if Map.get(item, "status") == "completed" and Map.get(item, "exitCode") in [0, nil] do
-      %{
-        type: :tool_call_completed,
-        tool_call_id: id,
-        name: name,
-        result: %{
-          "exit_code" => Map.get(item, "exitCode"),
-          "output" => Map.get(item, "aggregatedOutput")
-        }
-      }
-    else
-      %{
-        type: :tool_call_failed,
-        tool_call_id: id,
-        name: name,
-        reason:
-          inspect(%{
-            "status" => Map.get(item, "status"),
-            "exit_code" => Map.get(item, "exitCode"),
-            "output" => Map.get(item, "aggregatedOutput")
-          })
-      }
-    end
-  end
+  defp provider_tool_completed(%{"type" => "commandExecution"}), do: nil
 
   defp provider_tool_completed(%{"type" => "mcpToolCall", "id" => id} = item) do
     name = join_tool_name(Map.get(item, "server"), Map.get(item, "tool"))
@@ -466,25 +491,7 @@ defmodule Contract.Local.Agent.Adapters.CodexAppServer do
     end
   end
 
-  defp provider_tool_completed(%{"type" => "dynamicToolCall", "id" => id} = item) do
-    name = join_tool_name(Map.get(item, "namespace"), Map.get(item, "tool"))
-
-    if Map.get(item, "success") == false do
-      %{
-        type: :tool_call_failed,
-        tool_call_id: id,
-        name: name,
-        reason: inspect(Map.get(item, "contentItems") || Map.get(item, "status"))
-      }
-    else
-      %{
-        type: :tool_call_completed,
-        tool_call_id: id,
-        name: name,
-        result: Map.get(item, "contentItems") || %{}
-      }
-    end
-  end
+  defp provider_tool_completed(%{"type" => "dynamicToolCall"}), do: nil
 
   defp provider_tool_completed(_item), do: nil
 

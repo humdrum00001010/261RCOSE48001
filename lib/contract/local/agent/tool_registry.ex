@@ -10,6 +10,7 @@ defmodule Contract.Local.Agent.ToolRegistry do
 
   @namespace "positionalindex"
   @read_tool @namespace <> ".read"
+  @find_tool @namespace <> ".find"
   @write_tool @namespace <> ".write"
 
   @tools [
@@ -32,9 +33,46 @@ defmodule Contract.Local.Agent.ToolRegistry do
     },
     %{
       "namespace" => @namespace,
+      "name" => "find",
+      "description" =>
+        "doc.find(pattern, sec?, at?, size?, case_sensitive?): regex search over active local RHWP PositionalIndex paragraphs. Omit sec to search all sections. Returns matches with sec, para, off, count, and text; use off/count directly with doc.write replace_range.",
+      "risk" => "read",
+      "inputSchema" => %{
+        "type" => "object",
+        "additionalProperties" => false,
+        "properties" => %{
+          "pattern" => %{
+            "type" => "string",
+            "minLength" => 1,
+            "description" => "Regex pattern to match against paragraph text."
+          },
+          "sec" => %{
+            "type" => "integer",
+            "minimum" => 0,
+            "description" => "Optional section index. Omit to search all sections."
+          },
+          "at" => %{
+            "type" => "integer",
+            "minimum" => 0,
+            "default" => 0,
+            "description" => "Zero-based match cursor from a prior next_at."
+          },
+          "size" => %{"type" => "integer", "minimum" => 1, "maximum" => 50, "default" => 10},
+          "case_sensitive" => %{
+            "type" => "boolean",
+            "default" => false,
+            "description" => "When false, regex matching uses case-insensitive Unicode mode."
+          }
+        },
+        "required" => ["pattern"]
+      },
+      "annotations" => %{"readOnlyHint" => true}
+    },
+    %{
+      "namespace" => @namespace,
       "name" => "write",
       "description" =>
-        "Apply a bounded paragraph text edit to the active local RHWP document through the live PositionalIndex. Denied when workspace access is read-only.",
+        "doc.write applies bounded paragraph text edits through the live PositionalIndex. No start/end args exist. For replace_range pass payload.cmd=\"replace_range\" and payload.payload={off, count, text}; off/count are grapheme offsets, suitable for values returned by doc.find.",
       "risk" => "write",
       "inputSchema" => %{
         "type" => "object",
@@ -58,7 +96,38 @@ defmodule Contract.Local.Agent.ToolRegistry do
                   "replace_paragraph"
                 ]
               },
-              "payload" => %{"type" => "object"}
+              "payload" => %{
+                "type" => "object",
+                "additionalProperties" => false,
+                "description" =>
+                  "Command-specific payload. replace_range uses off, count, text; never use start/end.",
+                "properties" => %{
+                  "match" => %{
+                    "type" => "string",
+                    "minLength" => 1,
+                    "description" =>
+                      "Exact paragraph substring for insert_after_match or insert_before_match."
+                  },
+                  "off" => %{
+                    "type" => "integer",
+                    "minimum" => 0,
+                    "description" =>
+                      "Grapheme offset in paragraph. Required by insert_at_offset and replace_range."
+                  },
+                  "count" => %{
+                    "type" => "integer",
+                    "minimum" => 0,
+                    "description" =>
+                      "Grapheme count to replace/delete. Required by replace_range; use doc.find count."
+                  },
+                  "text" => %{
+                    "type" => "string",
+                    "minLength" => 1,
+                    "description" =>
+                      "Text to insert. Required by every write command; for replace_range this is replacement text."
+                  }
+                }
+              }
             },
             "required" => ["cmd", "payload"]
           },
@@ -87,6 +156,9 @@ defmodule Contract.Local.Agent.ToolRegistry do
   @doc "Calls a local document tool against the active document session."
   def call(session, @read_tool, args),
     do: call_document_session(session, :read, normalize_args(args))
+
+  def call(session, @find_tool, args),
+    do: call_document_session(session, :find, normalize_args(args))
 
   def call(session, @write_tool, args),
     do: call_document_session(session, :write, normalize_args(args))

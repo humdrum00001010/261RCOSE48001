@@ -86,6 +86,40 @@ defmodule Contract.Local.Agent.Session do
     {:reply, {:ok, public_snapshot(state)}, state}
   end
 
+  def handle_call(
+        {:execute_adapter_tool_call, turn_id, tool_call_id, name, arguments},
+        from,
+        state
+      ) do
+    cond do
+      state.current == nil ->
+        {:reply, {:error, :no_current_turn}, state}
+
+      state.current.turn.id != turn_id ->
+        {:reply, {:error, :stale_turn}, state}
+
+      not is_binary(name) or name == "" ->
+        {:reply, {:error, {:invalid_tool_call, :missing_name}}, state}
+
+      true ->
+        tool_call = %{
+          id: tool_call_id || Ecto.UUID.generate(),
+          turn_id: turn_id,
+          name: name,
+          arguments: if(is_map(arguments), do: arguments, else: %{}),
+          adapter_from: from
+        }
+
+        {state, result} = start_tool_call(state, tool_call)
+
+        case result do
+          {:pending, _tool_call_id} -> {:noreply, state}
+          {:ok, _result} = ok -> {:reply, ok, state}
+          {:error, _reason} = error -> {:reply, error, state}
+        end
+    end
+  end
+
   def handle_call({:send_turn, ctx, input, opts}, _from, state) do
     cond do
       not authorized?(ctx, state) ->
@@ -96,8 +130,13 @@ defmodule Contract.Local.Agent.Session do
 
       true ->
         turn = build_turn(state, input, opts)
-        adapter_opts = Keyword.merge(state.adapter_opts, Keyword.get(opts, :adapter_opts, []))
         parent = self()
+
+        adapter_opts =
+          state.adapter_opts
+          |> Keyword.merge(Keyword.get(opts, :adapter_opts, []))
+          |> Keyword.put(:local_tool_executor, parent)
+
         adapter = state.adapter
 
         task =
@@ -152,6 +191,7 @@ defmodule Contract.Local.Agent.Session do
     with :ok <- authorize_result(ctx, state),
          {:ok, tool_call, state} <- pop_pending_tool_call(state, tool_call_id) do
       {state, result} = execute_tool_call(state, tool_call)
+      reply_adapter_tool_call(tool_call, result)
       {:reply, result, state}
     else
       {:error, _} = error -> {:reply, error, state}
@@ -169,6 +209,7 @@ defmodule Contract.Local.Agent.Session do
           name: tool_call.name
         })
 
+      reply_adapter_tool_call(tool_call, {:error, :rejected})
       {:reply, {:ok, %{tool_call_id: tool_call.id, status: :rejected}}, state}
     else
       {:error, _} = error -> {:reply, error, state}
@@ -244,6 +285,10 @@ defmodule Contract.Local.Agent.Session do
     handle_text_delta(state, turn_id, delta)
   end
 
+  defp handle_adapter_event(state, turn_id, {:reasoning_delta, delta}) when is_binary(delta) do
+    emit(state, %{type: :reasoning_delta, turn_id: turn_id, delta: delta})
+  end
+
   defp handle_adapter_event(state, turn_id, {:tool_call, name, arguments}) do
     handle_tool_call(state, turn_id, %{name: name, arguments: arguments})
   end
@@ -253,9 +298,19 @@ defmodule Contract.Local.Agent.Session do
     handle_text_delta(state, turn_id, delta)
   end
 
+  defp handle_adapter_event(state, turn_id, %{type: :reasoning_delta, delta: delta})
+       when is_binary(delta) do
+    emit(state, %{type: :reasoning_delta, turn_id: turn_id, delta: delta})
+  end
+
   defp handle_adapter_event(state, turn_id, %{"type" => "text_delta", "delta" => delta})
        when is_binary(delta) do
     handle_text_delta(state, turn_id, delta)
+  end
+
+  defp handle_adapter_event(state, turn_id, %{"type" => "reasoning_delta", "delta" => delta})
+       when is_binary(delta) do
+    emit(state, %{type: :reasoning_delta, turn_id: turn_id, delta: delta})
   end
 
   defp handle_adapter_event(state, turn_id, %{type: :tool_call} = event) do
@@ -300,29 +355,8 @@ defmodule Contract.Local.Agent.Session do
       arguments: arguments
     }
 
-    state =
-      emit(state, %{
-        type: :tool_call_started,
-        turn_id: turn_id,
-        tool_call_id: tool_call_id,
-        name: name,
-        arguments: arguments
-      })
-
-    if ToolRegistry.requires_approval?(state.approval_policy, name) do
-      state
-      |> put_in([:pending_tool_calls, tool_call_id], tool_call)
-      |> emit(%{
-        type: :tool_approval_required,
-        turn_id: turn_id,
-        tool_call_id: tool_call_id,
-        name: name,
-        arguments: arguments
-      })
-    else
-      {state, _result} = execute_tool_call(state, tool_call)
-      state
-    end
+    {state, _result} = start_tool_call(state, tool_call)
+    state
   end
 
   defp emit_provider_tool_event(state, turn_id, type, event) do
@@ -386,6 +420,41 @@ defmodule Contract.Local.Agent.Session do
           })
 
         {state, {:error, reason}}
+    end
+  end
+
+  defp start_tool_call(state, tool_call) do
+    state =
+      emit(state, %{
+        type: :tool_call_started,
+        turn_id: tool_call.turn_id,
+        tool_call_id: tool_call.id,
+        name: tool_call.name,
+        arguments: tool_call.arguments
+      })
+
+    if ToolRegistry.requires_approval?(state.approval_policy, tool_call.name) do
+      state =
+        state
+        |> put_in([:pending_tool_calls, tool_call.id], tool_call)
+        |> emit(%{
+          type: :tool_approval_required,
+          turn_id: tool_call.turn_id,
+          tool_call_id: tool_call.id,
+          name: tool_call.name,
+          arguments: tool_call.arguments
+        })
+
+      {state, {:pending, tool_call.id}}
+    else
+      execute_tool_call(state, tool_call)
+    end
+  end
+
+  defp reply_adapter_tool_call(tool_call, result) do
+    case Map.get(tool_call, :adapter_from) do
+      nil -> :ok
+      from -> GenServer.reply(from, result)
     end
   end
 

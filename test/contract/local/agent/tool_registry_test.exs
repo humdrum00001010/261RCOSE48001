@@ -6,18 +6,44 @@ defmodule Contract.Local.Agent.ToolRegistryTest do
   alias Contract.Local.Document
   alias Contract.RhwpSnapshot.Materializer
 
-  test "lists namespaced positional index read and write tools" do
+  test "lists namespaced positional index read, find and write tools" do
     tools = ToolRegistry.tools()
     names = ToolRegistry.tool_names()
 
-    assert names == ["positionalindex.read", "positionalindex.write"]
+    assert names == ["positionalindex.read", "positionalindex.find", "positionalindex.write"]
 
     assert Enum.map(tools, &{&1["namespace"], &1["name"]}) == [
              {"positionalindex", "read"},
+             {"positionalindex", "find"},
              {"positionalindex", "write"}
            ]
 
     refute Enum.any?(tools, &String.contains?(&1["name"], "."))
+
+    find_tool = Enum.find(tools, &(&1["name"] == "find"))
+    assert get_in(find_tool, ["inputSchema", "required"]) == ["pattern"]
+    assert get_in(find_tool, ["inputSchema", "properties", "pattern", "minLength"]) == 1
+    assert get_in(find_tool, ["inputSchema", "properties", "case_sensitive", "default"]) == false
+    assert get_in(find_tool, ["annotations", "readOnlyHint"]) == true
+
+    write_tool = Enum.find(tools, &(&1["name"] == "write"))
+    assert write_tool["description"] =~ "No start/end"
+
+    write_payload_props =
+      get_in(write_tool, [
+        "inputSchema",
+        "properties",
+        "payload",
+        "properties",
+        "payload",
+        "properties"
+      ])
+
+    assert Map.has_key?(write_payload_props, "off")
+    assert Map.has_key?(write_payload_props, "count")
+    assert Map.has_key?(write_payload_props, "text")
+    refute Map.has_key?(write_payload_props, "start")
+    refute Map.has_key?(write_payload_props, "end")
   end
 
   test "calls read and write through active document session module" do
@@ -50,6 +76,7 @@ defmodule Contract.Local.Agent.ToolRegistryTest do
 
   test "approval policy treats writes as gated and reads as safe" do
     refute ToolRegistry.requires_approval?(:on_write, "positionalindex.read")
+    refute ToolRegistry.requires_approval?(:on_write, "positionalindex.find")
     assert ToolRegistry.requires_approval?(:on_write, "positionalindex.write")
     refute ToolRegistry.requires_approval?(:never, "positionalindex.write")
     assert ToolRegistry.requires_approval?(:always, "positionalindex.read")
@@ -89,6 +116,118 @@ defmodule Contract.Local.Agent.ToolRegistryTest do
                "off_end" => 21
              }
            ] = read["items"]
+  end
+
+  test "positionalindex find returns Korean regex offsets usable by replace_range" do
+    paragraph = "계약기간은 2026년 6월 1일부터 2027년 5월 31일까지이다"
+    {document, bytes} = open_document_with_ir!([paragraph])
+
+    session = %{document_id: document.id, access_control: "full-workspace"}
+    pattern = "\\d{4}년 \\d+월 \\d+일"
+    match_text = "2026년 6월 1일"
+    replacement = "2026년 7월 1일"
+    off = String.length("계약기간은 ")
+    count = String.length(match_text)
+
+    assert {:ok, find} =
+             ToolRegistry.call(session, "positionalindex.find", %{
+               "pattern" => pattern,
+               "size" => 1
+             })
+
+    assert find["revision"] == document.revision
+    assert find["total"] == 2
+    assert find["next_at"] == 1
+
+    assert [
+             %{
+               "sec" => 0,
+               "para" => 0,
+               "off" => ^off,
+               "count" => ^count,
+               "text" => ^match_text,
+               "paragraph" => ^paragraph,
+               "page" => 0,
+               "off_start" => 0
+             } = match
+           ] = find["matches"]
+
+    assert match["off_end"] == String.length(paragraph)
+
+    :ok = Materializer.register_editor(document.id)
+    on_exit(fn -> Materializer.unregister_editor(document.id) end)
+
+    args = %{
+      "sec" => match["sec"],
+      "para" => match["para"],
+      "type" => "paragraph",
+      "base_revision" => find["revision"],
+      "payload" => %{
+        "cmd" => "replace_range",
+        "payload" => %{
+          "off" => match["off"],
+          "count" => match["count"],
+          "text" => replacement
+        }
+      }
+    }
+
+    task_supervisor = start_supervised!(Task.Supervisor)
+
+    task =
+      Task.Supervisor.async_nolink(task_supervisor, fn ->
+        ToolRegistry.call(session, "positionalindex.write", args)
+      end)
+
+    assert_receive {:rhwp_positional_index_request,
+                    %{request_id: request_id, document_id: document_id, text_events: events}},
+                   1_000
+
+    assert document_id == document.id
+
+    assert [
+             %{
+               "kind" => "delete_text",
+               "sec" => 0,
+               "para" => 0,
+               "off" => ^off,
+               "count" => ^count
+             },
+             %{
+               "kind" => "insert_text",
+               "sec" => 0,
+               "para" => 0,
+               "off" => ^off,
+               "text" => ^replacement
+             }
+           ] = events
+
+    updated = String.replace(paragraph, match_text, replacement, global: false)
+    updated_ir = ir_for([updated])
+    assert {:ok, saved, _snapshot} = Document.save(document.id, bytes, %{ir: updated_ir})
+
+    :ok =
+      Materializer.ack(request_id, %{
+        status: :committed,
+        document_id: document.id,
+        revision: saved.revision,
+        snapshot: %{}
+      })
+
+    assert {:ok, %{"document_id" => document_id, "revision" => 2, "events" => 2}} =
+             Task.await(task)
+
+    assert document_id == document.id
+  end
+
+  test "positionalindex find reports invalid regex as invalid params" do
+    {document, _bytes} = open_document_with_ir!(["Alpha"])
+    session = %{document_id: document.id}
+
+    assert {:error, {:invalid_params, message}} =
+             ToolRegistry.call(session, "positionalindex.find", %{"pattern" => "["})
+
+    assert message =~ "pattern is invalid regex"
   end
 
   test "positionalindex write mutates active local document through materializer request" do

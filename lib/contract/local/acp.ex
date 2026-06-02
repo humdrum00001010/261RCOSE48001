@@ -27,7 +27,7 @@ defmodule Contract.Local.ACP do
       id: "claude",
       label: "Claude",
       icon: "local-agent-provider-claude",
-      favicon_src: "/favicon.ico",
+      favicon_src: "/images/icons/claude-favicon.ico",
       adapter: ClaudeCLI,
       adapter_opts: []
     },
