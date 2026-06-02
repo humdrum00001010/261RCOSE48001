@@ -7,7 +7,6 @@ defmodule EcritsWeb.Local.WorkspaceLive do
 
   alias Ecrits.Local.ACP
   alias Ecrits.Local.Document
-  alias Ecrits.Local.Document.EhwpRenderer
   alias Ecrits.Local.Document.RhwpAdapter
   alias Ecrits.Local.Path, as: LocalPath
   alias Ecrits.Local.Workspace
@@ -104,6 +103,14 @@ defmodule EcritsWeb.Local.WorkspaceLive do
      |> assign(:local_document_status, :none)
      |> assign(:local_document_snapshot, nil)
      |> assign(:local_hwp_page_count, 0)
+     |> assign(:local_hwp_stream_id, nil)
+     |> assign(:local_hwp_stream_renderer, nil)
+     |> assign(:local_hwp_stream_document_id, nil)
+     |> assign(:local_hwp_stream_revision, nil)
+     |> assign(:local_hwp_stream_loading?, false)
+     |> assign(:local_ehwp_edit_handle, nil)
+     |> assign(:local_ehwp_edit_document_id, nil)
+     |> assign(:local_ehwp_edit_revision, nil)
      |> assign(:workspace_error, nil)
      |> assign(:local_agent_session_id, nil)
      |> assign(:local_agent_status, :offline)
@@ -112,7 +119,7 @@ defmodule EcritsWeb.Local.WorkspaceLive do
      |> assign(:local_agent_text, "")
      |> assign(:local_agent_text_segment, 0)
      |> assign(:local_agent_reasoning_text, "")
-     |> assign(:local_agent_title, "")
+     |> assign(:local_agent_title, default_local_agent_title())
      |> assign(:local_agent_title_user_edited?, false)
      |> assign(:local_agent_title_form, local_agent_title_form())
      |> assign(:local_agent_provider, local_agent_provider_display())
@@ -125,7 +132,7 @@ defmodule EcritsWeb.Local.WorkspaceLive do
      |> assign(:local_agent_form, local_agent_form())
      |> assign(:local_agent_options_form, local_agent_options_form())
      |> allow_upload(:local_document_import,
-       accept: ~w(.hwp .hwpx),
+       accept: ~w(.hwp .hwpx .doc .docx),
        max_entries: 1,
        max_file_size: @local_document_upload_max_size,
        auto_upload: true,
@@ -277,6 +284,37 @@ defmodule EcritsWeb.Local.WorkspaceLive do
     persist_local_rhwp_snapshot(:save, params, socket)
   end
 
+  def handle_event(
+        "ehwp.local.replace_one",
+        %{"document_id" => document_id, "query" => query, "replacement" => replacement},
+        socket
+      )
+      when is_binary(query) and query != "" and is_binary(replacement) do
+    with :ok <- verify_active_document(socket, document_id),
+         {:ok, socket, handle} <- local_ehwp_edit_handle(socket, document_id),
+         {:ok, result} <- Ehwp.write(handle, {:replace_one, query, replacement}),
+         {:ok, socket} <- render_local_ehwp_edit_pages(socket, handle) do
+      {:reply, %{ok: true, persisted: false, result: result},
+       assign(socket, :local_document_error, nil)}
+    else
+      {:error, reason} ->
+        error = error_message(reason)
+        {:reply, %{error: error}, assign(socket, :local_document_error, error)}
+    end
+  end
+
+  def handle_event("ehwp.local.input", %{"document_id" => document_id} = params, socket) do
+    with :ok <- verify_active_document(socket, document_id),
+         {:ok, socket, handle} <- local_ehwp_edit_handle(socket, document_id),
+         {:ok, result} <- forward_local_ehwp_input(handle, params) do
+      {:reply, %{ok: true, result: result}, assign(socket, :local_document_error, nil)}
+    else
+      {:error, reason} ->
+        error = error_message(reason)
+        {:reply, %{error: error}, assign(socket, :local_document_error, error)}
+    end
+  end
+
   def handle_event("refresh_tree", _params, socket) do
     {:noreply, refresh_tree(socket, socket.assigns.expanded_paths)}
   end
@@ -412,6 +450,106 @@ defmodule EcritsWeb.Local.WorkspaceLive do
 
   def handle_info({:local_agent_event, _event}, socket), do: {:noreply, socket}
 
+  def handle_info({:ehwp_stream, stream_id, {:metadata, metadata}}, socket) do
+    socket =
+      if current_local_hwp_stream?(socket, stream_id) do
+        case local_hwp_metadata_page_count(metadata) do
+          page_count when is_integer(page_count) and page_count >= 0 ->
+            assign(socket, :local_hwp_page_count, page_count)
+
+          _other ->
+            socket
+        end
+      else
+        socket
+      end
+
+    {:noreply, socket}
+  end
+
+  def handle_info({:ehwp_stream, stream_id, {:page, page}}, socket) do
+    socket =
+      if current_local_hwp_stream?(socket, stream_id) do
+        socket
+        |> maybe_expand_local_hwp_page_count(page)
+        |> stream_insert(:local_hwp_pages, local_hwp_page(socket.assigns.active_document, page))
+      else
+        socket
+      end
+
+    {:noreply, socket}
+  end
+
+  def handle_info({:ehwp_stream, stream_id, {:error, reason}}, socket) do
+    socket =
+      if current_local_hwp_stream?(socket, stream_id) do
+        socket
+        |> assign(:local_hwp_stream_id, nil)
+        |> assign(:local_hwp_stream_loading?, false)
+        |> assign(:local_document_error, error_message(reason))
+      else
+        socket
+      end
+
+    {:noreply, socket}
+  end
+
+  def handle_info({:libreofficex, subscription, {:ready, metadata}}, socket) do
+    socket =
+      if current_local_hwp_stream?(socket, subscription) do
+        socket
+        |> maybe_assign_local_office_page_count(metadata)
+        |> assign(:local_hwp_stream_loading?, false)
+      else
+        socket
+      end
+
+    {:noreply, socket}
+  end
+
+  def handle_info({:libreofficex, subscription, {:tile, tile}}, socket) do
+    socket =
+      if current_local_hwp_stream?(socket, subscription) do
+        tile = local_office_tile(socket.assigns.active_document, tile)
+
+        socket
+        |> maybe_expand_local_hwp_page_count(tile)
+        |> assign(:local_hwp_stream_loading?, false)
+        |> stream_insert(:local_hwp_pages, tile)
+      else
+        socket
+      end
+
+    {:noreply, socket}
+  end
+
+  def handle_info({:libreofficex, subscription, {:error, reason}}, socket) do
+    socket =
+      if current_local_hwp_stream?(socket, subscription) do
+        socket
+        |> assign(:local_hwp_stream_id, nil)
+        |> assign(:local_hwp_stream_loading?, false)
+        |> assign(:local_document_error, error_message(reason))
+      else
+        socket
+      end
+
+    {:noreply, socket}
+  end
+
+  def handle_info({:ehwp_stream, stream_id, :done}, socket) do
+    socket =
+      if current_local_hwp_stream?(socket, stream_id) do
+        socket
+        |> assign(:local_hwp_stream_id, nil)
+        |> assign(:local_hwp_stream_loading?, false)
+      else
+        socket
+      end
+
+    {:noreply, socket}
+  end
+
   def handle_info({:rhwp_positional_index_request, request}, socket) do
     selected_document_id = active_document_id(socket)
     request_id = rhwp_request_value(request, ["request_id", :request_id])
@@ -457,6 +595,7 @@ defmodule EcritsWeb.Local.WorkspaceLive do
 
   @impl true
   def terminate(_reason, socket) do
+    _ = unsubscribe_local_hwp_stream(socket)
     _ = unregister_local_rhwp_materializer_editor(active_document_id(socket))
     :ok
   end
@@ -592,6 +731,7 @@ defmodule EcritsWeb.Local.WorkspaceLive do
               canvas_id={local_rhwp_dom_id(@active_document)}
               hwp_pages={@streams.local_hwp_pages}
               hwp_page_count={@local_hwp_page_count}
+              hwp_stream_loading?={@local_hwp_stream_loading?}
               save_state={
                 local_save_state(
                   @active_document,
@@ -890,7 +1030,7 @@ defmodule EcritsWeb.Local.WorkspaceLive do
                         data-role="chat-upload"
                         for={@uploads.local_document_import.ref}
                         class="inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded text-base-content/45 transition-colors hover:text-base-content"
-                        aria-label="Open local HWP or HWPX"
+                        aria-label="Open local document"
                       >
                         <.icon name="hero-paper-clip" class="size-3.5" />
                       </label>
@@ -1209,10 +1349,13 @@ defmodule EcritsWeb.Local.WorkspaceLive do
 
       {:error, reason} ->
         socket
+        |> unsubscribe_local_hwp_stream()
+        |> close_local_ehwp_edit_handle()
         |> assign(:workspace_error, error_message(reason))
         |> assign(:workspace_path, nil)
         |> assign(:active_document, nil)
         |> assign(:active_document_path, nil)
+        |> clear_local_hwp_pages()
     end
   end
 
@@ -1230,12 +1373,13 @@ defmodule EcritsWeb.Local.WorkspaceLive do
     _ = unregister_local_rhwp_materializer_editor(previous_document_id)
 
     socket
+    |> unsubscribe_local_hwp_stream()
+    |> close_local_ehwp_edit_handle()
     |> assign(:active_document_path, nil)
     |> assign(:active_document, nil)
     |> assign(:local_document_status, :none)
     |> assign(:local_document_snapshot, nil)
-    |> assign(:local_hwp_page_count, 0)
-    |> stream(:local_hwp_pages, [], reset: true)
+    |> clear_local_hwp_pages()
     |> maybe_restart_local_agent_for_document(previous_document_id)
   end
 
@@ -1260,7 +1404,7 @@ defmodule EcritsWeb.Local.WorkspaceLive do
           |> assign(:local_document_status, :opened)
           |> assign(:local_document_snapshot, nil)
           |> assign(:local_document_error, nil)
-          |> render_local_hwp_pages(document)
+          |> render_local_document_pages(document)
 
         maybe_restart_local_agent_for_document(socket, previous_document_id)
 
@@ -1268,13 +1412,14 @@ defmodule EcritsWeb.Local.WorkspaceLive do
         _ = unregister_local_rhwp_materializer_editor(previous_document_id)
 
         socket
+        |> unsubscribe_local_hwp_stream()
+        |> close_local_ehwp_edit_handle()
         |> assign(:selected_path, path)
         |> assign(:active_document_path, nil)
         |> assign(:active_document, nil)
         |> assign(:local_document_status, :error)
         |> assign(:local_document_error, error_message(reason))
-        |> assign(:local_hwp_page_count, 0)
-        |> stream(:local_hwp_pages, [], reset: true)
+        |> clear_local_hwp_pages()
     end
   end
 
@@ -1312,7 +1457,7 @@ defmodule EcritsWeb.Local.WorkspaceLive do
     |> assign(:local_agent_text_segment, 0)
     |> assign(:local_agent_reasoning_text, "")
     |> assign(:local_agent_title_user_edited?, false)
-    |> assign_local_agent_title("")
+    |> assign_local_agent_title(default_local_agent_title())
     |> assign(:local_agent_form, local_agent_form())
     |> stream(:local_agent_items, [], reset: true)
     |> start_local_agent_session()
@@ -1666,7 +1811,7 @@ defmodule EcritsWeb.Local.WorkspaceLive do
       Enum.flat_map(upload.entries, &Phoenix.Component.upload_errors(upload, &1))
   end
 
-  defp local_document_upload_error([:not_accepted | _errors]), do: "Select an HWP or HWPX file."
+  defp local_document_upload_error([:not_accepted | _errors]), do: "Select a supported document."
   defp local_document_upload_error([:too_large | _errors]), do: "Selected file is too large."
   defp local_document_upload_error([:too_many_files | _errors]), do: "Select one file at a time."
   defp local_document_upload_error([_error | _errors]), do: "Local document import failed."
@@ -1782,7 +1927,7 @@ defmodule EcritsWeb.Local.WorkspaceLive do
 
   defp selected_file_state(path, active_document_path) do
     if path == active_document_path do
-      "HWP/HWPX open affordance selected."
+      "Document open affordance selected."
     else
       "Preview state only."
     end
@@ -1791,11 +1936,17 @@ defmodule EcritsWeb.Local.WorkspaceLive do
   defp error_message({:invalid_path, message}) when is_binary(message), do: message
   defp error_message({:error, message}) when is_binary(message), do: message
   defp error_message({:local_substrate_unavailable, message}) when is_binary(message), do: message
+  defp error_message({:write_failed, message}) when is_binary(message), do: message
+  defp error_message({:render_failed, message}) when is_binary(message), do: message
+
+  defp error_message({:invalid_page_count, count}),
+    do: "Invalid EHWP page count: #{inspect(count)}."
+
   defp error_message(:not_found), do: "Local document session was not found."
   defp error_message(:format_mismatch), do: "Local document format did not match."
   defp error_message(:missing_bytes), do: "Local rhwp payload did not include document bytes."
   defp error_message(:stale_revision), do: "Local document changed before this save."
-  defp error_message(:unsupported_format), do: "Select an HWP or HWPX file."
+  defp error_message(:unsupported_format), do: "Select a supported document."
   defp error_message(:workspace_not_mounted), do: "Workspace is not mounted."
   defp error_message(:import_name_conflict), do: "Could not choose a local import path."
   defp error_message(message) when is_binary(message), do: message
@@ -1867,7 +2018,7 @@ defmodule EcritsWeb.Local.WorkspaceLive do
       |> assign(:local_document_status, status)
       |> assign(:local_document_snapshot, snapshot)
       |> assign(:local_document_error, nil)
-      |> render_local_hwp_pages(document)
+      |> render_local_document_pages(document)
     else
       socket
     end
@@ -1938,38 +2089,297 @@ defmodule EcritsWeb.Local.WorkspaceLive do
 
   defp local_rhwp_dom_id(%{id: id}), do: "local-rhwp-editor-#{dom_token(id)}"
 
+  defp render_local_document_pages(socket, %Document{format: format} = document) do
+    if Document.ehwp_format?(format) do
+      render_local_hwp_pages(socket, document)
+    else
+      render_local_office_tiles(socket, document)
+    end
+  end
+
   defp render_local_hwp_pages(socket, %Document{} = document) do
-    socket = stream(socket, :local_hwp_pages, [], reset: true)
+    socket =
+      socket
+      |> close_local_ehwp_edit_handle()
+      |> unsubscribe_local_hwp_stream()
+      |> clear_local_hwp_pages()
+      |> assign(:local_hwp_stream_renderer, :ehwp)
+      |> assign(:local_hwp_stream_document_id, document.id)
+      |> assign(:local_hwp_stream_revision, document.revision)
+      |> assign(:local_hwp_stream_loading?, connected?(socket))
 
-    case EhwpRenderer.render_pages(document) do
-      {:ok, %{page_count: page_count, pages: pages}} ->
-        pages
-        |> Enum.reduce(assign(socket, :local_hwp_page_count, page_count), fn page, socket ->
-          stream_insert(socket, :local_hwp_pages, local_hwp_page(document, page))
-        end)
+    if connected?(socket) do
+      case Ehwp.subscribe(document.path, local_ehwp_opts()) do
+        {:ok, stream_id} ->
+          assign(socket, :local_hwp_stream_id, stream_id)
 
-      {:error, reason} ->
-        socket
-        |> assign(:local_hwp_page_count, 0)
-        |> assign(:local_document_error, error_message(reason))
+        {:error, reason} ->
+          socket
+          |> assign(:local_hwp_stream_loading?, false)
+          |> assign(:local_document_error, error_message(reason))
+      end
+    else
+      socket
+    end
+  end
+
+  defp render_local_office_tiles(socket, %Document{} = document) do
+    socket =
+      socket
+      |> close_local_ehwp_edit_handle()
+      |> unsubscribe_local_hwp_stream()
+      |> clear_local_hwp_pages()
+      |> assign(:local_hwp_stream_renderer, :libreofficex)
+      |> assign(:local_hwp_stream_document_id, document.id)
+      |> assign(:local_hwp_stream_revision, document.revision)
+      |> assign(:local_hwp_stream_loading?, connected?(socket))
+
+    if connected?(socket) do
+      case local_libreofficex_runtime().subscribe(document.path, local_libreofficex_opts()) do
+        {:ok, subscription} ->
+          assign(socket, :local_hwp_stream_id, subscription)
+
+        {:error, reason} ->
+          socket
+          |> assign(:local_hwp_stream_loading?, false)
+          |> assign(:local_document_error, error_message(reason))
+      end
+    else
+      socket
     end
   end
 
   defp maybe_render_active_local_hwp_pages(socket, document_id) do
     case Document.document(document_id) do
-      {:ok, %Document{} = document} -> render_local_hwp_pages(socket, document)
+      {:ok, %Document{} = document} -> render_local_document_pages(socket, document)
       {:error, _reason} -> socket
     end
   end
 
-  defp local_hwp_page(%Document{} = document, page) do
+  defp clear_local_hwp_pages(socket) do
+    socket
+    |> assign(:local_hwp_page_count, 0)
+    |> assign(:local_hwp_stream_id, nil)
+    |> assign(:local_hwp_stream_renderer, nil)
+    |> assign(:local_hwp_stream_document_id, nil)
+    |> assign(:local_hwp_stream_revision, nil)
+    |> assign(:local_hwp_stream_loading?, false)
+    |> stream(:local_hwp_pages, [], reset: true)
+  end
+
+  defp unsubscribe_local_hwp_stream(%{assigns: %{local_hwp_stream_id: stream_id}} = socket) do
+    cond do
+      is_nil(stream_id) -> :ok
+      office_stream?(socket) -> local_libreofficex_runtime().unsubscribe(stream_id)
+      true -> Ehwp.unsubscribe(stream_id)
+    end
+
+    socket
+  end
+
+  defp unsubscribe_local_hwp_stream(socket), do: socket
+
+  defp office_stream?(%{assigns: %{local_hwp_stream_renderer: :libreofficex}}), do: true
+
+  defp office_stream?(_socket), do: false
+
+  defp current_local_hwp_stream?(socket, stream_id) do
+    active_document = socket.assigns.active_document
+
+    stream_id == socket.assigns.local_hwp_stream_id and
+      is_map(active_document) and
+      active_document.id == socket.assigns.local_hwp_stream_document_id and
+      active_document.revision == socket.assigns.local_hwp_stream_revision
+  end
+
+  defp local_hwp_metadata_page_count(%{page_count: page_count}) when is_integer(page_count),
+    do: page_count
+
+  defp local_hwp_metadata_page_count(%{"page_count" => page_count}) when is_integer(page_count),
+    do: page_count
+
+  defp local_hwp_metadata_page_count(_metadata), do: nil
+
+  defp maybe_expand_local_hwp_page_count(socket, %{number: number})
+       when is_integer(number) and number > socket.assigns.local_hwp_page_count do
+    assign(socket, :local_hwp_page_count, number)
+  end
+
+  defp maybe_expand_local_hwp_page_count(socket, _page), do: socket
+
+  defp maybe_assign_local_office_page_count(socket, metadata) do
+    case local_office_metadata_page_count(metadata) do
+      page_count when is_integer(page_count) and page_count >= 0 ->
+        assign(socket, :local_hwp_page_count, page_count)
+
+      _other ->
+        socket
+    end
+  end
+
+  defp local_office_metadata_page_count(%{page_count: page_count}) when is_integer(page_count),
+    do: page_count
+
+  defp local_office_metadata_page_count(%{"page_count" => page_count})
+       when is_integer(page_count),
+       do: page_count
+
+  defp local_office_metadata_page_count(%{pages: pages}) when is_list(pages), do: length(pages)
+
+  defp local_office_metadata_page_count(%{"pages" => pages}) when is_list(pages),
+    do: length(pages)
+
+  defp local_office_metadata_page_count(_metadata), do: nil
+
+  defp local_hwp_page(document, page) when is_map(document) do
     page
     |> Map.put(:id, local_hwp_page_dom_id(document, page.index))
   end
 
-  defp local_hwp_page_dom_id(%Document{} = document, page_index) do
-    "local-ehwp-page-#{dom_token(document.id)}-r#{document.revision}-p#{page_index}"
+  defp local_hwp_page_dom_id(%{id: id, revision: revision}, page_index) do
+    "local-ehwp-page-#{dom_token(id)}-r#{revision}-p#{page_index}"
   end
+
+  defp local_office_tile(document, tile) when is_map(document) and is_map(tile) do
+    page = int_tile_value(tile, :page, 1)
+    x = int_tile_value(tile, :x, 0)
+    y = int_tile_value(tile, :y, 0)
+    width = int_tile_value(tile, :width, 256)
+    height = int_tile_value(tile, :height, 256)
+
+    %{
+      id: local_office_tile_dom_id(document, page, x, y, width, height),
+      page: page,
+      number: page,
+      x: x,
+      y: y,
+      width: width,
+      height: height,
+      data: Map.get(tile, :data) || Map.get(tile, "data") || "",
+      metadata: Map.drop(tile, [:data, "data"])
+    }
+  end
+
+  defp local_office_tile_dom_id(%{id: id, revision: revision}, page, x, y, width, height) do
+    "local-office-tile-#{dom_token(id)}-r#{revision}-p#{page}-#{x}-#{y}-#{width}x#{height}"
+  end
+
+  defp int_tile_value(tile, key, default) do
+    string_key = Atom.to_string(key)
+
+    case Map.get(tile, key) || Map.get(tile, string_key) do
+      value when is_integer(value) -> value
+      value when is_float(value) -> round(value)
+      _value -> default
+    end
+  end
+
+  defp local_ehwp_opts do
+    Application.get_env(:ecrits, :local_ehwp_opts, [])
+  end
+
+  defp forward_local_ehwp_input(handle, %{"kind" => "mouse"} = event) do
+    Ehwp.mouse(handle, event)
+  end
+
+  defp forward_local_ehwp_input(handle, %{"kind" => "keyboard"} = event) do
+    Ehwp.keyboard(handle, event)
+  end
+
+  defp forward_local_ehwp_input(handle, event) when is_map(event) do
+    Ehwp.input(handle, event)
+  end
+
+  defp local_libreofficex_runtime do
+    Application.get_env(:ecrits, :local_libreofficex_runtime, Libreofficex)
+  end
+
+  defp local_libreofficex_opts do
+    Application.get_env(:ecrits, :local_libreofficex_opts, [])
+  end
+
+  defp local_ehwp_edit_handle(socket, document_id) do
+    active_document = socket.assigns.active_document
+
+    if socket.assigns.local_ehwp_edit_handle &&
+         socket.assigns.local_ehwp_edit_document_id == document_id &&
+         is_map(active_document) &&
+         socket.assigns.local_ehwp_edit_revision == active_document.revision do
+      {:ok, socket, socket.assigns.local_ehwp_edit_handle}
+    else
+      socket = close_local_ehwp_edit_handle(socket)
+
+      with {:ok, %Document{} = document} <- Document.document(document_id),
+           {:ok, handle, _metadata} <- Ehwp.open(document.path, local_ehwp_opts()) do
+        socket =
+          socket
+          |> assign(:local_ehwp_edit_handle, handle)
+          |> assign(:local_ehwp_edit_document_id, document.id)
+          |> assign(:local_ehwp_edit_revision, document.revision)
+
+        {:ok, socket, handle}
+      end
+    end
+  end
+
+  defp render_local_ehwp_edit_pages(socket, handle) do
+    with page_count when is_integer(page_count) and page_count >= 0 <- Ehwp.page_count(handle),
+         {:ok, pages} <- render_local_ehwp_edit_page_list(handle, page_count) do
+      document = socket.assigns.active_document
+
+      socket =
+        socket
+        |> unsubscribe_local_hwp_stream()
+        |> clear_local_hwp_pages()
+        |> assign(:local_hwp_page_count, page_count)
+        |> stream(:local_hwp_pages, Enum.map(pages, &local_hwp_page(document, &1)), reset: true)
+
+      {:ok, socket}
+    else
+      {:error, reason} -> {:error, reason}
+      other -> {:error, {:invalid_page_count, other}}
+    end
+  end
+
+  defp render_local_ehwp_edit_page_list(_handle, 0), do: {:ok, []}
+
+  defp render_local_ehwp_edit_page_list(handle, page_count) do
+    0..(page_count - 1)
+    |> Enum.reduce_while({:ok, []}, fn page_index, {:ok, pages} ->
+      case render_local_ehwp_edit_page(handle, page_index) do
+        {:ok, page} -> {:cont, {:ok, [page | pages]}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+    |> case do
+      {:ok, pages} -> {:ok, Enum.reverse(pages)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp render_local_ehwp_edit_page(handle, page_index) do
+    case Ehwp.render_page_svg(handle, page_index) do
+      {:ok, svg, metadata} ->
+        {:ok, %{index: page_index, number: page_index + 1, svg: svg, metadata: metadata}}
+
+      {:ok, svg} ->
+        {:ok, %{index: page_index, number: page_index + 1, svg: svg, metadata: %{}}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp close_local_ehwp_edit_handle(%{assigns: %{local_ehwp_edit_handle: handle}} = socket) do
+    _ = Ehwp.close(handle)
+
+    socket
+    |> assign(:local_ehwp_edit_handle, nil)
+    |> assign(:local_ehwp_edit_document_id, nil)
+    |> assign(:local_ehwp_edit_revision, nil)
+  end
+
+  defp close_local_ehwp_edit_handle(socket), do: socket
 
   defp rhwp_request_value(request, keys) when is_map(request) do
     Enum.find_value(keys, &Map.get(request, &1))
@@ -2074,7 +2484,7 @@ defmodule EcritsWeb.Local.WorkspaceLive do
     to_form(params, as: :agent)
   end
 
-  defp local_agent_title_form(title \\ "") do
+  defp local_agent_title_form(title \\ default_local_agent_title()) do
     to_form(%{"title" => local_agent_title(title)}, as: :local_agent_title)
   end
 
@@ -2097,6 +2507,8 @@ defmodule EcritsWeb.Local.WorkspaceLive do
   end
 
   defp local_agent_title(_title), do: ""
+
+  defp default_local_agent_title, do: "New Chat"
 
   defp local_agent_provider_param(params) do
     params["provider"] ||

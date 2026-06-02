@@ -17,10 +17,14 @@ defmodule EcritsWeb.Live.Studio.Components.Canvas.LocalHwpPages do
     ~H"""
     <div
       id={@id}
+      phx-hook="LocalEhwpEditor"
+      tabindex="0"
       class="relative h-full min-h-0 overflow-auto bg-white"
       data-component="canvas-local-hwp-pages"
       data-renderer="ehwp-svg"
       data-role="local-ehwp-editor"
+      data-ehwp-edit-mode="replace_one"
+      data-ehwp-input-mode="forward"
       data-document-id={@document_id}
       data-document-path={template_path(@spec)}
       data-document-name={template_name(@spec)}
@@ -33,7 +37,7 @@ defmodule EcritsWeb.Live.Studio.Components.Canvas.LocalHwpPages do
       <div
         id={"#{@id}-pages"}
         data-role="local-ehwp-pages"
-        class="ehwp-document-stack"
+        class="ehwp-document-stack ehwp-document-stack--local"
         phx-update="stream"
       >
         <section

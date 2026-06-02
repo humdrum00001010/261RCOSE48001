@@ -9,6 +9,7 @@ defmodule Ecrits.Local.ACP do
   alias Ecrits.Local.Agent.Adapters.CodexAppServer
   alias Ecrits.Local.Agent.Adapters.Fake
   alias Ecrits.Local.Agent.Adapters.Unavailable
+  alias Ecrits.Local.Agent.OrchexAdapter
   alias Ecrits.Local.Agent.Session
   alias Ecrits.Local.Agent.SessionSupervisor
 
@@ -127,6 +128,7 @@ defmodule Ecrits.Local.ACP do
   @impl true
   def init(opts) do
     providers = Keyword.get(opts, :providers, @providers)
+    :ok = Orchex.configure(OrchexAdapter.config(providers))
 
     {:ok, default_state(providers)}
   end

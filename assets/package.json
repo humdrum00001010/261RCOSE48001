@@ -1,0 +1,6 @@
+{
+  "dependencies": {
+    "daisyui": "5.5.20",
+    "topbar": "3.0.1"
+  }
+}

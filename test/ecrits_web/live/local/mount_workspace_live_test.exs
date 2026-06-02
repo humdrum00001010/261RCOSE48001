@@ -1,13 +1,36 @@
 defmodule EcritsWeb.LocalEhwpRuntimeStub do
   def available?, do: true
 
-  def open(path, _opts) when is_binary(path),
-    do: {:ok, %{path: path}, %{page_count: 2}}
+  def open(path, opts) when is_binary(path) do
+    handle = %{
+      path: path,
+      page_count: Keyword.get(opts, :page_count, 2),
+      owner: Keyword.get(opts, :owner),
+      block_page: Keyword.get(opts, :block_page),
+      error_page: Keyword.get(opts, :error_page)
+    }
 
-  def page_count(_handle), do: 2
-  def profile(_handle), do: %{page_count: 2}
+    {:ok, handle, %{page_count: handle.page_count}}
+  end
 
-  def render_page_svg(_handle, page_index) do
+  def page_count(handle), do: handle.page_count
+  def profile(handle), do: %{page_count: handle.page_count}
+
+  def render_page_svg(%{error_page: page_index}, page_index), do: {:error, :test_error}
+
+  def render_page_svg(%{owner: owner, block_page: page_index}, page_index) when is_pid(owner) do
+    send(owner, {:ehwp_render_blocked, self(), page_index})
+
+    receive do
+      :continue_ehwp_render -> :ok
+    end
+
+    render_page(page_index)
+  end
+
+  def render_page_svg(_handle, page_index), do: render_page(page_index)
+
+  defp render_page(page_index) do
     svg =
       ~s(<svg data-ehwp-test-page="#{page_index}" viewBox="0 0 10 10"><text>#{page_index + 1}</text></svg>)
 
@@ -16,8 +39,75 @@ defmodule EcritsWeb.LocalEhwpRuntimeStub do
 
   def read(_handle, opts), do: {:ok, {:read, opts}}
   def find(_handle, pattern, opts), do: {:ok, {:find, pattern, opts}}
+
+  def write(%{owner: owner, path: path}, op, opts) when is_pid(owner) do
+    send(owner, {:ehwp_write, path, op, opts})
+    {:ok, {:write, op, opts}}
+  end
+
   def write(_handle, op, opts), do: {:ok, {:write, op, opts}}
+
+  def input(%{owner: owner, path: path}, event, opts) when is_pid(owner) do
+    send(owner, {:ehwp_input, path, event, opts})
+    {:ok, {:input, event, opts}}
+  end
+
+  def input(_handle, event, opts), do: {:ok, {:input, event, opts}}
+
+  def close(%{owner: owner, path: path}) when is_pid(owner) do
+    send(owner, {:ehwp_closed, path})
+    :ok
+  end
+
   def close(_handle), do: :ok
+end
+
+defmodule EcritsWeb.LocalLibreOfficeRuntimeStub do
+  @png_1x1 Base.decode64!(
+             "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
+           )
+
+  def subscribe(path, opts) when is_binary(path) do
+    caller = self()
+    owner = Keyword.get(opts, :owner)
+    block? = Keyword.get(opts, :block?)
+    sub = %{path: path, ref: make_ref()}
+
+    {:ok, task} =
+      Task.start(fn ->
+        if is_pid(owner), do: send(owner, {:libreofficex_render_started, self(), path})
+
+        if block? do
+          receive do
+            :continue_libreofficex_render -> :ok
+          end
+        end
+
+        send(caller, {:libreofficex, sub, {:ready, %{path: path, page_count: 1}}})
+
+        send(caller, {
+          :libreofficex,
+          sub,
+          {:tile,
+           %{
+             id: "1:0:0:128:128",
+             page: 1,
+             x: 0,
+             y: 0,
+             width: 128,
+             height: 128,
+             format: :png,
+             data: @png_1x1
+           }}
+        })
+      end)
+
+    if is_pid(owner), do: send(owner, {:libreofficex_subscribed, task, path})
+
+    {:ok, sub}
+  end
+
+  def unsubscribe(_sub), do: :ok
 end
 
 defmodule EcritsWeb.Local.MountWorkspaceLiveTest do
@@ -39,9 +129,22 @@ defmodule EcritsWeb.Local.MountWorkspaceLiveTest do
     previous_agent = Application.get_env(:ecrits, :local_agent)
     previous_agent_ui = Application.get_env(:ecrits, :local_agent_ui)
     previous_local_ehwp_opts = Application.get_env(:ecrits, :local_ehwp_opts)
+
+    previous_local_libreofficex_runtime =
+      Application.get_env(:ecrits, :local_libreofficex_runtime)
+
+    previous_local_libreofficex_opts = Application.get_env(:ecrits, :local_libreofficex_opts)
     Application.put_env(:ecrits, :local_workspace_adapter, LocalWorkspaceAdapterStub)
     Application.put_env(:ecrits, :local_directory_picker, LocalDirectoryPickerStub)
     Application.put_env(:ecrits, :local_ehwp_opts, runtime: EcritsWeb.LocalEhwpRuntimeStub)
+
+    Application.put_env(
+      :ecrits,
+      :local_libreofficex_runtime,
+      EcritsWeb.LocalLibreOfficeRuntimeStub
+    )
+
+    Application.put_env(:ecrits, :local_libreofficex_opts, owner: self())
 
     Application.put_env(
       :ecrits,
@@ -92,6 +195,22 @@ defmodule EcritsWeb.Local.MountWorkspaceLiveTest do
         Application.put_env(:ecrits, :local_ehwp_opts, previous_local_ehwp_opts)
       else
         Application.delete_env(:ecrits, :local_ehwp_opts)
+      end
+
+      if previous_local_libreofficex_runtime do
+        Application.put_env(
+          :ecrits,
+          :local_libreofficex_runtime,
+          previous_local_libreofficex_runtime
+        )
+      else
+        Application.delete_env(:ecrits, :local_libreofficex_runtime)
+      end
+
+      if previous_local_libreofficex_opts do
+        Application.put_env(:ecrits, :local_libreofficex_opts, previous_local_libreofficex_opts)
+      else
+        Application.delete_env(:ecrits, :local_libreofficex_opts)
       end
     end)
   end
@@ -864,8 +983,11 @@ defmodule EcritsWeb.Local.MountWorkspaceLiveTest do
     refute has_element?(lv, ~s([id^="open-file-"]))
     refute has_element?(lv, "#preview-file-drafts-reference-docx")
     refute has_element?(lv, "#disabled-file-drafts-notes-xyz")
-    refute has_element?(lv, ~s([data-node-path="drafts/reference.docx"][phx-click="open_file"]))
-    refute has_element?(lv, ~s([data-node-path="drafts/reference.docx"]))
+
+    assert has_element?(
+             lv,
+             ~s([data-node-path="drafts/reference.docx"][data-openable="true"][data-file-extension="docx"][phx-click="open_file"])
+           )
 
     lv
     |> element("#toggle-dir-rulebook-md")
@@ -976,15 +1098,169 @@ defmodule EcritsWeb.Local.MountWorkspaceLiveTest do
              ~s([data-role="local-ehwp-editor"][data-renderer="ehwp-svg"][data-local-document-format="hwpx"][data-local-document-revision="0"][data-ehwp-page-count="2"])
            )
 
+    assert has_element?(
+             lv,
+             ~s([data-role="local-ehwp-editor"][phx-hook="LocalEhwpEditor"][data-ehwp-edit-mode="replace_one"])
+           )
+
     assert has_element?(lv, ~s([data-role="local-ehwp-pages"][phx-update="stream"]))
-    assert has_element?(lv, ~s([data-role="local-ehwp-page"][data-page-index="0"]))
-    assert has_element?(lv, ~s(svg[data-ehwp-test-page="0"]))
+    assert_eventually_has_element(lv, ~s([data-role="local-ehwp-page"][data-page-index="0"]))
+    assert_eventually_has_element(lv, ~s(svg[data-ehwp-test-page="0"]))
+    assert has_element?(lv, ~s([data-role="local-ehwp-pages"].ehwp-document-stack--local))
     refute render(lv) =~ ~s(phx-hook="Rhwp")
     refute has_element?(lv, ~s([data-role="local-ehwp-editor"][data-editable-spec-candidates]))
 
     refute has_element?(lv, ~s([data-role="canvas-empty-upload-action"]))
     refute has_element?(lv, "#document-direct-upload-input")
     refute has_element?(lv, ~s([phx-hook="DirectR2Upload"]))
+  end
+
+  test "local EHWP document opens shell before page stream finishes", %{conn: conn} do
+    Application.put_env(:ecrits, :local_ehwp_opts,
+      runtime: EcritsWeb.LocalEhwpRuntimeStub,
+      owner: self(),
+      block_page: 0
+    )
+
+    {:ok, lv, _html} =
+      live(
+        conn,
+        ~p"/workspace?#{[path: LocalWorkspaceAdapterStub.valid_path(), document: "drafts/service.hwpx"]}"
+      )
+
+    assert_receive {:ehwp_render_blocked, render_task, 0}, 1_000
+    assert Process.alive?(render_task)
+
+    assert has_element?(lv, "#local-rhwp-shell")
+    assert has_element?(lv, ~s([data-role="local-ehwp-editor"][data-renderer="ehwp-svg"]))
+    refute has_element?(lv, ~s([data-role="local-ehwp-page"][data-page-index="0"]))
+
+    send(render_task, :continue_ehwp_render)
+    assert_eventually_has_element(lv, ~s([data-role="local-ehwp-page"][data-page-index="0"]))
+  end
+
+  test "document query opens a local DOCX shell before LibreOffice tiles finish", %{
+    conn: conn
+  } do
+    Application.put_env(:ecrits, :local_libreofficex_opts, owner: self(), block?: true)
+
+    {:ok, lv, _html} =
+      live(
+        conn,
+        ~p"/workspace?#{[path: LocalWorkspaceAdapterStub.valid_path(), document: "drafts/reference.docx"]}"
+      )
+
+    root = LocalWorkspaceAdapterStub.valid_path()
+    path = Path.join(root, "drafts/reference.docx")
+    assert_receive {:libreofficex_render_started, render_task, ^path}, 1_000
+    assert Process.alive?(render_task)
+
+    assert has_element?(lv, "#local-rhwp-shell")
+    assert has_element?(lv, ~s(#studio-document-title-input[value="drafts/reference.docx"]))
+
+    assert has_element?(
+             lv,
+             ~s([data-role="local-office-viewer"][data-renderer="libreofficex-png-tiles"][data-local-document-format="docx"])
+           )
+
+    assert has_element?(lv, ~s([data-role="local-office-loading"]), "Rendering document...")
+    refute has_element?(lv, ~s([data-role="local-office-tile"]))
+    refute has_element?(lv, ~s([data-role="local-ehwp-editor"]))
+
+    send(render_task, :continue_libreofficex_render)
+    assert_eventually_has_element(lv, ~s([data-role="local-office-tile"][data-page-number="1"]))
+    assert_eventually_assign(lv, :local_hwp_stream_loading?, false)
+  end
+
+  test "local EHWP page events insert stream items and stale stream pages are ignored", %{
+    conn: conn
+  } do
+    Application.put_env(:ecrits, :local_ehwp_opts,
+      runtime: EcritsWeb.LocalEhwpRuntimeStub,
+      owner: self(),
+      block_page: 1
+    )
+
+    {:ok, lv, _html} =
+      live(
+        conn,
+        ~p"/workspace?#{[path: LocalWorkspaceAdapterStub.valid_path(), document: "drafts/service.hwpx"]}"
+      )
+
+    assert_receive {:ehwp_render_blocked, render_task, 1}, 1_000
+    assert Process.alive?(render_task)
+
+    stream_id = local_ehwp_stream_id(lv)
+    document_id = local_rhwp_document_id(lv)
+
+    send(lv.pid, {
+      :ehwp_stream,
+      stream_id,
+      {:page,
+       %{
+         index: 9,
+         number: 10,
+         svg: ~s(<svg data-ehwp-test-manual-page="current"></svg>),
+         metadata: %{}
+       }}
+    })
+
+    assert_eventually_has_element(
+      lv,
+      ~s(#local-ehwp-page-#{dom_token_for_test(document_id)}-r0-p9 svg[data-ehwp-test-manual-page="current"])
+    )
+
+    stale_stream_id = stream_id
+    stale_document_path = Path.join(LocalWorkspaceAdapterStub.valid_path(), "drafts/service.hwpx")
+
+    lv
+    |> element("#local-file-node-template-hwp")
+    |> render_click()
+
+    assert_patch(
+      lv,
+      ~p"/workspace?#{[path: LocalWorkspaceAdapterStub.valid_path(), document: "template.hwp", provider: "codex", model: "gpt-5.5", reasoning: "medium", access: "read-only"]}"
+    )
+
+    assert_receive {:ehwp_closed, ^stale_document_path}, 1_000
+    refute Process.alive?(render_task)
+
+    refute has_element?(lv, ~s(svg[data-ehwp-test-manual-page="current"]))
+
+    send(lv.pid, {
+      :ehwp_stream,
+      stale_stream_id,
+      {:page,
+       %{
+         index: 8,
+         number: 9,
+         svg: ~s(<svg data-ehwp-test-manual-page="stale"></svg>),
+         metadata: %{}
+       }}
+    })
+
+    refute has_element?(lv, ~s(svg[data-ehwp-test-manual-page="stale"]))
+  end
+
+  test "local EHWP stream errors stop loading and clear the stream id", %{conn: conn} do
+    Application.put_env(:ecrits, :local_ehwp_opts,
+      runtime: EcritsWeb.LocalEhwpRuntimeStub,
+      owner: self(),
+      error_page: 0
+    )
+
+    document_path = Path.join(LocalWorkspaceAdapterStub.valid_path(), "drafts/service.hwpx")
+
+    {:ok, lv, _html} =
+      live(
+        conn,
+        ~p"/workspace?#{[path: LocalWorkspaceAdapterStub.valid_path(), document: "drafts/service.hwpx"]}"
+      )
+
+    assert_receive {:ehwp_closed, ^document_path}, 1_000
+    assert_eventually_assign(lv, :local_hwp_stream_id, nil)
+    assert_eventually_assign(lv, :local_hwp_stream_loading?, false)
+    assert has_element?(lv, "#local-rhwp-error", "Workspace could not be loaded.")
   end
 
   test "local composer upload imports a selected HWPX into the workspace and opens it", %{
@@ -1133,6 +1409,70 @@ defmodule EcritsWeb.Local.MountWorkspaceLiveTest do
            )
   end
 
+  test "local EHWP edit bridge writes through current handle and re-renders pages", %{conn: conn} do
+    Application.put_env(:ecrits, :local_ehwp_opts,
+      runtime: EcritsWeb.LocalEhwpRuntimeStub,
+      owner: self()
+    )
+
+    root = LocalWorkspaceAdapterStub.valid_path()
+    relative_path = "drafts/service.hwpx"
+    path = Path.join(root, relative_path)
+
+    {:ok, lv, _html} =
+      live(conn, ~p"/workspace?#{[path: root, document: relative_path]}")
+
+    document_id = local_rhwp_document_id(lv)
+
+    render_hook(lv, "ehwp.local.replace_one", %{
+      "document_id" => document_id,
+      "query" => "1",
+      "replacement" => "edited"
+    })
+
+    assert_receive {:ehwp_write, ^path, {:replace_one, "1", "edited"}, []}, 1_000
+    assert_eventually_assign(lv, :local_hwp_stream_id, nil)
+    assert_eventually_has_element(lv, ~s([data-role="local-ehwp-page"][data-page-index="0"]))
+    assert has_element?(lv, ~s([data-role="local-ehwp-editor"][phx-hook="LocalEhwpEditor"]))
+  end
+
+  test "local EHWP editor forwards mouse and keyboard events to EHWP", %{conn: conn} do
+    Application.put_env(:ecrits, :local_ehwp_opts,
+      runtime: EcritsWeb.LocalEhwpRuntimeStub,
+      owner: self()
+    )
+
+    root = LocalWorkspaceAdapterStub.valid_path()
+    relative_path = "drafts/service.hwpx"
+    path = Path.join(root, relative_path)
+
+    {:ok, lv, _html} =
+      live(conn, ~p"/workspace?#{[path: root, document: relative_path]}")
+
+    document_id = local_rhwp_document_id(lv)
+
+    render_hook(lv, "ehwp.local.input", %{
+      "document_id" => document_id,
+      "kind" => "mouse",
+      "type" => "click",
+      "page_index" => 0,
+      "x" => 12.5,
+      "y" => 33.0
+    })
+
+    assert_receive {:ehwp_input, ^path, %{"kind" => "mouse", "type" => "click"}, []}, 1_000
+
+    render_hook(lv, "ehwp.local.input", %{
+      "document_id" => document_id,
+      "kind" => "keyboard",
+      "type" => "keydown",
+      "key" => "A",
+      "code" => "KeyA"
+    })
+
+    assert_receive {:ehwp_input, ^path, %{"kind" => "keyboard", "key" => "A"}, []}, 1_000
+  end
+
   test "local rhwp text mutation is acknowledged and does not remount", %{conn: conn} do
     root = LocalWorkspaceAdapterStub.valid_path()
 
@@ -1262,7 +1602,7 @@ defmodule EcritsWeb.Local.MountWorkspaceLiveTest do
 
     assert has_element?(
              lv,
-             "#local-agent-title-form[phx-change='update_local_agent_title'][data-role='chat-thread-title-form'] input#local-agent-title-label[data-role='chat-thread-title-label'][name='local_agent_title[title]'][type='text'][value=''][aria-label='Chat title']"
+             "#local-agent-title-form[phx-change='update_local_agent_title'][data-role='chat-thread-title-form'] input#local-agent-title-label[data-role='chat-thread-title-label'][name='local_agent_title[title]'][type='text'][value='New Chat'][aria-label='Chat title']"
            )
 
     refute render(lv) =~ "ecrits-local-ui chat"
@@ -1312,7 +1652,7 @@ defmodule EcritsWeb.Local.MountWorkspaceLiveTest do
            )
   end
 
-  test "agent generated title fills an untouched empty title", %{conn: conn} do
+  test "agent generated title replaces the untouched default title", %{conn: conn} do
     {:ok, lv, _html} =
       live(
         conn,
@@ -1865,6 +2205,66 @@ defmodule EcritsWeb.Local.MountWorkspaceLiveTest do
     :ok
   end
 
+  defp assert_eventually_has_element(lv, selector) do
+    deadline = System.monotonic_time(:millisecond) + 1_000
+    assert_eventually_has_element(lv, selector, deadline)
+  end
+
+  defp assert_eventually_has_element(lv, selector, deadline) do
+    if has_element?(lv, selector) do
+      :ok
+    else
+      if System.monotonic_time(:millisecond) < deadline do
+        Process.sleep(10)
+        assert_eventually_has_element(lv, selector, deadline)
+      else
+        assert has_element?(lv, selector)
+      end
+    end
+  end
+
+  defp assert_eventually_assign(lv, key, expected) do
+    deadline = System.monotonic_time(:millisecond) + 1_000
+    assert_eventually_assign(lv, key, expected, deadline)
+  end
+
+  defp assert_eventually_assign(lv, key, expected, deadline) do
+    if liveview_assign(lv, key) == expected do
+      :ok
+    else
+      if System.monotonic_time(:millisecond) < deadline do
+        Process.sleep(10)
+        assert_eventually_assign(lv, key, expected, deadline)
+      else
+        assert liveview_assign(lv, key) == expected
+      end
+    end
+  end
+
+  defp liveview_assign(lv, key) do
+    lv.pid
+    |> :sys.get_state()
+    |> Map.get(:socket)
+    |> then(& &1.assigns[key])
+  end
+
+  defp local_ehwp_stream_id(lv) do
+    stream_id = liveview_assign(lv, :local_hwp_stream_id)
+
+    assert not is_nil(stream_id)
+    stream_id
+  end
+
+  defp dom_token_for_test(value) when is_binary(value) do
+    value
+    |> String.replace(~r/[^a-zA-Z0-9]+/, "-")
+    |> String.trim("-")
+    |> case do
+      "" -> "root"
+      token -> token
+    end
+  end
+
   defp read_jsonl!(path) do
     path
     |> File.read!()
@@ -1967,6 +2367,8 @@ defmodule EcritsWeb.Local.MountWorkspaceLiveTest do
       "test/fixtures/hwpx/real_contract.hwpx",
       Path.join(root, "drafts/service.hwpx")
     )
+
+    File.write!(Path.join(root, "drafts/reference.docx"), "docx fixture")
   end
 
   defp cleanup_local_workspace_fixture do
@@ -1977,6 +2379,7 @@ defmodule EcritsWeb.Local.MountWorkspaceLiveTest do
           "employment_v1.hwp",
           "employment_v1 (1).hwp",
           "drafts/service.hwpx",
+          "drafts/reference.docx",
           "imported-service.hwpx"
         ] do
       document_id = Document.id_for(root, relative_path)

@@ -4,13 +4,8 @@
 
 // You can include dependencies in two ways.
 //
-// The simplest option is to put them in assets/vendor and
-// import them using relative paths:
-//
-//     import "../vendor/some-package.js"
-//
-// Alternatively, you can `npm install some-package --prefix assets` and import
-// them using a path starting with the package name:
+// You can `npm install some-package --prefix assets` and import
+// dependencies using a path starting with the package name:
 //
 //     import "some-package"
 //
@@ -23,7 +18,7 @@ import "phoenix_html"
 import {Socket} from "phoenix"
 import {LiveSocket} from "phoenix_live_view"
 import {hooks as colocatedHooks} from "phoenix-colocated/ecrits"
-import topbar from "../vendor/topbar"
+import topbar from "topbar"
 
 const csrfToken = document.querySelector("meta[name='csrf-token']").getAttribute("content")
 
@@ -97,6 +92,215 @@ const DirectR2Upload = {
   async sha256Hex(file) {
     const digest = await crypto.subtle.digest("SHA-256", await file.arrayBuffer())
     return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, "0")).join("")
+  },
+}
+
+const LocalEhwpEditor = {
+  mounted() {
+    this.activeEditor = null
+    this.onDblClick = event => this.startEditFromEvent(event)
+    this.onKeyDown = event => this.handleKeyDown(event)
+    this.onClick = event => this.forwardMouseEvent(event)
+    this.onMouseDown = event => {
+      this.focusEditor(event)
+      this.forwardMouseEvent(event)
+    }
+    this.onMouseUp = event => this.forwardMouseEvent(event)
+    this.el.addEventListener("click", this.onClick)
+    this.el.addEventListener("mousedown", this.onMouseDown)
+    this.el.addEventListener("mouseup", this.onMouseUp)
+    this.el.addEventListener("dblclick", this.onDblClick)
+    this.el.addEventListener("keydown", this.onKeyDown)
+  },
+
+  destroyed() {
+    this.el.removeEventListener("click", this.onClick)
+    this.el.removeEventListener("mousedown", this.onMouseDown)
+    this.el.removeEventListener("mouseup", this.onMouseUp)
+    this.el.removeEventListener("dblclick", this.onDblClick)
+    this.el.removeEventListener("keydown", this.onKeyDown)
+    this.removeActiveEditor()
+  },
+
+  handleKeyDown(event) {
+    if (this.isEditableTarget(event.target)) {
+      return
+    }
+
+    this.forwardKeyboardEvent(event)
+
+    if (event.key !== "Enter") return
+
+    this.startEditFromEvent(event)
+  },
+
+  focusEditor(event) {
+    if (this.isEditableTarget(event.target)) return
+    this.el.focus({ preventScroll: true })
+  },
+
+  forwardMouseEvent(event) {
+    if (this.isEditableTarget(event.target)) return
+
+    this.pushEvent("ehwp.local.input", {
+      ...this.pointerPayload(event),
+      kind: "mouse",
+      type: event.type,
+      button: event.button,
+      buttons: event.buttons,
+      detail: event.detail,
+    })
+  },
+
+  forwardKeyboardEvent(event) {
+    this.pushEvent("ehwp.local.input", {
+      ...this.targetPayload(event.target),
+      kind: "keyboard",
+      type: event.type,
+      key: event.key,
+      code: event.code,
+      location: event.location,
+      repeat: event.repeat,
+      alt_key: event.altKey,
+      ctrl_key: event.ctrlKey,
+      meta_key: event.metaKey,
+      shift_key: event.shiftKey,
+    })
+  },
+
+  pointerPayload(event) {
+    const payload = {
+      ...this.targetPayload(event.target),
+      client_x: event.clientX,
+      client_y: event.clientY,
+      alt_key: event.altKey,
+      ctrl_key: event.ctrlKey,
+      meta_key: event.metaKey,
+      shift_key: event.shiftKey,
+    }
+
+    const svg = event.target.closest?.("svg")
+    if (!svg) return payload
+
+    return { ...payload, ...this.svgPoint(svg, event) }
+  },
+
+  targetPayload(target) {
+    const page = target.closest?.("[data-role='local-ehwp-page']")
+    const text = target.closest?.("text")
+
+    return {
+      document_id: this.el.dataset.localDocumentId,
+      page_index: this.parseInteger(page?.dataset.pageIndex),
+      page_number: this.parseInteger(page?.dataset.pageNumber),
+      target_text: text?.textContent?.trim() || null,
+    }
+  },
+
+  svgPoint(svg, event) {
+    const point = svg.createSVGPoint?.()
+    const matrix = svg.getScreenCTM?.()
+
+    if (point && matrix) {
+      point.x = event.clientX
+      point.y = event.clientY
+      const transformed = point.matrixTransform(matrix.inverse())
+      return { x: transformed.x, y: transformed.y }
+    }
+
+    const rect = svg.getBoundingClientRect()
+    const viewBox = svg.viewBox?.baseVal
+
+    if (viewBox?.width && viewBox?.height && rect.width && rect.height) {
+      return {
+        x: viewBox.x + ((event.clientX - rect.left) / rect.width) * viewBox.width,
+        y: viewBox.y + ((event.clientY - rect.top) / rect.height) * viewBox.height,
+      }
+    }
+
+    return {}
+  },
+
+  parseInteger(value) {
+    const parsed = Number.parseInt(value, 10)
+    return Number.isFinite(parsed) ? parsed : null
+  },
+
+  isEditableTarget(target) {
+    return target?.matches?.("input, textarea, [contenteditable='true']")
+  },
+
+  startEditFromEvent(event) {
+    const text = event.target.closest?.("text")
+    if (!text || !this.el.contains(text)) return
+
+    const query = text.textContent?.trim()
+    if (!query) return
+
+    event.preventDefault()
+    event.stopPropagation()
+    this.openInlineEditor(text, query)
+  },
+
+  openInlineEditor(text, query) {
+    this.removeActiveEditor()
+
+    const input = document.createElement("input")
+    input.type = "text"
+    input.value = query
+    input.setAttribute("aria-label", "Replace text")
+    input.className = "ehwp-inline-edit rounded border border-base-content/30 bg-base-100 px-2 py-1 text-sm shadow-sm outline-none ring-2 ring-base-content/15"
+
+    const rect = text.getBoundingClientRect()
+    const host = this.el.getBoundingClientRect()
+    input.style.position = "absolute"
+    input.style.zIndex = "20"
+    input.style.left = `${Math.max(0, rect.left - host.left + this.el.scrollLeft)}px`
+    input.style.top = `${Math.max(0, rect.top - host.top + this.el.scrollTop)}px`
+    input.style.width = `${Math.max(80, rect.width + 24)}px`
+
+    let committed = false
+    const commit = async () => {
+      if (committed) return
+      committed = true
+      const replacement = input.value
+      this.removeActiveEditor()
+      if (replacement === query) return
+
+      const reply = await this.pushEventReply("ehwp.local.replace_one", {
+        document_id: this.el.dataset.localDocumentId,
+        query,
+        replacement,
+      })
+
+      if (reply?.error) console.warn("[ehwp] replace failed", reply.error)
+    }
+
+    const cancel = () => this.removeActiveEditor()
+    input.addEventListener("keydown", event => {
+      if (event.key === "Enter") {
+        event.preventDefault()
+        commit()
+      } else if (event.key === "Escape") {
+        event.preventDefault()
+        cancel()
+      }
+    })
+    input.addEventListener("blur", commit)
+
+    this.el.appendChild(input)
+    this.activeEditor = input
+    input.focus()
+    input.select()
+  },
+
+  removeActiveEditor() {
+    this.activeEditor?.remove()
+    this.activeEditor = null
+  },
+
+  pushEventReply(event, payload) {
+    return new Promise(resolve => this.pushEvent(event, payload, resolve))
   },
 }
 
@@ -482,7 +686,7 @@ const LocalChatRailResizer = {
 const liveSocket = new LiveSocket("/live", Socket, {
   longPollFallbackMs: 2500,
   params: {_csrf_token: csrfToken},
-  hooks: {...colocatedHooks, DirectR2Upload, LocalChatRailResizer},
+  hooks: {...colocatedHooks, DirectR2Upload, LocalEhwpEditor, LocalChatRailResizer},
 })
 
 // Show progress bar on live navigation and form submits

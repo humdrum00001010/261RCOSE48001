@@ -71,6 +71,35 @@ defmodule Ecrits.Local.DocumentTest do
     assert {:error, :unsupported_format} = Document.detect_format("sample.txt", "bytes")
   end
 
+  test "detects Microsoft Office formats by extension" do
+    assert {:ok, "doc"} = Document.detect_format("sample.doc", "bytes")
+    assert {:ok, "docx"} = Document.detect_format("sample.docx", <<"PK", 3, 4, 0>>)
+    assert {:ok, "xlsx"} = Document.detect_format("sample.xlsx", "bytes")
+    assert {:ok, "pptx"} = Document.detect_format("sample.pptx", "bytes")
+    assert {:ok, "rtf"} = Document.detect_format("sample.rtf", "bytes")
+    assert Document.libreoffice_format?("docx")
+    refute Document.libreoffice_format?("hwpx")
+    assert Document.ehwp_format?("hwpx")
+  end
+
+  test "opens a local docx document and creates metadata", %{root: root} do
+    source = "docx fixture"
+    path = Path.join(root, "contract.docx")
+    File.write!(path, source)
+
+    assert {:ok, %Document{} = document} = Document.open(root, "contract.docx")
+    assert document.format == "docx"
+    assert document.revision == 0
+    assert document.byte_size == byte_size(source)
+
+    paths = Document.metadata_paths(document)
+    index = decode_json!(paths.index)
+    assert index["format"] == "docx"
+    assert index["canonical"]["sha256"] == Document.sha256(source)
+
+    assert :ok = Document.close(document)
+  end
+
   test "checkpoint writes local snapshot without replacing canonical file", %{root: root} do
     path = Path.join(root, "contract.hwp")
     original = hwp_fixture()

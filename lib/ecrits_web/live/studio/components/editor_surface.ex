@@ -6,6 +6,7 @@ defmodule EcritsWeb.Live.Studio.Components.EditorSurface do
   use EcritsWeb, :html
 
   alias EcritsWeb.Live.Studio.Components.Canvas.LocalHwpPages
+  alias EcritsWeb.Live.Studio.Components.Canvas.LocalOfficeTiles
 
   attr :id, :string, default: "studio-root"
   attr :shell_id, :string, required: true
@@ -17,6 +18,7 @@ defmodule EcritsWeb.Live.Studio.Components.EditorSurface do
   attr :save_state, :string, required: true
   attr :hwp_pages, :any, required: true
   attr :hwp_page_count, :integer, default: 0
+  attr :hwp_stream_loading?, :boolean, default: false
 
   def local_document(assigns) do
     assigns = assign(assigns, :document_path, assigns.document.relative_path)
@@ -114,6 +116,7 @@ defmodule EcritsWeb.Live.Studio.Components.EditorSurface do
             <div class="relative h-full min-h-0 w-full">
               <div id={@frame_id} class="contents">
                 <LocalHwpPages.render
+                  :if={ehwp_format?(@document.format)}
                   id={@canvas_id}
                   pages={@hwp_pages}
                   page_count={@hwp_page_count}
@@ -121,6 +124,16 @@ defmodule EcritsWeb.Live.Studio.Components.EditorSurface do
                   document_id={@document.id}
                   local_document_format={@document.format}
                   local_document_revision={@document.revision}
+                />
+                <LocalOfficeTiles.render
+                  :if={!ehwp_format?(@document.format)}
+                  id={@canvas_id}
+                  tiles={@hwp_pages}
+                  page_count={@hwp_page_count}
+                  document_id={@document.id}
+                  local_document_format={@document.format}
+                  local_document_revision={@document.revision}
+                  loading?={@hwp_stream_loading?}
                 />
               </div>
             </div>
@@ -130,6 +143,8 @@ defmodule EcritsWeb.Live.Studio.Components.EditorSurface do
     </div>
     """
   end
+
+  defp ehwp_format?(format), do: format in ~w(hwp hwpx)
 
   defp toggle_local_fullscreen(js \\ %JS{}) do
     js

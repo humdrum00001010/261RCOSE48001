@@ -11,7 +11,9 @@ defmodule Ecrits.Local.Document do
   alias Ecrits.Local.Document.Supervisor
   alias Ecrits.Local.Path, as: LocalPath
 
-  @formats ~w(hwp hwpx)
+  @ehwp_formats ~w(hwp hwpx)
+  @libreoffice_formats ~w(doc docx docm dot dotx dotm xls xlsx xlsm xlt xltx xltm ppt pptx pptm pps ppsx ppsm pot potx potm rtf)
+  @formats @ehwp_formats ++ @libreoffice_formats
   @hwp_content_type "application/x-hwp"
   @hwpx_content_type "application/vnd.hancom.hwpx"
   @hwp_min_byte_size 512
@@ -149,9 +151,15 @@ defmodule Ecrits.Local.Document do
   end
 
   def detect_format(path_or_name, bytes) when is_binary(path_or_name) and is_binary(bytes) do
-    with {:ok, format} <- detect_magic(bytes),
-         :ok <- verify_extension_format(path_or_name, format) do
-      {:ok, format}
+    case extension_format(path_or_name) do
+      {:ok, format} when format in @libreoffice_formats ->
+        {:ok, format}
+
+      _other ->
+        with {:ok, format} <- detect_magic(bytes),
+             :ok <- verify_extension_format(path_or_name, format) do
+          {:ok, format}
+        end
     end
   end
 
@@ -174,6 +182,28 @@ defmodule Ecrits.Local.Document do
   @spec content_type(format()) :: String.t()
   def content_type("hwp"), do: @hwp_content_type
   def content_type("hwpx"), do: @hwpx_content_type
+  def content_type("doc"), do: "application/msword"
+
+  def content_type("docx"),
+    do: "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
+  def content_type("xls"), do: "application/vnd.ms-excel"
+
+  def content_type("xlsx"),
+    do: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+  def content_type("ppt"), do: "application/vnd.ms-powerpoint"
+
+  def content_type("pptx"),
+    do: "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+
+  def content_type(_format), do: "application/octet-stream"
+
+  @spec ehwp_format?(format()) :: boolean()
+  def ehwp_format?(format), do: format in @ehwp_formats
+
+  @spec libreoffice_format?(format()) :: boolean()
+  def libreoffice_format?(format), do: format in @libreoffice_formats
 
   @spec id_for(String.t(), String.t()) :: String.t()
   def id_for(workspace_root, relative_path)
@@ -233,10 +263,16 @@ defmodule Ecrits.Local.Document do
   end
 
   defp extension_format(path_or_name) do
-    case path_or_name |> Path.extname() |> String.downcase() do
-      ".hwp" -> {:ok, "hwp"}
-      ".hwpx" -> {:ok, "hwpx"}
-      _ -> :unknown
+    format =
+      path_or_name
+      |> Path.extname()
+      |> String.trim_leading(".")
+      |> String.downcase()
+
+    if format in @formats do
+      {:ok, format}
+    else
+      :unknown
     end
   end
 

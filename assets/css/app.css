@@ -245,6 +245,11 @@ body[data-chat-rail-dragging="true"] {
   padding: 32px 16px;
 }
 
+.ehwp-document-stack--local {
+  gap: 0;
+  padding: 0;
+}
+
 .ehwp-svg-page {
   position: relative;
   width: min(100%, 794px);
@@ -261,19 +266,16 @@ body[data-chat-rail-dragging="true"] {
 
 /* A Tailwind plugin that makes "hero-#{ICON}" classes available.
    The heroicons installation itself is managed by your mix.exs */
-@plugin "../vendor/heroicons";
+@plugin "./plugins/heroicons";
 
-/* daisyUI Tailwind Plugin. You can update this file by fetching the latest version with:
-   curl -sLO https://github.com/saadeghi/daisyui/releases/latest/download/daisyui.js
-   Make sure to look at the daisyUI changelog: https://daisyui.com/docs/changelog/ */
-@plugin "../vendor/daisyui" {
+@plugin "daisyui" {
   themes: false;
 }
 
 /* ecrits "studio" theme — quiet, low-chroma surfaces with an
    emerald primary, slate-blue secondary, amber accent. Tuned for long
    contract-reading sessions; see SPEC.md §10 for the design rationale. */
-@plugin "../vendor/daisyui-theme" {
+@plugin "daisyui/theme" {
   name: "studio";
   default: true;
   prefersdark: false;
@@ -312,7 +314,7 @@ body[data-chat-rail-dragging="true"] {
   --noise: 0;
 }
 
-@plugin "../vendor/daisyui-theme" {
+@plugin "daisyui/theme" {
   name: "studio-dark";
   default: false;
   prefersdark: false;

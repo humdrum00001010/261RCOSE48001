@@ -26,10 +26,7 @@ erl_crash.dump
 contract-*.tar
 
 # Ignore assets that are produced by build tools.
-# vendored rhwp 디렉토리는 별도 repo(/Users/phihu/rhwp)의 산출물이라 디렉토리
-# descent만 유지하고, 큰 바이너리(.wasm)는 따로 제외한다.
 /priv/static/assets/*
-!/priv/static/assets/rhwp/
 !/priv/static/assets/standard_contracts/
 /priv/static/assets/standard_contracts/*
 !/priv/static/assets/standard_contracts/employment_v1.editables.json
@@ -48,14 +45,14 @@ contract-*.tar
 # In case you use Node.js/npm, you want to ignore these.
 npm-debug.log
 /assets/node_modules/
+/assets/vendor/
 
 # App-local RHWP source/native runtime is provided by the ehwp dependency now.
-/vendor/rhwp/
-/native/rhwp_runtime/
+/vendor/
+/native/
 
 # Native NIF build outputs.
 /priv/native/
-/native/**/target/
 
 # Local environment file (secrets, never commit).
 /.env

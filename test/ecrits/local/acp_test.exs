@@ -3,6 +3,7 @@ defmodule Ecrits.Local.ACPTest do
 
   alias Ecrits.Context
   alias Ecrits.Local.ACP
+  alias Ecrits.Local.Agent.Adapters.Fake
 
   @ctx %Context{
     user: %Ecrits.Accounts.User{
@@ -59,6 +60,49 @@ defmodule Ecrits.Local.ACPTest do
 
     assert reason =~ "provider_unavailable"
     assert reason =~ "external"
+  end
+
+  test "Orchex configured by ACP drives existing local agent sessions" do
+    id = Ecto.UUID.generate()
+
+    on_exit(fn ->
+      case ACP.whereis(id) do
+        pid when is_pid(pid) -> GenServer.stop(pid)
+        nil -> :ok
+      end
+    end)
+
+    :ok = Orchex.subscribe()
+
+    assert {:ok, aid} =
+             Orchex.spawn([ctx: @ctx, provider: "codex", adapter: Fake], id)
+
+    assert_receive {:orchex, {:agent_spawned, ^aid, _role, ^id}}, 1_000
+
+    :ok = ACP.subscribe(id)
+
+    assert {:ok, %{id: turn_id, session_id: ^id, status: :running}} =
+             Orchex.query(aid, "hello", sender: :user)
+
+    assert_receive {:local_agent_event, %{type: :turn_started, turn_id: ^turn_id}}, 1_000
+
+    assert_receive {:local_agent_event,
+                    %{type: :text_delta, turn_id: ^turn_id, delta: "Fake response: "}},
+                   1_000
+
+    assert_receive {:local_agent_event, %{type: :text_delta, turn_id: ^turn_id, delta: "hello"}},
+                   1_000
+
+    assert_receive {:local_agent_event,
+                    %{type: :turn_completed, turn_id: ^turn_id, text: "Fake response: hello"}},
+                   1_000
+
+    assert pid = ACP.whereis(id)
+    ref = Process.monitor(pid)
+
+    assert :ok = Orchex.kill(aid)
+    assert_receive {:orchex, {:agent_killed, ^aid}}, 1_000
+    assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, 1_000
   end
 
   defp start_acp_session(opts) do

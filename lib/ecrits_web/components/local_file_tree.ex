@@ -10,6 +10,8 @@ defmodule EcritsWeb.Components.LocalFileTree do
   attr :expanded_paths, :any, required: true
   attr :selected_path, :string, default: nil
 
+  @open_extensions ~w(hwp hwpx doc docx docm dot dotx dotm xls xlsx xlsm xlt xltx xltm ppt pptx pptm pps ppsx ppsm pot potx potm rtf)
+
   def tree(assigns) do
     ~H"""
     <nav id={@id} aria-label="Workspace files" class="text-sm">
@@ -143,7 +145,8 @@ defmodule EcritsWeb.Components.LocalFileTree do
 
   defp visible_nodes(nodes), do: Enum.filter(nodes, &visible_node?/1)
 
-  defp visible_node?(node), do: directory?(node) or extension(node) in ["hwp", "hwpx", "md"]
+  defp visible_node?(node),
+    do: directory?(node) or extension(node) in (@open_extensions ++ ["md"])
 
   defp selected?(node, selected_path),
     do: not directory?(node) and node_path(node) == selected_path
@@ -179,7 +182,7 @@ defmodule EcritsWeb.Components.LocalFileTree do
   defp capability(node) do
     cond do
       directory?(node) -> :none
-      extension(node) in ["hwp", "hwpx"] -> :open
+      extension(node) in @open_extensions -> :open
       extension(node) == "md" -> :select
       true -> :none
     end

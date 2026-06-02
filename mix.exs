@@ -70,6 +70,10 @@ defmodule Ecrits.MixProject do
       {:dns_cluster, "~> 0.2.0"},
       {:bandit, "~> 1.5"},
       {:ehwp, git: "https://storage.cloudxyz.org/IlYoung/ehwp", branch: "main"},
+      {:libreofficex,
+       git: "https://storage.cloudxyz.org/IlYoung/libreofficex",
+       ref: "07170beab1d34a1e19667d48dba869d2e58972b8"},
+      {:orchex, git: "https://storage.cloudxyz.org/IlYoung/Orchex.git", branch: "main"},
       # ecrits extra deps.
       {:openai_ex, "~> 0.9"},
       {:dotenvy, "~> 1.0"},
@@ -90,7 +94,11 @@ defmodule Ecrits.MixProject do
   defp aliases do
     [
       setup: ["deps.get", "assets.setup", "assets.build"],
-      "assets.setup": ["tailwind.install --if-missing", "esbuild.install --if-missing"],
+      "assets.setup": [
+        "tailwind.install --if-missing",
+        "esbuild.install --if-missing",
+        "cmd npm ci --prefix assets"
+      ],
       "assets.build": ["compile", "tailwind ecrits", "esbuild ecrits"],
       "assets.deploy": [
         "tailwind ecrits --minify",
