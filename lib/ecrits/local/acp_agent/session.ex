@@ -35,6 +35,12 @@ defmodule Ecrits.Local.AcpAgent.Session do
   @registry Ecrits.Local.AcpAgent.SessionRegistry
   @pubsub Ecrits.PubSub
 
+  # Grace window for a cancelled turn's task to wind down its `AcpStream` cleanly
+  # (issue the ACP cancel + disconnect the client) before we hard-kill it. The
+  # stream's own `safe_disconnect/1` waits up to 2s on `GenServer.stop`, so allow
+  # a little more so the graceful path normally wins.
+  @cancel_grace_ms 5_000
+
   # ── public API ────────────────────────────────────────────────────
 
   def start_link(opts) do
@@ -153,8 +159,21 @@ defmodule Ecrits.Local.AcpAgent.Session do
         {:reply, {:error, :not_found}, state}
 
       true ->
-        if state.current.task_pid, do: Process.exit(state.current.task_pid, :kill)
+        # Cancel ONLY the in-flight turn while keeping THIS Session GenServer (and
+        # the conversation it anchors) alive. We ask the per-turn task to halt its
+        # `AcpStream` gracefully (`:acp_cancel_turn`) so the stream's `cleanup/1`
+        # runs the SAME teardown a normal turn completion uses — ACP cancel + clean
+        # client disconnect, which lets the provider subprocess flush its rollout so
+        # the NEXT turn resumes the same conversation. A brutal `Process.exit(task,
+        # :kill)` would skip that cleanup and tear the subprocess down mid-write,
+        # losing the conversation. A bounded fallback still hard-kills a task that
+        # refuses to wind down, so cancel can never hang.
         cancelled_turn_id = state.current.turn_id
+
+        if state.current.task_pid do
+          send(state.current.task_pid, :acp_cancel_turn)
+          Process.send_after(self(), {:force_kill_turn, state.current.task_pid}, @cancel_grace_ms)
+        end
 
         state =
           state
@@ -198,6 +217,15 @@ defmodule Ecrits.Local.AcpAgent.Session do
     else
       _ -> {:noreply, state}
     end
+  end
+
+  # Bounded fallback for a cancelled turn: if the per-turn task is still alive
+  # after the grace window (its `AcpStream` cleanup wedged), hard-kill it so it
+  # cannot linger. By now `current` has already been cleared, so this never
+  # affects a turn that started after the cancel.
+  def handle_info({:force_kill_turn, task_pid}, state) do
+    if is_pid(task_pid) and Process.alive?(task_pid), do: Process.exit(task_pid, :kill)
+    {:noreply, state}
   end
 
   def handle_info({ref, _result}, state) when is_reference(ref) do

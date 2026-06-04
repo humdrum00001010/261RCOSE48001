@@ -106,6 +106,16 @@ defmodule Ecrits.Local.AcpAgent.AcpStream do
     %{prompt_task: task, session_id: session_id, deadline: deadline} = state
 
     receive do
+      # Graceful turn cancel: halt the stream so `Stream.resource` runs `cleanup/1`,
+      # which issues the ACP cancel and disconnects the client cleanly (terminating
+      # the provider subprocess via `terminate/2` — the SAME teardown a normal turn
+      # completion uses). This must NOT be a `Process.exit(task, :kill)` from the
+      # Session: a brutal kill skips `cleanup/1`, propagates an untrappable `:kill`
+      # to the linked `ExMCP.ACP.Client`, and tears the subprocess down mid-flush so
+      # the next turn cannot resume the conversation.
+      :acp_cancel_turn ->
+        {:halt, %{state | done?: true}}
+
       {:acp_session_update, ^session_id, update} ->
         case map_update(update, state) do
           {:event, event, state} -> {[event], state}
