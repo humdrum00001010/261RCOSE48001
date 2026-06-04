@@ -1869,18 +1869,22 @@ defmodule EcritsWeb.Local.MountWorkspaceLiveTest do
 
     sync_liveview(lv)
 
+    # MDEx (GFM) emits standard semantic tags inside the `.chat-markdown`
+    # container (styling lives in app.css scoped to `.chat-markdown`).
     assert has_element?(
              lv,
-             "##{message_id} [data-role='chat-md-body'] [data-markdown-role='chat-md-paragraph'] strong",
+             "##{message_id} [data-role='chat-md-body'].chat-markdown p strong",
              "bold"
            )
 
-    assert has_element?(lv, "##{message_id} [data-role='chat-md-inline-code']", "inline()")
-    assert has_element?(lv, "##{message_id} [data-role='chat-md-list']", "first item")
+    assert has_element?(lv, "##{message_id} .chat-markdown p code", "inline()")
+    assert has_element?(lv, "##{message_id} .chat-markdown ul li", "first item")
 
     html = render(lv)
+    # MDEx runs with the default safe mode, so raw HTML is dropped rather than
+    # escaped — the script can never reach the DOM in any form.
     refute html =~ "<script>"
-    assert html =~ ~S|&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt;|
+    refute html =~ "alert(&quot;x&quot;)"
   end
 
   test "agent sidebar can cancel a running local agent turn", %{conn: conn} do

@@ -487,17 +487,16 @@ defmodule EcritsWeb.Live.Studio.Components.ChatRailTest do
         |> LazyHTML.from_fragment()
         |> LazyHTML.query(~s([data-role="agent-text"][data-message-id="chat-msg-agent-left"]))
 
-      # Agent prose is split into one paragraph span per `\n\n` chunk, so the
-      # rendered text picks up surrounding whitespace from the wrapper layout.
+      # MDEx wraps the completed prose in a plain <p> inside the
+      # `.chat-markdown` container; the styling lives in app.css scoped to
+      # `.chat-markdown`, so the tag carries no inline class.
       assert agent_text |> LazyHTML.text() |> String.trim() == "왼쪽에서 시작해야 합니다."
 
-      [paragraph_class] =
-        html
-        |> LazyHTML.from_fragment()
-        |> LazyHTML.query(~s(#chat-msg-agent-left [data-role="agent-paragraph"]))
-        |> LazyHTML.attribute("class")
-
-      refute paragraph_class =~ "whitespace-pre"
+      assert html
+             |> LazyHTML.from_fragment()
+             |> LazyHTML.query(~s(#chat-msg-agent-left .chat-markdown p))
+             |> LazyHTML.text()
+             |> String.trim() == "왼쪽에서 시작해야 합니다."
 
       [class] =
         agent_text
@@ -544,50 +543,42 @@ defmodule EcritsWeb.Live.Studio.Components.ChatRailTest do
 
       fragment = LazyHTML.from_fragment(html)
 
-      assert html =~ ~s(data-markdown-role="chat-md-paragraph")
-      assert html =~ ~s(data-role="chat-md-list")
-      assert html =~ ~s(data-role="chat-md-blockquote")
-      assert html =~ ~s(data-role="chat-md-code-block")
-      assert html =~ ~s(data-role="chat-md-code-language")
+      # MDEx (comrak GFM) emits standard semantic tags inside the
+      # `.chat-markdown` container; styling is in app.css, not inline.
+      assert fragment |> LazyHTML.query(".chat-markdown p") |> Enum.any?()
+      assert fragment |> LazyHTML.query(".chat-markdown ul li") |> Enum.any?()
+      assert fragment |> LazyHTML.query(".chat-markdown blockquote") |> Enum.any?()
+      # Fenced code block: a <pre><code class="language-elixir"> with MDEx's
+      # inlined syntax-highlight styles.
+      assert fragment |> LazyHTML.query(".chat-markdown pre code") |> Enum.any?()
 
       assert fragment |> LazyHTML.query("strong") |> LazyHTML.text() |> String.trim() == "bold"
       assert fragment |> LazyHTML.query("em") |> LazyHTML.text() |> String.trim() == "emphasis"
 
+      # Inline code is a bare <code> (not inside <pre>).
       assert fragment
-             |> LazyHTML.query(~s(code[data-role="chat-md-inline-code"]))
+             |> LazyHTML.query(".chat-markdown p code")
              |> LazyHTML.text()
              |> String.trim() == "inline()"
-
-      [inline_code_class] =
-        fragment
-        |> LazyHTML.query(~s(code[data-role="chat-md-inline-code"]))
-        |> LazyHTML.attribute("class")
-
-      assert inline_code_class =~ "inline-block"
-      assert inline_code_class =~ "max-w-full"
-      assert inline_code_class =~ "overflow-hidden"
-      assert inline_code_class =~ "text-ellipsis"
-      assert inline_code_class =~ "whitespace-nowrap"
-      refute inline_code_class =~ "bg-"
-      refute inline_code_class =~ "border"
-      refute inline_code_class =~ "rounded"
 
       assert LazyHTML.attribute(LazyHTML.query(fragment, "a"), "href") == [
                "https://example.com/docs"
              ]
 
-      assert fragment
-             |> LazyHTML.query(~s([data-role="chat-md-code-language"]))
-             |> LazyHTML.text()
-             |> String.trim() == "elixir"
+      assert LazyHTML.attribute(LazyHTML.query(fragment, ".chat-markdown pre code"), "class") == [
+               "language-elixir"
+             ]
 
       assert fragment
-             |> LazyHTML.query(~s(pre[data-role="chat-md-code-text"]))
+             |> LazyHTML.query(".chat-markdown pre code")
              |> LazyHTML.text()
              |> String.trim() == "IO.puts(\"<safe>\")"
 
+      # MDEx runs with the default `unsafe: false`, so raw HTML in the source
+      # is DROPPED entirely (replaced by an HTML comment) rather than escaped —
+      # the agent/user can never inject live markup.
       refute html =~ "<script>"
-      assert html =~ ~S|&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt;|
+      refute html =~ "alert(&quot;x&quot;)"
     end
 
     test "user messages render Markdown without allowing raw HTML injection" do
@@ -616,8 +607,8 @@ defmodule EcritsWeb.Live.Studio.Components.ChatRailTest do
 
       fragment = LazyHTML.from_fragment(html)
 
-      assert html =~ ~s(data-role="chat-md-list")
-      assert html =~ ~s(data-list-kind="ordered")
+      # MDEx renders the ordered list as a standard <ol> inside `.chat-markdown`.
+      assert fragment |> LazyHTML.query(".chat-markdown ol li") |> Enum.any?()
 
       list_text =
         fragment
@@ -628,12 +619,13 @@ defmodule EcritsWeb.Live.Studio.Components.ChatRailTest do
       assert list_text =~ "second"
 
       assert fragment
-             |> LazyHTML.query(~s(code[data-role="chat-md-inline-code"]))
+             |> LazyHTML.query(".chat-markdown p code")
              |> LazyHTML.text()
              |> String.trim() == "<tag>"
 
+      # Raw inline HTML is dropped by MDEx's default safe mode, not escaped.
       refute html =~ "<b>raw html</b>"
-      assert html =~ ~s(&lt;b&gt;raw html&lt;/b&gt;)
+      refute html =~ ~s(&lt;b&gt;raw html&lt;/b&gt;)
     end
 
     test "tool call details stay plain escaped JSON instead of Markdown" do

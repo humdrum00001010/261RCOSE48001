@@ -46,6 +46,7 @@ defmodule Ecrits.MixProject do
       {:ecto, "~> 3.13"},
       {:ecto_sqlite3, "~> 0.23.0"},
       {:phoenix_html, "~> 4.1"},
+      {:mdex, "~> 0.12"},
       {:phoenix_live_reload, "~> 1.2", only: :dev},
       {:phoenix_live_view, "~> 1.1.0"},
       {:lazy_html, ">= 0.1.0", only: :test},
@@ -101,7 +102,7 @@ defmodule Ecrits.MixProject do
       ],
       # The rhwp_core WASM binary (`assets/vendor/rhwp/rhwp_bg.wasm`) is a vendored
       # build artifact (produced by `wasm-pack build --target web --out-dir
-      # assets/vendor/rhwp ~/Desktop/rhwp_core`). esbuild bundles the ES-module
+      # assets/vendor/rhwp <rhwp_core checkout>`). esbuild bundles the ES-module
       # glue (`rhwp.js`) into app.js, but the `.wasm` itself must be served as a
       # static file, so copy it under `priv/static/assets/rhwp/` where Plug.Static
       # (only: ~w(assets ...)) serves it at `/assets/rhwp/rhwp_bg.wasm`.
