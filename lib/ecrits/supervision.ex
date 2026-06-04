@@ -125,9 +125,8 @@ defmodule Ecrits.Supervision do
 
   defp local_agent_runtime_children do
     [
-      {Registry, keys: :unique, name: Ecrits.Local.Agent.SessionRegistry},
-      Ecrits.Local.Agent.SessionSupervisor,
-      Ecrits.Local.ACP
+      {Registry, keys: :unique, name: Ecrits.Local.AcpAgent.SessionRegistry},
+      Ecrits.Local.AcpAgent.SessionSupervisor
     ]
   end
 end

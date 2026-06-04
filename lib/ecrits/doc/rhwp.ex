@@ -14,9 +14,7 @@ defmodule Ecrits.Doc.Rhwp do
   edit-only NIF surface — `get/set_*_properties`, `apply_style`, structural
   verbs, and `save`/export — is a *future* `ehwp` revival (design §8 "다음" #1,
   #6). Until those NIFs land, the corresponding callbacks return
-  `{:error, {:not_supported, reason}}` rather than silently faking success
-  (the existing `Ecrits.Local.Agent.DocumentTools.write/2` takes the same
-  honest stance).
+  `{:error, {:not_supported, reason}}` rather than silently faking success.
 
   Mapped today:
 

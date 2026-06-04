@@ -46,6 +46,10 @@ defmodule EcritsWeb.Endpoint do
   plug Plug.RequestId
   plug Plug.Telemetry, event_prefix: [:phoenix, :endpoint]
 
+  # The `doc.*` MCP server (consumed by ACP agents over streamable HTTP) must run
+  # before Plug.Parsers so it can read the raw JSON-RPC body itself.
+  plug EcritsWeb.Plugs.DocToolsMCPPlug
+
   plug Plug.Parsers,
     parsers: [:urlencoded, :multipart, :json],
     pass: ["*/*"],

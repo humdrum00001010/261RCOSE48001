@@ -27,9 +27,9 @@ defmodule Ecrits.SupervisionTest do
              EcritsWeb.Endpoint,
              Ecrits.Local.Document.Registry,
              Ecrits.Local.Document.Supervisor,
-             Ecrits.Local.Agent.SessionRegistry,
-             Ecrits.Local.Agent.SessionSupervisor,
-             Ecrits.Local.ACP
+             Ecrits.Local.OfficeEditSupervisor,
+             Ecrits.Local.AcpAgent.SessionRegistry,
+             Ecrits.Local.AcpAgent.SessionSupervisor
            ]
   end
 end

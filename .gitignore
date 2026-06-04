@@ -49,6 +49,8 @@ npm-debug.log
 
 # App-local RHWP source/native runtime is provided by the ehwp dependency now.
 /vendor/
+# ...but the ex_mcp fork (ACP mcpServers forwarding) is a tracked path dependency.
+!/vendor/ex_mcp/
 /native/
 
 # Native NIF build outputs.

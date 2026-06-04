@@ -71,6 +71,13 @@ defmodule Ecrits.MixProject do
       {:dns_cluster, "~> 0.2.0"},
       {:file_system, "~> 1.0"},
       {:bandit, "~> 1.5"},
+      # Vendored fork of ex_mcp (upstream hex 0.10.0). Forked so the ACP Codex/Claude
+      # adapters can forward `mcpServers` to the provider launch config, which the
+      # published package drops. `override: true` because orchex pulls ex_mcp ~> 0.10.0.
+      {:ex_mcp, path: "vendor/ex_mcp", override: true},
+      # Headless HWP/HWPX NIF runtime backing `Ecrits.Doc.Rhwp` (the server arm of
+      # the doc-editing MCP). Provides the `Ehwp` facade used by the `doc.*` tools.
+      {:ehwp, git: "https://storage.cloudxyz.org/IlYoung/ehwp", branch: "main"},
       {:libreofficex,
        git: "https://storage.cloudxyz.org/IlYoung/libreofficex",
        branch: "main"},

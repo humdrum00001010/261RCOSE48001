@@ -5,7 +5,7 @@ defmodule EcritsWeb.Local.WorkspaceLive do
 
   use EcritsWeb, :live_view
 
-  alias Ecrits.Local.ACP
+  alias Ecrits.Local.AcpAgent, as: ACP
   alias Ecrits.Local.Document
   alias Ecrits.Local.Document.RhwpAdapter
   alias Ecrits.Local.Path, as: LocalPath
@@ -3357,9 +3357,6 @@ defmodule EcritsWeb.Local.WorkspaceLive do
   defp normalize_provider_id(provider)
        when provider in [:claude, :claude_cli, "claude", "claude_cli"],
        do: "claude"
-
-  defp normalize_provider_id(Ecrits.Local.Agent.Adapters.CodexAppServer), do: "codex"
-  defp normalize_provider_id(Ecrits.Local.Agent.Adapters.ClaudeCLI), do: "claude"
 
   defp normalize_provider_id(provider) when is_atom(provider) do
     provider

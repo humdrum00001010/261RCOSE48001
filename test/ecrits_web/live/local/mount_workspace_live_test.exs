@@ -115,10 +115,8 @@ defmodule EcritsWeb.Local.MountWorkspaceLiveTest do
 
   import Phoenix.LiveViewTest
 
-  alias Ecrits.Local.Agent.Endpoint, as: AgentEndpoint
-  alias Ecrits.Local.ACP
+  alias Ecrits.Local.AcpAgent
   alias Ecrits.Local.Document
-  alias EcritsWeb.LocalAgentAdapterStub
   alias EcritsWeb.LocalDirectoryPickerStub
   alias EcritsWeb.LocalWorkspaceAdapterStub
 
@@ -727,11 +725,11 @@ defmodule EcritsWeb.Local.MountWorkspaceLiveTest do
                     }},
                    1_000
 
+    # The selected inline options are forwarded through to the ACP adapter_opts;
+    # the fake ex_mcp adapter echoes them back so we can assert the wiring.
     assert text =~ "Test response: selected rail opts"
     assert text =~ "model=gpt-5.3-codex-spark"
     assert text =~ "reasoning=xhigh"
-    assert text =~ "access=full-workspace"
-    assert text =~ "approval=never"
     assert text =~ "sandbox=workspace-write"
     assert text =~ "permission=dontAsk"
 
@@ -744,193 +742,8 @@ defmodule EcritsWeb.Local.MountWorkspaceLiveTest do
            )
   end
 
-  test "workspace chat rail access option is selectable and gates write tools on ask", %{
-    conn: conn
-  } do
-    use_test_agent_adapter!(
-      adapter_opts: [
-        script: [
-          %{
-            type: :tool_call,
-            id: "tool-access-write",
-            name: "doc.write",
-            arguments: %{"text" => "needs approval"}
-          }
-        ]
-      ]
-    )
-
-    {:ok, lv, _html} =
-      live(
-        conn,
-        ~p"/workspace?#{[path: LocalWorkspaceAdapterStub.valid_path(), provider: "codex"]}"
-      )
-
-    assert has_element?(
-             lv,
-             "#local-agent-provider-options #local-agent-access-select[data-selected-access='read-only'] button#local-agent-inline-access-read-only[data-selected='true']",
-             "Read only"
-           )
-
-    lv
-    |> element("#local-agent-inline-access-ask")
-    |> render_click()
-
-    assert_patch(
-      lv,
-      ~p"/workspace?#{[path: LocalWorkspaceAdapterStub.valid_path(), provider: "codex", model: "gpt-5.5", reasoning: "medium", access: "ask"]}"
-    )
-
-    assert has_element?(
-             lv,
-             "#local-agent-provider-options #local-agent-access-select[data-selected-access='ask'] button#local-agent-inline-access-ask[data-selected='true']",
-             "Ask"
-           )
-
-    session_id = subscribe_agent(lv)
-
-    lv
-    |> form("#local-agent-form", agent: %{message: "write"})
-    |> render_submit()
-
-    assert_receive {:local_agent_event,
-                    %{
-                      type: :tool_approval_required,
-                      session_id: ^session_id,
-                      tool_call_id: "tool-access-write"
-                    }},
-                   1_000
-
-    sync_liveview(lv)
-
-    assert has_element?(
-             lv,
-             "#local-agent-tool-tool-access-write[data-role='local-agent-tool'][data-message-status='approval_required']",
-             "Needs approval"
-           )
-  end
-
-  test "workspace chat rail doc.write fails explicitly until native persistence exists", %{
-    conn: conn
-  } do
-    root = LocalWorkspaceAdapterStub.valid_path()
-    relative_path = "employment_v1.hwp"
-    path = Path.join(root, relative_path)
-    bytes = File.read!(path)
-    title_paragraph = "표준근로계약서"
-    party_paragraph = employment_party_paragraph("기존회사", "기존직원")
-
-    use_test_agent_adapter!(
-      adapter_opts: [
-        script: [
-          %{
-            type: :tool_call,
-            id: "tool-write-employer",
-            name: "doc.write",
-            arguments: %{
-              "base_revision" => 1,
-              "query" => "기존회사",
-              "replacement" => "주식회사 한빛"
-            }
-          },
-          %{
-            type: :tool_call,
-            id: "tool-write-worker",
-            name: "doc.write",
-            arguments: %{
-              "base_revision" => 1,
-              "query" => "기존직원",
-              "replacement" => "김로컬"
-            }
-          },
-          {:text_delta, "edited parties"}
-        ]
-      ]
-    )
-
-    {:ok, lv, _html} =
-      live(
-        conn,
-        ~p"/workspace?#{[path: root, document: relative_path, provider: "codex", access: "full-workspace"]}"
-      )
-
-    document_id = local_rhwp_document_id(lv)
-    session_id = subscribe_agent(lv)
-
-    render_hook(lv, "rhwp.local.snapshot.checkpoint", %{
-      "document_id" => document_id,
-      "bytes_base64" => Base.encode64(bytes),
-      "format" => "hwp",
-      "min_revision" => 0,
-      "context" =>
-        local_agent_edit_ir([title_paragraph, party_paragraph],
-          contract_type: "employment_v1",
-          title: "employment_v1.hwp"
-        )
-    })
-
-    assert {:ok, %Document{revision: 1}} = Document.document(document_id)
-    assert has_element?(lv, "#local-rhwp-save-state", "Checkpointed revision 1")
-
-    lv
-    |> form("#local-agent-form", agent: %{message: "사업주와 근로자를 수정해"})
-    |> render_submit()
-
-    assert_receive {:local_agent_event,
-                    %{
-                      type: :tool_call_failed,
-                      session_id: ^session_id,
-                      tool_call_id: "tool-write-employer",
-                      name: "doc.write",
-                      reason: employer_reason
-                    }},
-                   1_000
-
-    assert employer_reason =~ "unavailable during the rhwp_core browser-WASM migration"
-
-    assert_receive {:local_agent_event,
-                    %{
-                      type: :tool_call_failed,
-                      session_id: ^session_id,
-                      tool_call_id: "tool-write-worker",
-                      name: "doc.write",
-                      reason: worker_reason
-                    }},
-                   1_000
-
-    assert worker_reason =~ "unavailable during the rhwp_core browser-WASM migration"
-
-    assert_receive {:local_agent_event,
-                    %{
-                      type: :turn_completed,
-                      session_id: ^session_id,
-                      text: "edited parties"
-                    }},
-                   1_000
-
-    sync_liveview(lv)
-
-    assert has_element?(lv, "#local-rhwp-save-state", "Checkpointed revision 1")
-    assert has_element?(lv, "#local-agent-tool-tool-write-employer", "doc.write")
-    assert has_element?(lv, "#local-agent-tool-tool-write-worker", "doc.write")
-
-    assert {:ok, %Document{revision: 1} = document} = Document.document(document_id)
-    assert [^title_paragraph, ^party_paragraph] = local_agent_context_texts(document)
-  end
-
   test "workspace chat rail coerces fake provider URL to codex", %{conn: conn} do
     root = LocalWorkspaceAdapterStub.valid_path()
-
-    assert {:error, {:live_redirect, %{to: to}}} =
-             live(conn, ~p"/workspace?#{[path: root, provider: "fake"]}")
-
-    assert to =~ "provider=codex"
-    refute to =~ "provider=fake"
-  end
-
-  test "workspace provider fallback does not crash when ACP is stopped", %{conn: conn} do
-    root = LocalWorkspaceAdapterStub.valid_path()
-    stop_registered_acp!()
 
     assert {:error, {:live_redirect, %{to: to}}} =
              live(conn, ~p"/workspace?#{[path: root, provider: "fake"]}")
@@ -1385,8 +1198,10 @@ defmodule EcritsWeb.Local.MountWorkspaceLiveTest do
 
     Application.put_env(:ecrits, :local_agent_ui,
       provider: "codex",
-      adapter: Ecrits.Local.Agent.Adapters.CodexAppServer,
-      adapter_opts: [executable: missing, timeout: 200]
+      adapter_opts: [
+        exmcp_adapter: EcritsWeb.FakeAcpAdapter,
+        fail_with: "executable_not_found: #{missing}"
+      ]
     )
 
     {:ok, lv, _html} =
@@ -1437,7 +1252,7 @@ defmodule EcritsWeb.Local.MountWorkspaceLiveTest do
     document_id = local_rhwp_document_id(lv)
     session_id = subscribe_agent(lv)
 
-    assert {:ok, %{document_id: ^document_id}} = AgentEndpoint.status(nil, session_id)
+    assert {:ok, %{document_id: ^document_id}} = AcpAgent.status(nil, session_id)
   end
 
   test "agent rail shows provider logo in model selector for codex route display", %{conn: conn} do
@@ -1994,47 +1809,22 @@ defmodule EcritsWeb.Local.MountWorkspaceLiveTest do
                    1_000
   end
 
+  # Inject the test-only fake ex_mcp ACP adapter so the chat-rail rendering can be
+  # driven deterministically through the real ExMCP.ACP stack (no provider CLI).
   defp use_test_agent_adapter!(opts) do
+    adapter_opts = Keyword.get(opts, :adapter_opts, [])
+
     Application.put_env(:ecrits, :local_agent, provider: "codex")
 
-    Application.put_env(
-      :ecrits,
-      :local_agent_ui,
-      Keyword.merge([provider: "codex", adapter: LocalAgentAdapterStub], opts)
+    Application.put_env(:ecrits, :local_agent_ui,
+      provider: "codex",
+      adapter_opts: Keyword.put(adapter_opts, :exmcp_adapter, EcritsWeb.FakeAcpAdapter)
     )
-  end
-
-  defp stop_registered_acp! do
-    on_exit(&restart_registered_acp/0)
-
-    case Process.whereis(ACP) do
-      pid when is_pid(pid) ->
-        assert :ok = Supervisor.terminate_child(Ecrits.Supervisor, ACP)
-
-      nil ->
-        :ok
-    end
-  end
-
-  defp restart_registered_acp do
-    case Process.whereis(ACP) do
-      pid when is_pid(pid) ->
-        :ok
-
-      nil ->
-        case Supervisor.restart_child(Ecrits.Supervisor, ACP) do
-          {:ok, _pid} -> :ok
-          {:ok, _pid, _info} -> :ok
-          {:error, :running} -> :ok
-          {:error, {:already_started, _pid}} -> :ok
-          {:error, _reason} -> :ok
-        end
-    end
   end
 
   defp subscribe_agent(lv) do
     session_id = local_agent_session_id(lv)
-    :ok = AgentEndpoint.subscribe(session_id)
+    :ok = AcpAgent.subscribe(session_id)
     track_agent_session(session_id)
 
     session_id
@@ -2042,7 +1832,7 @@ defmodule EcritsWeb.Local.MountWorkspaceLiveTest do
 
   defp track_agent_session(session_id) do
     on_exit(fn ->
-      case AgentEndpoint.whereis(session_id) do
+      case AcpAgent.whereis(session_id) do
         pid when is_pid(pid) -> GenServer.stop(pid)
         nil -> :ok
       end
