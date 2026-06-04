@@ -102,6 +102,7 @@ defmodule EcritsWeb.Local.WorkspaceLive do
      # path above is the graceful fallback.
      |> assign(:office_edit_session, nil)
      |> assign(:office_edit_document_id, nil)
+     |> assign(:office_edit_document, nil)
      |> assign(:page_title, "Workspace")
      |> assign(:workspace, nil)
      |> assign(:workspace_path, nil)
@@ -633,6 +634,44 @@ defmodule EcritsWeb.Local.WorkspaceLive do
        y: caret.y,
        height: caret.height
      })}
+  end
+
+  # The async LOK open finished: hand the metadata to the hook so it builds the
+  # page/slide boxes and starts painting. Ignored if the session was torn down
+  # (navigated away) while opening.
+  def handle_info({:office_edit, {:opened, info}}, socket) do
+    if socket.assigns[:office_edit_session] do
+      {:noreply,
+       socket
+       |> assign(:local_hwp_stream_loading?, false)
+       |> push_event("office_edit_open", %{
+         document_id: socket.assigns[:office_edit_document_id],
+         revision: socket.assigns[:local_hwp_stream_revision],
+         doc_type: to_string(info.doc_type),
+         part_count: info.part_count,
+         page_count: info.page_count,
+         # Per-part px geometry so the hook sizes each slide box to its REAL
+         # (landscape) dims before painting (no portrait clip).
+         parts_geometry: Map.get(info, :parts_geometry, [])
+       })}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  # The async LOK open failed: fall back to the read-only PDF-tile path.
+  def handle_info({:office_edit, {:open_error, _reason}}, socket) do
+    document = socket.assigns[:office_edit_document]
+    socket = tear_down_office_edit_session(socket)
+
+    socket =
+      if match?(%Document{}, document) do
+        subscribe_read_only_office(socket, document)
+      else
+        assign(socket, :local_hwp_stream_loading?, false)
+      end
+
+    {:noreply, socket}
   end
 
   def handle_info({:office_edit, {:error, _reason}}, socket) do
@@ -2508,33 +2547,22 @@ defmodule EcritsWeb.Local.WorkspaceLive do
     try do
       case Ecrits.Local.OfficeEditSession.start(document.path, owner: self()) do
         {:ok, pid} ->
-          case Ecrits.Local.OfficeEditSession.info(pid) do
-            {:ok, info} ->
-              socket =
-                socket
-                |> assign(:office_edit_session, pid)
-                |> assign(:office_edit_document_id, document.id)
-                |> assign(:local_hwp_stream_renderer, :libreofficex_edit)
-                |> assign(:local_hwp_stream_document_id, document.id)
-                |> assign(:local_hwp_stream_revision, document.revision)
-                |> assign(:local_hwp_stream_loading?, true)
-                |> push_event("office_edit_open", %{
-                  document_id: document.id,
-                  revision: document.revision,
-                  doc_type: to_string(info.doc_type),
-                  part_count: info.part_count,
-                  page_count: info.page_count,
-                  # Per-part px geometry so the hook sizes each slide box to its
-                  # REAL (landscape) dims before painting (no portrait clip).
-                  parts_geometry: Map.get(info, :parts_geometry, [])
-                })
+          # Optimistic: the session opens the document async (~0.5s LOK load) and
+          # notifies us with `{:office_edit, {:opened, info}}` (-> push
+          # office_edit_open) or `{:office_edit, {:open_error, _}}` (-> fall back
+          # to the read-only path). We show the editor shell in a loading state
+          # immediately so the open never blocks/freezes the LiveView.
+          socket =
+            socket
+            |> assign(:office_edit_session, pid)
+            |> assign(:office_edit_document_id, document.id)
+            |> assign(:office_edit_document, document)
+            |> assign(:local_hwp_stream_renderer, :libreofficex_edit)
+            |> assign(:local_hwp_stream_document_id, document.id)
+            |> assign(:local_hwp_stream_revision, document.revision)
+            |> assign(:local_hwp_stream_loading?, true)
 
-              {:ok, socket}
-
-            {:error, _reason} ->
-              _ = Ecrits.Local.OfficeEditSession.close(pid)
-              {:fallback, socket}
-          end
+          {:ok, socket}
 
         {:error, _reason} ->
           {:fallback, socket}
@@ -2567,6 +2595,7 @@ defmodule EcritsWeb.Local.WorkspaceLive do
         socket
         |> assign(:office_edit_session, nil)
         |> assign(:office_edit_document_id, nil)
+        |> assign(:office_edit_document, nil)
 
       _ ->
         socket

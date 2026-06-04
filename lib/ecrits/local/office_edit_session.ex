@@ -55,6 +55,10 @@ defmodule Ecrits.Local.OfficeEditSession do
     :edit,
     :owner,
     :owner_ref,
+    # Open is async (handle_continue): the path/opts are stored so the heavy
+    # LOK documentLoad happens OFF the LiveView's path.
+    :path,
+    :edit_opts,
     :doc_type,
     :part_count,
     :repaint_timer,
@@ -64,6 +68,8 @@ defmodule Ecrits.Local.OfficeEditSession do
     :pending_repaint,
     # Last known caret (twips doc-space) so the clip can start at the caret line.
     :last_caret_twip_y,
+    # Monotonic ms of the last live paint, for leading-edge debounce.
+    :last_paint_ms,
     part: 0
   ]
 
@@ -81,20 +87,14 @@ defmodule Ecrits.Local.OfficeEditSession do
 
     spec = {__MODULE__, Keyword.merge(opts, path: path, owner: owner)}
 
+    # Returns as soon as the process starts; the heavy LOK documentLoad runs
+    # async in handle_continue and the owner is notified with
+    # `{:office_edit, {:opened, info}}` or `{:office_edit, {:open_error, reason}}`
+    # — so a ~0.5s open never blocks the LiveView mailbox.
     case DynamicSupervisor.start_child(Ecrits.Local.OfficeEditSupervisor, spec) do
-      {:ok, pid} ->
-        # The child opens the document in its init; if that failed it stops with
-        # a reason. A successful start means the document is live.
-        case info(pid) do
-          {:ok, _info} -> {:ok, pid}
-          {:error, reason} -> {:error, reason}
-        end
-
-      {:error, {:shutdown, reason}} ->
-        {:error, reason}
-
-      {:error, reason} ->
-        {:error, reason}
+      {:ok, pid} -> {:ok, pid}
+      {:error, {:shutdown, reason}} -> {:error, reason}
+      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -158,51 +158,45 @@ defmodule Ecrits.Local.OfficeEditSession do
     path = Keyword.fetch!(opts, :path)
     owner = Keyword.fetch!(opts, :owner)
     edit_opts = Keyword.take(opts, [:install_dir, :user_profile_url])
+    ref = Process.monitor(owner)
 
+    state = %__MODULE__{owner: owner, owner_ref: ref, path: path, edit_opts: edit_opts}
+
+    # Return immediately; open the document in handle_continue so the ~0.5s LOK
+    # documentLoad runs off the LiveView's synchronous path.
+    {:ok, state, {:continue, :open}}
+  end
+
+  @impl true
+  def handle_continue(:open, state) do
     try do
-      case Edit.open(path, edit_opts) do
+      case Edit.open(state.path, state.edit_opts) do
         {:ok, %Edit{} = edit} ->
-          ref = Process.monitor(owner)
-
           part_count =
             case Edit.get_parts(edit) do
               n when is_integer(n) and n > 0 -> n
               _ -> 1
             end
 
-          state = %__MODULE__{
-            edit: edit,
-            owner: owner,
-            owner_ref: ref,
-            doc_type: edit.doc_type,
-            part_count: part_count
-          }
-
-          {:ok, state}
+          state = %{state | edit: edit, doc_type: edit.doc_type, part_count: part_count}
+          notify(state, {:opened, build_info(state)})
+          {:noreply, state}
 
         {:error, reason} ->
-          {:stop, {:shutdown, reason}}
+          notify(state, {:open_error, reason})
+          {:stop, :normal, state}
       end
     rescue
       e ->
         Logger.warning("[office_edit] open crashed: #{Exception.message(e)}")
-        {:stop, {:shutdown, :open_crashed}}
+        notify(state, {:open_error, :open_crashed})
+        {:stop, :normal, state}
     end
   end
 
   @impl true
   def handle_call(:info, _from, state) do
-    info = %{
-      doc_type: state.doc_type,
-      part_count: state.part_count,
-      page_count: guarded(fn -> Edit.page_count(state.edit) end, 0),
-      # Per-part geometry (px @96dpi). For a presentation this is the size of
-      # each slide so the host sizes each box to its REAL (landscape) dims BEFORE
-      # painting; empty for single-part text docs (one tall page sized by tiles).
-      parts_geometry: parts_geometry(state)
-    }
-
-    {:reply, {:ok, info}, state}
+    {:reply, {:ok, build_info(state)}, state}
   end
 
   def handle_call(:save, _from, state) do
@@ -266,7 +260,13 @@ defmodule Ecrits.Local.OfficeEditSession do
       case state.pending_repaint do
         %{} = region ->
           paint_region(state, region, @typing_scale)
-          %{state | repaint_timer: nil, pending_repaint: nil}
+
+          %{
+            state
+            | repaint_timer: nil,
+              pending_repaint: nil,
+              last_paint_ms: System.monotonic_time(:millisecond)
+          }
           |> arm_crisp_repaint(region)
 
         _ ->
@@ -482,11 +482,40 @@ defmodule Ecrits.Local.OfficeEditSession do
   defp presentation?(%{doc_type: :presentation}), do: true
   defp presentation?(_), do: false
 
+  # Document metadata pushed to the hook on open.
+  defp build_info(state) do
+    %{
+      doc_type: state.doc_type,
+      part_count: state.part_count,
+      page_count: guarded(fn -> Edit.page_count(state.edit) end, 0),
+      # Per-part geometry (px @96dpi). For a presentation this sizes each slide
+      # box to its REAL (landscape) dims BEFORE painting; empty for text docs.
+      parts_geometry: parts_geometry(state)
+    }
+  end
+
   # Per-part geometry for the host (only meaningful for multi-part docs like
   # presentations). Returns [] for single-part text docs.
+  #
+  # Every slide in a deck shares ONE page size, so we measure the active part
+  # once (doc_size, ~0ms) and replicate it for all parts — instead of walking
+  # every part (each set_part forces a full slide relayout: ~2ms × N, which
+  # blocked the open by ~160ms for an 84-slide deck). Same shape the hook reads.
   defp parts_geometry(state) do
     if presentation?(state) and state.part_count > 1 do
-      guarded(fn -> Edit.parts_geometry(state.edit) end, [])
+      case guarded(fn -> Edit.doc_size(state.edit) end, {:error, :backend_missing}) do
+        {:ok, %{width: tw, height: th}}
+        when is_integer(tw) and is_integer(th) and tw > 0 and th > 0 ->
+          w = twip_to_px(tw)
+          h = twip_to_px(th)
+
+          for part <- 0..(state.part_count - 1) do
+            %{part: part, width_twip: tw, height_twip: th, width_px: w, height_px: h}
+          end
+
+        _ ->
+          []
+      end
     else
       []
     end
@@ -539,11 +568,25 @@ defmodule Ecrits.Local.OfficeEditSession do
 
   # (Re)arm the coalescing debounce: cancel any pending crisp repaint (typing
   # resumed) and (re)start the short flush timer so a burst paints once.
+  # Leading-edge debounce: the FIRST keystroke (or first after an idle gap) paints
+  # immediately (delay 0) so a single key has ~no added latency; keys arriving
+  # within @repaint_debounce_ms of the last paint coalesce into one trailing
+  # flush. A flush already armed just absorbs the merged region.
   defp arm_repaint(state) do
     state = cancel_timer(state, :crisp_timer)
-    if state.repaint_timer, do: Process.cancel_timer(state.repaint_timer)
-    timer = Process.send_after(self(), :flush_repaint, @repaint_debounce_ms)
-    %{state | repaint_timer: timer}
+    now = System.monotonic_time(:millisecond)
+
+    cond do
+      state.repaint_timer ->
+        state
+
+      is_integer(state.last_paint_ms) and now - state.last_paint_ms < @repaint_debounce_ms ->
+        delay = @repaint_debounce_ms - (now - state.last_paint_ms)
+        %{state | repaint_timer: Process.send_after(self(), :flush_repaint, delay)}
+
+      true ->
+        %{state | repaint_timer: Process.send_after(self(), :flush_repaint, 0)}
+    end
   end
 
   # After a coalesced (scale-1) paint, schedule a single crisp (scale-2) repaint
