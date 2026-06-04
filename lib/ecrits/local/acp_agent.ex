@@ -184,14 +184,31 @@ defmodule Ecrits.Local.AcpAgent do
   end
 
   defp endpoint_base_url do
-    config = Application.get_env(:ecrits, EcritsWeb.Endpoint, [])
-    http = Keyword.get(config, :http, [])
-    port = Keyword.get(http, :port)
-
-    case port do
+    case endpoint_http_port() do
       port when is_integer(port) -> "http://127.0.0.1:#{port}"
       _ -> nil
     end
+  end
+
+  # Prefer the live endpoint's bound port (authoritative once running); fall back
+  # to configured http port, then Phoenix's default 4000.
+  defp endpoint_http_port do
+    runtime_port =
+      try do
+        EcritsWeb.Endpoint.config(:http)[:port]
+      rescue
+        _ -> nil
+      catch
+        _, _ -> nil
+      end
+
+    config_port =
+      :ecrits
+      |> Application.get_env(EcritsWeb.Endpoint, [])
+      |> Keyword.get(:http, [])
+      |> Keyword.get(:port)
+
+    runtime_port || config_port || 4000
   end
 
   # ── helpers ─────────────────────────────────────────────────────────
