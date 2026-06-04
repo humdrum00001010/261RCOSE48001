@@ -145,6 +145,12 @@ const WasmHwpEditor = {
   },
 
   async loadDocument({ url }) {
+    // Idempotent: a re-pushed `hwp_wasm_load` for the URL we already hold must
+    // NOT rebuild the doc — the in-browser doc is the authoritative copy for the
+    // viewed document, so reloading the original bytes would discard live edits.
+    // (Spurious re-pushes come from tree-refresh / fs-watcher / reconcile cycles.)
+    // Reload only on a genuine document switch (a different URL).
+    if (this.doc && this.loadedUrl === url) return
     try {
       await ensureWasm()
       const response = await fetch(url, { credentials: "same-origin" })
@@ -157,6 +163,7 @@ const WasmHwpEditor = {
       }
 
       this.doc = new HwpDocument(bytes)
+      this.loadedUrl = url
       // Distribution/read-only docs must be converted before render/edit (the
       // reference editor does this on every open). Harmless on normal docs.
       try { this.doc.convertToEditable() } catch (_) {}
