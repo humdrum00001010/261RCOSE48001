@@ -94,7 +94,17 @@ defmodule Ecrits.Supervision do
   defp document_service_children do
     [
       Ecrits.RhwpSnapshot.Materializer
-    ]
+    ] ++ office_warmer_children()
+  end
+
+  # Pre-warm LibreOffice at boot so the first office-document open is fast.
+  # Skipped under :test (no soffice dependency in the suite) and when explicitly
+  # disabled via config.
+  defp office_warmer_children do
+    env = Application.get_env(:ecrits, :env, :dev)
+    enabled? = Application.get_env(:ecrits, :office_warm_on_boot, env != :test)
+
+    if enabled?, do: [Ecrits.Local.OfficeWarmer], else: []
   end
 
   defp web_children do

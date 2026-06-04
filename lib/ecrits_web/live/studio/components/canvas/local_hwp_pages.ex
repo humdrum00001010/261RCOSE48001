@@ -1,6 +1,14 @@
 defmodule EcritsWeb.Live.Studio.Components.Canvas.LocalHwpPages do
   @moduledoc """
-  Local HWP/HWPX page stack rendered by server-side EHWP.
+  Local HWP/HWPX page stack rendered by the in-browser rhwp_core WASM engine.
+
+  The server no longer renders SVG (the `ehwp` NIF is gone). Instead the
+  `WasmHwpEditor` hook loads rhwp_core's WASM build, fetches the document's raw
+  bytes from the `local/document-bytes` route, and renders + hit-tests each page
+  to a `<canvas>` locally. The hook owns the page-stack DOM (`phx-update="ignore"`)
+  and creates one `<canvas>` (+ caret overlay) per page; this template only
+  provides the host element, the IME proxy, and the document metadata the hook
+  reads to know which bytes to fetch.
   """
 
   use EcritsWeb, :html
@@ -10,6 +18,7 @@ defmodule EcritsWeb.Live.Studio.Components.Canvas.LocalHwpPages do
   attr :page_count, :integer, default: 0
   attr :spec, :map, required: true
   attr :document_id, :string, required: true
+  attr :bytes_url, :string, default: nil
   attr :local_document_format, :string, required: true
   attr :local_document_revision, :integer, required: true
 
@@ -17,14 +26,11 @@ defmodule EcritsWeb.Live.Studio.Components.Canvas.LocalHwpPages do
     ~H"""
     <div
       id={@id}
-      phx-hook="LocalEhwpEditor"
-      tabindex="0"
+      phx-hook="WasmHwpEditor"
       class="relative h-full min-h-0 overflow-auto bg-white"
       data-component="canvas-local-hwp-pages"
-      data-renderer="ehwp-svg"
-      data-role="local-ehwp-editor"
-      data-ehwp-edit-mode="replace_one"
-      data-ehwp-input-mode="forward"
+      data-renderer="rhwp-wasm"
+      data-role="local-hwp-editor"
       data-document-id={@document_id}
       data-document-path={template_path(@spec)}
       data-document-name={template_name(@spec)}
@@ -32,24 +38,35 @@ defmodule EcritsWeb.Live.Studio.Components.Canvas.LocalHwpPages do
       data-local-document-id={@document_id}
       data-local-document-format={@local_document_format}
       data-local-document-revision={@local_document_revision}
-      data-ehwp-page-count={@page_count}
+      data-bytes-url={@bytes_url}
     >
+      <%!-- The OS IME needs an editable element to compose into (Korean editing,
+            a later phase). Kept TRULY INVISIBLE — transparent text AND caret —
+            and glued to the WASM caret so the OS candidate window anchors there.
+            phx-update="ignore" so LiveView patches keep it. --%>
+      <textarea
+        id={"#{@id}-ime-proxy"}
+        data-role="local-hwp-ime-proxy"
+        autocomplete="off"
+        autocorrect="off"
+        autocapitalize="off"
+        spellcheck="false"
+        aria-hidden="true"
+        tabindex="-1"
+        rows="1"
+        phx-update="ignore"
+        class="absolute left-0 top-0 m-0 p-0 border-0 outline-none bg-transparent resize-none overflow-hidden"
+        style="width:1.5em;height:1em;color:transparent;caret-color:transparent;white-space:pre;line-height:1;font-size:16px;z-index:20"
+      ></textarea>
+      <%!-- The WASM hook owns this canvas stack: it creates one <canvas> per page
+            (+ a caret overlay) and renders near-viewport pages on demand, so
+            LiveView must not patch it. --%>
       <div
         id={"#{@id}-pages"}
-        data-role="local-ehwp-pages"
+        data-role="local-hwp-pages"
         class="ehwp-document-stack ehwp-document-stack--local"
-        phx-update="stream"
+        phx-update="ignore"
       >
-        <section
-          :for={{dom_id, page} <- @pages}
-          id={dom_id}
-          class="ehwp-svg-page"
-          data-role="local-ehwp-page"
-          data-page-index={page.index}
-          data-page-number={page.number}
-        >
-          {Phoenix.HTML.raw(page.svg)}
-        </section>
       </div>
     </div>
     """

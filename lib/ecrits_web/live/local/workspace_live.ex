@@ -91,6 +91,12 @@ defmodule EcritsWeb.Local.WorkspaceLive do
      |> stream_configure(:local_hwp_pages, dom_id: & &1.id)
      |> stream(:local_agent_items, [])
      |> stream(:local_hwp_pages, [])
+     # Office (libreofficex) virtualization: tiles are accumulated per page and
+     # only composited into the DOM for near-viewport pages (placeholders else),
+     # so a 1000-tile deck never streams its full ~17MB into one LiveView diff.
+     |> assign(:local_office_tiles, %{})
+     |> assign(:local_office_page_dims, %{})
+     |> assign(:local_office_hydrated, MapSet.new())
      |> assign(:page_title, "Workspace")
      |> assign(:workspace, nil)
      |> assign(:workspace_path, nil)
@@ -99,6 +105,10 @@ defmodule EcritsWeb.Local.WorkspaceLive do
      |> assign(:selected_path, nil)
      |> assign(:active_document_path, nil)
      |> assign(:active_document, nil)
+     |> assign(:open_documents, [])
+     |> assign(:active_document_id, nil)
+     |> assign(:fs_watcher_pid, nil)
+     |> assign(:fs_refresh_timer, nil)
      |> assign(:local_document_error, nil)
      |> assign(:local_document_status, :none)
      |> assign(:local_document_snapshot, nil)
@@ -108,9 +118,7 @@ defmodule EcritsWeb.Local.WorkspaceLive do
      |> assign(:local_hwp_stream_document_id, nil)
      |> assign(:local_hwp_stream_revision, nil)
      |> assign(:local_hwp_stream_loading?, false)
-     |> assign(:local_ehwp_edit_handle, nil)
-     |> assign(:local_ehwp_edit_document_id, nil)
-     |> assign(:local_ehwp_edit_revision, nil)
+     |> assign(:last_caret, nil)
      |> assign(:workspace_error, nil)
      |> assign(:local_agent_session_id, nil)
      |> assign(:local_agent_status, :offline)
@@ -237,6 +245,23 @@ defmodule EcritsWeb.Local.WorkspaceLive do
      |> push_patch(to: workspace_document_path(socket, path))}
   end
 
+  def handle_event("tab_switch", %{"id" => id}, socket) do
+    case Enum.find(socket.assigns.open_documents, &(&1.id == id)) do
+      nil ->
+        {:noreply, socket}
+
+      %{path: path} ->
+        {:noreply,
+         socket
+         |> assign(:selected_path, path)
+         |> push_patch(to: workspace_document_path(socket, path))}
+    end
+  end
+
+  def handle_event("tab_close", %{"id" => id}, socket) do
+    {:noreply, close_open_document_tab(socket, id)}
+  end
+
   def handle_event("rhwp.local.load", %{"document_id" => document_id}, socket) do
     with :ok <- verify_active_document(socket, document_id),
          {:ok, response} <- RhwpAdapter.load(document_id) do
@@ -284,35 +309,16 @@ defmodule EcritsWeb.Local.WorkspaceLive do
     persist_local_rhwp_snapshot(:save, params, socket)
   end
 
-  def handle_event(
-        "ehwp.local.replace_one",
-        %{"document_id" => document_id, "query" => query, "replacement" => replacement},
-        socket
-      )
-      when is_binary(query) and query != "" and is_binary(replacement) do
-    with :ok <- verify_active_document(socket, document_id),
-         {:ok, socket, handle} <- local_ehwp_edit_handle(socket, document_id),
-         {:ok, result} <- Ehwp.write(handle, {:replace_one, query, replacement}),
-         {:ok, socket} <- render_local_ehwp_edit_pages(socket, handle) do
-      {:reply, %{ok: true, persisted: false, result: result},
-       assign(socket, :local_document_error, nil)}
-    else
-      {:error, reason} ->
-        error = error_message(reason)
-        {:reply, %{error: error}, assign(socket, :local_document_error, error)}
-    end
+  # Office (libreofficex) page virtualization: hydrate composites the page's
+  # accumulated tiles into the DOM when it scrolls near the viewport; release
+  # drops them back to a lightweight placeholder so the deck's full PNG payload
+  # is never resident at once. `page` is 1-based (matching the tile `page`).
+  def handle_event("office.local.hydrate_page", %{"page" => page}, socket) do
+    {:noreply, hydrate_local_office_page(socket, local_hwp_to_int(page))}
   end
 
-  def handle_event("ehwp.local.input", %{"document_id" => document_id} = params, socket) do
-    with :ok <- verify_active_document(socket, document_id),
-         {:ok, socket, handle} <- local_ehwp_edit_handle(socket, document_id),
-         {:ok, result} <- forward_local_ehwp_input(handle, params) do
-      {:reply, %{ok: true, result: result}, assign(socket, :local_document_error, nil)}
-    else
-      {:error, reason} ->
-        error = error_message(reason)
-        {:reply, %{error: error}, assign(socket, :local_document_error, error)}
-    end
+  def handle_event("office.local.release_page", %{"page" => page}, socket) do
+    {:noreply, release_local_office_page(socket, local_hwp_to_int(page))}
   end
 
   def handle_event("refresh_tree", _params, socket) do
@@ -450,55 +456,12 @@ defmodule EcritsWeb.Local.WorkspaceLive do
 
   def handle_info({:local_agent_event, _event}, socket), do: {:noreply, socket}
 
-  def handle_info({:ehwp_stream, stream_id, {:metadata, metadata}}, socket) do
-    socket =
-      if current_local_hwp_stream?(socket, stream_id) do
-        case local_hwp_metadata_page_count(metadata) do
-          page_count when is_integer(page_count) and page_count >= 0 ->
-            assign(socket, :local_hwp_page_count, page_count)
-
-          _other ->
-            socket
-        end
-      else
-        socket
-      end
-
-    {:noreply, socket}
-  end
-
-  def handle_info({:ehwp_stream, stream_id, {:page, page}}, socket) do
-    socket =
-      if current_local_hwp_stream?(socket, stream_id) do
-        socket
-        |> maybe_expand_local_hwp_page_count(page)
-        |> stream_insert(:local_hwp_pages, local_hwp_page(socket.assigns.active_document, page))
-      else
-        socket
-      end
-
-    {:noreply, socket}
-  end
-
-  def handle_info({:ehwp_stream, stream_id, {:error, reason}}, socket) do
-    socket =
-      if current_local_hwp_stream?(socket, stream_id) do
-        socket
-        |> assign(:local_hwp_stream_id, nil)
-        |> assign(:local_hwp_stream_loading?, false)
-        |> assign(:local_document_error, error_message(reason))
-      else
-        socket
-      end
-
-    {:noreply, socket}
-  end
-
   def handle_info({:libreofficex, subscription, {:ready, metadata}}, socket) do
     socket =
       if current_local_hwp_stream?(socket, subscription) do
         socket
         |> maybe_assign_local_office_page_count(metadata)
+        |> seed_local_office_pages(metadata)
         |> assign(:local_hwp_stream_loading?, false)
       else
         socket
@@ -507,19 +470,56 @@ defmodule EcritsWeb.Local.WorkspaceLive do
     {:noreply, socket}
   end
 
+  # A cold deck rasterizes ~60 tiles per visible page, and the subscription
+  # server emits each as its own `{:tile, ...}` message. Handling them one per
+  # `handle_info` meant ~60 mailbox messages — each doing a full page
+  # `stream_insert` (re-rendering + base64-re-encoding every accumulated tile,
+  # ~178KB of diff) — queued AHEAD of any `tab_switch`/`tab_close` the user
+  # clicks mid-render. That saturates the single LV mailbox so the tab event
+  # waits behind the whole burst (measured ~575ms for a 300-tile burst) and the
+  # click feels swallowed. Coalesce instead: drain every tile already waiting in
+  # the mailbox, fold them into the per-page tile maps cheaply, then do ONE
+  # `stream_insert` per affected page. The expensive render happens once per
+  # page per batch instead of once per tile, and because we only drain tiles
+  # ALREADY queued (`after 0`), a `tab_switch` that arrived during the burst is
+  # processed on the very next mailbox turn instead of behind 60 renders.
   def handle_info({:libreofficex, subscription, {:tile, tile}}, socket) do
+    if current_local_hwp_stream?(socket, subscription) do
+      tiles = [tile | drain_pending_office_tiles(subscription)]
+
+      socket =
+        socket
+        |> assign(:local_hwp_stream_loading?, false)
+        |> accumulate_local_office_tiles(tiles)
+
+      {:noreply, socket}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  # Office (LOK) caret moved. The native LibreOfficeKit cursor backend forwards
+  # `{:cursor, %{rect: {x, y, w, h}, page: page}}` here so the office editor can
+  # draw a caret the SAME way the HWP (ehwp) path does — via the shared
+  # `ehwp_native_cursor` client event the LocalEhwpEditor hook consumes. Until
+  # the LOK NIF backend is built it emits no cursor events, so this is dormant
+  # plumbing (no-op), but it means an unhandled `{:cursor}` can never crash the
+  # LiveView and the caret path is uniform once LOK lands.
+  def handle_info({:libreofficex, subscription, {:cursor, payload}}, socket) do
     socket =
       if current_local_hwp_stream?(socket, subscription) do
-        tile = local_office_tile(socket.assigns.active_document, tile)
-
-        socket
-        |> maybe_expand_local_hwp_page_count(tile)
-        |> assign(:local_hwp_stream_loading?, false)
-        |> stream_insert(:local_hwp_pages, tile)
+        push_office_cursor(socket, payload)
       else
         socket
       end
 
+    {:noreply, socket}
+  end
+
+  # Office (LOK) text selection changed. Dormant until the LOK backend lands;
+  # handled explicitly so the message can never crash the LiveView.
+  def handle_info({:libreofficex, subscription, {:selection, _rects}}, socket) do
+    _ = subscription
     {:noreply, socket}
   end
 
@@ -537,18 +537,6 @@ defmodule EcritsWeb.Local.WorkspaceLive do
     {:noreply, socket}
   end
 
-  def handle_info({:ehwp_stream, stream_id, :done}, socket) do
-    socket =
-      if current_local_hwp_stream?(socket, stream_id) do
-        socket
-        |> assign(:local_hwp_stream_id, nil)
-        |> assign(:local_hwp_stream_loading?, false)
-      else
-        socket
-      end
-
-    {:noreply, socket}
-  end
 
   def handle_info({:rhwp_positional_index_request, request}, socket) do
     selected_document_id = active_document_id(socket)
@@ -593,10 +581,36 @@ defmodule EcritsWeb.Local.WorkspaceLive do
     {:noreply, apply_local_document_snapshot(socket, :checkpointed, document, snapshot)}
   end
 
+  def handle_info({:file_event, pid, :stop}, %{assigns: %{fs_watcher_pid: pid}} = socket) do
+    {:noreply, assign(socket, :fs_watcher_pid, nil)}
+  end
+
+  def handle_info({:file_event, pid, {path, _events}}, %{assigns: %{fs_watcher_pid: pid}} = socket) do
+    if fs_relevant_path?(path) do
+      {:noreply, schedule_tree_refresh(socket)}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  # Watcher events from a stale/replaced watcher are ignored.
+  def handle_info({:file_event, _pid, _payload}, socket), do: {:noreply, socket}
+
+  def handle_info(:refresh_tree, socket) do
+    socket =
+      socket
+      |> assign(:fs_refresh_timer, nil)
+      |> refresh_tree(socket.assigns.expanded_paths)
+      |> reconcile_open_documents()
+
+    {:noreply, socket}
+  end
+
   @impl true
   def terminate(_reason, socket) do
     _ = unsubscribe_local_hwp_stream(socket)
     _ = unregister_local_rhwp_materializer_editor(active_document_id(socket))
+    _ = stop_fs_watcher(socket)
     :ok
   end
 
@@ -713,35 +727,34 @@ defmodule EcritsWeb.Local.WorkspaceLive do
             data-local-editor-shell="true"
             class="relative z-[var(--local-editor-z)] h-full min-h-0 min-w-0 overflow-hidden bg-[var(--cs-bg)] max-lg:hidden"
           >
-            <div
-              :if={@local_document_error}
-              id="local-rhwp-error"
-              class="m-5 rounded-md border border-error/25 bg-error/10 px-4 py-3 text-sm text-error"
-            >
-              {@local_document_error}
-            </div>
-
             <EditorSurface.local_document
-              :if={@active_document}
+              :if={@active_document || @open_documents != []}
               shell_id="local-rhwp-shell"
               toolbar_id="local-rhwp-toolbar"
               frame_id="local-rhwp-editor-frame"
               document={@active_document}
-              document_spec={local_document_spec(@active_document)}
-              canvas_id={local_rhwp_dom_id(@active_document)}
+              document_spec={@active_document && local_document_spec(@active_document)}
+              canvas_id={@active_document && local_rhwp_dom_id(@active_document)}
+              hwp_bytes_url={
+                @active_document &&
+                  local_document_bytes_url(@workspace_path, @active_document.relative_path)
+              }
+              open_documents={@open_documents}
+              active_document_id={@active_document_id}
               hwp_pages={@streams.local_hwp_pages}
               hwp_page_count={@local_hwp_page_count}
               hwp_stream_loading?={@local_hwp_stream_loading?}
               save_state={
-                local_save_state(
-                  @active_document,
-                  @local_document_snapshot,
-                  @local_document_status
-                )
+                @active_document &&
+                  local_save_state(
+                    @active_document,
+                    @local_document_snapshot,
+                    @local_document_status
+                  )
               }
             />
 
-            <div :if={!@active_document} class="px-5 py-6">
+            <div :if={!@active_document && @open_documents == []} class="px-5 py-6">
               <div class="rounded-md border border-base-300 bg-base-100 p-4">
                 <%= if @selected_path do %>
                   <p id="local-selected-file" class="text-sm font-medium text-base-content">
@@ -1346,11 +1359,11 @@ defmodule EcritsWeb.Local.WorkspaceLive do
         |> assign(:tree, Map.get(workspace, :tree, []))
         |> assign(:workspace_error, nil)
         |> assign(:page_title, workspace_title(workspace))
+        |> maybe_start_fs_watcher()
 
       {:error, reason} ->
         socket
         |> unsubscribe_local_hwp_stream()
-        |> close_local_ehwp_edit_handle()
         |> assign(:workspace_error, error_message(reason))
         |> assign(:workspace_path, nil)
         |> assign(:active_document, nil)
@@ -1374,9 +1387,9 @@ defmodule EcritsWeb.Local.WorkspaceLive do
 
     socket
     |> unsubscribe_local_hwp_stream()
-    |> close_local_ehwp_edit_handle()
     |> assign(:active_document_path, nil)
     |> assign(:active_document, nil)
+    |> assign(:active_document_id, nil)
     |> assign(:local_document_status, :none)
     |> assign(:local_document_snapshot, nil)
     |> clear_local_hwp_pages()
@@ -1386,6 +1399,86 @@ defmodule EcritsWeb.Local.WorkspaceLive do
   defp open_local_document(%{assigns: %{workspace: nil}} = socket, _path), do: socket
 
   defp open_local_document(socket, path) do
+    socket
+    |> upsert_open_document_tab(path)
+    |> do_open_local_document(path)
+  end
+
+  # Open-or-focus tab tracking. The id is a deterministic token of the relative
+  # path so re-opening the same file focuses the existing tab instead of adding
+  # a duplicate. Tab order is preserved; a freshly opened file is appended.
+  defp upsert_open_document_tab(socket, path) do
+    id = tab_id(path)
+    tabs = socket.assigns.open_documents
+
+    tabs =
+      if Enum.any?(tabs, &(&1.id == id)) do
+        tabs
+      else
+        tabs ++ [%{id: id, name: Path.basename(path), path: path}]
+      end
+
+    socket
+    |> assign(:open_documents, tabs)
+    |> assign(:active_document_id, id)
+  end
+
+  defp tab_id(path), do: dom_token(path)
+
+  # Drop a tab. When it was the active tab we tear down the live document
+  # (stream + edit handle) and focus a neighbor; if it was the last tab we fall
+  # back to the empty workspace state.
+  defp close_open_document_tab(socket, id) do
+    tabs = socket.assigns.open_documents
+
+    case Enum.find_index(tabs, &(&1.id == id)) do
+      nil ->
+        socket
+
+      index ->
+        active? = socket.assigns.active_document_id == id
+        remaining = List.delete_at(tabs, index)
+        socket = assign(socket, :open_documents, remaining)
+
+        cond do
+          not active? ->
+            socket
+
+          remaining == [] ->
+            socket
+            |> tear_down_active_local_document()
+            |> assign(:active_document_id, nil)
+            |> assign(:selected_path, nil)
+            |> push_patch(to: workspace_no_document_path(socket))
+
+          true ->
+            neighbor = Enum.at(remaining, min(index, length(remaining) - 1))
+
+            socket
+            |> assign(:active_document_id, neighbor.id)
+            |> assign(:selected_path, neighbor.path)
+            |> push_patch(to: workspace_document_path(socket, neighbor.path))
+        end
+    end
+  end
+
+  # Close streams/handles for the currently active document, mirroring the
+  # teardown that `maybe_open_local_document/2` performs on empty navigation.
+  defp tear_down_active_local_document(socket) do
+    previous_document_id = active_document_id(socket)
+    _ = unregister_local_rhwp_materializer_editor(previous_document_id)
+
+    socket
+    |> unsubscribe_local_hwp_stream()
+    |> assign(:active_document_path, nil)
+    |> assign(:active_document, nil)
+    |> assign(:local_document_status, :none)
+    |> assign(:local_document_snapshot, nil)
+    |> assign(:local_document_error, nil)
+    |> clear_local_hwp_pages()
+  end
+
+  defp do_open_local_document(socket, path) do
     root = workspace_root_path(socket.assigns.workspace)
     previous_document_id = active_document_id(socket)
 
@@ -1413,7 +1506,6 @@ defmodule EcritsWeb.Local.WorkspaceLive do
 
         socket
         |> unsubscribe_local_hwp_stream()
-        |> close_local_ehwp_edit_handle()
         |> assign(:selected_path, path)
         |> assign(:active_document_path, nil)
         |> assign(:active_document, nil)
@@ -1881,6 +1973,123 @@ defmodule EcritsWeb.Local.WorkspaceLive do
     end
   end
 
+  # Start a file-system watcher for the mounted workspace root once the socket
+  # is connected. Idempotent: an existing watcher is kept.
+  defp maybe_start_fs_watcher(%{assigns: %{fs_watcher_pid: pid}} = socket) when is_pid(pid) do
+    socket
+  end
+
+  defp maybe_start_fs_watcher(socket) do
+    root = workspace_root_path(socket.assigns.workspace)
+
+    if connected?(socket) and is_binary(root) and root != "" do
+      case FileSystem.start_link(dirs: [root]) do
+        {:ok, pid} ->
+          FileSystem.subscribe(pid)
+          assign(socket, :fs_watcher_pid, pid)
+
+        _other ->
+          socket
+      end
+    else
+      socket
+    end
+  end
+
+  defp stop_fs_watcher(%{assigns: %{fs_watcher_pid: pid}}) when is_pid(pid) do
+    if Process.alive?(pid), do: GenServer.stop(pid, :normal, 1_000)
+    :ok
+  end
+
+  defp stop_fs_watcher(_socket), do: :ok
+
+  # Ignore the metadata tree, dotfiles, and editor swap files; everything else
+  # is a workspace change worth re-listing.
+  defp fs_relevant_path?(path) when is_binary(path) do
+    segments = path |> Path.split() |> Enum.reject(&(&1 in ["/", ""]))
+    base = Path.basename(path)
+
+    cond do
+      Enum.any?(segments, &(&1 == ".ecrits")) -> false
+      String.starts_with?(base, ".") -> false
+      String.ends_with?(base, "~") -> false
+      true -> true
+    end
+  end
+
+  defp fs_relevant_path?(_path), do: false
+
+  # Debounce: collapse a burst of file events into a single refresh.
+  defp schedule_tree_refresh(socket) do
+    case socket.assigns.fs_refresh_timer do
+      ref when is_reference(ref) -> Process.cancel_timer(ref)
+      _ -> :ok
+    end
+
+    timer = Process.send_after(self(), :refresh_tree, 150)
+    assign(socket, :fs_refresh_timer, timer)
+  end
+
+  # After the tree is rebuilt, drop any tabs whose backing file disappeared and
+  # focus a neighbor if the active document vanished. Existence is checked on
+  # disk (not via the tree) so tabs for files inside collapsed directories are
+  # not dropped spuriously.
+  defp reconcile_open_documents(socket) do
+    root = workspace_root_path(socket.assigns.workspace)
+    tabs = socket.assigns.open_documents
+    {kept, dropped} = Enum.split_with(tabs, &open_document_exists?(root, &1.path))
+
+    cond do
+      dropped == [] ->
+        socket
+
+      true ->
+        active_id = socket.assigns.active_document_id
+        active_dropped? = Enum.any?(dropped, &(&1.id == active_id))
+        socket = assign(socket, :open_documents, kept)
+
+        cond do
+          not active_dropped? ->
+            socket
+
+          kept == [] ->
+            socket
+            |> tear_down_active_local_document()
+            |> assign(:active_document_id, nil)
+            |> assign(:selected_path, nil)
+
+          true ->
+            # Pick the tab nearest the one that vanished to keep focus stable.
+            dropped_index =
+              Enum.find_index(tabs, &(&1.id == active_id)) || 0
+
+            neighbor =
+              Enum.at(kept, min(dropped_index, length(kept) - 1)) || List.first(kept)
+
+            socket
+            |> assign(:active_document_id, neighbor.id)
+            |> assign(:selected_path, neighbor.path)
+            |> push_patch(to: workspace_document_path(socket, neighbor.path))
+        end
+    end
+  end
+
+  defp open_document_exists?(root, relative_path)
+       when is_binary(root) and root != "" and is_binary(relative_path) do
+    case LocalPath.normalize(relative_path) do
+      {:ok, rel} ->
+        case LocalPath.join(root, rel) do
+          {:ok, absolute} -> File.exists?(absolute)
+          _ -> false
+        end
+
+      _ ->
+        false
+    end
+  end
+
+  defp open_document_exists?(_root, _relative_path), do: false
+
   defp toggle_path(expanded_paths, path) do
     if MapSet.member?(expanded_paths, path) do
       MapSet.delete(expanded_paths, path)
@@ -1897,6 +2106,10 @@ defmodule EcritsWeb.Local.WorkspaceLive do
 
   defp workspace_document_path(socket, relative_path) do
     ~p"/workspace?#{workspace_query(socket, document: relative_path, provider: socket.assigns.local_agent_provider.key)}"
+  end
+
+  defp workspace_no_document_path(socket) do
+    ~p"/workspace?#{workspace_query(socket, provider: socket.assigns.local_agent_provider.key)}"
   end
 
   defp workspace_provider_path(socket, provider_id, overrides \\ []) do
@@ -2097,36 +2310,46 @@ defmodule EcritsWeb.Local.WorkspaceLive do
     end
   end
 
+  # HWP/HWPX now render entirely in the browser via rhwp_core WASM. The server
+  # no longer rasterizes pages (the `ehwp` NIF is gone); it just tells the
+  # `WasmHwpEditor` hook where to fetch the document's raw bytes, and the hook
+  # does `new HwpDocument(bytes)` + renderPageToCanvas + hitTest locally.
   defp render_local_hwp_pages(socket, %Document{} = document) do
     socket =
       socket
-      |> close_local_ehwp_edit_handle()
       |> unsubscribe_local_hwp_stream()
       |> clear_local_hwp_pages()
-      |> assign(:local_hwp_stream_renderer, :ehwp)
+      |> assign(:local_hwp_stream_renderer, :rhwp_wasm)
       |> assign(:local_hwp_stream_document_id, document.id)
       |> assign(:local_hwp_stream_revision, document.revision)
-      |> assign(:local_hwp_stream_loading?, connected?(socket))
+      |> assign(:local_hwp_stream_loading?, false)
 
     if connected?(socket) do
-      case Ehwp.subscribe(document.path, local_ehwp_opts()) do
-        {:ok, stream_id} ->
-          assign(socket, :local_hwp_stream_id, stream_id)
+      url =
+        local_document_bytes_url(socket.assigns.workspace_path, document.relative_path)
 
-        {:error, reason} ->
-          socket
-          |> assign(:local_hwp_stream_loading?, false)
-          |> assign(:local_document_error, error_message(reason))
-      end
+      push_event(socket, "hwp_wasm_load", %{
+        url: url,
+        document_id: document.id,
+        revision: document.revision
+      })
     else
       socket
     end
   end
 
+  # Read-only raw-bytes URL the WasmHwpEditor hook fetches to feed rhwp_core.
+  defp local_document_bytes_url(workspace_path, relative_path)
+       when is_binary(workspace_path) and is_binary(relative_path) do
+    "/local/document-bytes?" <>
+      URI.encode_query(%{"path" => workspace_path, "document" => relative_path})
+  end
+
+  defp local_document_bytes_url(_workspace_path, _relative_path), do: nil
+
   defp render_local_office_tiles(socket, %Document{} = document) do
     socket =
       socket
-      |> close_local_ehwp_edit_handle()
       |> unsubscribe_local_hwp_stream()
       |> clear_local_hwp_pages()
       |> assign(:local_hwp_stream_renderer, :libreofficex)
@@ -2164,14 +2387,17 @@ defmodule EcritsWeb.Local.WorkspaceLive do
     |> assign(:local_hwp_stream_document_id, nil)
     |> assign(:local_hwp_stream_revision, nil)
     |> assign(:local_hwp_stream_loading?, false)
+    |> assign(:local_office_tiles, %{})
+    |> assign(:local_office_page_dims, %{})
+    |> assign(:local_office_hydrated, MapSet.new())
     |> stream(:local_hwp_pages, [], reset: true)
   end
 
+  # Only the office (libreofficex) renderer holds a server-side subscription now;
+  # HWP/HWPX render entirely in the browser (no server stream to tear down).
   defp unsubscribe_local_hwp_stream(%{assigns: %{local_hwp_stream_id: stream_id}} = socket) do
-    cond do
-      is_nil(stream_id) -> :ok
-      office_stream?(socket) -> local_libreofficex_runtime().unsubscribe(stream_id)
-      true -> Ehwp.unsubscribe(stream_id)
+    if not is_nil(stream_id) and office_stream?(socket) do
+      local_libreofficex_runtime().unsubscribe(stream_id)
     end
 
     socket
@@ -2191,14 +2417,6 @@ defmodule EcritsWeb.Local.WorkspaceLive do
       active_document.id == socket.assigns.local_hwp_stream_document_id and
       active_document.revision == socket.assigns.local_hwp_stream_revision
   end
-
-  defp local_hwp_metadata_page_count(%{page_count: page_count}) when is_integer(page_count),
-    do: page_count
-
-  defp local_hwp_metadata_page_count(%{"page_count" => page_count}) when is_integer(page_count),
-    do: page_count
-
-  defp local_hwp_metadata_page_count(_metadata), do: nil
 
   defp maybe_expand_local_hwp_page_count(socket, %{number: number})
        when is_integer(number) and number > socket.assigns.local_hwp_page_count do
@@ -2231,38 +2449,277 @@ defmodule EcritsWeb.Local.WorkspaceLive do
 
   defp local_office_metadata_page_count(_metadata), do: nil
 
-  defp local_hwp_page(document, page) when is_map(document) do
-    page
-    |> Map.put(:id, local_hwp_page_dom_id(document, page.index))
+  defp local_hwp_to_int(i) when is_integer(i), do: i
+  defp local_hwp_to_int(i) when is_binary(i), do: String.to_integer(i)
+
+  # --- office (libreofficex) tile virtualization -------------------------
+  #
+  # Tiles arrive incrementally and tile each page into a (mostly 256px) grid.
+  # We accumulate them per page (keyed by their x/y so a re-render replaces the
+  # same tile) and only composite a page's tiles into the DOM when its placeholder
+  # reports near-viewport (LazyOfficeTile hook). A 1000-tile deck therefore never
+  # streams its full PNG payload into a single LiveView diff, and tiles place at
+  # their (x, y, w, h) inside a correctly-sized page box (no flex-wrap overlap).
+
+  # Pre-seed one placeholder page per slide from the :ready metadata so the page
+  # boxes (and their reserved sizes) exist before tiles land; the Intersection
+  # Observer then hydrates the near-viewport ones.
+  defp seed_local_office_pages(socket, metadata) do
+    pages = office_metadata_pages(metadata)
+
+    if pages == [] do
+      socket
+    else
+      dims =
+        Enum.reduce(pages, socket.assigns.local_office_page_dims, fn p, acc ->
+          page = office_value(p, :page, map_size(acc) + 1)
+          w = office_value(p, :width, 0)
+          h = office_value(p, :height, 0)
+
+          if is_integer(w) and is_integer(h) and w > 0 and h > 0,
+            do: Map.put(acc, page, {w, h}),
+            else: acc
+        end)
+
+      socket = assign(socket, :local_office_page_dims, dims)
+
+      # Insert placeholders in ascending page order. `Map.keys/1` is unordered,
+      # so iterating it scrambles the deck (the stream renders items in insert
+      # order); sort so page 1 is first and the IntersectionObserver hydrates the
+      # top of the deck first.
+      dims
+      |> Map.keys()
+      |> Enum.sort()
+      |> Enum.reduce(socket, fn page, acc ->
+        stream_insert(acc, :local_hwp_pages, office_page_placeholder(acc, page))
+      end)
+    end
   end
 
-  defp local_hwp_page_dom_id(%{id: id, revision: revision}, page_index) do
-    "local-ehwp-page-#{dom_token(id)}-r#{revision}-p#{page_index}"
+  defp office_metadata_pages(%{pages: pages}) when is_list(pages), do: pages
+  defp office_metadata_pages(%{"pages" => pages}) when is_list(pages), do: pages
+  defp office_metadata_pages(_metadata), do: []
+
+  defp office_value(map, key, default) do
+    case Map.get(map, key, Map.get(map, Atom.to_string(key))) do
+      nil -> default
+      value -> value
+    end
   end
 
-  defp local_office_tile(document, tile) when is_map(document) and is_map(tile) do
-    page = int_tile_value(tile, :page, 1)
-    x = int_tile_value(tile, :x, 0)
-    y = int_tile_value(tile, :y, 0)
-    width = int_tile_value(tile, :width, 256)
-    height = int_tile_value(tile, :height, 256)
+  # Pull every `{:tile, ...}` for this subscription that is ALREADY sitting in
+  # the mailbox so a whole page's burst is folded in one `handle_info`. We use
+  # `after 0`, so this only sweeps tiles that have already arrived — any user
+  # event (or tile that lands after we start draining) stays at the back of the
+  # queue and is processed on the next turn, which is what keeps `tab_switch`
+  # responsive. A generous cap bounds a single batch so one drain can't itself
+  # become an unbounded reduction hog.
+  @office_tile_drain_cap 240
+  defp drain_pending_office_tiles(subscription) do
+    drain_pending_office_tiles(subscription, @office_tile_drain_cap, [])
+  end
+
+  defp drain_pending_office_tiles(_subscription, 0, acc), do: Enum.reverse(acc)
+
+  defp drain_pending_office_tiles(subscription, budget, acc) do
+    receive do
+      {:libreofficex, ^subscription, {:tile, tile}} ->
+        drain_pending_office_tiles(subscription, budget - 1, [tile | acc])
+    after
+      0 -> Enum.reverse(acc)
+    end
+  end
+
+  # Fold a batch of tiles into the per-page tile maps and re-place each affected
+  # page just ONCE. Each tile is base64-encoded a single time as it arrives (its
+  # data URI is cached on the entry), so re-streaming a page is a cheap string copy
+  # rather than a fresh encode of its whole accumulated tile set. Coalescing the
+  # batch (one re-stream per page, not per tile) plus encode-once is what keeps a
+  # cold render from starving the LV's user-event handling (e.g. a tab_switch).
+  defp accumulate_local_office_tiles(socket, tiles) when is_list(tiles) do
+    {tiles_by_page, dims, pages} =
+      Enum.reduce(tiles, {socket.assigns.local_office_tiles, socket.assigns.local_office_page_dims, MapSet.new()}, fn
+        tile, {tiles_acc, dims_acc, pages_acc} when is_map(tile) ->
+          # A tile MUST name its own integer page. Previously a tile with a
+          # missing/non-integer :page silently defaulted to page 1, so any stray
+          # or malformed tile dumped its pixels into page 1's slot (and, symmetrically,
+          # was the kind of misrouting that paints "page 1 everywhere"). Drop such
+          # tiles instead — a slot only ever shows tiles that explicitly belong to it.
+          case office_tile_page(tile) do
+            nil ->
+              {tiles_acc, dims_acc, pages_acc}
+
+            page ->
+              x = int_tile_value(tile, :x, 0)
+              y = int_tile_value(tile, :y, 0)
+              width = int_tile_value(tile, :width, 256)
+              height = int_tile_value(tile, :height, 256)
+              page_w = int_tile_value(tile, :page_width, 0)
+              page_h = int_tile_value(tile, :page_height, 0)
+              data = Map.get(tile, :data) || Map.get(tile, "data") || ""
+
+              # Base64-encode the PNG ONCE, here, the moment a tile arrives — and
+              # keep only the data-URI string (the raw bytes are needed nowhere else).
+              # Previously every per-page re-stream re-encoded the page's WHOLE
+              # accumulated tile set inside the diff, so a page whose N tiles trickled
+              # in across N batches paid O(N^2) base64 on the LiveView's critical path,
+              # delaying any tab_switch queued behind the burst. Encoding once makes it
+              # O(N) total and the re-stream a trivial string copy.
+              entry = %{x: x, y: y, width: width, height: height, src: tile_data_uri(data)}
+
+              tiles_acc =
+                Map.update(tiles_acc, page, %{{x, y} => entry}, fn page_tiles ->
+                  Map.put(page_tiles, {x, y}, entry)
+                end)
+
+              dims_acc =
+                if page_w > 0 and page_h > 0,
+                  do: Map.put_new(dims_acc, page, {page_w, page_h}),
+                  else: dims_acc
+
+              {tiles_acc, dims_acc, MapSet.put(pages_acc, page)}
+          end
+
+        _tile, acc ->
+          acc
+      end)
+
+    max_page = pages |> MapSet.to_list() |> Enum.max(fn -> 0 end)
+
+    socket =
+      socket
+      |> assign(:local_office_tiles, tiles_by_page)
+      |> assign(:local_office_page_dims, dims)
+      |> maybe_expand_local_hwp_page_count(%{number: max_page})
+
+    Enum.reduce(pages, socket, fn page, acc ->
+      if MapSet.member?(acc.assigns.local_office_hydrated, page) do
+        stream_insert(acc, :local_hwp_pages, office_page_hydrated(acc, page))
+      else
+        stream_insert(acc, :local_hwp_pages, office_page_placeholder(acc, page))
+      end
+    end)
+  end
+
+  # A tile's page must be a positive integer; anything else routes nowhere.
+  defp office_tile_page(tile) do
+    case int_tile_value(tile, :page, 0) do
+      page when is_integer(page) and page > 0 -> page
+      _ -> nil
+    end
+  end
+
+  defp hydrate_local_office_page(socket, page) do
+    socket
+    |> update(:local_office_hydrated, &MapSet.put(&1, page))
+    # Ask the engine to render this page's tiles on demand (it streams them back
+    # as {:tile, ...}). The engine converted the doc to PDF once on subscribe but
+    # rasterizes nothing until a page is requested, so a big deck opens fast and
+    # only near-viewport pages ever cost a rasterize. Requesting an
+    # already-rendered page is a cheap engine no-op.
+    |> request_local_office_page(page)
+    |> then(&stream_insert(&1, :local_hwp_pages, office_page_hydrated(&1, page)))
+  end
+
+  defp release_local_office_page(socket, page) do
+    socket = update(socket, :local_office_hydrated, &MapSet.delete(&1, page))
+    release_local_office_page_tiles(socket, page)
+  end
+
+  # Tell the engine to forget this off-screen page (so a scroll-back re-renders
+  # it fresh) and drop its tiles from this process so the deck's full PNG payload
+  # is never resident at once. We keep the page's stream item as a lightweight,
+  # box-reserving placeholder.
+  defp release_local_office_page_tiles(socket, page) do
+    request_release_local_office_page(socket, page)
+
+    socket
+    |> update(:local_office_tiles, &Map.delete(&1, page))
+    |> stream_insert(:local_hwp_pages, office_page_placeholder(socket, page))
+  end
+
+  defp request_local_office_page(%{assigns: %{local_hwp_stream_id: sub}} = socket, page)
+       when not is_nil(sub) do
+    if office_stream?(socket), do: local_libreofficex_runtime().request_page(sub, page)
+    socket
+  end
+
+  defp request_local_office_page(socket, _page), do: socket
+
+  defp request_release_local_office_page(%{assigns: %{local_hwp_stream_id: sub}} = socket, page)
+       when not is_nil(sub) do
+    if office_stream?(socket), do: local_libreofficex_runtime().release_page(sub, page)
+    socket
+  end
+
+  defp request_release_local_office_page(socket, _page), do: socket
+
+  # Translate a LOK cursor callback into the shared `ehwp_native_cursor` client
+  # event (the LocalEhwpEditor hook draws the caret from this), so an office
+  # caret is drawn the same way as the HWP caret. The LOK rect is
+  # `{x, y, w, h}` on a 1-based `page`; the client draws into the page's tile box
+  # using page-relative coordinates, so we forward x/y/height with a 0-based
+  # page index. Dormant until the LOK cursor backend is built.
+  defp push_office_cursor(socket, %{rect: {x, y, _w, h}, page: page}) when is_integer(page) do
+    rect = %{"x" => x, "y" => y, "height" => h, "pageIndex" => page - 1, "pageNumber" => page}
+
+    socket
+    |> assign(:last_caret, rect)
+    |> push_event("ehwp_native_cursor", %{"cursorRect" => rect})
+  end
+
+  defp push_office_cursor(socket, _payload), do: socket
+
+  defp office_page_placeholder(socket, page) do
+    {w, h} = office_page_dims(socket, page)
 
     %{
-      id: local_office_tile_dom_id(document, page, x, y, width, height),
-      page: page,
+      id: local_office_page_dom_id(socket.assigns.active_document, page),
+      index: page - 1,
       number: page,
-      x: x,
-      y: y,
-      width: width,
-      height: height,
-      data: Map.get(tile, :data) || Map.get(tile, "data") || "",
-      metadata: Map.drop(tile, [:data, "data"])
+      page: page,
+      page_width: w,
+      page_height: h,
+      tiles: nil,
+      w: w,
+      h: h
     }
   end
 
-  defp local_office_tile_dom_id(%{id: id, revision: revision}, page, x, y, width, height) do
-    "local-office-tile-#{dom_token(id)}-r#{revision}-p#{page}-#{x}-#{y}-#{width}x#{height}"
+  defp office_page_hydrated(socket, page) do
+    {pw, ph} = office_page_dims(socket, page)
+
+    case socket.assigns.local_office_tiles |> Map.get(page, %{}) |> Map.values() do
+      [] ->
+        # Hydrated (its tiles were requested) but none have rasterized back yet.
+        # Render it as a placeholder — a clean, box-reserving blank — rather than an
+        # empty hydrated <figure>, so the slot never sits as an ambiguous bare box.
+        office_page_placeholder(socket, page)
+
+      values ->
+        tiles =
+          values
+          |> Enum.sort_by(&{&1.y, &1.x})
+          |> Enum.map(&Map.merge(&1, %{page_width: pw, page_height: ph}))
+
+        %{office_page_placeholder(socket, page) | tiles: tiles}
+    end
   end
+
+  # Reserve a sane box even before the page's real raster dims arrive so the
+  # placeholder occupies roughly the right space (A4 portrait fallback).
+  defp office_page_dims(socket, page) do
+    case Map.get(socket.assigns.local_office_page_dims, page) do
+      {w, h} when is_integer(w) and is_integer(h) and w > 0 and h > 0 -> {w, h}
+      _ -> {1240, 1754}
+    end
+  end
+
+  defp local_office_page_dom_id(%{id: id, revision: revision}, page) do
+    "local-office-page-#{dom_token(id)}-r#{revision}-p#{page}"
+  end
+
+  defp local_office_page_dom_id(_document, page), do: "local-office-page-p#{page}"
 
   defp int_tile_value(tile, key, default) do
     string_key = Atom.to_string(key)
@@ -2274,112 +2731,25 @@ defmodule EcritsWeb.Local.WorkspaceLive do
     end
   end
 
-  defp local_ehwp_opts do
-    Application.get_env(:ecrits, :local_ehwp_opts, [])
-  end
+  defp tile_data_uri(data) when is_binary(data) and byte_size(data) > 0,
+    do: "data:image/png;base64," <> Base.encode64(data)
 
-  defp forward_local_ehwp_input(handle, %{"kind" => "mouse"} = event) do
-    Ehwp.mouse(handle, event)
-  end
-
-  defp forward_local_ehwp_input(handle, %{"kind" => "keyboard"} = event) do
-    Ehwp.keyboard(handle, event)
-  end
-
-  defp forward_local_ehwp_input(handle, event) when is_map(event) do
-    Ehwp.input(handle, event)
-  end
+  defp tile_data_uri(_data), do: ""
 
   defp local_libreofficex_runtime do
     Application.get_env(:ecrits, :local_libreofficex_runtime, Libreofficex)
   end
 
   defp local_libreofficex_opts do
-    Application.get_env(:ecrits, :local_libreofficex_opts, [])
+    # Render tiles at 2x (retina) by default so slide text stays crisp. Only
+    # visible pages are ever rasterized (lazy, on-demand via request_page), so
+    # the higher DPI costs nothing for off-screen slides. The page box still
+    # lays out at CSS pixels — the component sizes tiles as a percentage of the
+    # page's raster dims, so a 2x raster just sharpens the same on-screen box.
+    Application.get_env(:ecrits, :local_libreofficex_opts,
+      tile: %{page: 1, x: 0, y: 0, width: 512, height: 512, scale: 2.0}
+    )
   end
-
-  defp local_ehwp_edit_handle(socket, document_id) do
-    active_document = socket.assigns.active_document
-
-    if socket.assigns.local_ehwp_edit_handle &&
-         socket.assigns.local_ehwp_edit_document_id == document_id &&
-         is_map(active_document) &&
-         socket.assigns.local_ehwp_edit_revision == active_document.revision do
-      {:ok, socket, socket.assigns.local_ehwp_edit_handle}
-    else
-      socket = close_local_ehwp_edit_handle(socket)
-
-      with {:ok, %Document{} = document} <- Document.document(document_id),
-           {:ok, handle, _metadata} <- Ehwp.open(document.path, local_ehwp_opts()) do
-        socket =
-          socket
-          |> assign(:local_ehwp_edit_handle, handle)
-          |> assign(:local_ehwp_edit_document_id, document.id)
-          |> assign(:local_ehwp_edit_revision, document.revision)
-
-        {:ok, socket, handle}
-      end
-    end
-  end
-
-  defp render_local_ehwp_edit_pages(socket, handle) do
-    with page_count when is_integer(page_count) and page_count >= 0 <- Ehwp.page_count(handle),
-         {:ok, pages} <- render_local_ehwp_edit_page_list(handle, page_count) do
-      document = socket.assigns.active_document
-
-      socket =
-        socket
-        |> unsubscribe_local_hwp_stream()
-        |> clear_local_hwp_pages()
-        |> assign(:local_hwp_page_count, page_count)
-        |> stream(:local_hwp_pages, Enum.map(pages, &local_hwp_page(document, &1)), reset: true)
-
-      {:ok, socket}
-    else
-      {:error, reason} -> {:error, reason}
-      other -> {:error, {:invalid_page_count, other}}
-    end
-  end
-
-  defp render_local_ehwp_edit_page_list(_handle, 0), do: {:ok, []}
-
-  defp render_local_ehwp_edit_page_list(handle, page_count) do
-    0..(page_count - 1)
-    |> Enum.reduce_while({:ok, []}, fn page_index, {:ok, pages} ->
-      case render_local_ehwp_edit_page(handle, page_index) do
-        {:ok, page} -> {:cont, {:ok, [page | pages]}}
-        {:error, reason} -> {:halt, {:error, reason}}
-      end
-    end)
-    |> case do
-      {:ok, pages} -> {:ok, Enum.reverse(pages)}
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
-  defp render_local_ehwp_edit_page(handle, page_index) do
-    case Ehwp.render_page_svg(handle, page_index) do
-      {:ok, svg, metadata} ->
-        {:ok, %{index: page_index, number: page_index + 1, svg: svg, metadata: metadata}}
-
-      {:ok, svg} ->
-        {:ok, %{index: page_index, number: page_index + 1, svg: svg, metadata: %{}}}
-
-      {:error, reason} ->
-        {:error, reason}
-    end
-  end
-
-  defp close_local_ehwp_edit_handle(%{assigns: %{local_ehwp_edit_handle: handle}} = socket) do
-    _ = Ehwp.close(handle)
-
-    socket
-    |> assign(:local_ehwp_edit_handle, nil)
-    |> assign(:local_ehwp_edit_document_id, nil)
-    |> assign(:local_ehwp_edit_revision, nil)
-  end
-
-  defp close_local_ehwp_edit_handle(socket), do: socket
 
   defp rhwp_request_value(request, keys) when is_map(request) do
     Enum.find_value(keys, &Map.get(request, &1))

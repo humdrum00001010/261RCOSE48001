@@ -68,11 +68,11 @@ defmodule Ecrits.MixProject do
       {:gettext, "~> 1.0"},
       {:jason, "~> 1.2"},
       {:dns_cluster, "~> 0.2.0"},
+      {:file_system, "~> 1.0"},
       {:bandit, "~> 1.5"},
-      {:ehwp, git: "https://storage.cloudxyz.org/IlYoung/ehwp", branch: "main"},
       {:libreofficex,
        git: "https://storage.cloudxyz.org/IlYoung/libreofficex",
-       ref: "07170beab1d34a1e19667d48dba869d2e58972b8"},
+       branch: "main"},
       {:orchex, git: "https://storage.cloudxyz.org/IlYoung/Orchex.git", branch: "main"},
       # ecrits extra deps.
       {:openai_ex, "~> 0.9"},
@@ -99,8 +99,19 @@ defmodule Ecrits.MixProject do
         "esbuild.install --if-missing",
         "cmd npm ci --prefix assets"
       ],
-      "assets.build": ["compile", "tailwind ecrits", "esbuild ecrits"],
+      # The rhwp_core WASM binary (`assets/vendor/rhwp/rhwp_bg.wasm`) is a vendored
+      # build artifact (produced by `wasm-pack build --target web --out-dir
+      # assets/vendor/rhwp ~/Desktop/rhwp_core`). esbuild bundles the ES-module
+      # glue (`rhwp.js`) into app.js, but the `.wasm` itself must be served as a
+      # static file, so copy it under `priv/static/assets/rhwp/` where Plug.Static
+      # (only: ~w(assets ...)) serves it at `/assets/rhwp/rhwp_bg.wasm`.
+      "assets.rhwp_wasm": [
+        "cmd mkdir -p priv/static/assets/rhwp",
+        "cmd cp assets/vendor/rhwp/rhwp_bg.wasm priv/static/assets/rhwp/rhwp_bg.wasm"
+      ],
+      "assets.build": ["compile", "assets.rhwp_wasm", "tailwind ecrits", "esbuild ecrits"],
       "assets.deploy": [
+        "assets.rhwp_wasm",
         "tailwind ecrits --minify",
         "esbuild ecrits --minify",
         "phx.digest"

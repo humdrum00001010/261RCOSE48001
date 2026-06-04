@@ -886,7 +886,7 @@ defmodule EcritsWeb.Local.MountWorkspaceLiveTest do
                     }},
                    1_000
 
-    assert employer_reason =~ "cannot persist changed bytes"
+    assert employer_reason =~ "unavailable during the rhwp_core browser-WASM migration"
 
     assert_receive {:local_agent_event,
                     %{
@@ -898,7 +898,7 @@ defmodule EcritsWeb.Local.MountWorkspaceLiveTest do
                     }},
                    1_000
 
-    assert worker_reason =~ "cannot persist changed bytes"
+    assert worker_reason =~ "unavailable during the rhwp_core browser-WASM migration"
 
     assert_receive {:local_agent_event,
                     %{
@@ -1095,48 +1095,61 @@ defmodule EcritsWeb.Local.MountWorkspaceLiveTest do
 
     assert has_element?(
              lv,
-             ~s([data-role="local-ehwp-editor"][data-renderer="ehwp-svg"][data-local-document-format="hwpx"][data-local-document-revision="0"][data-ehwp-page-count="2"])
+             ~s([data-role="local-hwp-editor"][data-renderer="rhwp-wasm"][data-local-document-format="hwpx"][data-local-document-revision="0"])
            )
 
     assert has_element?(
              lv,
-             ~s([data-role="local-ehwp-editor"][phx-hook="LocalEhwpEditor"][data-ehwp-edit-mode="replace_one"])
+             ~s([data-role="local-hwp-editor"][phx-hook="WasmHwpEditor"])
            )
 
-    assert has_element?(lv, ~s([data-role="local-ehwp-pages"][phx-update="stream"]))
-    assert_eventually_has_element(lv, ~s([data-role="local-ehwp-page"][data-page-index="0"]))
-    assert_eventually_has_element(lv, ~s(svg[data-ehwp-test-page="0"]))
-    assert has_element?(lv, ~s([data-role="local-ehwp-pages"].ehwp-document-stack--local))
+    # The browser-WASM hook owns the page-stack DOM (phx-update="ignore") and
+    # builds the per-page <canvas> nodes client-side from the streamed bytes, so
+    # the server-rendered stack is an empty, hook-owned container.
+    assert has_element?(lv, ~s([data-role="local-hwp-pages"][phx-update="ignore"]))
+    assert has_element?(lv, ~s([data-role="local-hwp-pages"].ehwp-document-stack--local))
+
+    # The hook fetches the document's raw bytes from the gated read-only route.
+    assert has_element?(lv, ~s([data-role="local-hwp-editor"][data-bytes-url]))
+
     refute render(lv) =~ ~s(phx-hook="Rhwp")
-    refute has_element?(lv, ~s([data-role="local-ehwp-editor"][data-editable-spec-candidates]))
+    refute has_element?(lv, ~s([data-role="local-hwp-editor"][data-editable-spec-candidates]))
 
     refute has_element?(lv, ~s([data-role="canvas-empty-upload-action"]))
     refute has_element?(lv, "#document-direct-upload-input")
     refute has_element?(lv, ~s([phx-hook="DirectR2Upload"]))
   end
 
-  test "local EHWP document opens shell before page stream finishes", %{conn: conn} do
-    Application.put_env(:ecrits, :local_ehwp_opts,
-      runtime: EcritsWeb.LocalEhwpRuntimeStub,
-      owner: self(),
-      block_page: 0
-    )
-
+  test "local HWP opens the browser-WASM shell and pushes the bytes URL to load", %{conn: conn} do
     {:ok, lv, _html} =
       live(
         conn,
         ~p"/workspace?#{[path: LocalWorkspaceAdapterStub.valid_path(), document: "drafts/service.hwpx"]}"
       )
 
-    assert_receive {:ehwp_render_blocked, render_task, 0}, 1_000
-    assert Process.alive?(render_task)
-
+    # HWP/HWPX render entirely in the browser now: the server stands up the
+    # WasmHwpEditor shell (no server-side SVG stream) and tells the hook where to
+    # fetch the document's raw bytes for `new HwpDocument(bytes)`.
     assert has_element?(lv, "#local-rhwp-shell")
-    assert has_element?(lv, ~s([data-role="local-ehwp-editor"][data-renderer="ehwp-svg"]))
-    refute has_element?(lv, ~s([data-role="local-ehwp-page"][data-page-index="0"]))
+    assert has_element?(lv, ~s([data-role="local-hwp-editor"][data-renderer="rhwp-wasm"]))
+    assert has_element?(lv, ~s([data-role="local-hwp-editor"][phx-hook="WasmHwpEditor"]))
 
-    send(render_task, :continue_ehwp_render)
-    assert_eventually_has_element(lv, ~s([data-role="local-ehwp-page"][data-page-index="0"]))
+    # The bytes URL points at the gated read-only route with the workspace +
+    # document path, and the server pushes it as `hwp_wasm_load` on open.
+    bytes_url =
+      lv
+      |> render()
+      |> LazyHTML.from_fragment()
+      |> LazyHTML.query(~s([data-role="local-hwp-editor"]))
+      |> LazyHTML.attribute("data-bytes-url")
+      |> List.first()
+
+    assert is_binary(bytes_url)
+    assert bytes_url =~ "/local/document-bytes?"
+    assert bytes_url =~ "document=drafts%2Fservice.hwpx"
+
+    # No server-side page rasterization happens; the hook builds the canvases.
+    assert has_element?(lv, ~s([data-role="local-hwp-pages"][phx-update="ignore"]))
   end
 
   test "document query opens a local DOCX shell before LibreOffice tiles finish", %{
@@ -1165,102 +1178,11 @@ defmodule EcritsWeb.Local.MountWorkspaceLiveTest do
 
     assert has_element?(lv, ~s([data-role="local-office-loading"]), "Rendering document...")
     refute has_element?(lv, ~s([data-role="local-office-tile"]))
-    refute has_element?(lv, ~s([data-role="local-ehwp-editor"]))
+    refute has_element?(lv, ~s([data-role="local-hwp-editor"]))
 
     send(render_task, :continue_libreofficex_render)
     assert_eventually_has_element(lv, ~s([data-role="local-office-tile"][data-page-number="1"]))
     assert_eventually_assign(lv, :local_hwp_stream_loading?, false)
-  end
-
-  test "local EHWP page events insert stream items and stale stream pages are ignored", %{
-    conn: conn
-  } do
-    Application.put_env(:ecrits, :local_ehwp_opts,
-      runtime: EcritsWeb.LocalEhwpRuntimeStub,
-      owner: self(),
-      block_page: 1
-    )
-
-    {:ok, lv, _html} =
-      live(
-        conn,
-        ~p"/workspace?#{[path: LocalWorkspaceAdapterStub.valid_path(), document: "drafts/service.hwpx"]}"
-      )
-
-    assert_receive {:ehwp_render_blocked, render_task, 1}, 1_000
-    assert Process.alive?(render_task)
-
-    stream_id = local_ehwp_stream_id(lv)
-    document_id = local_rhwp_document_id(lv)
-
-    send(lv.pid, {
-      :ehwp_stream,
-      stream_id,
-      {:page,
-       %{
-         index: 9,
-         number: 10,
-         svg: ~s(<svg data-ehwp-test-manual-page="current"></svg>),
-         metadata: %{}
-       }}
-    })
-
-    assert_eventually_has_element(
-      lv,
-      ~s(#local-ehwp-page-#{dom_token_for_test(document_id)}-r0-p9 svg[data-ehwp-test-manual-page="current"])
-    )
-
-    stale_stream_id = stream_id
-    stale_document_path = Path.join(LocalWorkspaceAdapterStub.valid_path(), "drafts/service.hwpx")
-
-    lv
-    |> element("#local-file-node-template-hwp")
-    |> render_click()
-
-    assert_patch(
-      lv,
-      ~p"/workspace?#{[path: LocalWorkspaceAdapterStub.valid_path(), document: "template.hwp", provider: "codex", model: "gpt-5.5", reasoning: "medium", access: "read-only"]}"
-    )
-
-    assert_receive {:ehwp_closed, ^stale_document_path}, 1_000
-    refute Process.alive?(render_task)
-
-    refute has_element?(lv, ~s(svg[data-ehwp-test-manual-page="current"]))
-
-    send(lv.pid, {
-      :ehwp_stream,
-      stale_stream_id,
-      {:page,
-       %{
-         index: 8,
-         number: 9,
-         svg: ~s(<svg data-ehwp-test-manual-page="stale"></svg>),
-         metadata: %{}
-       }}
-    })
-
-    refute has_element?(lv, ~s(svg[data-ehwp-test-manual-page="stale"]))
-  end
-
-  test "local EHWP stream errors stop loading and clear the stream id", %{conn: conn} do
-    Application.put_env(:ecrits, :local_ehwp_opts,
-      runtime: EcritsWeb.LocalEhwpRuntimeStub,
-      owner: self(),
-      error_page: 0
-    )
-
-    document_path = Path.join(LocalWorkspaceAdapterStub.valid_path(), "drafts/service.hwpx")
-
-    {:ok, lv, _html} =
-      live(
-        conn,
-        ~p"/workspace?#{[path: LocalWorkspaceAdapterStub.valid_path(), document: "drafts/service.hwpx"]}"
-      )
-
-    assert_receive {:ehwp_closed, ^document_path}, 1_000
-    assert_eventually_assign(lv, :local_hwp_stream_id, nil)
-    assert_eventually_assign(lv, :local_hwp_stream_loading?, false)
-    assert has_element?(lv, "#local-rhwp-error", "Workspace could not be loaded.")
   end
 
   test "local composer upload imports a selected HWPX into the workspace and opens it", %{
@@ -1298,7 +1220,7 @@ defmodule EcritsWeb.Local.MountWorkspaceLiveTest do
 
     assert has_element?(
              lv,
-             ~s([data-role="local-ehwp-editor"][data-local-document-format="hwpx"][data-document-path="#{upload_name}"])
+             ~s([data-role="local-hwp-editor"][data-local-document-format="hwpx"][data-document-path="#{upload_name}"])
            )
 
     refute has_element?(lv, "#document-direct-upload-input")
@@ -1328,7 +1250,7 @@ defmodule EcritsWeb.Local.MountWorkspaceLiveTest do
 
     assert has_element?(
              lv,
-             ~s([data-role="local-ehwp-editor"][data-local-document-format="hwp"][data-document-path="template.hwp"])
+             ~s([data-role="local-hwp-editor"][data-local-document-format="hwp"][data-document-path="template.hwp"])
            )
   end
 
@@ -1341,10 +1263,10 @@ defmodule EcritsWeb.Local.MountWorkspaceLiveTest do
 
     assert has_element?(
              lv,
-             ~s([data-role="local-ehwp-editor"][data-local-document-format="hwp"][data-document-path="employment_v1.hwp"][data-contract-type-key="employment_v1"])
+             ~s([data-role="local-hwp-editor"][data-local-document-format="hwp"][data-document-path="employment_v1.hwp"][data-contract-type-key="employment_v1"])
            )
 
-    refute has_element?(lv, ~s([data-role="local-ehwp-editor"][data-editable-spec-candidates]))
+    refute has_element?(lv, ~s([data-role="local-hwp-editor"][data-editable-spec-candidates]))
   end
 
   test "copied local employment standard HWP does not expose editable specs to the editor", %{
@@ -1358,10 +1280,10 @@ defmodule EcritsWeb.Local.MountWorkspaceLiveTest do
 
     assert has_element?(
              lv,
-             ~s|[data-role="local-ehwp-editor"][data-local-document-format="hwp"][data-document-path="employment_v1 (1).hwp"][data-contract-type-key="employment_v1"]|
+             ~s|[data-role="local-hwp-editor"][data-local-document-format="hwp"][data-document-path="employment_v1 (1).hwp"][data-contract-type-key="employment_v1"]|
            )
 
-    refute has_element?(lv, ~s([data-role="local-ehwp-editor"][data-editable-spec-candidates]))
+    refute has_element?(lv, ~s([data-role="local-hwp-editor"][data-editable-spec-candidates]))
   end
 
   test "local rhwp events load bytes, checkpoint, save, and reload saved revision", %{conn: conn} do
@@ -1405,72 +1327,8 @@ defmodule EcritsWeb.Local.MountWorkspaceLiveTest do
 
     assert has_element?(
              reloaded_lv,
-             ~s([data-role="local-ehwp-editor"][data-local-document-revision="2"])
+             ~s([data-role="local-hwp-editor"][data-local-document-revision="2"])
            )
-  end
-
-  test "local EHWP edit bridge writes through current handle and re-renders pages", %{conn: conn} do
-    Application.put_env(:ecrits, :local_ehwp_opts,
-      runtime: EcritsWeb.LocalEhwpRuntimeStub,
-      owner: self()
-    )
-
-    root = LocalWorkspaceAdapterStub.valid_path()
-    relative_path = "drafts/service.hwpx"
-    path = Path.join(root, relative_path)
-
-    {:ok, lv, _html} =
-      live(conn, ~p"/workspace?#{[path: root, document: relative_path]}")
-
-    document_id = local_rhwp_document_id(lv)
-
-    render_hook(lv, "ehwp.local.replace_one", %{
-      "document_id" => document_id,
-      "query" => "1",
-      "replacement" => "edited"
-    })
-
-    assert_receive {:ehwp_write, ^path, {:replace_one, "1", "edited"}, []}, 1_000
-    assert_eventually_assign(lv, :local_hwp_stream_id, nil)
-    assert_eventually_has_element(lv, ~s([data-role="local-ehwp-page"][data-page-index="0"]))
-    assert has_element?(lv, ~s([data-role="local-ehwp-editor"][phx-hook="LocalEhwpEditor"]))
-  end
-
-  test "local EHWP editor forwards mouse and keyboard events to EHWP", %{conn: conn} do
-    Application.put_env(:ecrits, :local_ehwp_opts,
-      runtime: EcritsWeb.LocalEhwpRuntimeStub,
-      owner: self()
-    )
-
-    root = LocalWorkspaceAdapterStub.valid_path()
-    relative_path = "drafts/service.hwpx"
-    path = Path.join(root, relative_path)
-
-    {:ok, lv, _html} =
-      live(conn, ~p"/workspace?#{[path: root, document: relative_path]}")
-
-    document_id = local_rhwp_document_id(lv)
-
-    render_hook(lv, "ehwp.local.input", %{
-      "document_id" => document_id,
-      "kind" => "mouse",
-      "type" => "click",
-      "page_index" => 0,
-      "x" => 12.5,
-      "y" => 33.0
-    })
-
-    assert_receive {:ehwp_input, ^path, %{"kind" => "mouse", "type" => "click"}, []}, 1_000
-
-    render_hook(lv, "ehwp.local.input", %{
-      "document_id" => document_id,
-      "kind" => "keyboard",
-      "type" => "keydown",
-      "key" => "A",
-      "code" => "KeyA"
-    })
-
-    assert_receive {:ehwp_input, ^path, %{"kind" => "keyboard", "key" => "A"}, []}, 1_000
   end
 
   test "local rhwp text mutation is acknowledged and does not remount", %{conn: conn} do
@@ -1501,7 +1359,7 @@ defmodule EcritsWeb.Local.MountWorkspaceLiveTest do
 
     assert has_element?(
              lv,
-             ~s([data-role="local-ehwp-editor"][data-local-document-id="#{document_id}"])
+             ~s([data-role="local-hwp-editor"][data-local-document-id="#{document_id}"])
            )
 
     assert {:ok, document} = Document.document(document_id)
@@ -2248,22 +2106,6 @@ defmodule EcritsWeb.Local.MountWorkspaceLiveTest do
     |> then(& &1.assigns[key])
   end
 
-  defp local_ehwp_stream_id(lv) do
-    stream_id = liveview_assign(lv, :local_hwp_stream_id)
-
-    assert not is_nil(stream_id)
-    stream_id
-  end
-
-  defp dom_token_for_test(value) when is_binary(value) do
-    value
-    |> String.replace(~r/[^a-zA-Z0-9]+/, "-")
-    |> String.trim("-")
-    |> case do
-      "" -> "root"
-      token -> token
-    end
-  end
 
   defp read_jsonl!(path) do
     path
@@ -2277,7 +2119,7 @@ defmodule EcritsWeb.Local.MountWorkspaceLiveTest do
       lv
       |> render()
       |> LazyHTML.from_fragment()
-      |> LazyHTML.query(~s([data-role="local-ehwp-editor"]))
+      |> LazyHTML.query(~s([data-role="local-hwp-editor"]))
       |> LazyHTML.attribute("data-local-document-id")
       |> List.first()
 

@@ -183,7 +183,7 @@ defmodule EcritsWeb.Components.LocalFileTree do
     cond do
       directory?(node) -> :none
       extension(node) in @open_extensions -> :open
-      extension(node) == "md" -> :select
+      extension(node) == "md" -> :open
       true -> :none
     end
   end

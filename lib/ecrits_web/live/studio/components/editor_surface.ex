@@ -12,16 +12,20 @@ defmodule EcritsWeb.Live.Studio.Components.EditorSurface do
   attr :shell_id, :string, required: true
   attr :toolbar_id, :string, required: true
   attr :frame_id, :string, required: true
-  attr :document, :map, required: true
-  attr :document_spec, :map, required: true
-  attr :canvas_id, :string, required: true
-  attr :save_state, :string, required: true
+  attr :document, :map, default: nil
+  attr :document_spec, :map, default: nil
+  attr :canvas_id, :string, default: nil
+  attr :hwp_bytes_url, :string, default: nil
+  attr :save_state, :string, default: nil
+  attr :open_documents, :list, default: []
+  attr :active_document_id, :string, default: nil
   attr :hwp_pages, :any, required: true
   attr :hwp_page_count, :integer, default: 0
   attr :hwp_stream_loading?, :boolean, default: false
 
   def local_document(assigns) do
-    assigns = assign(assigns, :document_path, assigns.document.relative_path)
+    assigns =
+      assign(assigns, :document_path, assigns.document && assigns.document.relative_path)
 
     ~H"""
     <div
@@ -32,43 +36,64 @@ defmodule EcritsWeb.Live.Studio.Components.EditorSurface do
       <div
         id={@id}
         data-component="studio-document-surface"
-        data-local-document-id={@document.id}
+        data-local-document-id={@document && @document.id}
         class="h-full min-h-0 w-full overflow-hidden"
       >
         <section class="flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-transparent">
           <div id={@toolbar_id} class="contents">
             <header
               id="studio-document-header"
-              class="flex min-h-11 flex-wrap items-center justify-between gap-x-2.5 gap-y-1.5 border-b border-base-300 bg-base-100 px-5 py-1.5 max-sm:min-h-0 max-sm:px-4 max-sm:py-2"
+              class="flex min-h-9 items-stretch justify-between border-b border-base-300 bg-base-100 max-sm:min-h-0"
             >
-              <div class="flex min-w-0 flex-1 flex-wrap items-center gap-1 max-sm:w-full">
+              <div
+                id="studio-document-tabs"
+                role="tablist"
+                aria-label="Open documents"
+                data-role="document-tabs"
+                class="flex min-w-0 flex-1 items-stretch overflow-hidden max-sm:w-full"
+              >
                 <div
-                  id="studio-document-title-form"
-                  class="flex h-8 min-w-0 max-w-[18rem] items-center"
-                  data-role="document-title-form"
+                  :for={tab <- @open_documents}
+                  id={"studio-document-tab-#{tab.id}"}
+                  role="tab"
+                  data-role="document-tab"
+                  data-tab-id={tab.id}
+                  data-active={to_string(tab.id == @active_document_id)}
+                  aria-selected={to_string(tab.id == @active_document_id)}
+                  title={tab.path}
+                  class={[
+                    "group flex min-w-0 shrink items-center gap-1 border-r border-base-300 px-3 max-w-[15rem] text-[13px] leading-none transition-colors border-b-2",
+                    if(tab.id == @active_document_id,
+                      do: "bg-base-100 text-base-content font-medium border-b-primary",
+                      else:
+                        "bg-base-200/50 text-base-content/55 border-b-transparent hover:bg-base-100/70 hover:text-base-content"
+                    )
+                  ]}
                 >
-                  <input
-                    id="studio-document-title-input"
-                    type="text"
-                    value={@document_path}
-                    aria-label="Local document path"
-                    title={@document_path}
-                    readonly
-                    autocomplete="off"
-                    spellcheck="false"
-                    class="h-7 w-[min(16rem,45vw)] max-w-full truncate rounded-md border border-base-300 bg-transparent px-1.5 py-0 text-[13px] font-medium leading-none text-base-content outline-none transition-colors hover:border-base-content/30 focus:border-base-content/50 focus:bg-base-100 focus:outline-none focus:ring-0 focus:shadow-none"
-                  />
+                  <button
+                    type="button"
+                    phx-click="tab_switch"
+                    phx-value-id={tab.id}
+                    data-role="document-tab-switch"
+                    class="min-w-0 flex-1 truncate text-left outline-none"
+                    title={tab.path}
+                  >
+                    {tab.name}
+                  </button>
+                  <button
+                    type="button"
+                    phx-click="tab_close"
+                    phx-value-id={tab.id}
+                    data-role="document-tab-close"
+                    aria-label={"Close #{tab.name}"}
+                    class="inline-flex size-4 shrink-0 items-center justify-center rounded text-base-content/45 transition-colors hover:bg-base-200 hover:text-base-content"
+                  >
+                    <.icon name="hero-x-mark" class="size-3" />
+                  </button>
                 </div>
-
-                <span
-                  id="local-active-document-badge"
-                  class="hidden h-7 shrink-0 items-center rounded-md border border-base-300 px-2 text-xs text-base-content/60 2xl:inline-flex"
-                >
-                  Open
-                </span>
               </div>
 
-              <div class="ml-auto inline-flex min-w-0 shrink-0 items-center justify-end gap-1.5 max-sm:w-full">
+              <div class="ml-auto inline-flex min-w-0 shrink-0 items-center justify-end gap-1.5 pl-2 pr-3 max-sm:w-full">
                 <span
                   id="local-rhwp-save-state"
                   class="hidden max-w-48 truncate text-xs text-base-content/55 2xl:inline"
@@ -114,7 +139,7 @@ defmodule EcritsWeb.Live.Studio.Components.EditorSurface do
 
           <article class="relative m-0 flex min-h-0 flex-1 overflow-hidden border-0 bg-transparent p-0 font-sans text-[15px] leading-[1.78] text-base-content shadow-none max-sm:mx-3 max-sm:px-5 max-sm:py-7">
             <div class="relative h-full min-h-0 w-full">
-              <div id={@frame_id} class="contents">
+              <div :if={@document} id={@frame_id} class="contents">
                 <LocalHwpPages.render
                   :if={ehwp_format?(@document.format)}
                   id={@canvas_id}
@@ -122,6 +147,7 @@ defmodule EcritsWeb.Live.Studio.Components.EditorSurface do
                   page_count={@hwp_page_count}
                   spec={@document_spec}
                   document_id={@document.id}
+                  bytes_url={@hwp_bytes_url}
                   local_document_format={@document.format}
                   local_document_revision={@document.revision}
                 />
@@ -135,6 +161,14 @@ defmodule EcritsWeb.Live.Studio.Components.EditorSurface do
                   local_document_revision={@document.revision}
                   loading?={@hwp_stream_loading?}
                 />
+              </div>
+
+              <div
+                :if={!@document}
+                id="studio-document-empty-body"
+                class="flex h-full min-h-0 w-full items-start justify-center px-5 py-6 text-sm text-base-content/60"
+              >
+                This file type can't be rendered in the editor.
               </div>
             </div>
           </article>

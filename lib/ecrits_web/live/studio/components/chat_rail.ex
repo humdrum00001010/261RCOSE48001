@@ -662,7 +662,7 @@ defmodule EcritsWeb.Live.Studio.Components.ChatRail do
         <% {:code, code} -> %>
           <code
             data-role="chat-md-inline-code"
-            class="inline-block max-w-full overflow-hidden align-baseline font-mono text-[0.92em] text-ellipsis whitespace-nowrap text-base-content/90"
+            class="inline align-baseline font-mono text-[0.85em] leading-[inherit] break-words text-base-content/90"
           >
             {code}
           </code>

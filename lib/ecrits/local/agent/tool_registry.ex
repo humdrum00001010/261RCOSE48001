@@ -18,12 +18,26 @@ defmodule Ecrits.Local.Agent.ToolRegistry do
       "namespace" => @namespace,
       "name" => "read",
       "description" =>
-        "Read active local RHWP document text through the native document runtime.",
+        "doc.read(at?, size?): read a CHUNK of the active local RHWP document text. Returns text + total + next_at; page with at/size instead of dumping the whole document.",
       "risk" => "read",
       "inputSchema" => %{
         "type" => "object",
         "additionalProperties" => false,
-        "properties" => %{}
+        "properties" => %{
+          "at" => %{
+            "type" => "integer",
+            "minimum" => 0,
+            "default" => 0,
+            "description" => "Zero-based character offset to start from (use a prior next_at)."
+          },
+          "size" => %{
+            "type" => "integer",
+            "minimum" => 1,
+            "maximum" => 20000,
+            "default" => 4000,
+            "description" => "Max characters to return in this chunk."
+          }
+        }
       },
       "annotations" => %{"readOnlyHint" => true}
     },

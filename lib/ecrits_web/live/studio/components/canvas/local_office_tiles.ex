@@ -1,6 +1,14 @@
 defmodule EcritsWeb.Live.Studio.Components.Canvas.LocalOfficeTiles do
   @moduledoc """
-  Local Microsoft Office document tile stack rendered by LibreOffice.
+  Local Microsoft Office document page stack rendered by LibreOffice.
+
+  Each slide/page is its own correctly-sized page box. The page's raster tiles
+  are placed absolutely at their `(x, y, width, height)` inside that box so they
+  compose without overlap. Pages are virtualized: only near-viewport pages carry
+  their (heavy base64 PNG) tiles in the DOM; the rest stay lightweight,
+  box-reserving placeholders that hydrate on scroll (see the `LazyOfficeTile`
+  hook). This keeps each LiveView diff small so a 1000-tile deck never overflows
+  the socket frame.
   """
 
   use EcritsWeb, :html
@@ -17,7 +25,7 @@ defmodule EcritsWeb.Live.Studio.Components.Canvas.LocalOfficeTiles do
     ~H"""
     <div
       id={@id}
-      class="relative h-full min-h-0 overflow-auto bg-white"
+      class="relative h-full min-h-0 overflow-auto bg-base-200"
       data-component="canvas-local-office-tiles"
       data-renderer="libreofficex-png-tiles"
       data-role="local-office-viewer"
@@ -36,36 +44,78 @@ defmodule EcritsWeb.Live.Studio.Components.Canvas.LocalOfficeTiles do
       </div>
 
       <div
-        id={"#{@id}-tiles"}
-        data-role="local-office-tiles"
-        class="flex min-h-full flex-wrap content-start gap-2 bg-base-200 p-5"
+        id={"#{@id}-pages"}
+        data-role="local-office-pages"
+        class="flex min-h-full flex-col items-center gap-4"
         phx-update="stream"
       >
         <figure
-          :for={{dom_id, tile} <- @tiles}
+          :for={{dom_id, page} <- @tiles}
           id={dom_id}
-          class="m-0 overflow-hidden border border-base-300 bg-white"
-          data-role="local-office-tile"
-          data-page-number={tile.page}
-          data-tile-x={tile.x}
-          data-tile-y={tile.y}
-          data-tile-width={tile.width}
-          data-tile-height={tile.height}
+          class="relative m-0 max-w-full overflow-hidden border border-base-300 bg-white shadow-sm"
+          data-role="local-office-page"
+          data-page-number={page.page}
+          phx-hook="LazyOfficeTile"
+          style={page_box_style(page)}
         >
-          <img
-            src={tile_src(tile)}
-            alt={"Page #{tile.page}"}
-            width={tile.width}
-            height={tile.height}
-            class="block max-w-full"
-          />
+          <%!-- Only a page that has at least one of ITS OWN tiles renders images.
+                A hydrated-but-tileless page (and any placeholder) renders the blank
+                box-reserving fill instead — never an ambiguous empty <figure> that
+                could borrow another slot's pixels or collapse its reserved box. An
+                empty list is NOT truthy here on purpose (it means "no tiles yet"). --%>
+          <%= if match?([_ | _], page[:tiles]) do %>
+            <img
+              :for={tile <- page.tiles}
+              src={tile_src(tile)}
+              alt={"Page #{page.page}"}
+              width={tile.width}
+              height={tile.height}
+              class="absolute block max-w-none"
+              style={tile_style(tile)}
+            />
+          <% else %>
+            <div class="absolute inset-0 bg-base-100" aria-hidden="true"></div>
+          <% end %>
         </figure>
       </div>
     </div>
     """
   end
 
-  defp tile_src(%{data: data}) when is_binary(data) do
+  # Each page reserves its raster box; max-width caps it to the viewport while
+  # aspect-ratio keeps the height proportional, so placeholders occupy the same
+  # space the hydrated tiles will.
+  defp page_box_style(%{page_width: w, page_height: h})
+       when is_integer(w) and is_integer(h) and w > 0 and h > 0,
+       do: "width:#{w}px;max-width:100%;aspect-ratio:#{w} / #{h}"
+
+  defp page_box_style(_), do: nil
+
+  # Tiles position as a percentage of the page so they stay glued when the page
+  # box is scaled down to fit the viewport (the page box's aspect-ratio + the
+  # img's percentage geometry scale together).
+  defp tile_style(%{x: x, y: y, width: w, height: h} = tile) do
+    {pw, ph} = page_dims(tile)
+
+    "left:#{pct(x, pw)}%;top:#{pct(y, ph)}%;width:#{pct(w, pw)}%;height:#{pct(h, ph)}%"
+  end
+
+  defp page_dims(%{page_width: pw, page_height: ph})
+       when is_integer(pw) and is_integer(ph) and pw > 0 and ph > 0,
+       do: {pw, ph}
+
+  defp page_dims(_tile), do: {1240, 1754}
+
+  defp pct(_value, total) when total <= 0, do: 0
+  defp pct(value, total), do: Float.round(value / total * 100, 4)
+
+  # The data URI is precomputed once when the tile arrives (see
+  # `tile_data_uri/1` in the LiveView) so re-streaming a page during the cold
+  # render burst is a string copy, not a fresh base64 encode of every tile.
+  defp tile_src(%{src: src}) when is_binary(src) and src != "", do: src
+
+  # Backward-compatible fallback for any tile still carrying raw PNG bytes.
+  defp tile_src(%{data: data}) when is_binary(data) and byte_size(data) > 0 do
     "data:image/png;base64," <> Base.encode64(data)
   end
 
