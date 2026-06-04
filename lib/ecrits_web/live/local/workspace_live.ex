@@ -97,6 +97,11 @@ defmodule EcritsWeb.Local.WorkspaceLive do
      |> assign(:local_office_tiles, %{})
      |> assign(:local_office_page_dims, %{})
      |> assign(:local_office_hydrated, MapSet.new())
+     # LOK in-process office EDIT session (docx/pptx/xlsx made editable like the
+     # HWP editor). nil when no edit session is available — the read-only PDF-tile
+     # path above is the graceful fallback.
+     |> assign(:office_edit_session, nil)
+     |> assign(:office_edit_document_id, nil)
      |> assign(:page_title, "Workspace")
      |> assign(:workspace, nil)
      |> assign(:workspace_path, nil)
@@ -321,6 +326,66 @@ defmodule EcritsWeb.Local.WorkspaceLive do
     {:noreply, release_local_office_page(socket, local_hwp_to_int(page))}
   end
 
+  # --- LOK office EDIT session events (from the OfficeEditor JS hook) ----------
+  # All are guarded by an active edit session; with no session they are no-ops,
+  # so a stray client event can never crash the LiveView.
+
+  def handle_event("office.edit.hit_test", %{"page" => page, "x" => x, "y" => y}, socket) do
+    with_office_edit(socket, fn pid ->
+      Ecrits.Local.OfficeEditSession.hit_test(pid, num_to_int(page), num_to_float(x), num_to_float(y))
+    end)
+
+    {:noreply, socket}
+  end
+
+  def handle_event("office.edit.key", params, socket) do
+    event = office_edit_key_event(params)
+
+    if event != nil do
+      with_office_edit(socket, &Ecrits.Local.OfficeEditSession.keyboard(&1, event))
+    end
+
+    {:noreply, socket}
+  end
+
+  def handle_event("office.edit.ime", params, socket) do
+    event = office_edit_ime_event(params)
+
+    if event != nil do
+      with_office_edit(socket, &Ecrits.Local.OfficeEditSession.ime(&1, event))
+    end
+
+    {:noreply, socket}
+  end
+
+  def handle_event("office.edit.paint", params, socket) do
+    viewport = office_edit_viewport(params)
+    with_office_edit(socket, &Ecrits.Local.OfficeEditSession.request_tile(&1, viewport))
+    {:noreply, socket}
+  end
+
+  def handle_event("office.edit.set_part", %{"part" => part}, socket) do
+    with_office_edit(socket, &Ecrits.Local.OfficeEditSession.set_part(&1, num_to_int(part)))
+    {:noreply, socket}
+  end
+
+  def handle_event("office.edit.save", _params, socket) do
+    case socket.assigns[:office_edit_session] do
+      pid when is_pid(pid) ->
+        case Ecrits.Local.OfficeEditSession.save(pid) do
+          :ok ->
+            {:noreply, push_event(socket, "office_edit_saved", %{ok: true})}
+
+          {:error, reason} ->
+            {:noreply,
+             push_event(socket, "office_edit_saved", %{ok: false, error: error_message(reason)})}
+        end
+
+      _ ->
+        {:noreply, socket}
+    end
+  end
+
   def handle_event("refresh_tree", _params, socket) do
     {:noreply, refresh_tree(socket, socket.assigns.expanded_paths)}
   end
@@ -537,6 +602,43 @@ defmodule EcritsWeb.Local.WorkspaceLive do
     {:noreply, socket}
   end
 
+  # LOK edit-session output: forward painted tiles + caret moves to the
+  # OfficeEditor hook. The hook draws the PNG tile into its canvas and the caret
+  # onto its overlay (the same shape the HWP editor uses, but tiles come from
+  # the server LOK paintTile rather than client WASM).
+  def handle_info({:office_edit, {:tile, tile}}, socket) do
+    socket =
+      socket
+      |> assign(:local_hwp_stream_loading?, false)
+      |> push_event("office_edit_tile", %{
+        part: tile.part,
+        page: tile.page,
+        x: tile.x,
+        y: tile.y,
+        tile_w: tile.tile_w,
+        tile_h: tile.tile_h,
+        width: tile.width,
+        height: tile.height,
+        src: "data:image/png;base64," <> tile.png_base64
+      })
+
+    {:noreply, socket}
+  end
+
+  def handle_info({:office_edit, {:caret, caret}}, socket) do
+    {:noreply,
+     push_event(socket, "office_edit_caret", %{
+       page: caret.page,
+       x: caret.x,
+       y: caret.y,
+       height: caret.height
+     })}
+  end
+
+  def handle_info({:office_edit, {:error, _reason}}, socket) do
+    {:noreply, socket}
+  end
+
 
   def handle_info({:rhwp_positional_index_request, request}, socket) do
     selected_document_id = active_document_id(socket)
@@ -609,6 +711,7 @@ defmodule EcritsWeb.Local.WorkspaceLive do
   @impl true
   def terminate(_reason, socket) do
     _ = unsubscribe_local_hwp_stream(socket)
+    _ = tear_down_office_edit_session(socket)
     _ = unregister_local_rhwp_materializer_editor(active_document_id(socket))
     _ = stop_fs_watcher(socket)
     :ok
@@ -744,6 +847,7 @@ defmodule EcritsWeb.Local.WorkspaceLive do
               hwp_pages={@streams.local_hwp_pages}
               hwp_page_count={@local_hwp_page_count}
               hwp_stream_loading?={@local_hwp_stream_loading?}
+              office_edit?={@local_hwp_stream_renderer == :libreofficex_edit}
               save_state={
                 @active_document &&
                   local_save_state(
@@ -2347,28 +2451,122 @@ defmodule EcritsWeb.Local.WorkspaceLive do
 
   defp local_document_bytes_url(_workspace_path, _relative_path), do: nil
 
+  # Office (docx/pptx/xlsx) rendering. We PREFER the LOK in-process edit session
+  # (click->caret, type->edit, real-time tile repaint, Ctrl+S save). If a LOK
+  # edit session can't be created (no runtime / open failed), we degrade to the
+  # read-only PDF-tile subscription path — the editor never crashes the BEAM.
   defp render_local_office_tiles(socket, %Document{} = document) do
     socket =
       socket
       |> unsubscribe_local_hwp_stream()
       |> clear_local_hwp_pages()
+
+    cond do
+      not connected?(socket) ->
+        socket
+        |> assign(:local_hwp_stream_renderer, :libreofficex)
+        |> assign(:local_hwp_stream_document_id, document.id)
+        |> assign(:local_hwp_stream_revision, document.revision)
+
+      office_edit_enabled?() ->
+        case start_office_edit_session(socket, document) do
+          {:ok, socket} -> socket
+          {:fallback, socket} -> subscribe_read_only_office(socket, document)
+        end
+
+      true ->
+        subscribe_read_only_office(socket, document)
+    end
+  end
+
+  defp subscribe_read_only_office(socket, %Document{} = document) do
+    socket =
+      socket
       |> assign(:local_hwp_stream_renderer, :libreofficex)
       |> assign(:local_hwp_stream_document_id, document.id)
       |> assign(:local_hwp_stream_revision, document.revision)
-      |> assign(:local_hwp_stream_loading?, connected?(socket))
+      |> assign(:local_hwp_stream_loading?, true)
 
-    if connected?(socket) do
-      case local_libreofficex_runtime().subscribe(document.path, local_libreofficex_opts()) do
-        {:ok, subscription} ->
-          assign(socket, :local_hwp_stream_id, subscription)
+    case local_libreofficex_runtime().subscribe(document.path, local_libreofficex_opts()) do
+      {:ok, subscription} ->
+        assign(socket, :local_hwp_stream_id, subscription)
 
-        {:error, reason} ->
-          socket
-          |> assign(:local_hwp_stream_loading?, false)
-          |> assign(:local_document_error, error_message(reason))
+      {:error, reason} ->
+        socket
+        |> assign(:local_hwp_stream_loading?, false)
+        |> assign(:local_document_error, error_message(reason))
+    end
+  end
+
+  # Start a LOK edit session (a supervised, LiveView-owned process). On success
+  # the office renderer becomes `:libreofficex_edit`; the OfficeEditor hook then
+  # drives hit_test/keyboard/ime/paint over server events and the session pushes
+  # tiles + caret back. Anything other than a clean start falls back read-only.
+  defp start_office_edit_session(socket, %Document{} = document) do
+    socket = tear_down_office_edit_session(socket)
+
+    try do
+      case Ecrits.Local.OfficeEditSession.start(document.path, owner: self()) do
+        {:ok, pid} ->
+          case Ecrits.Local.OfficeEditSession.info(pid) do
+            {:ok, info} ->
+              socket =
+                socket
+                |> assign(:office_edit_session, pid)
+                |> assign(:office_edit_document_id, document.id)
+                |> assign(:local_hwp_stream_renderer, :libreofficex_edit)
+                |> assign(:local_hwp_stream_document_id, document.id)
+                |> assign(:local_hwp_stream_revision, document.revision)
+                |> assign(:local_hwp_stream_loading?, true)
+                |> push_event("office_edit_open", %{
+                  document_id: document.id,
+                  revision: document.revision,
+                  doc_type: to_string(info.doc_type),
+                  part_count: info.part_count,
+                  page_count: info.page_count
+                })
+
+              {:ok, socket}
+
+            {:error, _reason} ->
+              _ = Ecrits.Local.OfficeEditSession.close(pid)
+              {:fallback, socket}
+          end
+
+        {:error, _reason} ->
+          {:fallback, socket}
       end
-    else
-      socket
+    rescue
+      _ -> {:fallback, socket}
+    catch
+      _, _ -> {:fallback, socket}
+    end
+  end
+
+  defp office_edit_enabled? do
+    Application.get_env(:ecrits, :office_edit_enabled, true) and
+      office_edit_runtime_available?()
+  end
+
+  defp office_edit_runtime_available? do
+    Libreofficex.Edit.available?()
+  rescue
+    _ -> false
+  catch
+    _, _ -> false
+  end
+
+  defp tear_down_office_edit_session(socket) do
+    case socket.assigns[:office_edit_session] do
+      pid when is_pid(pid) ->
+        _ = Ecrits.Local.OfficeEditSession.close(pid)
+
+        socket
+        |> assign(:office_edit_session, nil)
+        |> assign(:office_edit_document_id, nil)
+
+      _ ->
+        socket
     end
   end
 
@@ -2381,6 +2579,7 @@ defmodule EcritsWeb.Local.WorkspaceLive do
 
   defp clear_local_hwp_pages(socket) do
     socket
+    |> tear_down_office_edit_session()
     |> assign(:local_hwp_page_count, 0)
     |> assign(:local_hwp_stream_id, nil)
     |> assign(:local_hwp_stream_renderer, nil)
@@ -2451,6 +2650,80 @@ defmodule EcritsWeb.Local.WorkspaceLive do
 
   defp local_hwp_to_int(i) when is_integer(i), do: i
   defp local_hwp_to_int(i) when is_binary(i), do: String.to_integer(i)
+
+  # --- LOK office edit-session helpers ----------------------------------------
+
+  defp with_office_edit(socket, fun) do
+    case socket.assigns[:office_edit_session] do
+      pid when is_pid(pid) ->
+        if Process.alive?(pid), do: fun.(pid)
+        :ok
+
+      _ ->
+        :ok
+    end
+  end
+
+  # Translate a keydown payload into a `Libreofficex.Edit` keyboard event. A
+  # named control key (Backspace/Enter/arrows/…) maps to `%{key:}`; a single
+  # printable character maps to `%{text:}`. Anything else returns nil (ignored).
+  @office_edit_control_keys ~w(Backspace Delete Enter Return Tab Escape ArrowDown
+                               ArrowUp ArrowLeft ArrowRight Home End PageUp PageDown)
+  defp office_edit_key_event(%{"key" => key}) when key in @office_edit_control_keys do
+    %{key: key}
+  end
+
+  defp office_edit_key_event(%{"text" => text}) when is_binary(text) and text != "" do
+    %{text: text}
+  end
+
+  defp office_edit_key_event(%{"key" => key}) when is_binary(key) do
+    # A single-character printable key (e.g. "a", "1", "가") arrives as :key.
+    case String.length(key) do
+      1 -> %{text: key}
+      _ -> nil
+    end
+  end
+
+  defp office_edit_key_event(_), do: nil
+
+  # IME composition payload -> ext_text_input event.
+  defp office_edit_ime_event(%{"commit" => text}) when is_binary(text) and text != "" do
+    %{commit: text}
+  end
+
+  defp office_edit_ime_event(%{"preedit" => text}) when is_binary(text) do
+    %{preedit: text}
+  end
+
+  defp office_edit_ime_event(%{"end" => true}), do: %{end: true}
+  defp office_edit_ime_event(_), do: nil
+
+  defp office_edit_viewport(params) do
+    %{
+      page: num_to_int(Map.get(params, "page", 1)),
+      x: num_to_float(Map.get(params, "x", 0)),
+      y: num_to_float(Map.get(params, "y", 0)),
+      width: num_to_float(Map.get(params, "width", 0)),
+      height: num_to_float(Map.get(params, "height", 0))
+    }
+  end
+
+  defp num_to_int(n) when is_integer(n), do: n
+  defp num_to_int(n) when is_float(n), do: round(n)
+  defp num_to_int(n) when is_binary(n), do: String.to_integer(n)
+  defp num_to_int(_), do: 0
+
+  defp num_to_float(n) when is_number(n), do: n / 1
+
+  defp num_to_float(n) when is_binary(n) do
+    case Float.parse(n) do
+      {f, _} -> f
+      :error -> 0.0
+    end
+  end
+
+  defp num_to_float(_), do: 0.0
 
   # --- office (libreofficex) tile virtualization -------------------------
   #

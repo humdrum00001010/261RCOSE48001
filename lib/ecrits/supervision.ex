@@ -111,7 +111,12 @@ defmodule Ecrits.Supervision do
   defp local_document_runtime_children do
     [
       {Registry, keys: :unique, name: Ecrits.Local.Document.Registry},
-      Ecrits.Local.Document.Supervisor
+      Ecrits.Local.Document.Supervisor,
+      # LibreOfficeKit (LOK) in-process office editing sessions: one transient
+      # child per open editable office document, owned by the LiveView that
+      # started it (the session monitors its owner and frees the LOK document on
+      # owner death). Read-only office rendering does not use this tree.
+      {DynamicSupervisor, strategy: :one_for_one, name: Ecrits.Local.OfficeEditSupervisor}
     ]
   end
 

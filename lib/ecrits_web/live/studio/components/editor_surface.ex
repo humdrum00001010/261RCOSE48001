@@ -6,6 +6,7 @@ defmodule EcritsWeb.Live.Studio.Components.EditorSurface do
   use EcritsWeb, :html
 
   alias EcritsWeb.Live.Studio.Components.Canvas.LocalHwpPages
+  alias EcritsWeb.Live.Studio.Components.Canvas.LocalOfficeEditor
   alias EcritsWeb.Live.Studio.Components.Canvas.LocalOfficeTiles
 
   attr :id, :string, default: "studio-root"
@@ -22,6 +23,7 @@ defmodule EcritsWeb.Live.Studio.Components.EditorSurface do
   attr :hwp_pages, :any, required: true
   attr :hwp_page_count, :integer, default: 0
   attr :hwp_stream_loading?, :boolean, default: false
+  attr :office_edit?, :boolean, default: false
 
   def local_document(assigns) do
     assigns =
@@ -151,8 +153,16 @@ defmodule EcritsWeb.Live.Studio.Components.EditorSurface do
                   local_document_format={@document.format}
                   local_document_revision={@document.revision}
                 />
+                <LocalOfficeEditor.render
+                  :if={!ehwp_format?(@document.format) and @office_edit?}
+                  id={@canvas_id}
+                  document_id={@document.id}
+                  local_document_format={@document.format}
+                  local_document_revision={@document.revision}
+                  loading?={@hwp_stream_loading?}
+                />
                 <LocalOfficeTiles.render
-                  :if={!ehwp_format?(@document.format)}
+                  :if={!ehwp_format?(@document.format) and not @office_edit?}
                   id={@canvas_id}
                   tiles={@hwp_pages}
                   page_count={@hwp_page_count}
