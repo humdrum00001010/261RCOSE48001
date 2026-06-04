@@ -56,7 +56,7 @@ defmodule EcritsWeb.Live.Studio.Components.Canvas.LocalHwpPages do
         rows="1"
         phx-update="ignore"
         class="absolute left-0 top-0 m-0 p-0 border-0 outline-none bg-transparent resize-none overflow-hidden"
-        style="width:1.5em;height:1em;color:transparent;caret-color:transparent;white-space:pre;line-height:1;font-size:16px;z-index:20"
+        style="width:1.5em;height:1em;color:transparent;caret-color:transparent;white-space:pre;line-height:1;font-size:16px;z-index:20;pointer-events:none"
       ></textarea>
       <%!-- The WASM hook owns this canvas stack: it creates one <canvas> per page
             (+ a caret overlay) and renders near-viewport pages on demand, so
