@@ -149,6 +149,19 @@ defmodule Ecrits.Local.AcpAgent do
     end
   end
 
+  @doc """
+  Live-updates a running session's turn parameters (access/approval mode,
+  reasoning effort, same-provider model) in place — preserving the conversation
+  — rather than recreating the session. The next turn starts from the merged
+  options. Mirrors `session/set_mode` / `session/set_config_option` semantics
+  (the ACP session is created per turn, so these are stored-for-next-turn).
+  """
+  def update_session_options(session_id, adapter_opts) when is_list(adapter_opts) do
+    with {:ok, pid} <- fetch_session(session_id) do
+      Session.update_options(pid, adapter_opts)
+    end
+  end
+
   def status(_ctx, session_id) do
     with {:ok, pid} <- fetch_session(session_id) do
       Session.snapshot(pid)

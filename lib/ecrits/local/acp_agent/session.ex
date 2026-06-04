@@ -67,6 +67,22 @@ defmodule Ecrits.Local.AcpAgent.Session do
   def send_turn(pid, ctx, input, opts \\ []), do: GenServer.call(pid, {:send_turn, ctx, input, opts})
   def cancel(pid, ctx, turn_id \\ nil), do: GenServer.call(pid, {:cancel, ctx, turn_id})
 
+  @doc """
+  Updates this live session's turn parameters (access/approval mode, reasoning
+  effort, same-provider model) WITHOUT recreating the session, so the chat
+  conversation is preserved. The merged `adapter_opts` (and `mcp_servers`) are
+  picked up by the next turn.
+
+  This is the in-process equivalent of issuing `session/set_mode` /
+  `session/set_config_option` on the ACP client: the ACP session + client are
+  created fresh per turn (see `AcpStream`), so a "live" change is just the
+  stored per-turn options the next turn starts from — which is exactly what the
+  Codex/Claude ACP adapters do with those requests ("stored for next turn").
+  """
+  def update_options(pid, adapter_opts) when is_list(adapter_opts) do
+    GenServer.call(pid, {:update_options, adapter_opts})
+  end
+
   def topic(id), do: "local_agent:" <> id
 
   # ── GenServer ─────────────────────────────────────────────────────
@@ -92,6 +108,11 @@ defmodule Ecrits.Local.AcpAgent.Session do
   @impl true
   def handle_call(:snapshot, _from, state) do
     {:reply, {:ok, public_snapshot(state)}, state}
+  end
+
+  def handle_call({:update_options, new_opts}, _from, state) do
+    merged = Keyword.merge(state.adapter_opts, new_opts)
+    {:reply, :ok, %{state | adapter_opts: merged}}
   end
 
   def handle_call({:send_turn, ctx, input, _opts}, _from, state) do

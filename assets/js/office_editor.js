@@ -49,6 +49,8 @@ const OfficeEditor = {
 
     this.onMouseDown = e => this.onCanvasMouseDown(e)
     this.el.addEventListener("mousedown", this.onMouseDown)
+    this.onDblClick = e => this.onCanvasDblClick(e)
+    this.el.addEventListener("dblclick", this.onDblClick)
 
     this.bindEditing()
 
@@ -65,6 +67,7 @@ const OfficeEditor = {
     if (this.blink) clearInterval(this.blink)
     if (this.slideObserver) this.slideObserver.disconnect()
     this.el.removeEventListener("mousedown", this.onMouseDown)
+    this.el.removeEventListener("dblclick", this.onDblClick)
     this.unbindEditing()
     if (window.__officeEditor === this) window.__officeEditor = null
   },
@@ -277,29 +280,49 @@ const OfficeEditor = {
 
   // ─── Input ───────────────────────────────────────────────────────────────
 
+  // Resolve a pointer event to { page, x, y } in page-local CSS px (the LOK
+  // hit_test coordinate space @96dpi), or null if the event isn't over a page.
+  pointToPage(event) {
+    const section = event.target.closest("[data-role='office-editor-page']")
+    if (!section) return null
+    const page = Number(section.dataset.pageNumber) || 1
+    const canvas = section.querySelector("[data-role='office-editor-canvas']")
+    if (!canvas) return null
+    const rect = canvas.getBoundingClientRect()
+    const x = ((event.clientX - rect.left) / rect.width) * this.pageBoxWidth(page)
+    const y = ((event.clientY - rect.top) / rect.height) * this.pageBoxHeight(page)
+    return { page, x, y }
+  },
+
   // mousedown on a page -> page-local px -> hit_test.
   onCanvasMouseDown(event) {
     if (event.button !== 0) return
-    const section = event.target.closest("[data-role='office-editor-page']")
-    if (!section) return
-    const page = Number(section.dataset.pageNumber) || 1
-    const canvas = section.querySelector("[data-role='office-editor-canvas']")
-    if (!canvas) return
-    const rect = canvas.getBoundingClientRect()
-    // page-local CSS px (the LOK hit_test coordinate space @96dpi).
-    const x = ((event.clientX - rect.left) / rect.width) * this.pageBoxWidth(page)
-    const y = ((event.clientY - rect.top) / rect.height) * this.pageBoxHeight(page)
+    const hit = this.pointToPage(event)
+    if (!hit) return
 
     // Impress slides are shape-based: a single click only SELECTS a shape, it
-    // does not place a text caret. So for a presentation we enter the clicked
-    // shape's text body (server double-clicks via Edit.enter_text_at); for a
+    // does not place a text caret — mirroring PowerPoint/Impress, you must
+    // DOUBLE-click to enter a shape's text body (see onCanvasDblClick). So a
+    // single click on a presentation is select-only / no-op here. For a
     // text/spreadsheet doc a single-click hit_test places the caret directly.
-    if (this.docType === "presentation") {
-      this.pushEvent("office.edit.enter_text", { page, x, y })
-    } else {
-      this.pushEvent("office.edit.hit_test", { page, x, y })
+    if (this.docType !== "presentation") {
+      this.pushEvent("office.edit.hit_test", hit)
+      if (this.imeProxy) {
+        event.preventDefault()
+        this.imeProxy.focus({ preventScroll: true })
+      }
     }
+  },
 
+  // dblclick on a presentation slide -> enter the clicked shape's text body
+  // (server double-clicks via Edit.enter_text_at). Mirrors PowerPoint/Impress
+  // where a double-click is required to edit shape text.
+  onCanvasDblClick(event) {
+    if (event.button !== 0) return
+    if (this.docType !== "presentation") return
+    const hit = this.pointToPage(event)
+    if (!hit) return
+    this.pushEvent("office.edit.enter_text", hit)
     if (this.imeProxy) {
       event.preventDefault()
       this.imeProxy.focus({ preventScroll: true })

@@ -193,19 +193,23 @@ defmodule EcritsWeb.Local.WorkspaceLive do
       |> mount_workspace(path)
       |> maybe_open_local_document(params)
 
+    # Access/reasoning/same-provider-model changes must NOT recreate the session
+    # (that starts a brand-new ACP session and loses the conversation). They are
+    # per-turn options, so apply them to the LIVE session in place — the next
+    # turn picks them up — and restart only on a real provider switch (codex<->
+    # claude) or a workspace/document-context change that needs a fresh session.
+    options_changed? = access_changed? or reasoning_changed? or model_changed?
+
     socket =
       if should_restart_local_agent_session?(
            socket,
            same_workspace?,
            provider_changed?,
-           model_changed?,
-           reasoning_changed?,
-           access_changed?,
            previous_agent_context
          ) do
         restart_local_agent_session(socket)
       else
-        socket
+        maybe_apply_live_local_agent_options(socket, options_changed?)
       end
 
     socket =
@@ -1306,7 +1310,7 @@ defmodule EcritsWeb.Local.WorkspaceLive do
                     data-selected-model={@local_agent_model}
                     data-selected-reasoning={@local_agent_reasoning_effort}
                     data-selected-access={@local_agent_access_control}
-                    class="flex min-w-0 items-center gap-1 border-t border-base-300 px-2 py-1.5 text-[11px] leading-5 text-base-content/60"
+                    class="flex min-w-0 flex-wrap items-center gap-1 border-t border-base-300 px-2 py-1.5 text-[11px] leading-5 text-base-content/60"
                   >
                     <div class="block min-w-0 shrink-0">
                       <span class="sr-only">Model</span>
@@ -1402,10 +1406,10 @@ defmodule EcritsWeb.Local.WorkspaceLive do
                       id="local-agent-reasoning-select"
                       data-role="provider-reasoning-select"
                       data-selected-reasoning={@local_agent_reasoning_effort}
-                      class="group relative shrink-0"
+                      class="group relative min-w-0 max-w-28"
                     >
-                      <summary class="inline-flex h-6 cursor-pointer list-none items-center justify-between gap-1 rounded border border-base-300 bg-base-100 px-1.5 text-[11px] text-base-content transition-colors hover:border-base-content/25 marker:hidden">
-                        <span class="whitespace-nowrap">
+                      <summary class="inline-flex h-6 min-w-0 max-w-28 cursor-pointer list-none items-center justify-between gap-1 rounded border border-base-300 bg-base-100 px-1.5 text-[11px] text-base-content transition-colors hover:border-base-content/25 marker:hidden">
+                        <span class="min-w-0 truncate">
                           {local_agent_reasoning_short_label(@local_agent_reasoning_effort)}
                         </span>
                         <.icon
@@ -1445,10 +1449,10 @@ defmodule EcritsWeb.Local.WorkspaceLive do
                       id="local-agent-access-select"
                       data-role="agent-access-control"
                       data-selected-access={@local_agent_access_control}
-                      class="group relative shrink-0"
+                      class="group relative min-w-0 max-w-36"
                     >
-                      <summary class="inline-flex h-7 cursor-pointer list-none items-center justify-between gap-1 rounded border border-base-300 bg-base-100 px-1.5 text-xs text-base-content transition-colors hover:border-base-content/25 marker:hidden">
-                        <span class="whitespace-nowrap">
+                      <summary class="inline-flex h-7 min-w-0 max-w-36 cursor-pointer list-none items-center justify-between gap-1 rounded border border-base-300 bg-base-100 px-1.5 text-xs text-base-content transition-colors hover:border-base-content/25 marker:hidden">
+                        <span class="min-w-0 truncate">
                           {local_agent_access_control(@local_agent_access_control).label}
                         </span>
                         <.icon name="hero-chevron-down" class="size-3 shrink-0 text-base-content/45" />
@@ -1776,27 +1780,47 @@ defmodule EcritsWeb.Local.WorkspaceLive do
     |> start_local_agent_session()
   end
 
+  # Restart (new ACP session, conversation reset) ONLY on a genuine
+  # provider switch (codex<->claude) or a workspace/document-context change.
+  # Access/reasoning/same-provider-model changes are applied live instead — see
+  # maybe_apply_live_local_agent_options/2 — so they preserve the conversation.
   defp should_restart_local_agent_session?(
          socket,
          same_workspace?,
          provider_changed?,
-         model_changed?,
-         reasoning_changed?,
-         access_changed?,
          previous_agent_context
        ) do
     is_nil(socket.assigns.workspace_error) and
-      (not same_workspace? or provider_changed? or model_changed? or reasoning_changed? or
-         access_changed? or
+      (not same_workspace? or provider_changed? or
          previous_agent_context != local_agent_session_context(socket))
   end
 
+  # Apply per-turn option changes (access/reasoning/same-provider model) to the
+  # running session without recreating it, preserving the conversation. No live
+  # session yet -> nothing to do (the next start picks up the assigns).
+  defp maybe_apply_live_local_agent_options(socket, false), do: socket
+
+  defp maybe_apply_live_local_agent_options(
+         %{assigns: %{local_agent_session_id: session_id}} = socket,
+         true
+       )
+       when is_binary(session_id) do
+    workspace_path = workspace_root_path(socket.assigns.workspace || %{})
+    _ = ACP.update_session_options(session_id, local_agent_provider_adapter_opts(socket, workspace_path))
+    socket
+  end
+
+  defp maybe_apply_live_local_agent_options(socket, _changed?), do: socket
+
+  # NOTE: local_agent_model is deliberately NOT part of the restart context: a
+  # same-provider model swap is a per-turn option applied live (above), not a
+  # reason to recreate the session. A cross-provider switch is caught by
+  # provider_changed? in handle_params.
   defp local_agent_session_context(socket) do
     {
       socket.assigns.workspace_path,
       active_document_id(socket),
-      socket.assigns.active_document_path,
-      socket.assigns.local_agent_model
+      socket.assigns.active_document_path
     }
   end
 
