@@ -2523,7 +2523,10 @@ defmodule EcritsWeb.Local.WorkspaceLive do
                   revision: document.revision,
                   doc_type: to_string(info.doc_type),
                   part_count: info.part_count,
-                  page_count: info.page_count
+                  page_count: info.page_count,
+                  # Per-part px geometry so the hook sizes each slide box to its
+                  # REAL (landscape) dims before painting (no portrait clip).
+                  parts_geometry: Map.get(info, :parts_geometry, [])
                 })
 
               {:ok, socket}

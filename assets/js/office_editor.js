@@ -31,6 +31,13 @@ const OfficeEditor = {
     this.caretBlinkOn = true
     // Page raster dims (px) keyed by page number, from the first tile that lands.
     this.pageDims = new Map()
+    // Per-page authoritative box dims (px) from the server's parts_geometry.
+    // When set (presentations), the box is sized to the slide and tiles must NOT
+    // resize it.
+    this.fixedDims = new Map()
+    // Slides we've already asked the server to paint (lazy paint, issue 1).
+    this.painted = new Set()
+    this.slideObserver = null
 
     this.pageStack = this.el.querySelector("[data-role='office-editor-pages']")
     this.imeProxy = this.el.querySelector("[data-role='office-editor-ime-proxy']")
@@ -56,6 +63,7 @@ const OfficeEditor = {
 
   destroyed() {
     if (this.blink) clearInterval(this.blink)
+    if (this.slideObserver) this.slideObserver.disconnect()
     this.el.removeEventListener("mousedown", this.onMouseDown)
     this.unbindEditing()
     if (window.__officeEditor === this) window.__officeEditor = null
@@ -66,13 +74,65 @@ const OfficeEditor = {
   onOpen(payload) {
     this.docType = payload.doc_type || "text"
     this.partCount = Math.max(1, Number(payload.part_count) || 1)
-    // For a text doc the "pages" come from tiles; seed at least one page box so
-    // the canvas exists immediately. Presentations have one box per slide/part.
-    const initial = this.docType === "presentation" ? this.partCount : 1
-    this.pageCount = Math.max(initial, Number(payload.page_count) || initial)
-    this.buildPageStack(this.pageCount)
-    // Ask the server to paint the first page/part.
-    this.requestPaint(1)
+    this.painted = new Set()
+    this.fixedDims = new Map()
+
+    // Per-part geometry from the server (px @96dpi). For a presentation this is
+    // each slide's REAL size (landscape), so we size each box to it BEFORE
+    // painting — no portrait-default clip (issue 2).
+    const geom = Array.isArray(payload.parts_geometry) ? payload.parts_geometry : []
+    geom.forEach(g => {
+      const w = Math.round(Number(g.width_px) || 0)
+      const h = Math.round(Number(g.height_px) || 0)
+      if (w > 0 && h > 0) this.fixedDims.set(Number(g.part) + 1, { w, h })
+    })
+
+    if (this.docType === "presentation") {
+      // One box per slide/part. Build them all (so scroll height is right and a
+      // slide can scroll into view), but DON'T paint all 84 — paint each lazily
+      // when it scrolls into view (issue 1).
+      this.pageCount = this.partCount
+      this.buildPageStack(this.pageCount)
+      this.observeSlides()
+      // Paint slide 1 eagerly so the first view isn't blank.
+      this.requestPaint(1)
+    } else {
+      // Text doc: one tall page seeded immediately; tiles size it.
+      this.pageCount = Math.max(1, Number(payload.page_count) || 1)
+      this.buildPageStack(this.pageCount)
+      this.requestPaint(1)
+    }
+  },
+
+  // Lazily paint presentation slides as they scroll into the viewer (issue 1).
+  // The viewer element (this.el) is the scroll root; each page section is a
+  // target. A slide is painted at most once.
+  observeSlides() {
+    if (this.slideObserver) this.slideObserver.disconnect()
+    if (typeof IntersectionObserver === "undefined") {
+      // No IO: fall back to painting everything (rare; keeps it functional).
+      for (let p = 1; p <= this.pageCount; p++) this.lazyPaint(p)
+      return
+    }
+    this.slideObserver = new IntersectionObserver(
+      entries => {
+        for (const e of entries) {
+          if (!e.isIntersecting) continue
+          const page = Number(e.target.dataset.pageNumber) || 0
+          if (page) this.lazyPaint(page)
+        }
+      },
+      // Prefetch slightly before a slide fully enters so it's painted by the
+      // time it's visible. Root is the scrollable viewer.
+      { root: this.el, rootMargin: "300px 0px", threshold: 0.01 }
+    )
+    this.pages.forEach(entry => this.slideObserver.observe(entry.section))
+  },
+
+  lazyPaint(page) {
+    if (this.painted.has(page)) return
+    this.painted.add(page)
+    this.requestPaint(page)
   },
 
   // A painted PNG tile for a page. Place it at its page-local px (x,y) inside
@@ -132,9 +192,11 @@ const OfficeEditor = {
 
   createPage(page, dims) {
     if (this.pages.has(page)) return this.pages.get(page)
-    // Default A4-portrait box until the first tile reports real dims.
-    const w = (dims && dims.w) || 794
-    const h = (dims && dims.h) || 1123
+    // Prefer the server-reported per-part size (presentation slides: real
+    // landscape dims), then any caller dims, else A4-portrait for a text page.
+    const fixed = this.fixedDims.get(page)
+    const w = (fixed && fixed.w) || (dims && dims.w) || 794
+    const h = (fixed && fixed.h) || (dims && dims.h) || 1123
 
     const section = document.createElement("section")
     section.dataset.role = "office-editor-page"
@@ -176,6 +238,9 @@ const OfficeEditor = {
   ensurePage(page, tile) {
     let entry = this.pages.get(page)
     if (!entry) entry = this.createPage(page)
+    // Presentation slides have authoritative server dims; never let a tile
+    // resize them (a sub-region tile would otherwise shrink the box).
+    if (this.fixedDims.has(page)) return
     // The full-part paint reports the page's px footprint via tile_w/tile_h when
     // it covers the whole page (x==0,y==0). Use it to size the box once.
     if ((tile.x || 0) === 0 && (tile.y || 0) === 0 && tile.tile_w && tile.tile_h) {
