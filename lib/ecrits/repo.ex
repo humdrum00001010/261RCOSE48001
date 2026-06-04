@@ -2,8 +2,8 @@ defmodule Ecrits.Repo do
   @moduledoc """
   Local SQLite repository for the ecrits app store.
 
-  This repo intentionally stays separate from `Ecrits.LegacyRepo`, which is a
-  retired compatibility boundary for the old hosted SQL surface.
+  This is the app's only persistence boundary; the legacy hosted Postgres
+  repo (`Ecrits.LegacyRepo`) and its SaaS surface were retired.
   """
 
   use Ecto.Repo,

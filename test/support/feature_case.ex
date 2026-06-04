@@ -16,10 +16,8 @@ defmodule EcritsWeb.FeatureCase do
     quote do
       use Wallaby.Feature
 
-      import Ecrits.PersonaFactory
       import EcritsWeb.FeatureCase
 
-      alias Ecrits.PersonaFactory
       alias Wallaby.Query
     end
   end

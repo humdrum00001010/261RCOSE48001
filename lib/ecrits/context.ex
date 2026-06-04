@@ -3,27 +3,22 @@ defmodule Ecrits.Context do
   The request-scoped context (`T.ctx`) threaded through every ecrits
   module.
 
-  Every public function in `Ecrits.Studio`, `Ecrits.Runtime`,
-  `Ecrits.Engine`, `Ecrits.IO`, `Ecrits.Agent`, etc. takes a
-  `%Ecrits.Context{}` as its first argument. It replaces the
-  `phx.gen.auth`-generated `Ecrits.Accounts.Scope` while remaining
-  compatible with the generated user-auth plumbing (the assign key is still
-  `:current_scope`, and `for_user/1` is still the constructor used by
-  `user_auth.ex`).
+  It is the first argument threaded through the surviving local-first
+  components (the studio chrome data structures still carry a context).
+  The SaaS `Ecrits.Accounts` user layer is retired, so `:user` is now an
+  opaque term (always `nil` in the local-first app).
 
   Fields:
 
-    * `:user` — the authenticated `Ecrits.Accounts.User` struct, or `nil`.
+    * `:user` — opaque user term, or `nil` (auth layer retired).
     * `:tenant` — tenant identifier, scoped per request (nil until populated).
     * `:request_id` — Plug request id, useful for log correlation.
     * `:now` — frozen request timestamp for deterministic time-based logic.
     * `:perms` — permission set (map or list, shape TBD).
   """
 
-  alias Ecrits.Accounts.User
-
   @type t :: %__MODULE__{
-          user: User.t() | nil,
+          user: term() | nil,
           tenant: term() | nil,
           request_id: String.t() | nil,
           now: DateTime.t() | nil,
@@ -37,12 +32,9 @@ defmodule Ecrits.Context do
             perms: nil
 
   @doc """
-  Builds a context for the given user.
-
-  Returns `nil` if no user is given, matching the legacy auth contract used
-  by older document-scoped code.
+  Builds a context for the given user term, or `nil` when no user is given.
   """
-  @spec for_user(User.t() | nil) :: t() | nil
-  def for_user(%User{} = user), do: %__MODULE__{user: user}
+  @spec for_user(term() | nil) :: t() | nil
   def for_user(nil), do: nil
+  def for_user(user), do: %__MODULE__{user: user}
 end

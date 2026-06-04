@@ -44,64 +44,10 @@ if config_env() != :test do
 end
 
 # ---------------------------------------------------------------------------
-# Mailer — Swoosh SMTP, Worksmobile (port 465 implicit TLS), OTP-28 hardened
+# Korean Law MCP
 # ---------------------------------------------------------------------------
-# SMTP is `:prod`-only. `:dev` always uses Swoosh.Adapters.Local so that
-# `/dev/mailbox` works on a plain `mix phx.server` boot (even with MAIL_HOST
-# in .env). `:test` always uses Swoosh.Adapters.Test (set in config/test.exs).
-if config_env() == :prod and System.get_env("MAIL_HOST") not in [nil, ""] do
-  config :ecrits, Ecrits.Mailer,
-    adapter: Swoosh.Adapters.SMTP,
-    relay: System.fetch_env!("MAIL_HOST"),
-    port: String.to_integer(System.fetch_env!("MAIL_PORT")),
-    ssl: true,
-    tls: :never,
-    auth: :always,
-    username: System.fetch_env!("MAIL_USERNAME"),
-    password: System.fetch_env!("MAIL_PASSWORD"),
-    retries: 2,
-    no_mx_lookups: true,
-    sockopts: [
-      versions: [:"tlsv1.2", :"tlsv1.3"],
-      verify: :verify_peer,
-      cacerts: :public_key.cacerts_get(),
-      depth: 3,
-      customize_hostname_check: [
-        match_fun: :public_key.pkix_verify_hostname_match_fun(:https)
-      ],
-      server_name_indication: System.fetch_env!("MAIL_HOST") |> String.to_charlist()
-    ]
-
-  config :swoosh, :api_client, Swoosh.ApiClient.Finch
-  config :swoosh, local: false
-end
-
-if System.get_env("MAIL_FROM_ADDRESS") not in [nil, ""] do
-  config :ecrits,
-         :mail_from,
-         {System.get_env("MAIL_FROM_NAME", "ecrits"), System.fetch_env!("MAIL_FROM_ADDRESS")}
-end
-
-# ---------------------------------------------------------------------------
-# OpenAI / Upstage / Korean Law MCP
-# ---------------------------------------------------------------------------
-# Model + effort are runtime-only so swapping them never trips the dev
-# `config.exs` compile reloader. The api_key block stays gated on the env
-# var being present (so test/CI without keys still boots cleanly).
-config :ecrits, :openai,
-  default_model: System.get_env("OPENAI_MODEL", "gpt-5.5"),
-  reasoning_effort: System.get_env("OPENAI_REASONING_EFFORT", "medium")
-
-if System.get_env("OPENAI_API_KEY") not in [nil, ""] do
-  config :ecrits, :openai, api_key: System.fetch_env!("OPENAI_API_KEY")
-end
-
-if System.get_env("UPSTAGE_API_KEY") not in [nil, ""] do
-  config :ecrits, :upstage,
-    api_key: System.fetch_env!("UPSTAGE_API_KEY"),
-    endpoint: "https://api.upstage.ai/v1/document-ai/document-parse"
-end
-
+# The SaaS OpenAI/Upstage/SMTP-mailer stack was retired with the legacy DB.
+# Only the Korean Law MCP integration survives (command-palette law search).
 if System.get_env("LAW_OC") not in [nil, ""] do
   config :ecrits, :law_mcp,
     oc: System.fetch_env!("LAW_OC"),
@@ -146,14 +92,3 @@ if config_env() == :prod do
     ],
     secret_key_base: secret_key_base
 end
-
-# ---------------------------------------------------------------------------
-# Export binaries (Chromium-for-Testing → PDF, pandoc → DOCX)
-# ---------------------------------------------------------------------------
-# Wired in every environment (including :test) so the format modules can
-# resolve a path before falling back to PATH lookup. The format-specific
-# tests that actually shell out are tagged `:requires_chromium` /
-# `:requires_pandoc` and excluded from the default suite.
-config :ecrits,
-  chromium_path: System.get_env("CHROMIUM_PATH", "/usr/local/bin/chromium"),
-  pandoc_path: System.get_env("PANDOC_PATH", "/usr/bin/pandoc")

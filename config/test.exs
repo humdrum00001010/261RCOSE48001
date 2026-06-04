@@ -49,9 +49,6 @@ config :wallaby,
   otp_app: :ecrits,
   base_url: "http://localhost:4002"
 
-# In test we don't send emails
-config :ecrits, Ecrits.Mailer, adapter: Swoosh.Adapters.Test
-
 # Disable swoosh api client as it is only required for production adapters
 config :swoosh, :api_client, false
 
@@ -69,27 +66,10 @@ config :phoenix_live_view,
 config :phoenix,
   sort_verified_routes_query_params: true
 
-# Provider stubs / fake credentials so config-time fetches succeed.
-config :ecrits, :upstage,
-  endpoint: "http://localhost:0/v1/document-ai/document-parse",
-  api_key: "test-upstage-key"
-
-config :ecrits, :openai,
-  api_key: "test-openai-key",
-  base_url: "http://localhost:0/v1",
-  default_model: "gpt-5-mini",
-  reasoning_effort: "high"
-
+# Korean Law MCP stub endpoint so config-time fetches succeed.
 config :ecrits, :law_mcp,
   endpoint: "http://localhost:0/mcp",
   oc: "openapi"
-
-# Mox-based OpenAI driver for the Agent runtime tests.
-config :ecrits, :io_drivers,
-  http: Ecrits.IO.HTTP.Req,
-  openai: Ecrits.IO.OpenAIMock,
-  upstage: Ecrits.IO.Upstage,
-  law_mcp: Ecrits.IO.LawMCP
 
 # External HWPX validator — used by `test/ecrits/export/hwpx_external_validator_test.exs`
 # (tag `:external_hwpx`, excluded from the default suite).

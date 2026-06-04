@@ -2,26 +2,12 @@
 # excluded from the default `mix test` run to keep the unit suite fast and
 # Chromium-free. CI / sprite runs `mix test --include browser`.
 #
-# `:external_hwpx` shells out to a third-party `pyhwpxlib` binary to
-# validate generated HWPX bytes against an external parser. Excluded by
-# default; run with `mix test --include external_hwpx`.
-#
-# `:requires_chromium` / `:requires_pandoc` (Wave 4 export) shell out to
-# headless Chromium-for-Testing and pandoc respectively. Default `mix
-# test` skips them; run with `mix test --include requires_chromium` or
-# `--include requires_pandoc` on the sprite (which ships both binaries).
+# `:live_law_mcp` hits the real Korean Law MCP endpoint; excluded by default.
 ExUnit.start(
   exclude: [
-    :live_smtp,
     :live,
-    :live_openai,
     :live_law_mcp,
-    :live_upstage,
-    :legacy_saas,
-    :browser,
-    :external_hwpx,
-    :requires_chromium,
-    :requires_pandoc
+    :browser
   ]
 )
 
@@ -41,8 +27,3 @@ browser_included? =
 if browser_included? and Process.whereis(EcritsWeb.Endpoint) do
   {:ok, _} = Application.ensure_all_started(:wallaby)
 end
-
-# Mox definitions for IO drivers. The test config swaps in
-# `Ecrits.IO.OpenAIMock` for the OpenAI driver.
-Mox.defmock(Ecrits.IO.OpenAIMock, for: Ecrits.IO.OpenAI.Behaviour)
-Mox.set_mox_global()

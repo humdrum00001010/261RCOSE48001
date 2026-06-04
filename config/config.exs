@@ -43,33 +43,11 @@ config :ecrits, :local_agent, provider: "codex"
 # continue to match English `msgid` strings (= source-of-truth).
 config :ecrits, :ui_locale, "ko"
 
-# Provider IO + Agent runtime. Each block reads the matching env vars at
-# runtime via `Application.fetch_env!/2`; tests override these in `config/test.exs`.
-config :ecrits, :upstage,
-  endpoint: "https://api.upstage.ai/v1/document-ai/document-parse",
-  api_key: System.get_env("UPSTAGE_API_KEY")
-
-config :ecrits, :openai,
-  api_key: System.get_env("OPENAI_API_KEY"),
-  base_url: System.get_env("OPENAI_BASE_URL", "https://api.openai.com/v1")
-
-# NOTE: `default_model` + `reasoning_effort` live in `config/runtime.exs`,
-# not here. Putting them in `config.exs` makes the Phoenix dev code
-# reloader 500 every HTTP request when they change (you must restart the
-# whole VM for compile-time config edits). runtime.exs is re-read on each
-# boot, doesn't trip the reloader, and is also where env-var overrides
-# (OPENAI_MODEL, OPENAI_REASONING_EFFORT) get wired in.
-
+# Korean Law MCP — the surviving provider integration (used by the command
+# palette law search). Reads env vars at runtime via `Application.fetch_env!/2`.
 config :ecrits, :law_mcp,
   endpoint: System.get_env("LAW_MCP_URL", "https://korean-law-mcp.fly.dev/mcp"),
   oc: System.get_env("LAW_OC", "openapi")
-
-# Driver overrides — tests swap these for mock implementations.
-config :ecrits, :io_drivers,
-  http: Ecrits.IO.HTTP.Req,
-  openai: Ecrits.IO.OpenAI,
-  upstage: Ecrits.IO.Upstage,
-  law_mcp: Ecrits.IO.LawMCP
 
 # Configure the endpoint
 config :ecrits, EcritsWeb.Endpoint,
@@ -81,15 +59,6 @@ config :ecrits, EcritsWeb.Endpoint,
   ],
   pubsub_server: Ecrits.PubSub,
   live_view: [signing_salt: "QfT/bbEN"]
-
-# Configure the mailer
-#
-# By default it uses the "Local" adapter which stores the emails
-# locally. You can see the emails in your browser, at "/dev/mailbox".
-#
-# For production it's recommended to configure a different adapter
-# at the `config/runtime.exs`.
-config :ecrits, Ecrits.Mailer, adapter: Swoosh.Adapters.Local
 
 # Configure esbuild (the version is required)
 config :esbuild,

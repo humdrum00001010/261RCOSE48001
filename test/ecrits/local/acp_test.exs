@@ -6,7 +6,7 @@ defmodule Ecrits.Local.ACPTest do
   alias Ecrits.Local.Agent.Adapters.Fake
 
   @ctx %Context{
-    user: %Ecrits.Accounts.User{
+    user: %{
       id: "00000000-0000-0000-0000-000000000295",
       email: "local-acp@example.test"
     }

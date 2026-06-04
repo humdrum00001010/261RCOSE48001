@@ -62,14 +62,6 @@ config :ecrits, EcritsWeb.Endpoint,
 # Enable dev routes for dashboard and mailbox
 config :ecrits, dev_routes: true
 
-# Keep source uploads deterministic and offline unless a test explicitly
-# overrides the driver.
-config :ecrits, :io_drivers,
-  http: Ecrits.IO.HTTP.Req,
-  openai: Ecrits.IO.OpenAI,
-  upstage: Ecrits.IO.DeterministicParser,
-  law_mcp: Ecrits.IO.LawMCP
-
 # Do not include metadata nor timestamps in development logs
 config :logger, :default_formatter, format: "[$level] $message\n"
 

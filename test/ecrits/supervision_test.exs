@@ -8,8 +8,6 @@ defmodule Ecrits.SupervisionTest do
              :storage,
              :document_services,
              :web,
-             :studio_agent_runtime,
-             :studio_session_runtime,
              :local_document_runtime,
              :local_agent_runtime
            ]
@@ -26,11 +24,6 @@ defmodule Ecrits.SupervisionTest do
              Ecrits.Loader,
              Ecrits.RhwpSnapshot.Materializer,
              EcritsWeb.Endpoint,
-             Ecrits.Agent.Document.Registry,
-             Ecrits.Agent.Document.RunRegistry,
-             Ecrits.Agent.DocumentSupervisor,
-             Ecrits.Session.Registry,
-             Ecrits.Session.Supervisor,
              Ecrits.Local.Document.Registry,
              Ecrits.Local.Document.Supervisor,
              Ecrits.Local.Agent.SessionRegistry,

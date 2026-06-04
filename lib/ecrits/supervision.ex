@@ -11,7 +11,6 @@ defmodule Ecrits.Supervision do
     * platform services make the BEAM/Phoenix host usable;
     * storage opens the local ~/.ecrits SQLite store;
     * document services own cross-cutting document materialization;
-    * studio runtimes keep the older hosted document/session model alive;
     * local document runtime owns open workspace-document sessions;
     * local agent runtime owns ACP sessions and the agent-visible MCP tool loop.
 
@@ -38,18 +37,14 @@ defmodule Ecrits.Supervision do
       # workers publish, subscribe, or make HTTP calls.
       {:platform, platform_children()},
       {:http_clients, http_client_children()},
-      # Local durable app state. Keep separate from the retired Ecrits.LegacyRepo
-      # legacy boundary so local-first storage can move without reviving SaaS DB code.
+      # Local durable app state — the only persistence boundary now that the
+      # legacy SaaS Postgres repo is retired.
       {:storage, storage_children()},
       # Format/runtime services that are shared by user editing and agent edits.
       {:document_services, document_service_children()},
       # Phoenix endpoint starts after shared services so LiveViews can mount
       # document and agent sessions immediately.
       {:web, web_children()},
-      # Hosted/SaaS-era studio runtimes. Keep until local editor abstractions
-      # fully absorb the same document/session responsibilities.
-      {:studio_agent_runtime, studio_agent_runtime_children()},
-      {:studio_session_runtime, studio_session_runtime_children()},
       # Local editor runtimes: document sessions first, ACP/agent sessions after,
       # because agents bind to the active document session by id.
       {:local_document_runtime, local_document_runtime_children()},
@@ -110,21 +105,6 @@ defmodule Ecrits.Supervision do
   defp web_children do
     [
       EcritsWeb.Endpoint
-    ]
-  end
-
-  defp studio_agent_runtime_children do
-    [
-      {Registry, keys: :unique, name: Ecrits.Agent.Document.Registry},
-      {Registry, keys: :unique, name: Ecrits.Agent.Document.RunRegistry},
-      Ecrits.Agent.DocumentSupervisor
-    ]
-  end
-
-  defp studio_session_runtime_children do
-    [
-      {Registry, keys: :unique, name: Ecrits.Session.Registry},
-      {DynamicSupervisor, strategy: :one_for_one, name: Ecrits.Session.Supervisor}
     ]
   end
 

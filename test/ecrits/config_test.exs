@@ -5,7 +5,7 @@ defmodule Ecrits.ConfigTest do
 
   describe "assert_loaded!/1" do
     test ":prod raises on missing required keys; :dev/:test return :ok" do
-      key = "OPENAI_API_KEY"
+      key = "LAW_OC"
       original = System.get_env(key)
       System.delete_env(key)
 
@@ -23,16 +23,22 @@ defmodule Ecrits.ConfigTest do
   end
 
   describe "required_keys/1" do
-    test ":prod requires SECRET_KEY_BASE + external services; DB URL is retired" do
+    test ":prod requires SECRET_KEY_BASE + Law MCP credential; DB / retired-SaaS keys are gone" do
       prod = Config.required_keys(:prod)
       refute "DATABASE_URL" in prod
       assert "SECRET_KEY_BASE" in prod
-      assert "OPENAI_API_KEY" in prod
+      assert "LAW_OC" in prod
+      # SaaS provider stack (OpenAI / Upstage / SMTP mailer) and the legacy
+      # object store are retired — their env vars are no longer required.
+      refute "OPENAI_API_KEY" in prod
+      refute "UPSTAGE_API_KEY" in prod
+      refute "MAIL_HOST" in prod
       refute "R2_BUCKET" in prod
 
       dev = Config.required_keys(:dev)
       refute "DATABASE_URL" in dev
       refute "SECRET_KEY_BASE" in dev
+      assert "LAW_OC" in dev
     end
   end
 end

@@ -86,7 +86,6 @@ defmodule EcritsWeb do
       import Phoenix.HTML
       # Core UI components
       import EcritsWeb.CoreComponents
-      import EcritsWeb.AuthComponents
       import EcritsWeb.Components.AppShell
 
       # Common modules used in templates

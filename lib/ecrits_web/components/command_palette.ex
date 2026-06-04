@@ -685,9 +685,9 @@ defmodule EcritsWeb.Components.CommandPalette do
     |> assign(:results, results)
   end
 
-  # Routes through Ecrits.Studio.search_documents/2 (Wave 4 —
-  # backed by Ecrits.Documents.search/3). Tolerates the documents
-  # table not existing yet by returning [] on DB errors.
+  # The hosted document index (Ecrits.Studio.search_documents/2 → the legacy
+  # Postgres documents table) is retired. Document search now always returns
+  # `[]` until a local-first index backs this mode.
   defp run_doc_search(socket, "") do
     socket
     |> assign(:query, "")
@@ -701,19 +701,10 @@ defmodule EcritsWeb.Components.CommandPalette do
   end
 
   @doc """
-  Public for tests. Routes a query through `Ecrits.Studio.search_documents/2`
-  with a defensive rescue so test envs without the documents migration
-  see `[]` rather than a 500.
+  Document search backend. The hosted Postgres document index is retired, so
+  this returns `[]` until a local-first index is wired in.
   """
-  def search_documents(scope, query) do
-    Ecrits.Studio.search_documents(scope, query)
-  rescue
-    _ -> []
-  end
-
-  # Backwards-compat shim — pre-Wave-4 callers used search_documents_stub/2.
-  @doc false
-  def search_documents_stub(scope, query), do: search_documents(scope, query)
+  def search_documents(_scope, _query), do: []
 
   # --- Command catalog -------------------------------------------------
 

@@ -8,7 +8,7 @@ defmodule Ecrits.Local.Agent.EndpointTest do
   alias Ecrits.Local.Agent.Endpoint
 
   @ctx %Context{
-    user: %Ecrits.Accounts.User{
+    user: %{
       id: "00000000-0000-0000-0000-000000000294",
       email: "local-agent@example.test"
     }
