@@ -499,6 +499,37 @@ defmodule ExMCP.ACP.Adapters.Codex do
     {:skip, state}
   end
 
+  # Codex 0.137 renamed the start notification `item/created` -> `item/started`
+  # and the tool item type `function_call` -> `mcpToolCall` (for MCP servers) /
+  # `functionCall` (built-in). An MCP call starts as:
+  #
+  #   item/started %{"item" => %{"type" => "mcpToolCall", "id" => "call_...",
+  #     "server" => "ecrits_doc", "tool" => "doc.list", "arguments" => %{},
+  #     "status" => "inProgress", "result" => nil}}
+  #
+  # Surface it as an ACP `tool_call` so the chat-rail tool_call block opens.
+  defp handle_notification("item/started", %{"item" => %{"type" => "mcpToolCall"} = item}, state) do
+    {:messages, [mcp_tool_call_started_update(state, item)], state}
+  end
+
+  defp handle_notification("item/started", %{"item" => %{"type" => "functionCall"} = item}, state) do
+    notification =
+      session_update(state, %{
+        "sessionUpdate" => "tool_call",
+        "toolCallId" => item["callId"] || item["id"],
+        "title" => item["name"],
+        "kind" => codex_tool_kind(item["name"]),
+        "rawInput" => item["arguments"],
+        "status" => "pending"
+      })
+
+    {:messages, [notification], state}
+  end
+
+  defp handle_notification("item/started", _params, state) do
+    {:skip, state}
+  end
+
   # Item completed — handles agent messages, tool calls, and tool results
   defp handle_notification("item/completed", params, state) do
     item = params["item"] || %{}
@@ -717,6 +748,58 @@ defmodule ExMCP.ACP.Adapters.Codex do
 
   # ── Item Completion Handlers ───────────────────────────────────
 
+  # Codex 0.137 MCP tool result: the same `mcpToolCall` item, now with
+  # `status: "completed"|"failed"` and a populated `result`/`error`.
+  defp handle_item_completed(%{"type" => "mcpToolCall"} = item, state) do
+    failed? = item["status"] == "failed" or item["error"] != nil
+    output = mcp_tool_result_text(item)
+
+    notification =
+      session_update(state, %{
+        "sessionUpdate" => "tool_call_update",
+        "toolCallId" => item["id"] || item["callId"],
+        "toolName" => mcp_tool_name(item),
+        "status" => if(failed?, do: "failed", else: "completed"),
+        "kind" => codex_tool_kind(item["tool"]),
+        "rawInput" => item["arguments"],
+        "rawOutput" => item["result"] || item["error"],
+        "content" => [tool_text_content(output)]
+      })
+
+    {:messages, [notification], state}
+  end
+
+  defp handle_item_completed(%{"type" => "functionCall"} = item, state) do
+    failed? = item["status"] == "failed" or item["error"] != nil
+
+    notification =
+      session_update(state, %{
+        "sessionUpdate" => "tool_call_update",
+        "toolCallId" => item["callId"] || item["id"],
+        "toolName" => item["name"],
+        "status" => if(failed?, do: "failed", else: "completed"),
+        "kind" => codex_tool_kind(item["name"]),
+        "rawInput" => item["arguments"],
+        "rawOutput" => item["output"] || item["result"],
+        "content" => [tool_text_content(item["output"] || item["result"] || "")]
+      })
+
+    {:messages, [notification], state}
+  end
+
+  defp handle_item_completed(%{"type" => "agentMessage"} = item, state) do
+    text = item["text"] || ""
+
+    notification =
+      session_update(state, %{
+        "sessionUpdate" => "agent_message_chunk",
+        "content" => %{"type" => "text", "text" => text},
+        "final" => true
+      })
+
+    {:messages, [notification], state}
+  end
+
   defp handle_item_completed(%{"type" => "agent_message"} = item, state) do
     text = item["text"] || ""
 
@@ -818,6 +901,55 @@ defmodule ExMCP.ACP.Adapters.Codex do
   end
 
   defp codex_tool_kind(_), do: "other"
+
+  # ── MCP tool-call (Codex 0.137 `mcpToolCall` item) helpers ──────
+
+  defp mcp_tool_call_started_update(state, item) do
+    session_update(state, %{
+      "sessionUpdate" => "tool_call",
+      "toolCallId" => item["id"] || item["callId"],
+      "toolName" => mcp_tool_name(item),
+      "title" => mcp_tool_name(item),
+      "kind" => codex_tool_kind(item["tool"]),
+      "rawInput" => item["arguments"],
+      "status" => "in_progress"
+    })
+  end
+
+  # `server`/`tool` are split in the item (e.g. "ecrits_doc" + "doc.list");
+  # present the dotted tool name, qualified by server when both are present.
+  defp mcp_tool_name(%{"server" => server, "tool" => tool})
+       when is_binary(server) and is_binary(tool),
+       do: "#{server}.#{tool}"
+
+  defp mcp_tool_name(%{"tool" => tool}) when is_binary(tool), do: tool
+  defp mcp_tool_name(%{"name" => name}) when is_binary(name), do: name
+  defp mcp_tool_name(_item), do: "mcp_tool"
+
+  # Codex wraps the MCP result as `%{"Ok" => %{"content" => [...]}}` (or
+  # `%{"Err" => ...}`); flatten the text content for the chat-rail block.
+  defp mcp_tool_result_text(%{"result" => result}) when not is_nil(result),
+    do: mcp_result_text(result)
+
+  defp mcp_tool_result_text(%{"error" => error}) when not is_nil(error),
+    do: mcp_result_text(error)
+
+  defp mcp_tool_result_text(_item), do: ""
+
+  defp mcp_result_text(%{"Ok" => ok}), do: mcp_result_text(ok)
+  defp mcp_result_text(%{"Err" => err}), do: mcp_result_text(err)
+
+  defp mcp_result_text(%{"content" => content}) when is_list(content) do
+    content
+    |> Enum.map(fn
+      %{"text" => text} when is_binary(text) -> text
+      other -> Jason.encode!(other)
+    end)
+    |> Enum.join("\n")
+  end
+
+  defp mcp_result_text(value) when is_binary(value), do: value
+  defp mcp_result_text(value), do: Jason.encode!(value)
 
   defp format_web_search_results(results) when is_binary(results), do: results
   defp format_web_search_results(nil), do: ""
