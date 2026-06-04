@@ -290,7 +290,15 @@ const OfficeEditor = {
     const x = ((event.clientX - rect.left) / rect.width) * this.pageBoxWidth(page)
     const y = ((event.clientY - rect.top) / rect.height) * this.pageBoxHeight(page)
 
-    this.pushEvent("office.edit.hit_test", { page, x, y })
+    // Impress slides are shape-based: a single click only SELECTS a shape, it
+    // does not place a text caret. So for a presentation we enter the clicked
+    // shape's text body (server double-clicks via Edit.enter_text_at); for a
+    // text/spreadsheet doc a single-click hit_test places the caret directly.
+    if (this.docType === "presentation") {
+      this.pushEvent("office.edit.enter_text", { page, x, y })
+    } else {
+      this.pushEvent("office.edit.hit_test", { page, x, y })
+    }
 
     if (this.imeProxy) {
       event.preventDefault()

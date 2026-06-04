@@ -349,6 +349,22 @@ defmodule EcritsWeb.Local.WorkspaceLive do
     {:noreply, socket}
   end
 
+  # Impress/Draw text-frame entry (the JS hook sends this for presentations,
+  # where a single click only selects a shape): activate the clicked slide's part
+  # and double-click into the shape's text body so a caret is placed.
+  def handle_event("office.edit.enter_text", %{"page" => page, "x" => x, "y" => y}, socket) do
+    with_office_edit(socket, fn pid ->
+      Ecrits.Local.OfficeEditSession.enter_text(
+        pid,
+        num_to_int(page),
+        num_to_float(x),
+        num_to_float(y)
+      )
+    end)
+
+    {:noreply, socket}
+  end
+
   def handle_event("office.edit.key", params, socket) do
     event = office_edit_key_event(params)
 

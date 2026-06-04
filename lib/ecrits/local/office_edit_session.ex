@@ -114,6 +114,15 @@ defmodule Ecrits.Local.OfficeEditSession do
   @spec hit_test(pid(), pos_integer(), number(), number()) :: :ok
   def hit_test(pid, page, x, y), do: GenServer.cast(pid, {:hit_test, page, x, y})
 
+  @doc """
+  Enters Impress/Draw SHAPE TEXT-EDIT at page-local px on a 1-based page (the
+  slide is activated first), then double-clicks into the shape's text body so a
+  caret is placed; sends back a `:caret`. Use this instead of `hit_test/4` for
+  presentations, where a single click only selects a shape.
+  """
+  @spec enter_text(pid(), pos_integer(), number(), number()) :: :ok
+  def enter_text(pid, page, x, y), do: GenServer.cast(pid, {:enter_text, page, x, y})
+
   @doc "Posts a keyboard event (`%{text:}` or `%{key:}`); paints the dirty tiles."
   @spec keyboard(pid(), map()) :: :ok
   def keyboard(pid, event), do: GenServer.cast(pid, {:keyboard, event})
@@ -221,6 +230,21 @@ defmodule Ecrits.Local.OfficeEditSession do
     {:noreply, state}
   end
 
+  # Impress/Draw text-frame entry: make the clicked slide's part active (each
+  # slide is a distinct LOK part), then double-click into the shape's text body
+  # so a real caret lands and subsequent keyboard/IME edits that shape's text.
+  def handle_cast({:enter_text, page, x, y}, state) do
+    part = page - 1
+    guarded(fn -> Edit.set_part(state.edit, part) end, :ok)
+
+    case guarded(fn -> Edit.enter_text_at(state.edit, page, x, y) end, {:error, :no_cursor}) do
+      {:ok, caret} -> notify(state, {:caret, normalize_caret(caret)})
+      _ -> :ok
+    end
+
+    {:noreply, %{state | part: part}}
+  end
+
   def handle_cast({:keyboard, event}, state) do
     {:noreply, apply_edit(state, fn -> Edit.keyboard(state.edit, event) end)}
   end
@@ -322,7 +346,42 @@ defmodule Ecrits.Local.OfficeEditSession do
               state
           end
 
-        schedule_repaint(state, Map.get(reply, :invalidated, []))
+        invalidated = Map.get(reply, :invalidated, [])
+
+        # Impress/Draw shape-text edits emit NO LOK tile-invalidation on the svp
+        # build (in-shape Outliner text never triggers INVALIDATE_TILES and slides
+        # have no page rects to synthesize one from), so the dirty-rect list comes
+        # back empty even though the shape's text DID change. Without a forced
+        # repaint the new glyphs would never reach the canvas. So for a
+        # presentation we always repaint the active slide after an edit; text docs
+        # keep the precise dirty-rect coalescing path.
+        if presentation?(state) do
+          schedule_slide_repaint(state)
+        else
+          schedule_repaint(state, invalidated)
+        end
+
+      _ ->
+        state
+    end
+  end
+
+  # Coalesce a whole-active-slide repaint after a presentation edit, reusing the
+  # same debounce timer so a typing burst paints once per quiet gap. The pending
+  # region spans the full slide (origin 0,0, doc_size extent).
+  defp schedule_slide_repaint(state) do
+    part = active_part(state)
+
+    case guarded(fn -> Edit.doc_size(state.edit) end, {:error, :backend_missing}) do
+      {:ok, %{width: tw, height: th}}
+      when is_integer(tw) and is_integer(th) and tw > 0 and th > 0 ->
+        region = %{part: part, x: 0, y: 0, w: tw, h: th}
+
+        arm_repaint(%{
+          state
+          | pending_repaint: union_region(state.pending_repaint, region),
+            full_repaint: union_region(state.full_repaint, region)
+        })
 
       _ ->
         state
@@ -440,9 +499,13 @@ defmodule Ecrits.Local.OfficeEditSession do
 
   defp paint_slide(_state, _), do: :ok
 
-  # Paint a coalesced live-typing region (issue 3) at the given scale.
+  # Paint a coalesced live-typing region (issue 3) at the given scale. For a
+  # presentation each part IS a slide/page, so pass the 1-based page explicitly
+  # (slides have no page_rects to infer it from); text docs infer the page from
+  # the twip-y as before.
   defp paint_region(state, %{part: part, x: x, y: y, w: w, h: h}, scale) do
-    paint_rect(state, part, x, y, max(w, 1), max(h, 1), scale)
+    page = if presentation?(state), do: part + 1, else: nil
+    paint_rect(state, part, x, y, max(w, 1), max(h, 1), scale, page)
   end
 
   # Paint a document twip rect of `part` and push the resulting PNG tile. The
