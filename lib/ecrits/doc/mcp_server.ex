@@ -32,9 +32,19 @@ defmodule Ecrits.Doc.MCPServer do
      %{
        protocolVersion: "2025-06-18",
        serverInfo: %{name: @server_name, version: @server_version},
-       capabilities: %{tools: %{}}
+       capabilities: capabilities()
      }, state}
   end
+
+  # `ExMCP.HttpPlug`'s message-processor `initialize` path calls
+  # `handler.get_capabilities/0` *directly* (an artifact of the `use ExMCP.Server`
+  # DSL style), bypassing the `handle_initialize/2` callback this `Handler`
+  # module implements. Without it that path raises `UndefinedFunctionError` and
+  # the MCP handshake intermittently fails. Provide it so both initialize paths
+  # report the same capability set.
+  def get_capabilities, do: capabilities()
+
+  defp capabilities, do: %{tools: %{}}
 
   @impl true
   def handle_list_tools(_cursor, state) do
