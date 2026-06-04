@@ -16,6 +16,12 @@ defmodule EcritsWeb.Local.WorkspaceLive do
   alias EcritsWeb.Local.WorkspaceAdapter
 
   @local_document_upload_max_size 50_000_000
+  # Debounce interval for re-rendering the streaming agent message body as
+  # formatted markdown. Raw text appends (client-side) provide instant
+  # sub-debounce feedback; on each tick we re-render the accumulated buffer
+  # through MDEx so the visible body becomes progressively-formatted markdown
+  # without thrashing on every token.
+  @local_agent_text_flush_ms 120
   @employment_contract_type_key "employment_v1"
   @selectable_local_agent_provider_ids ~w(codex claude)
   @local_agent_models [
@@ -132,6 +138,7 @@ defmodule EcritsWeb.Local.WorkspaceLive do
      |> assign(:local_agent_turn_id, nil)
      |> assign(:local_agent_text, "")
      |> assign(:local_agent_text_segment, 0)
+     |> assign(:local_agent_text_flush_ref, nil)
      |> assign(:local_agent_reasoning_text, "")
      |> assign(:local_agent_title, default_local_agent_title())
      |> assign(:local_agent_title_user_edited?, false)
@@ -521,6 +528,17 @@ defmodule EcritsWeb.Local.WorkspaceLive do
   end
 
   def handle_info({:local_agent_event, _event}, socket), do: {:noreply, socket}
+
+  # Debounced re-render of the in-flight streaming agent message. Re-renders the
+  # accumulated buffer through `markdown_body`/MDEx so LiveView pushes formatted
+  # HTML that replaces the raw client-side appends.
+  def handle_info({:flush_local_agent_text, ref}, socket) do
+    if socket.assigns.local_agent_text_flush_ref == ref do
+      {:noreply, flush_local_agent_text(socket)}
+    else
+      {:noreply, socket}
+    end
+  end
 
   def handle_info({:libreofficex, subscription, {:ready, metadata}}, socket) do
     socket =
@@ -1819,6 +1837,7 @@ defmodule EcritsWeb.Local.WorkspaceLive do
       message_id: agent_assistant_dom_id(turn_id, segment),
       piece: String.replace(delta, ~r/\n{2,}/, "\n")
     })
+    |> schedule_local_agent_text_flush()
   end
 
   defp apply_local_agent_event(socket, %{type: :reasoning_delta, turn_id: turn_id, delta: delta})
@@ -1891,6 +1910,7 @@ defmodule EcritsWeb.Local.WorkspaceLive do
     text = text || socket.assigns.local_agent_text
 
     socket
+    |> cancel_local_agent_text_flush()
     |> assign(:local_agent_turn_id, nil)
     |> assign(:local_agent_text, "")
     |> assign(:local_agent_status, :idle)
@@ -1901,6 +1921,7 @@ defmodule EcritsWeb.Local.WorkspaceLive do
 
   defp apply_local_agent_event(socket, %{type: :turn_failed, turn_id: turn_id, reason: reason}) do
     socket
+    |> cancel_local_agent_text_flush()
     |> assign(:local_agent_turn_id, nil)
     |> assign(:local_agent_text, "")
     |> assign(:local_agent_status, :failed)
@@ -1915,6 +1936,7 @@ defmodule EcritsWeb.Local.WorkspaceLive do
          turn_id: turn_id
        }) do
     socket
+    |> cancel_local_agent_text_flush()
     |> assign(:local_agent_turn_id, nil)
     |> assign(:local_agent_text, "")
     |> assign(:local_agent_status, :cancelled)
@@ -3597,6 +3619,8 @@ defmodule EcritsWeb.Local.WorkspaceLive do
   defp agent_reasoning_dom_id(turn_id), do: "local-agent-thinking-#{turn_id}"
 
   defp close_local_agent_text_segment(socket) do
+    socket = cancel_local_agent_text_flush(socket)
+
     case socket.assigns.local_agent_text do
       text when is_binary(text) and text != "" ->
         turn_id = socket.assigns.local_agent_turn_id
@@ -3610,6 +3634,44 @@ defmodule EcritsWeb.Local.WorkspaceLive do
       _empty ->
         socket
     end
+  end
+
+  # Coalesces streaming text deltas into a single debounced re-render. We keep a
+  # monotonic ref so a flush message that fires after the buffer was already
+  # finalized (tool boundary, turn completion) is ignored. Only one timer is
+  # ever outstanding: while one is pending, new deltas simply extend the
+  # accumulated buffer and the in-flight timer renders the latest text.
+  defp schedule_local_agent_text_flush(socket) do
+    if socket.assigns.local_agent_text_flush_ref do
+      socket
+    else
+      ref = make_ref()
+      Process.send_after(self(), {:flush_local_agent_text, ref}, @local_agent_text_flush_ms)
+      assign(socket, :local_agent_text_flush_ref, ref)
+    end
+  end
+
+  defp flush_local_agent_text(socket) do
+    socket = assign(socket, :local_agent_text_flush_ref, nil)
+
+    case socket.assigns.local_agent_text do
+      text when is_binary(text) and text != "" ->
+        turn_id = socket.assigns.local_agent_turn_id
+        segment = socket.assigns.local_agent_text_segment
+
+        stream_insert(
+          socket,
+          :local_agent_items,
+          agent_assistant_item(turn_id, text, :running, segment)
+        )
+
+      _empty ->
+        socket
+    end
+  end
+
+  defp cancel_local_agent_text_flush(socket) do
+    assign(socket, :local_agent_text_flush_ref, nil)
   end
 
   defp maybe_remove_empty_reasoning(socket, turn_id) do
