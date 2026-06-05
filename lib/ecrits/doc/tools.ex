@@ -206,13 +206,43 @@ defmodule Ecrits.Doc.Tools do
       "namespace" => @namespace,
       "name" => "edit",
       "description" =>
-        "Structural verb (insert_text/delete_range/replace_text/split/insert_node/...). Honours base_revision.",
+        "Apply ONE structural edit, discriminated by op.op. Honours base_revision.",
       "risk" => "write",
       "inputSchema" => %{
         "type" => "object",
         "properties" => %{
           "document" => %{"type" => "string"},
-          "op" => %{"type" => "object"},
+          "op" => %{
+            "type" => "object",
+            "description" =>
+              "The edit. Field `op` is the verb. Per verb:\n" <>
+                "• replace_text {op, query, replacement, ref?, all?}: replace the literal `query` text with `replacement`. " <>
+                "BOTH `query` and `replacement` are REQUIRED (the field is `replacement`, NOT `text`/`new`/`value`). " <>
+                "To DELETE text use delete_range — never an empty/omitted `replacement`. " <>
+                "`replacement` is SINGLE-paragraph text: do NOT put newlines in it (one paragraph per op; use `split` to add paragraphs). " <>
+                "By default only the FIRST match is replaced; scope to one paragraph with `ref` (from doc.find/doc.outline), or pass `all:true` to replace every match. " <>
+                "If `query` occurs in more than one place and neither `ref` nor `all` is given, the edit is REJECTED (so you never edit unrelated sample blocks by accident).\n" <>
+                "• insert_text {op, ref, text, at?}\n" <>
+                "• delete_range {op, ref, count? | to_ref?}\n" <>
+                "• split {op, ref}  • insert_node {op, parent_ref, type, at?, props?}  • delete_node {op, ref}",
+            "properties" => %{
+              "op" => %{
+                "type" => "string",
+                "enum" => ~w(insert_text delete_range replace_text split insert_node delete_node move_node insert_picture)
+              },
+              "query" => %{"type" => "string", "description" => "replace_text: literal text to find."},
+              "replacement" => %{
+                "type" => "string",
+                "description" => "replace_text: text to substitute in (single paragraph, no newlines). REQUIRED for replace_text."
+              },
+              "ref" => %{"type" => "string", "description" => "Target element ref (from doc.find/doc.outline). Scopes the edit to that element."},
+              "all" => %{"type" => "boolean", "description" => "replace_text: replace EVERY match (default false = first match only)."},
+              "text" => %{"type" => "string", "description" => "insert_text: text to insert."},
+              "at" => %{"type" => "integer", "description" => "char offset within the target paragraph."},
+              "count" => %{"type" => "integer", "description" => "delete_range: number of chars to delete."}
+            },
+            "required" => ["op"]
+          },
           "base_revision" => %{"type" => "integer", "minimum" => 0}
         },
         "required" => ["document", "op"]

@@ -1160,8 +1160,38 @@ const WasmHwpEditor = {
 
     if (verb === "replace_text") {
       const query = op.query != null ? String(op.query) : ""
-      const replacement = op.replacement != null ? String(op.replacement) : ""
       if (!query) return { error: "replace_text requires a non-empty query" }
+      // A MISSING replacement must never become a silent delete — that is how a
+      // mis-fielded op (new text under `text`/`new`) wiped paragraphs. Require it
+      // explicitly; to delete text the agent uses delete_range.
+      if (op.replacement == null) {
+        return { error: "replace_text requires a 'replacement' field (the field is 'replacement', not 'text'/'new'; to delete text use delete_range)" }
+      }
+      const replacement = String(op.replacement)
+      if (replacement.includes("\n")) {
+        return { error: "replace_text replacement must be a single paragraph (no newlines); use one op per paragraph or 'split'" }
+      }
+      const all = op.all === true
+
+      // Count matches BEFORE replacing: `replaceAll` is global, and this file can
+      // hold several sample contracts, so a paragraph-length query may match in
+      // unrelated blocks. Replacing >1 requires an explicit all:true so the agent
+      // never rewrites unrelated text by accident.
+      let matchCount = null
+      try {
+        const raw = this.doc.searchAllText(query, true, true)
+        const parsed = raw ? JSON.parse(raw) : []
+        const list = Array.isArray(parsed) ? parsed : (parsed.matches || [])
+        matchCount = list.length
+      } catch (_) {
+        matchCount = null
+      }
+      if (matchCount === 0) {
+        return { error: `replace_text: no match for query (it must be the document's exact current text)` }
+      }
+      if (matchCount != null && matchCount > 1 && !all) {
+        return { error: `replace_text: query matches ${matchCount} places; use a longer/unique query, or pass all:true to replace every match` }
+      }
 
       let replaced = 0
       try {

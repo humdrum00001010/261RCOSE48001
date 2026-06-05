@@ -33,7 +33,7 @@ defmodule Ecrits.Doc.Op do
     case fetch(op, :op) do
       {:ok, verb} when is_binary(verb) ->
         if verb in @verbs do
-          {:ok, atomize(op) |> Map.put(:op, verb)}
+          validate(verb, atomize(op) |> Map.put(:op, verb))
         else
           {:error, {:unknown_op, verb}}
         end
@@ -47,6 +47,35 @@ defmodule Ecrits.Doc.Op do
   end
 
   def normalize(_op), do: {:error, {:invalid_op, "op must be a map"}}
+
+  # Per-verb validation. The dangerous case is `replace_text` with a missing or
+  # non-string `replacement` (e.g. the agent put the new text under `text`/`new`):
+  # the browser would then substitute the empty string and silently DELETE the
+  # match. Reject that here with an actionable message so the agent corrects the
+  # field instead of corrupting the document. To delete text the agent must use
+  # `delete_range`. A multi-paragraph (newline-bearing) replacement is also
+  # rejected — one paragraph per op (the renderer keeps a paragraph on one line).
+  defp validate("replace_text", %{} = op) do
+    cond do
+      not is_binary(op[:query]) or op[:query] == "" ->
+        {:error, {:invalid_op, "replace_text requires a non-empty string \"query\""}}
+
+      not is_binary(op[:replacement]) ->
+        {:error,
+         {:invalid_op,
+          "replace_text requires a string \"replacement\" (the field is \"replacement\", not \"text\"/\"new\"; to delete text use delete_range)"}}
+
+      String.contains?(op[:replacement], "\n") ->
+        {:error,
+         {:invalid_op,
+          "replace_text \"replacement\" must be a single paragraph (no newlines); use one op per paragraph or \"split\""}}
+
+      true ->
+        {:ok, op}
+    end
+  end
+
+  defp validate(_verb, op), do: {:ok, op}
 
   defp fetch(map, key) when is_atom(key) do
     cond do
