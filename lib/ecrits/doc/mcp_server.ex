@@ -1,9 +1,10 @@
 defmodule Ecrits.Doc.MCPServer do
   @moduledoc """
-  MCP server that exposes `Ecrits.Doc.Tools` (`doc.context/list/open/inspect/
-  outline/read/find/get/set/edit/apply_style/save`) over the Model Context
-  Protocol. `doc.read` is incremental (≤30 paragraphs/call); `doc.inspect`/
-  `doc.get`/`doc.set` are the reflective property-IR surface.
+  MCP server that exposes `Ecrits.Doc.Tools` (`doc.context/list/open/create/
+  read/find/get/set/edit/save` — ten tools) over the Model Context Protocol.
+  `doc.read` is incremental (≤30 paragraphs/call); `doc.get` (type + current
+  values + settable property names + children) and `doc.set` (universal property
+  setter, incl. char formatting) are the reflective property-IR surface.
 
   This is the ACP-native bridge: rather than a bespoke tool loop, the document
   abstraction is published as a standard MCP server (ex_mcp's core competency)

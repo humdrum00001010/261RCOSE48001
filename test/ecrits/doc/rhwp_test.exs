@@ -171,12 +171,6 @@ defmodule Ecrits.Doc.RhwpTest do
     end
   end
 
-  describe "apply_style/3" do
-    test "named style is not supported by the headless NIF yet", %{handle: handle} do
-      assert {:error, {:not_supported, _}} = Rhwp.apply_style(handle, "hwp:s0/p1", "Heading 1")
-    end
-  end
-
   describe "save/2" do
     test "export to bytes is not supported by the headless NIF yet", %{handle: handle} do
       assert {:error, {:not_supported, _}} = Rhwp.save(handle, [])

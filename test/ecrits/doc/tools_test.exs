@@ -21,10 +21,16 @@ defmodule Ecrits.Doc.ToolsTest do
     test "exposes the common doc.* surface with schemas and risk levels" do
       names = Tools.tools() |> Enum.map(&(&1["namespace"] <> "." <> &1["name"]))
 
-      for n <- ~w(doc.list doc.open doc.outline doc.read doc.find doc.get doc.set
-                  doc.edit doc.apply_style doc.save) do
+      for n <- ~w(doc.context doc.list doc.open doc.create doc.read doc.find
+                  doc.get doc.set doc.edit doc.save) do
         assert n in names, "expected #{n} in tool catalog"
       end
+
+      # The consolidated surface is exactly ten tools; the former doc.inspect and
+      # doc.apply_style are folded into doc.get / doc.set.
+      assert "doc.inspect" not in names
+      assert "doc.apply_style" not in names
+      assert length(names) == 10
 
       for tool <- Tools.tools() do
         assert is_map(tool["inputSchema"])
@@ -220,7 +226,7 @@ defmodule Ecrits.Doc.ToolsTest do
     end
   end
 
-  describe "doc.inspect — reflective property-IR" do
+  describe "doc.get — reflective property-IR (inspect folded in)" do
     setup %{pool: pool} do
       {:ok, %{"document" => doc_id}} =
         Tools.call(ctx(pool), "doc.open", %{
@@ -231,51 +237,36 @@ defmodule Ecrits.Doc.ToolsTest do
       {:ok, doc_id: doc_id}
     end
 
-    test "document inspect returns native property names + children", %{pool: pool, doc_id: doc_id} do
-      assert {:ok, info} = Tools.call(ctx(pool), "doc.inspect", %{"document" => doc_id})
-      assert info["type"] == "document"
-      assert is_list(info["children"])
-    end
-
-    test "char-ref inspect lists native props (Bold etc.)", %{pool: pool, doc_id: doc_id} do
+    test "doc.get on a char ref returns type + settable names + children", %{
+      pool: pool,
+      doc_id: doc_id
+    } do
       {:ok, %{"matches" => [m | _]}} =
         Tools.call(ctx(pool), "doc.find", %{"document" => doc_id, "pattern" => "제2조"})
 
       assert {:ok, info} =
-               Tools.call(ctx(pool), "doc.inspect", %{"document" => doc_id, "ref" => m["ref"]})
+               Tools.call(ctx(pool), "doc.get", %{"document" => doc_id, "ref" => m["ref"]})
 
-      assert "Bold" in info["properties"]
-    end
-  end
-
-  describe "doc.get / doc.set round-trip surface (property IR)" do
-    setup %{pool: pool} do
-      {:ok, %{"document" => doc_id}} =
-        Tools.call(ctx(pool), "doc.open", %{
-          "path" => "c.hwp",
-          "open_opts" => [__text__: "제2조 본문"]
-        })
-
-      {:ok, doc_id: doc_id}
+      assert info["type"] == "char_run"
+      # Settable native-property names (the old doc.inspect vocabulary).
+      assert "Bold" in info["settable"]
+      assert is_list(info["children"])
+      # Live values are best-effort: present when readable, nil when the engine
+      # can't read them yet. Either way the discovery surface is intact.
+      assert Map.has_key?(info, "values")
     end
 
-    test "get + set route through the property-IR but are honestly capability-gated", %{
+    test "doc.get on a paragraph ref lists paragraph settable props", %{
       pool: pool,
       doc_id: doc_id
     } do
-      assert {:error, %{"not_supported" => true}} =
-               Tools.call(ctx(pool), "doc.get", %{
-                 "document" => doc_id,
-                 "ref" => "hwp:s0/p0",
-                 "props" => ["Bold"]
-               })
+      ref = Ecrits.Doc.Rhwp.Ref.encode(%{kind: :paragraph, sec: 0, para: 1})
 
-      assert {:error, %{"not_supported" => true}} =
-               Tools.call(ctx(pool), "doc.set", %{
-                 "document" => doc_id,
-                 "ref" => "hwp:s0/p0",
-                 "props" => %{"Bold" => false}
-               })
+      assert {:ok, info} =
+               Tools.call(ctx(pool), "doc.get", %{"document" => doc_id, "ref" => ref})
+
+      assert info["type"] == "paragraph"
+      assert "Alignment" in info["settable"]
     end
   end
 
@@ -313,10 +304,10 @@ defmodule Ecrits.Doc.ToolsTest do
       assert {:ok, %{"active_document" => ^a}} = Tools.call(ctx(pool), "doc.context", %{})
     end
 
-    test "context + inspect are exposed in the tool catalog as read tools" do
+    test "context + get are exposed in the tool catalog as read tools" do
       by_name = Map.new(Tools.tools(), &{&1["namespace"] <> "." <> &1["name"], &1["risk"]})
       assert by_name["doc.context"] == "read"
-      assert by_name["doc.inspect"] == "read"
+      assert by_name["doc.get"] == "read"
     end
   end
 
