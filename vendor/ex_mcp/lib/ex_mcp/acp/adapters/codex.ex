@@ -62,6 +62,7 @@ defmodule ExMCP.ACP.Adapters.Codex do
     accumulated_text: [],
     accumulated_thinking: [],
     accumulated_usage: nil,
+    auto_approve?: false,
     opts: []
   ]
 
@@ -72,8 +73,27 @@ defmodule ExMCP.ACP.Adapters.Codex do
     {:ok,
      %__MODULE__{
        opts: opts,
-       model: Keyword.get(opts, :model)
+       model: Keyword.get(opts, :model),
+       auto_approve?: auto_approve?(opts)
      }}
+  end
+
+  # Codex 0.137 sends server→client JSON-RPC *requests* (not notifications) when a
+  # tool wants approval / an MCP server elicits input — e.g.
+  # `mcpServer/elicitation/request`, `item/commandExecution/requestApproval`,
+  # `item/fileChange/requestApproval`. The app-server BLOCKS the turn until the
+  # client replies; if we never answer, a write tool (like `doc.edit`) stalls and
+  # the turn ends without applying the edit. When the workspace access mode permits
+  # writes (no per-write approval), we auto-approve these so the edit goes through
+  # unattended, mirroring how a human would click "approve". This is gated on the
+  # access mode the LiveView passes down (`approvalPolicy`/`sandbox`).
+  defp auto_approve?(opts) do
+    policy = opts |> Keyword.get(:approvalPolicy) |> to_string()
+    sandbox = opts |> Keyword.get(:sandbox) |> to_string()
+
+    # "never" approval policy == full-workspace (don't ask). A writable sandbox
+    # (workspace-write / danger-full-access) likewise means writes are intended.
+    policy in ["never"] or sandbox in ["workspace-write", "danger-full-access"]
   end
 
   @impl true
@@ -362,6 +382,15 @@ defmodule ExMCP.ACP.Adapters.Codex do
     handle_response(state, id, {:error, error})
   end
 
+  # Server→client *request* (has BOTH an id and a method): codex app-server is
+  # blocking on our reply. These are the approval/elicitation prompts that gate
+  # write tools. Must be matched BEFORE the notification clause below, since a
+  # notification has a method but no id.
+  defp handle_inbound_message(%{"id" => id, "method" => method} = msg, state)
+       when is_binary(method) do
+    handle_server_request(method, id, msg["params"] || %{}, state)
+  end
+
   defp handle_inbound_message(%{"method" => method, "params" => params}, state)
        when is_binary(method) do
     handle_notification(method, params || %{}, state)
@@ -432,6 +461,72 @@ defmodule ExMCP.ACP.Adapters.Codex do
       "id" => acp_id,
       "error" => normalize_error(error)
     }
+  end
+
+  # ── Server→Client Request Handling (approvals / elicitations) ──
+  #
+  # These are JSON-RPC *requests* the codex app-server sends DOWN to us and then
+  # blocks on, waiting for a result. The shapes come from the codex app-server
+  # protocol (`codex app-server generate-ts`, `ServerRequest`):
+  #
+  #   mcpServer/elicitation/request   -> { action: "accept"|"decline"|"cancel", content, _meta }
+  #   item/fileChange/requestApproval -> { decision: "accept"|"acceptForSession"|"decline"|"cancel" }
+  #   item/commandExecution/requestApproval -> { decision: "accept"|... }
+  #   item/permissions/requestApproval-> { permissions, scope }  (not auto-handled; declined)
+  #   applyPatchApproval / execCommandApproval (legacy v1) -> { decision: ReviewDecision }
+  #
+  # When the workspace access mode permits writes we auto-approve so the write
+  # tool (e.g. doc.edit) proceeds; otherwise we decline (the user picked a
+  # read-only / ask mode and we don't have an interactive approval UI wired here).
+  defp handle_server_request("mcpServer/elicitation/request", id, params, state) do
+    # MCP elicitation: accept with empty structured content (our doc.* tools don't
+    # require structured user input — the elicitation is just an approval gate).
+    # This is the exact request codex 0.137 sends before running an MCP *write*
+    # tool, e.g. "Allow the doc MCP server to run tool \"doc.edit\"?", with
+    # `_meta.codex_approval_kind = "mcp_tool_call"`. It blocks the turn until we
+    # reply — leaving it unanswered is what stalls doc.edit.
+    {action, content} =
+      if state.auto_approve?, do: {"accept", %{}}, else: {"decline", nil}
+
+    Logger.debug(
+      "[Codex Adapter] mcpServer/elicitation/request -> #{action} (#{params["serverName"]})"
+    )
+
+    {:skip_and_write, jsonrpc_result(id, %{"action" => action, "content" => content, "_meta" => nil}),
+     state}
+  end
+
+  defp handle_server_request(method, id, _params, state)
+       when method in ["item/fileChange/requestApproval", "item/commandExecution/requestApproval"] do
+    decision = if state.auto_approve?, do: "accept", else: "decline"
+    Logger.debug("[Codex Adapter] #{method} -> #{decision}")
+    {:skip_and_write, jsonrpc_result(id, %{"decision" => decision}), state}
+  end
+
+  # Legacy v1 approval requests use the `ReviewDecision` enum ("approved"/"denied").
+  defp handle_server_request(method, id, _params, state)
+       when method in ["applyPatchApproval", "execCommandApproval"] do
+    decision = if state.auto_approve?, do: "approved", else: "denied"
+    Logger.debug("[Codex Adapter] #{method} -> #{decision}")
+    {:skip_and_write, jsonrpc_result(id, %{"decision" => decision}), state}
+  end
+
+  # Any other server request we don't explicitly model: reply with a JSON-RPC
+  # error so the app-server stops blocking (rather than hanging the turn forever).
+  defp handle_server_request(method, id, _params, state) do
+    Logger.debug("[Codex Adapter] Unhandled server request: #{method} (replying method_not_found)")
+
+    error = %{
+      "jsonrpc" => "2.0",
+      "id" => id,
+      "error" => %{"code" => -32_601, "message" => "method not handled: #{method}"}
+    }
+
+    {:skip_and_write, [Jason.encode!(error), "\n"], state}
+  end
+
+  defp jsonrpc_result(id, result) do
+    [Jason.encode!(%{"jsonrpc" => "2.0", "id" => id, "result" => result}), "\n"]
   end
 
   # ── Notification Handling ─────────────────────────────────────
