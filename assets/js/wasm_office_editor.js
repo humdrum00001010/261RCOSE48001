@@ -86,6 +86,34 @@ function ensureRuntime() {
       )
     }
 
+    // THE root office-load failure (captured live, top-level COI tab): the UNO
+    // JS scripting bootstrap `runUnoScriptUrls` (run synchronously inside the
+    // first `loadFromBytes`) calls `importScripts(...)` to load the UNO binding
+    // scripts. `importScripts` is a Web Worker global; under -sPROXY_TO_PTHREAD
+    // that code path runs on the JS MAIN thread (window), where importScripts is
+    // undefined → `ReferenceError: importScripts is not defined` → init fails and
+    // LOK caches it as "lok office init previously failed". Provide a main-thread
+    // polyfill: load each URL synchronously and eval it in GLOBAL scope (matching
+    // importScripts semantics). The scripts are same-origin (served under
+    // /assets/office/ via locateFile), so a synchronous XHR is fine. The guard
+    // leaves the real importScripts untouched inside actual pthread Workers.
+    if (typeof self.importScripts !== "function") {
+      self.importScripts = function (...urls) {
+        for (const u of urls) {
+          const url = /^(https?:|blob:|\/)/.test(u) ? u : OFFICE_BASE + u
+          tlog("importScripts(polyfill) GET", url)
+          const xhr = new XMLHttpRequest()
+          xhr.open("GET", url, false)
+          xhr.send()
+          if (xhr.status && (xhr.status < 200 || xhr.status >= 300)) {
+            throw new Error("importScripts polyfill: GET " + url + " -> " + xhr.status)
+          }
+          // indirect eval -> global scope, like importScripts
+          ;(0, eval)(xhr.responseText)
+        }
+      }
+    }
+
     // Emscripten reads this PRE-EXISTING global for config. The auto-running glue
     // (`var Module = typeof Module != "undefined" ? Module : {}`) picks it up.
     const Module = {
