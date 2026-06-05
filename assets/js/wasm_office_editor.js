@@ -92,45 +92,44 @@ function ensureRuntime() {
       locateFile: (path) => OFFICE_BASE + path,
       // pthread workers re-load the SAME script; point them at the static glue.
       mainScriptUrlOrBlob: GLUE_URL,
-      // CRITICAL — DO NOT run the auto `main()` here (noInitialRun:true).
+      // CRITICAL — RUN the auto `main()` (noInitialRun:false).
       //
       // This is the headless LibreOffice-Technology->WASM *LOK editing* build
-      // (static/source/unoembindhelpers/LokEditBindings.cxx). It is compiled
-      // with -sPROXY_TO_PTHREAD (HAVE_EMSCRIPTEN_PROXY_TO_PTHREAD=1, confirmed
-      // in core-wasm-build/config_host/config_emscripten.h), so embind calls
-      // from this (browser main) thread are proxied to soffice's dedicated
-      // runtime pthread, and that pthread can block while the browser main
-      // thread stays free to service emscripten_*_run_in_main_runtime_thread
-      // proxied calls (e.g. getUnoScriptUrls reading location.href in
-      // initjsunoscripting.cxx).
+      // (static/source/unoembindhelpers/LokEditBindings.cxx), compiled with
+      // -sPROXY_TO_PTHREAD (HAVE_EMSCRIPTEN_PROXY_TO_PTHREAD=1) and JSPI OFF.
       //
-      // The desktop/UNO bootstrap is brought up EXACTLY ONCE, lazily, by the
-      // first embind `loadFromBytes`:
-      //   loadFromBytes -> ensure_office -> lok::lok_cpp_init ->
-      //   libreofficekit_hook_2 -> lo_initialize, which
-      //   osl_createThread(lo_startmain) -> soffice_main -> Desktop::Main ->
-      //   InitApplicationServiceManager (UNO component context) and then
-      //   Application::Execute -> SvpSalInstance::DoExecute, which parks the
-      //   headless VCL event loop via emscripten_set_main_loop_arg(...,
-      //   simulateInfiniteLoop=1) on that lo_startmain pthread (the
-      //   O3TL_UNREACHABLE after it never runs — set_main_loop unwinds the
-      //   stack by throwing and keeps the pthread alive via its event loop).
-      //   (desktop/source/lib/init.cxx ~8595; vcl/headless/svpinst.cxx:308.)
+      // Under -sPROXY_TO_PTHREAD the emscripten runtime ONLY spins up its
+      // "main" runtime thread (the proxy-main pthread) when callMain() runs,
+      // i.e. when noInitialRun is FALSE — callMain's entry is
+      // __emscripten_proxy_main, which spawns that pthread and runs the C
+      // main(). With noInitialRun:true that pthread is NEVER created, so there
+      // is no LO main/event-loop thread at all; the lazy embind loadFromBytes
+      // then runs lo_initialize ON THE BROWSER JS MAIN THREAD, which spawns the
+      // lo_startmain pthread and immediately blocks in RequestHandler::
+      // WaitForReady(). But a worker pthread can only finish starting while the
+      // JS main thread is free to service the Worker handshake — and it is
+      // blocked — so lo_startmain never runs, readiness is never signalled, and
+      // init fails; LokEditBindings caches that as "lok office init previously
+      // failed" (the symptom). (desktop/source/lib/init.cxx ~8595; emscripten
+      // libeventloop/libpthread; see static/README.wasm.md "Threads and the
+      // event loop".)
       //
-      // ROOT CAUSE OF THE `DeploymentException` (this fix):
-      // The prior config set noInitialRun:false, so Emscripten ALSO ran its
-      // own `main()` -> soffice_main -> Desktop::Main -> a FULL desktop + UNO
-      // bootstrap (InitApplicationServiceManager + initJsUnoScripting). Then
-      // the hook's first `loadFromBytes` triggered lo_initialize, which — with
-      // gImpl freshly created and bInitialized==false — ran a SECOND full UNO
-      // bootstrap (cppu::defaultBootstrap_InitialComponentContext +
-      // initJsUnoScripting) and spawned a SECOND soffice_main. Two competing
-      // UNO component-context bootstraps on the same process throw
-      // com::sun::star::uno::DeploymentException out of lo_initialize (caught
-      // and reported as "Bootstrapping exception ...", surfaced to JS as the
-      // "Office WASM failed to load: ...DeploymentException"). Letting ONLY the
-      // loadFromBytes/lo_initialize path bootstrap removes the conflict.
-      noInitialRun: true,
+      // THE FIX (build-level): the WASM main() (desktop/source/app/main.c, our
+      // __EMSCRIPTEN__ branch) calls libreofficekit_hook_2("/instdir", NULL) so
+      // the ONE UNO/VCL bootstrap + the parked svp event loop come up on the
+      // proxy-main pthread, with the browser JS main thread free to service the
+      // lo_startmain Worker spawn and the emscripten main-runtime-thread
+      // proxied calls (getUnoScriptUrls reading location.href in
+      // initjsunoscripting.cxx). libreofficekit_hook_2 -> lo_initialize is
+      // idempotent (static alreadyCalled / bInitialized guards, init.cxx:8343,
+      // 8646), so the first embind loadFromBytes -> ensure_office ->
+      // lok_cpp_init -> libreofficekit_hook_2 REUSES the same gImpl (no second
+      // component-context bootstrap, no second soffice_main).
+      //
+      // We must therefore wait for the bootstrap to COMPLETE before the first
+      // loadFromBytes (see the uno_init gate below) so ensure_office never wins
+      // the race and re-enters lo_initialize on the JS main thread.
+      noInitialRun: false,
       // Standard soffice-WASM config: the soffice runtime thread does not
       // "exit" (it parks in the emscripten main loop); don't let Emscripten
       // tear down the runtime.
@@ -170,16 +169,20 @@ function ensureRuntime() {
     }
     window.Module = Module
 
-    // READINESS GATE (LOK build): the editing API is the embind export
-    // `loadFromBytes` (LokEditBindings.cxx), force-registered via
-    // EMSCRIPTEN_BINDINGS during wasm runtime init. We do NOT wait on
-    // `Module.uno_init` — that is the desktop UNO-scripting signal and only
-    // resolves *inside* the first loadFromBytes call, which deadlocks against
-    // this gate (see the long note in the Module config above). Instead we wait
-    // for `loadFromBytes` to become callable (it should be present at/just after
-    // onRuntimeInitialized) with a bounded poll, so a never-arriving export
-    // surfaces a real error instead of an indefinite "Loading…".
+    // READINESS GATE (LOK build, noInitialRun:false): TWO things must be true
+    // before the first loadFromBytes:
+    //   1. the embind export `loadFromBytes` is callable (force-registered via
+    //      EMSCRIPTEN_BINDINGS at wasm runtime init), AND
+    //   2. the UNO/VCL bootstrap driven by main()->libreofficekit_hook_2 has
+    //      COMPLETED. `Module.uno_init` (static/emscripten/uno.js) resolves from
+    //      initJsUnoScripting()'s setupMainChannel -> uno_init$resolve, i.e. once
+    //      lo_initialize finished on the proxy-main pthread. Gating on it ensures
+    //      ensure_office() (from the first loadFromBytes, on the JS main thread)
+    //      finds gImpl already created and REUSES it (idempotent hook) instead of
+    //      racing main() and re-entering lo_initialize on the JS main thread
+    //      (which is the deadlock the build-level fix removes).
     let settled = false
+    let unoReady = false
     const finish = () => {
       if (settled) return
       settled = true
@@ -193,20 +196,39 @@ function ensureRuntime() {
       reject(err)
     }
 
-    const apiReady = () =>
+    const exportReady = () =>
       typeof Module.loadFromBytes === "function" || typeof Module._loadFromBytes === "function"
+    // Ready to load a document only when the embind export exists AND the UNO
+    // bootstrap (main()->libreofficekit_hook_2->lo_initialize) has resolved
+    // uno_init. See the gate note above.
+    const apiReady = () => exportReady() && unoReady
 
-    // Diagnostic: surface what uno_init is doing in THIS build without gating on
-    // it. If it ever resolves/rejects, the timeline shows it (expected: never,
-    // until a doc is loaded) — proves whether uno_init was the wrong signal.
+    // Gate on `Module.uno_init`: it resolves when initJsUnoScripting() completes
+    // on the proxy-main pthread (i.e. the LOK bootstrap from main() finished). If
+    // it ever rejects, the bootstrap failed — surface that as the real error.
     const probeUnoInit = () => {
       const present = !!(Module.uno_init && typeof Module.uno_init.then === "function")
-      tlog("uno_init present?", present, "(NOT gating on it; LOK build uses loadFromBytes)")
+      tlog("uno_init present?", present, "(gating on it: LOK bootstrap-complete signal)")
       if (present) {
         Module.uno_init.then(
-          () => tlog("uno_init resolved (desktop UNO bootstrap complete — happens during/after first loadFromBytes)"),
-          (err) => tlog("uno_init rejected", err && err.message || err)
+          () => {
+            unoReady = true
+            tlog("uno_init resolved (UNO/VCL bootstrap complete via main()->libreofficekit_hook_2)")
+            if (exportReady()) finish()
+          },
+          (err) => {
+            tlog("uno_init rejected", (err && err.message) || err)
+            fail(new Error(
+              "office WASM: UNO bootstrap (uno_init) rejected: " +
+                ((err && err.message) || err) + "\nLast engine output:\n" + dumpLog()
+            ))
+          }
         )
+      } else {
+        // No uno_init at all means the glue wasn't built with uno.js post-js, or
+        // main() didn't run; don't silently hang.
+        tlog("uno_init ABSENT — bootstrap cannot be observed; treating export as sufficient")
+        unoReady = true
       }
     }
 
@@ -215,13 +237,15 @@ function ensureRuntime() {
     Module.onRuntimeInitialized = () => {
       tlog("runtime initialized (wasm instantiated)")
       probeUnoInit()
-      tlog("loadFromBytes present at runtimeInitialized?", apiReady())
+      tlog("ready at runtimeInitialized? export=", exportReady(), "uno=", unoReady)
       if (apiReady()) {
         finish()
         return
       }
-      // Embind export not attached yet: poll until it is. Bounded so a missing
-      // export (renamed/not linked) becomes a clear console error, not a hang.
+      // Not both gates yet: poll until the embind export is attached AND the UNO
+      // bootstrap (uno_init) has resolved. Bounded so a missing export or a
+      // never-completing bootstrap becomes a clear console error, not a hang.
+      // (uno_init resolving also calls finish() directly from its .then above.)
       const deadline = performance.now() + POLL_MAX_MS
       let attempt = 0
       const poll = () => {
@@ -231,15 +255,17 @@ function ensureRuntime() {
         // Log first few attempts + then every ~2s so the timeline isn't noisy
         // but a stall is still visible (and never silent).
         if (attempt <= 3 || attempt % 40 === 0) {
-          tlog("poll: loadFromBytes present?", ok, "(attempt " + attempt + ")")
+          tlog("poll: export=", exportReady(), "uno=", unoReady, "(attempt " + attempt + ")")
         }
         if (ok) {
           finish()
         } else if (performance.now() >= deadline) {
-          tlog("poll TIMEOUT after " + (POLL_MAX_MS / 1000) + "s — loadFromBytes never appeared")
+          tlog("poll TIMEOUT after " + (POLL_MAX_MS / 1000) + "s — export=" +
+            exportReady() + " uno=" + unoReady)
           fail(new Error(
-            "office WASM: embind export loadFromBytes did not become callable within " +
-              (POLL_MAX_MS / 1000) + "s of runtime init. Module keys: " +
+            "office WASM: not ready within " + (POLL_MAX_MS / 1000) +
+              "s of runtime init (loadFromBytes export present=" + exportReady() +
+              ", UNO bootstrap uno_init resolved=" + unoReady + "). Module keys: " +
               Object.keys(Module).filter((k) => typeof Module[k] === "function").sort().join(", ") +
               "\nLast engine output:\n" + dumpLog()
           ))
@@ -448,27 +474,29 @@ const WasmOfficeEditor = {
   // Hand the document bytes to the engine, copying into the wasm heap when the
   // export expects a (ptr,len) pair rather than a JS typed array.
   openWithBytes(Module, bytes) {
-    // The embind `loadFromBytes` takes a SINGLE argument (the byte buffer); the
-    // format is auto-detected by LibreOffice's import-filter detection from the
-    // content — passing a 2nd `format` arg throws
-    // "called with 2 arguments, expected 1".
+    // The embind `loadFromBytes(bytes, fileName)` takes TWO arguments
+    // (LokEditBindings.cxx): the byte buffer AND a fileName whose extension
+    // selects LibreOffice's import filter. Calling it with one arg throws an
+    // embind BindingError ("called with 1 arguments, expected 2"). We pass a
+    // synthetic name carrying the document's format extension.
     const arg = this.toEmbindBytes(Module, bytes)
+    const fileName = "document." + (this.format || "docx")
 
     if (this.api.shape === "embind-class") {
       const ctor = this.api.ctor
       if (typeof ctor.loadFromBytes === "function") {
-        this.handle = ctor.loadFromBytes(arg)
+        this.handle = ctor.loadFromBytes(arg, fileName)
       } else {
         this.handle = new ctor()
-        this.handle.loadFromBytes(arg)
+        this.handle.loadFromBytes(arg, fileName)
       }
       return
     }
 
-    // module-functions shape: embind `loadFromBytes(bytes) -> bool`
+    // module-functions shape: embind `loadFromBytes(bytes, fileName) -> bool`
     // (LokEditBindings.cxx) — true on success, false when documentLoad failed
     // (reason on stderr, captured in the ring).
-    const ok = this.api.loadFromBytes(arg)
+    const ok = this.api.loadFromBytes(arg, fileName)
     if (ok === false) {
       throw new Error("loadFromBytes returned false (open failed). Engine output:\n" + dumpLog())
     }
