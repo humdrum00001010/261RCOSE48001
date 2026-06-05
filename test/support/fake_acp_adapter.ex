@@ -25,9 +25,41 @@ defmodule EcritsWeb.FakeAcpAdapter do
   def command(_opts), do: :one_shot
 
   @impl true
-  def capabilities, do: %{}
+  def capabilities do
+    # Advertise resume/load so `ExMCP.ACP.Client.load_session/4`'s capability gate
+    # passes — mirrors the real Codex adapter (`loadSession: true`, resume), which
+    # is what the cross-turn-memory fix relies on.
+    %{
+      "loadSession" => true,
+      "sessionCapabilities" => %{"resume" => %{}}
+    }
+  end
 
+  # ── session lifecycle (cross-turn memory) ───────────────────────────
+  #
+  # The chat `Session` persists the provider session id and RESUMES it on turns
+  # 2+ (`session/load`) instead of minting a fresh one (`session/new`) each turn.
+  # Report each call to `:test_pid` (when `report_session_lifecycle: true`) so a
+  # test can assert turn 2 resumes the SAME id rather than creating a new thread.
+  #
+  # On `session/new` we mint a stable id and tell the bridge to use it via
+  # `{:session_id, id}`, so the id the client stores matches the one we report.
+  # On `session/load` we echo back the `sessionId` the client passed (codex does
+  # the same: `thread/start` with the remembered `threadId`).
   @impl true
+  def translate_outbound(%{"method" => "session/new"}, state) do
+    session_id = "fake-thread-" <> Integer.to_string(System.unique_integer([:positive]))
+    report_session(state, :new, session_id)
+    {:ok, {:session_id, session_id}, %{state | session_id: session_id}}
+  end
+
+  def translate_outbound(%{"method" => method, "params" => params}, state)
+      when method in ["session/load", "session/resume"] do
+    session_id = params["sessionId"] || state.session_id
+    report_session(state, :load, session_id)
+    {:ok, {:session_id, session_id}, %{state | session_id: session_id}}
+  end
+
   def translate_outbound(%{"method" => "session/prompt", "id" => id, "params" => params}, state) do
     opts = state.opts
     # Use the session id the client/bridge actually assigned (the bridge
@@ -203,6 +235,19 @@ defmodule EcritsWeb.FakeAcpAdapter do
       "method" => "session/update",
       "params" => %{"sessionId" => session_id, "update" => update}
     }
+  end
+
+  defp report_session(state, method, session_id) do
+    opts = state.opts
+
+    if Keyword.get(opts, :report_session_lifecycle) do
+      case Keyword.get(opts, :test_pid) do
+        pid when is_pid(pid) -> send(pid, {:fake_acp_session, method, session_id})
+        _ -> :ok
+      end
+    end
+
+    :ok
   end
 
   defp extract_prompt_text(nil), do: ""
