@@ -236,21 +236,30 @@ defmodule Ecrits.Doc.Rhwp do
   defp interfaces_for(_other), do: []
 
   @impl true
-  def get(_handle, ref, _props) do
-    with {:ok, _decoded} <- Ref.decode(ref) do
-      not_supported(
-        "doc.get property read requires the edit-only ehwp NIF (get_*_properties); not in the current NIF"
-      )
+  # IR-direct property read: query get_properties at the ref. `props` (a name
+  # list) narrows the returned set when given.
+  def get(%{ehwp: ehwp_handle}, ref, props) do
+    q =
+      %{q: "get_properties", kind: ref_kind(ref)}
+      |> Map.merge(flatten_ref(ref))
+      |> maybe_put(:props, present_list(props))
+
+    case Ehwp.query(ehwp_handle, q) do
+      {:ok, json} -> {:ok, decode_write(json)}
+      {:error, reason} -> {:error, query_error(reason)}
     end
   end
 
   @impl true
-  def set(_handle, ref, props, _base_rev) when is_map(props) do
-    with {:ok, _decoded} <- Ref.decode(ref) do
-      not_supported(
-        "doc.set property edit requires the edit-only ehwp NIF (set_*_properties/apply_char_props); not in the current NIF"
-      )
-    end
+  # IR-direct property edit: apply_op set_properties at the ref. `kind`
+  # (picture/shape/table/cell/paragraph) routes to the native setter; take it
+  # from the props map if the caller embedded it, else let the engine infer.
+  def set(%{ehwp: ehwp_handle}, ref, props, _base_rev) when is_map(props) do
+    {kind, prop_map} = pop_kind(props)
+
+    %{op: "set_properties", props: prop_map, kind: kind || ref_kind(ref)}
+    |> Map.merge(flatten_ref(ref))
+    |> apply_one(ehwp_handle)
   end
 
   @impl true
@@ -276,12 +285,14 @@ defmodule Ecrits.Doc.Rhwp do
   end
 
   @impl true
-  def apply_style(_handle, ref, _style) do
-    with {:ok, _decoded} <- Ref.decode(ref) do
-      not_supported(
-        "doc.apply_style requires the edit-only ehwp NIF (apply_style); not in the current NIF"
-      )
-    end
+  # IR-direct: apply character formatting over the ref's run via apply_op
+  # apply_char_format. `style` is a props map (Bold/FontSize/TextColor/...).
+  def apply_style(%{ehwp: ehwp_handle}, ref, style) do
+    props = if is_map(style), do: style, else: %{"style" => style}
+
+    %{op: "apply_char_format", props: props, to: ref}
+    |> Map.merge(flatten_ref(ref))
+    |> apply_one(ehwp_handle)
   end
 
   @impl true
@@ -367,9 +378,43 @@ defmodule Ecrits.Doc.Rhwp do
 
   defp decode_bin(b), do: b
 
-  # --- helpers -------------------------------------------------------------
+  # Apply ONE already-built IR op (atom-keyed, ref pre-flattened) via the NIF.
+  defp apply_one(op, ehwp_handle) do
+    case Ehwp.apply_op(ehwp_handle, [op], []) do
+      {:ok, results} -> {:ok, %{op: op[:op], native: decode_write(results)}}
+      {:error, {index, kind, msg}} -> {:error, %{op_index: index, kind: to_string(kind), message: to_string(msg)}}
+      {:error, reason} -> {:error, reason}
+    end
+  end
 
-  defp not_supported(reason), do: {:error, {:not_supported, reason}}
+  # Pull a `kind` discriminator out of the props map (string or atom key).
+  defp pop_kind(props) do
+    {kind, rest} = Map.pop(props, "kind")
+    {kind || Map.get(props, :kind), Map.delete(rest, :kind)}
+  end
+
+  defp query_error(reason), do: reason
+
+  # The property `kind` the NIF needs to route get/set_properties: derive it from
+  # the ref's element type (char run vs paragraph). Control-scoped kinds
+  # (picture/shape/table/cell) require control refs the current Ref grammar does
+  # not encode yet — the caller can override by embedding `kind` in the props.
+  defp ref_kind(ref) when is_binary(ref) do
+    case Ref.decode(ref) do
+      {:ok, %{kind: :paragraph}} -> "paragraph"
+      _ -> "char"
+    end
+  end
+
+  defp ref_kind(_ref), do: "char"
+
+  defp maybe_put(map, _key, nil), do: map
+  defp maybe_put(map, key, value), do: Map.put(map, key, value)
+
+  defp present_list(list) when is_list(list) and list != [], do: list
+  defp present_list(_other), do: nil
+
+  # --- helpers -------------------------------------------------------------
 
   defp read_text(ehwp_handle) do
     case Ehwp.read(ehwp_handle, []) do
