@@ -203,33 +203,54 @@ function ensureRuntime() {
     // uno_init. See the gate note above.
     const apiReady = () => exportReady() && unoReady
 
-    // Gate on `Module.uno_init`: it resolves when initJsUnoScripting() completes
-    // on the proxy-main pthread (i.e. the LOK bootstrap from main() finished). If
-    // it ever rejects, the bootstrap failed — surface that as the real error.
-    const probeUnoInit = () => {
-      const present = !!(Module.uno_init && typeof Module.uno_init.then === "function")
-      tlog("uno_init present?", present, "(gating on it: LOK bootstrap-complete signal)")
-      if (present) {
-        Module.uno_init.then(
+    // Bootstrap-complete signal. Our WASM main() runs libreofficekit_hook_2 (NOT
+    // soffice_main), so the desktop scripting path that resolves `uno_init`
+    // (initJsUnoScripting) is NOT taken — `uno_init` NEVER resolves on this path
+    // (confirmed live: export present=true, uno_init resolved=false, 120s hang).
+    // The signal that DOES fire when our main()->hook bootstrap finishes is
+    // `uno_main` (the uno.js wrapper resolves it when main() returns). Gate on
+    // uno_main, accept uno_init too if it ever resolves, and — since the embind
+    // export being attached already means the LOK bindings are live — fall back
+    // to "export is enough" after a short grace so a missing/renamed promise can
+    // never reproduce the 120s hang.
+    const GRACE_MS = 8000
+    const watch = (name) => {
+      const p = Module[name]
+      if (p && typeof p.then === "function") {
+        p.then(
           () => {
+            if (settled) return
             unoReady = true
-            tlog("uno_init resolved (UNO/VCL bootstrap complete via main()->libreofficekit_hook_2)")
+            tlog(name + " resolved (LOK bootstrap complete)")
             if (exportReady()) finish()
           },
           (err) => {
-            tlog("uno_init rejected", (err && err.message) || err)
+            tlog(name + " rejected", (err && err.message) || err)
             fail(new Error(
-              "office WASM: UNO bootstrap (uno_init) rejected: " +
+              "office WASM: UNO bootstrap (" + name + ") rejected: " +
                 ((err && err.message) || err) + "\nLast engine output:\n" + dumpLog()
             ))
           }
         )
-      } else {
-        // No uno_init at all means the glue wasn't built with uno.js post-js, or
-        // main() didn't run; don't silently hang.
-        tlog("uno_init ABSENT — bootstrap cannot be observed; treating export as sufficient")
-        unoReady = true
+        return true
       }
+      return false
+    }
+    const probeUnoInit = () => {
+      const m = watch("uno_main")
+      const i = watch("uno_init")
+      tlog("bootstrap-signal present? uno_main=", m, "uno_init=", i, "(gating, export is the fallback)")
+      // Grace fallback: if the export is attached but no uno_* promise has
+      // resolved shortly after, proceed anyway — the bindings are live, and a
+      // real loadFromBytes failure self-reports instantly (no 120s hang).
+      setTimeout(() => {
+        if (settled || unoReady) return
+        if (exportReady()) {
+          tlog("no uno_* resolve within " + GRACE_MS + "ms but export is live — proceeding")
+          unoReady = true
+          finish()
+        }
+      }, GRACE_MS)
     }
 
     const POLL_INTERVAL_MS = 50
