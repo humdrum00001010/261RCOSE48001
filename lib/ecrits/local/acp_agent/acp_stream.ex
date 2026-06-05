@@ -510,14 +510,28 @@ defmodule Ecrits.Local.AcpAgent.AcpStream do
     doc = open_document_label(turn)
 
     """
-    [System] A document is currently open in the editor#{doc}. You can read AND
-    edit that open document through the document MCP tools served by the MCP
-    server named `doc`. These tools are `doc_context`, `doc_list`, `doc_find`,
-    `doc_read`, `doc_edit`, `doc_set`, `doc_get`, `doc_apply_style`, `doc_save` (the server registers them with a dot, e.g. `doc.context`, and your
-    client normalizes the `.` to `_` — treat `doc_<x>` and `doc.<x>` as the SAME
-    tool). They are the one and only way to touch the open document. Do NOT shell
-    out to hwp5proc, LibreOffice, soffice, pandoc, cat/sed, or any file
-    reader/writer for the open document.
+    [System] A document is currently open in the editor#{doc}. You can read, edit,
+    AND create documents through the document MCP tools served by the MCP server
+    named `doc`. These tools are `doc_context`, `doc_list`, `doc_open`,
+    `doc_create`, `doc_find`, `doc_read`, `doc_edit`, `doc_set`, `doc_get`,
+    `doc_apply_style`, `doc_save` (the server registers them with a dot, e.g.
+    `doc.context`, and your client normalizes the `.` to `_` — treat `doc_<x>` and
+    `doc.<x>` as the SAME tool). They are the one and only way to touch documents.
+    Do NOT shell out to hwp5proc, LibreOffice, soffice, pandoc, cat/sed, or any
+    file reader/writer.
+
+    CHOOSING THE TARGET — read the user's intent before touching anything:
+    • If they want to MODIFY the currently-open document (fill it in, fix it,
+      change wording), edit THAT document (the one above).
+    • If they want a NEW document — "write a … from scratch", "create a new …",
+      "start from a blank document", "빈 문서에서 시작", "새로 작성" — you MUST call
+      `doc_create` (args: `path` = the new file's save path in the workspace,
+      `kind` = "hwp"/"hwpx") to make a fresh blank document, then author into THAT
+      new document. Do NOT overwrite or repurpose the currently-open document just
+      because it happens to be open. A freshly-created doc is genuinely empty.
+    To build a table from scratch use `doc_edit` `insert_table` {rows, cols} (it
+    returns the new table's {paraIdx, controlIdx}); fill cells with `insert_text`
+    using a ref that carries {paragraph: paraIdx, control: controlIdx, cell, cell_para}.
 
     IMPORTANT — these tools may NOT appear directly in your initial callable tool
     list: your client defers MCP server tools behind a tool-search / MCP-tool
