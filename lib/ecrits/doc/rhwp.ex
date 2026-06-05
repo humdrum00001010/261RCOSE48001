@@ -337,10 +337,21 @@ defmodule Ecrits.Doc.Rhwp do
     # paragraph (not the section-0/para-0 default). The browser backend uses a
     # JSON `{section,paragraph,offset,...}` ref — accept that too.
     case Ref.decode(ref) do
-      {:ok, %{kind: :char, sec: s, para: p, off: o}} -> %{section: s, paragraph: p, offset: o}
-      {:ok, %{kind: :paragraph, sec: s, para: p}} -> %{section: s, paragraph: p}
-      {:ok, %{kind: :section, sec: s}} -> %{section: s}
-      {:ok, %{kind: :document}} -> %{}
+      {:ok, %{kind: :cell_char, sec: s, para: p, control: ct, cell: ce, cell_para: cp, off: o}} ->
+        %{section: s, paragraph: p, control: ct, cell: ce, cell_para: cp, offset: o}
+
+      {:ok, %{kind: :char, sec: s, para: p, off: o}} ->
+        %{section: s, paragraph: p, offset: o}
+
+      {:ok, %{kind: :paragraph, sec: s, para: p}} ->
+        %{section: s, paragraph: p}
+
+      {:ok, %{kind: :section, sec: s}} ->
+        %{section: s}
+
+      {:ok, %{kind: :document}} ->
+        %{}
+
       _ ->
         case Jason.decode(ref) do
           {:ok, %{} = m} -> flatten_ref(m)
@@ -381,9 +392,14 @@ defmodule Ecrits.Doc.Rhwp do
   # Apply ONE already-built IR op (atom-keyed, ref pre-flattened) via the NIF.
   defp apply_one(op, ehwp_handle) do
     case Ehwp.apply_op(ehwp_handle, [op], []) do
-      {:ok, results} -> {:ok, %{op: op[:op], native: decode_write(results)}}
-      {:error, {index, kind, msg}} -> {:error, %{op_index: index, kind: to_string(kind), message: to_string(msg)}}
-      {:error, reason} -> {:error, reason}
+      {:ok, results} ->
+        {:ok, %{op: op[:op], native: decode_write(results)}}
+
+      {:error, {index, kind, msg}} ->
+        {:error, %{op_index: index, kind: to_string(kind), message: to_string(msg)}}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -402,6 +418,7 @@ defmodule Ecrits.Doc.Rhwp do
   defp ref_kind(ref) when is_binary(ref) do
     case Ref.decode(ref) do
       {:ok, %{kind: :paragraph}} -> "paragraph"
+      {:ok, %{kind: :cell_char}} -> "cell"
       _ -> "char"
     end
   end
@@ -491,12 +508,29 @@ defmodule Ecrits.Doc.Rhwp do
     len = match["count"] || match["length"] || match[:count] || String.length(pattern)
     text = match["text"] || match[:text] || pattern
 
-    %{
-      ref: Ref.encode(%{kind: :char, sec: sec, para: para, off: off, len: len}),
-      text: text,
-      off: off,
-      len: len
-    }
+    # A match inside a table cell carries cellContext {parentPara,ctrlIdx,cellIdx,
+    # cellPara}. Encode it as a cell-addressed ref so a follow-up edit routes to
+    # the cell (the in-cell native op), not the body paragraph — otherwise tables
+    # (signature blocks, amount tables) are unreachable for the agent.
+    decoded =
+      case match["cellContext"] || match[:cellContext] do
+        %{} = cc ->
+          %{
+            kind: :cell_char,
+            sec: sec,
+            para: cc["parentPara"] || cc[:parentPara] || para,
+            control: cc["ctrlIdx"] || cc[:ctrlIdx] || 0,
+            cell: cc["cellIdx"] || cc[:cellIdx] || 0,
+            cell_para: cc["cellPara"] || cc[:cellPara] || 0,
+            off: off,
+            len: len
+          }
+
+        _ ->
+          %{kind: :char, sec: sec, para: para, off: off, len: len}
+      end
+
+    %{ref: Ref.encode(decoded), text: text, off: off, len: len}
   end
 
   defp decode_matches(matches) when is_list(matches), do: Enum.map(matches, &stringify/1)

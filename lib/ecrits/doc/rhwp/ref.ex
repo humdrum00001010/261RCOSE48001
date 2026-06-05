@@ -11,9 +11,16 @@ defmodule Ecrits.Doc.Rhwp.Ref do
       hwp:s<sec>             a section
       hwp:s<sec>/p<para>     a paragraph
       hwp:s<sec>/p<para>/c<off>+<len>   a character run inside a paragraph
+      hwp:s<sec>/p<para>/tbl<ctrl>/cell<cell>/cp<cellpara>/c<off>+<len>
+                             a character run inside a TABLE CELL — `p<para>` is
+                             the parent paragraph holding the table control,
+                             `tbl<ctrl>` the control index, `cell<cell>` the cell
+                             index, `cp<cellpara>` the paragraph index within the
+                             cell. doc.find emits this for matches inside cells so
+                             a follow-up edit targets the cell, not the body.
 
   The decoded form is a plain map with a `:kind` discriminator, which the
-  backend pattern-matches when routing `get`/`set`.
+  backend pattern-matches when routing `get`/`set`/`edit`.
   """
 
   @type t :: String.t()
@@ -39,6 +46,18 @@ defmodule Ecrits.Doc.Rhwp.Ref do
 
   def encode(%{kind: :char, sec: sec, para: para, off: off, len: len}),
     do: "#{@scheme}s#{sec}/p#{para}/c#{off}+#{len}"
+
+  def encode(%{
+        kind: :cell_char,
+        sec: sec,
+        para: para,
+        control: control,
+        cell: cell,
+        cell_para: cell_para,
+        off: off,
+        len: len
+      }),
+      do: "#{@scheme}s#{sec}/p#{para}/tbl#{control}/cell#{cell}/cp#{cell_para}/c#{off}+#{len}"
 
   @spec decode(t()) :: {:ok, decoded()} | {:error, term()}
   def decode(@scheme <> rest) when is_binary(rest), do: decode_body(rest)
@@ -72,6 +91,26 @@ defmodule Ecrits.Doc.Rhwp.Ref do
              {:ok, para} <- int(para),
              {:ok, off, len} <- run(run) do
           {:ok, %{kind: :char, sec: sec, para: para, off: off, len: len}}
+        end
+
+      ["s" <> sec, "p" <> para, "tbl" <> ctrl, "cell" <> cell, "cp" <> cpara, "c" <> run] ->
+        with {:ok, sec} <- int(sec),
+             {:ok, para} <- int(para),
+             {:ok, ctrl} <- int(ctrl),
+             {:ok, cell} <- int(cell),
+             {:ok, cpara} <- int(cpara),
+             {:ok, off, len} <- run(run) do
+          {:ok,
+           %{
+             kind: :cell_char,
+             sec: sec,
+             para: para,
+             control: ctrl,
+             cell: cell,
+             cell_para: cpara,
+             off: off,
+             len: len
+           }}
         end
 
       _ ->
