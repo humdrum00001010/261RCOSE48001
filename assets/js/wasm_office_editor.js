@@ -92,54 +92,48 @@ function ensureRuntime() {
       locateFile: (path) => OFFICE_BASE + path,
       // pthread workers re-load the SAME script; point them at the static glue.
       mainScriptUrlOrBlob: GLUE_URL,
-      // CRITICAL: this headless LibreOffice->WASM build MUST run its `main()`
-      // (-> soffice_main -> Desktop::Main). Suppressing it (noInitialRun:true)
-      // is what traps `unreachable`:
-      //   * The LOK editing API (loadFromBytes -> lok_cpp_init ->
-      //     libreofficekit_hook_2 -> lo_initialize, see LokEditBindings.cxx +
-      //     desktop/source/lib/init.cxx) only works once the UNO component
-      //     context + SfxApplication/Desktop are up — which the desktop
-      //     bootstrap brings up.
-      //   * That bootstrap drives the headless VCL event loop via
-      //     SvpSalInstance::DoExecute (vcl/headless/svpinst.cxx), which calls
-      //     emscripten_set_main_loop_arg(..., simulateInfiniteLoop=1) and then
-      //     `O3TL_UNREACHABLE` (== std::unreachable == the wasm `unreachable`
-      //     instruction). set_main_loop is meant to unwind the stack by throwing
-      //     and KEEP the runtime alive via the JS event loop; that only works
-      //     when reached from the runtime's own `main()`. With noInitialRun the
-      //     loop machinery never gets a `main()` to unwind back to, so the
-      //     `unreachable` after it is what actually executes -> the trap.
-      //   * UNO bootstrap (initJsUnoScripting, desktop/source/app/
-      //     initjsunoscripting.cxx) runs on the soffice pthread and uses
-      //     emscripten_{sync,async}_run_in_main_runtime_thread — it REQUIRES the
-      //     JS main thread to be free + pumping its proxy queue (i.e. inside the
-      //     set_main_loop loop), not blocked inside a synchronous embind call.
-      // So we let main() run and gate the API on the embind export becoming
-      // callable (see the readiness poll below).
+      // CRITICAL — DO NOT run the auto `main()` here (noInitialRun:true).
       //
-      // WHY NOT `Module.uno_init`? (this was the prior gate, and it DEADLOCKED)
-      // `Module.uno_init` (static/emscripten/uno.js) is the *interactive desktop
-      // UNO-scripting* ready signal. It is resolved by initJsUnoScripting()
-      // (appinit.cxx InitApplicationServiceManager / init.cxx lo_initialize) via
-      // a `LOWA-channel` MessageChannel handshake — but ONLY once the desktop
-      // bootstrap (soffice_main -> Desktop::Main) runs. In THIS headless build
-      // (CONFIRMED from ~/Desktop/core) that bootstrap is kicked off lazily by
-      // the FIRST `loadFromBytes` call: loadFromBytes -> ensure_office ->
-      // lok::lok_cpp_init -> libreofficekit_hook_2 -> lo_initialize, which
-      // osl_createThread(lo_startmain)->soffice_main->Desktop::Main
-      // (desktop/source/lib/init.cxx:~8595). So `uno_init` never resolves until
-      // loadFromBytes is called — yet our hook only calls loadFromBytes AFTER
-      // ensureRuntime() (the uno_init gate) resolves. uno_init waits on
-      // loadFromBytes; loadFromBytes waits on uno_init -> permanent hang on
-      // "Loading office engine…". The correct LOK-build ready signal is simply
-      // that the embind export (loadFromBytes) is registered & callable, which
-      // happens during wasm runtime init (EMSCRIPTEN_BINDINGS(LokEditBindings),
-      // static-linked --whole-archive) — i.e. by onRuntimeInitialized. The heavy
-      // office init then happens lazily, synchronously, inside the first
-      // loadFromBytes (ensure_office), which is fine.
-      noInitialRun: false,
-      // Standard soffice-WASM config: main() does not "exit" (it parks in the
-      // emscripten main loop); don't let Emscripten tear down the runtime.
+      // This is the headless LibreOffice-Technology->WASM *LOK editing* build
+      // (static/source/unoembindhelpers/LokEditBindings.cxx). It is compiled
+      // with -sPROXY_TO_PTHREAD (HAVE_EMSCRIPTEN_PROXY_TO_PTHREAD=1, confirmed
+      // in core-wasm-build/config_host/config_emscripten.h), so embind calls
+      // from this (browser main) thread are proxied to soffice's dedicated
+      // runtime pthread, and that pthread can block while the browser main
+      // thread stays free to service emscripten_*_run_in_main_runtime_thread
+      // proxied calls (e.g. getUnoScriptUrls reading location.href in
+      // initjsunoscripting.cxx).
+      //
+      // The desktop/UNO bootstrap is brought up EXACTLY ONCE, lazily, by the
+      // first embind `loadFromBytes`:
+      //   loadFromBytes -> ensure_office -> lok::lok_cpp_init ->
+      //   libreofficekit_hook_2 -> lo_initialize, which
+      //   osl_createThread(lo_startmain) -> soffice_main -> Desktop::Main ->
+      //   InitApplicationServiceManager (UNO component context) and then
+      //   Application::Execute -> SvpSalInstance::DoExecute, which parks the
+      //   headless VCL event loop via emscripten_set_main_loop_arg(...,
+      //   simulateInfiniteLoop=1) on that lo_startmain pthread (the
+      //   O3TL_UNREACHABLE after it never runs — set_main_loop unwinds the
+      //   stack by throwing and keeps the pthread alive via its event loop).
+      //   (desktop/source/lib/init.cxx ~8595; vcl/headless/svpinst.cxx:308.)
+      //
+      // ROOT CAUSE OF THE `DeploymentException` (this fix):
+      // The prior config set noInitialRun:false, so Emscripten ALSO ran its
+      // own `main()` -> soffice_main -> Desktop::Main -> a FULL desktop + UNO
+      // bootstrap (InitApplicationServiceManager + initJsUnoScripting). Then
+      // the hook's first `loadFromBytes` triggered lo_initialize, which — with
+      // gImpl freshly created and bInitialized==false — ran a SECOND full UNO
+      // bootstrap (cppu::defaultBootstrap_InitialComponentContext +
+      // initJsUnoScripting) and spawned a SECOND soffice_main. Two competing
+      // UNO component-context bootstraps on the same process throw
+      // com::sun::star::uno::DeploymentException out of lo_initialize (caught
+      // and reported as "Bootstrapping exception ...", surfaced to JS as the
+      // "Office WASM failed to load: ...DeploymentException"). Letting ONLY the
+      // loadFromBytes/lo_initialize path bootstrap removes the conflict.
+      noInitialRun: true,
+      // Standard soffice-WASM config: the soffice runtime thread does not
+      // "exit" (it parks in the emscripten main loop); don't let Emscripten
+      // tear down the runtime.
       ignoreApplicationExit: true,
       // Force headless and skip the IPC/socket pipe the desktop would normally
       // open (no UI / single instance handling in the browser).
