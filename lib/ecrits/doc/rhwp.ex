@@ -254,9 +254,24 @@ defmodule Ecrits.Doc.Rhwp do
   end
 
   @impl true
-  def edit(handle, op, _base_rev) do
+  # IR-direct: the normalized op IS the engine op. Flatten its `ref` into the
+  # `apply_op` shape (section/paragraph/offset/control?/cell?/cell_para? at the
+  # top level, the rest of the verb fields verbatim) and hand the batch straight
+  # to the NIF. No per-verb translation/wrapper.
+  def edit(%{ehwp: ehwp_handle}, op, _base_rev) do
     with {:ok, op} <- Op.normalize(op) do
-      do_edit(handle, op)
+      {bins, op} = pop_bins(op)
+
+      case Ehwp.apply_op(ehwp_handle, [to_ir_op(op)], bins) do
+        {:ok, results} ->
+          {:ok, %{op: op.op, native: decode_write(results)}}
+
+        {:error, {index, kind, msg}} ->
+          {:error, %{op_index: index, kind: to_string(kind), message: to_string(msg)}}
+
+        {:error, reason} ->
+          {:error, reason}
+      end
     end
   end
 
@@ -276,40 +291,61 @@ defmodule Ecrits.Doc.Rhwp do
     )
   end
 
-  # --- edit verbs ----------------------------------------------------------
+  # --- edit op -> IR (apply_op) shape --------------------------------------
 
-  defp do_edit(%{ehwp: ehwp_handle}, %{op: "replace_text"} = op) do
-    with {:ok, query} <- require_field(op, :query),
-         {:ok, replacement} <- require_field(op, :replacement) do
-      case Ehwp.write(ehwp_handle, {:replace_one, query, replacement}, []) do
-        {:ok, result} ->
-          {:ok, %{op: "replace_text", invalidated: [0], native: decode_write(result)}}
+  # The normalized op carries verb fields (query/replacement/text/count/row/col/
+  # props/...) plus a `ref`. The engine `apply_op` wants the ref's positional
+  # keys FLATTENED onto the op (serde `#[serde(flatten)]`), so spread them to the
+  # top level and keep the rest of the fields verbatim. Atom keys throughout —
+  # `Ehwp.apply_op` Jason-encodes them to the JSON the NIF expects.
+  defp to_ir_op(op) do
+    verb = op.op
+    {ref, rest} = op |> Map.delete(:op) |> Map.pop(:ref)
 
-        {:error, _reason} = error ->
-          error
-      end
+    rest
+    |> Map.put(:op, verb)
+    |> Map.merge(flatten_ref(ref))
+  end
+
+  defp flatten_ref(ref) when is_binary(ref) do
+    case Jason.decode(ref) do
+      {:ok, %{} = m} -> flatten_ref(m)
+      _ -> %{}
     end
   end
 
-  defp do_edit(_handle, %{op: verb})
-       when verb in ~w(insert_text delete_range split insert_node delete_node move_node insert_picture) do
-    not_supported(
-      "doc.edit op=#{verb} requires the edit-only ehwp NIF (structural verbs); the current NIF only exposes replace_text"
-    )
+  defp flatten_ref(%{} = ref) do
+    Enum.reduce([:section, :paragraph, :offset, :control, :cell, :cell_para], %{}, fn k, acc ->
+      case Map.get(ref, k, Map.get(ref, Atom.to_string(k))) do
+        nil -> acc
+        v -> Map.put(acc, k, v)
+      end
+    end)
   end
 
-  defp do_edit(_handle, %{op: verb}), do: {:error, {:unknown_op, verb}}
+  defp flatten_ref(_ref), do: %{}
+
+  # `insert_picture` carries image bytes as base64 in `:bins`; pull them into the
+  # binary list `apply_op` takes (the op references them by `bin_index`).
+  defp pop_bins(op) do
+    case Map.pop(op, :bins) do
+      {bins, rest} when is_list(bins) -> {Enum.map(bins, &decode_bin/1), rest}
+      {_nil, rest} -> {[], rest}
+    end
+  end
+
+  defp decode_bin(b) when is_binary(b) do
+    case Base.decode64(b) do
+      {:ok, bytes} -> bytes
+      :error -> b
+    end
+  end
+
+  defp decode_bin(b), do: b
 
   # --- helpers -------------------------------------------------------------
 
   defp not_supported(reason), do: {:error, {:not_supported, reason}}
-
-  defp require_field(op, key) do
-    case Map.get(op, key) do
-      value when is_binary(value) and value != "" -> {:ok, value}
-      _ -> {:error, {:invalid_op, "#{key} (non-empty string) is required"}}
-    end
-  end
 
   defp read_text(ehwp_handle) do
     case Ehwp.read(ehwp_handle, []) do
