@@ -1177,23 +1177,32 @@ const WasmHwpEditor = {
       // ref-scoped: replace the query ONLY inside the referenced paragraph, so a
       // phrase that recurs across sample blocks is edited exactly where intended.
       if (ref) {
-        const len = this.paragraphLength(ref.section, ref.paragraph)
         let paraText = ""
         try {
+          const len = this.paragraphLength(ref.section, ref.paragraph)
           paraText = this.doc.getTextRange(ref.section, ref.paragraph, 0, len) || ""
-        } catch (error) {
-          return { error: `getTextRange failed: ${String((error && error.message) || error)}` }
+        } catch (_) {
+          paraText = ""
         }
         const idx = paraText.indexOf(query)
-        if (idx < 0) return { error: `replace_text: query not found in ref paragraph (section ${ref.section}, paragraph ${ref.paragraph})` }
-        try {
-          this.doc.deleteText(ref.section, ref.paragraph, idx, query.length)
-          this.doc.insertText(ref.section, ref.paragraph, idx, replacement)
-        } catch (error) {
-          return { error: `scoped replace failed: ${String((error && error.message) || error)}` }
+        if (idx >= 0) {
+          try {
+            this.doc.deleteText(ref.section, ref.paragraph, idx, query.length)
+            this.doc.insertText(ref.section, ref.paragraph, idx, replacement)
+          } catch (error) {
+            return { error: `scoped replace failed: ${String((error && error.message) || error)}` }
+          }
+          this.recordOp("AgentReplaceText", { section: ref.section, para: ref.paragraph, offset: idx, query, replacement, replaced: 1 })
+          return this.finishAgentEdit(baseRev, { replaced: 1 })
         }
-        this.recordOp("AgentReplaceText", { section: ref.section, para: ref.paragraph, offset: idx, query, replacement, replaced: 1 })
-        return this.finishAgentEdit(baseRev, { replaced: 1 })
+        // Body-paragraph miss — the text most likely lives inside a TABLE CELL,
+        // which getTextRange(section,paragraph) does not read. Don't error: fall
+        // through to the global count-guarded path below, which searches the whole
+        // document (cells included) and replaces the match.
+        console.warn(
+          `[wasm-hwp] ref-scoped replace: query not in body paragraph ${ref.section}/${ref.paragraph} ` +
+            "(likely in a table cell) — falling back to global match"
+        )
       }
 
       // global (no ref): count matches first; replacing >1 needs explicit all:true
