@@ -48,14 +48,17 @@ config :ecrits, EcritsWeb.Endpoint,
 config :ecrits, EcritsWeb.Endpoint,
   live_reload: [
     web_console_logger: true,
+    # The `(?!.*\.claude/)` guard excludes background-agent git worktrees under
+    # `.claude/worktrees/...` — an agent editing its own isolated worktree copy
+    # must NOT live-reload (and destabilize) the main dev server.
     patterns: [
       # Static assets, except user uploads
-      ~r"priv/static/(?!uploads/).*\.(js|css|png|jpeg|jpg|gif|svg)$",
+      ~r"^(?!.*\.claude/).*priv/static/(?!uploads/).*\.(js|css|png|jpeg|jpg|gif|svg)$",
       # Gettext translations
-      ~r"priv/gettext/.*\.po$",
+      ~r"^(?!.*\.claude/).*priv/gettext/.*\.po$",
       # Router, Controllers, LiveViews and LiveComponents
-      ~r"lib/ecrits_web/router\.ex$",
-      ~r"lib/ecrits_web/(controllers|live|components)/.*\.(ex|heex)$"
+      ~r"^(?!.*\.claude/).*lib/ecrits_web/router\.ex$",
+      ~r"^(?!.*\.claude/).*lib/ecrits_web/(controllers|live|components)/.*\.(ex|heex)$"
     ]
   ]
 

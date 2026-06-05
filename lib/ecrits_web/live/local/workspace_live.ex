@@ -226,7 +226,9 @@ defmodule EcritsWeb.Local.WorkspaceLive do
   end
 
   def handle_params(_params, _uri, socket) do
-    {:noreply, assign(socket, :workspace_error, "Workspace path is required.")}
+    # No workspace path in the URL — there's nothing to show. Send the user to
+    # the folder picker ("/") instead of rendering a dead-end error page.
+    {:noreply, push_navigate(socket, to: ~p"/")}
   end
 
   @impl true
@@ -1590,14 +1592,16 @@ defmodule EcritsWeb.Local.WorkspaceLive do
         |> assign(:page_title, workspace_title(workspace))
         |> maybe_start_fs_watcher()
 
-      {:error, reason} ->
+      {:error, _reason} ->
+        # Workspace failed to mount (bad / inaccessible path) — send the user
+        # back to the folder picker ("/") rather than a dead-end error page.
         socket
         |> unsubscribe_local_hwp_stream()
-        |> assign(:workspace_error, error_message(reason))
         |> assign(:workspace_path, nil)
         |> assign(:active_document, nil)
         |> assign(:active_document_path, nil)
         |> clear_local_hwp_pages()
+        |> push_navigate(to: ~p"/")
     end
   end
 
