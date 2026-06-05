@@ -1255,6 +1255,86 @@ defmodule EcritsWeb.Local.MountWorkspaceLiveTest do
     assert {:ok, %{document_id: ^document_id}} = AcpAgent.status(nil, session_id)
   end
 
+  test "selecting a document preserves the chat-rail conversation and session", %{conn: conn} do
+    # Regression for the reset-on-document-select bug: opening/selecting a
+    # document must NOT recreate the ACP session or wipe the chat stream. The
+    # conversation, the session_id, and the backing Session PID must all survive
+    # — exactly like the #54 access-change decoupling.
+    use_test_agent_adapter!(adapter_opts: [script: [{:text_delta, "streaming reply"}]])
+
+    {:ok, lv, _html} =
+      live(
+        conn,
+        ~p"/workspace?#{[path: LocalWorkspaceAdapterStub.valid_path(), document: "template.hwp", provider: "codex"]}"
+      )
+
+    session_id = subscribe_agent(lv)
+    session_pid = AcpAgent.whereis(session_id)
+    assert is_pid(session_pid)
+
+    # Build a conversation so there is something to lose.
+    lv
+    |> form("#local-agent-form", agent: %{message: "first question"})
+    |> render_submit()
+
+    assert_receive {:local_agent_event, %{type: :turn_completed, session_id: ^session_id}},
+                   1_000
+
+    sync_liveview(lv)
+
+    assert has_element?(
+             lv,
+             ~s([data-role="local-agent-message"][data-message-role="user"]),
+             "first question"
+           )
+
+    # Expand the drafts directory so its documents become selectable.
+    lv
+    |> element("#toggle-dir-drafts")
+    |> render_click()
+
+    # Select a DIFFERENT document — the path that previously reset the chat.
+    lv
+    |> element(~s([data-node-path="drafts/service.hwpx"][phx-click="open_file"]))
+    |> render_click()
+
+    sync_liveview(lv)
+
+    # Same session_id, same backing PID, conversation intact.
+    assert local_agent_session_id(lv) == session_id
+    assert AcpAgent.whereis(session_id) == session_pid
+    assert Process.alive?(session_pid)
+
+    assert has_element?(
+             lv,
+             ~s([data-role="local-agent-message"][data-message-role="user"]),
+             "first question"
+           )
+
+    # Select a SECOND, different document (back to the HWP top-level one) —
+    # still preserved.
+    lv
+    |> element(~s([data-node-path="template.hwp"][phx-click="open_file"]))
+    |> render_click()
+
+    sync_liveview(lv)
+
+    assert local_agent_session_id(lv) == session_id
+    assert AcpAgent.whereis(session_id) == session_pid
+    assert Process.alive?(session_pid)
+
+    assert has_element?(
+             lv,
+             ~s([data-role="local-agent-message"][data-message-role="user"]),
+             "first question"
+           )
+
+    # The live session's per-turn document context must follow the active doc,
+    # so the agent's doc.* tools still target what the user is viewing.
+    new_document_id = local_rhwp_document_id(lv)
+    assert {:ok, %{document_id: ^new_document_id}} = AcpAgent.status(nil, session_id)
+  end
+
   test "agent rail shows provider logo in model selector for codex route display", %{conn: conn} do
     {:ok, lv, _html} =
       live(
@@ -1728,7 +1808,14 @@ defmodule EcritsWeb.Local.MountWorkspaceLiveTest do
     # Only the two streamed deltas should reach the browser as append events —
     # the terminal `final: true` chunk must NOT produce a third append.
     assert_push_event(lv, "local_agent_text_append", %{message_id: msg_id, piece: "Hi "}, 1_000)
-    assert_push_event(lv, "local_agent_text_append", %{message_id: ^msg_id, piece: "there?"}, 1_000)
+
+    assert_push_event(
+      lv,
+      "local_agent_text_append",
+      %{message_id: ^msg_id, piece: "there?"},
+      1_000
+    )
+
     refute_push_event(lv, "local_agent_text_append", %{piece: "Hi there?"}, 200)
 
     # The accumulated turn text must be the single message, not the doubled one.
@@ -1751,7 +1838,9 @@ defmodule EcritsWeb.Local.MountWorkspaceLiveTest do
 
     # Exactly one occurrence — a doubled emit would render "Hi there?Hi there?".
     occurrences = final_body |> String.split("Hi there?") |> length() |> Kernel.-(1)
-    assert occurrences == 1, "expected the reply once, got #{occurrences}x in: #{inspect(final_body)}"
+
+    assert occurrences == 1,
+           "expected the reply once, got #{occurrences}x in: #{inspect(final_body)}"
   end
 
   test "agent sidebar renders a final-only message when no deltas were streamed",

@@ -117,8 +117,14 @@ defmodule Ecrits.Local.AcpAgent.Session do
   end
 
   def handle_call({:update_options, new_opts}, _from, state) do
-    merged = Keyword.merge(state.adapter_opts, new_opts)
-    {:reply, :ok, %{state | adapter_opts: merged}}
+    # The active document is per-turn context, NOT a reason to recreate the
+    # session — switching the document in the workspace must preserve the
+    # conversation (mirrors the access/reasoning live-update path). When the
+    # caller passes a `:document_id`, follow it on the live session so the next
+    # turn's doc.* tools target what the user is now viewing.
+    {document_id, adapter_opts} = Keyword.pop(new_opts, :document_id, state.document_id)
+    merged = Keyword.merge(state.adapter_opts, adapter_opts)
+    {:reply, :ok, %{state | adapter_opts: merged, document_id: document_id}}
   end
 
   def handle_call({:send_turn, ctx, input, _opts}, _from, state) do

@@ -1812,16 +1812,16 @@ defmodule EcritsWeb.Local.WorkspaceLive do
 
   defp maybe_apply_live_local_agent_options(socket, _changed?), do: socket
 
-  # NOTE: local_agent_model is deliberately NOT part of the restart context: a
-  # same-provider model swap is a per-turn option applied live (above), not a
-  # reason to recreate the session. A cross-provider switch is caught by
-  # provider_changed? in handle_params.
+  # NOTE: neither the active document NOR local_agent_model is part of the
+  # restart context. The chat-rail conversation is WORKSPACE-scoped, not
+  # document-scoped: selecting/opening a document must preserve the conversation
+  # (the document is per-turn context applied live via
+  # maybe_restart_local_agent_for_document/2 — mirroring the access/reasoning
+  # decoupling). A same-provider model swap is likewise a live per-turn option.
+  # Only a workspace change (here) or a cross-provider switch (provider_changed?
+  # in handle_params) recreates the session.
   defp local_agent_session_context(socket) do
-    {
-      socket.assigns.workspace_path,
-      active_document_id(socket),
-      socket.assigns.active_document_path
-    }
+    socket.assigns.workspace_path
   end
 
   defp maybe_cancel_active_local_agent(%{
@@ -2184,6 +2184,12 @@ defmodule EcritsWeb.Local.WorkspaceLive do
 
   defp put_current_document_id(opts, _document_id), do: opts
 
+  # Selecting/opening a document must NOT recreate the ACP session (that would
+  # wipe the chat-rail conversation). The active document is per-turn context, so
+  # — exactly like access/reasoning changes (#54) — apply it to the LIVE session
+  # in place; the next turn's doc.* tools then target the now-active document.
+  # With no live session yet, the next start picks up the current document from
+  # local_agent_session_opts, so there is nothing to do.
   defp maybe_restart_local_agent_for_document(socket, previous_document_id) do
     current_document_id = active_document_id(socket)
 
@@ -2198,7 +2204,12 @@ defmodule EcritsWeb.Local.WorkspaceLive do
         start_local_agent_session(socket)
 
       true ->
-        restart_local_agent_session(socket)
+        _ =
+          ACP.update_session_options(socket.assigns.local_agent_session_id,
+            document_id: current_document_id
+          )
+
+        socket
     end
   end
 
