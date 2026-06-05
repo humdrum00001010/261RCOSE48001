@@ -43,14 +43,17 @@ function ensureRuntime() {
   if (runtimePromise) return runtimePromise
 
   runtimePromise = new Promise((resolve, reject) => {
+    // NOTE: we do NOT pre-empt with a hardcoded "needs cross-origin isolation"
+    // message. The Emscripten PThreads glue will surface the REAL failure itself
+    // (e.g. a SharedArrayBuffer/`shared:true` memory error, a glue 404 via
+    // script.onerror, or onAbort) — report that actual error, not an assumption.
+    // A diagnostic only, non-fatal:
     if (typeof SharedArrayBuffer === "undefined" || !self.crossOriginIsolated) {
-      reject(
-        new Error(
-          "office WASM needs cross-origin isolation (SharedArrayBuffer). " +
-            "crossOriginIsolated=" + String(self.crossOriginIsolated)
-        )
+      console.warn(
+        "[office-wasm] crossOriginIsolated=" + String(self.crossOriginIsolated) +
+          ", SharedArrayBuffer=" + typeof SharedArrayBuffer +
+          " — attempting load anyway; the glue will surface the real error if it can't run."
       )
-      return
     }
 
     // Emscripten reads this PRE-EXISTING global for config. The auto-running glue
