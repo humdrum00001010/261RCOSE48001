@@ -117,9 +117,29 @@ defmodule Ecrits.MixProject do
         "cmd mkdir -p priv/static/assets/rhwp",
         "cmd cp assets/vendor/rhwp/rhwp_bg.wasm priv/static/assets/rhwp/rhwp_bg.wasm"
       ],
-      "assets.build": ["compile", "assets.rhwp_wasm", "tailwind ecrits", "esbuild ecrits"],
+      # The LibreOffice->WASM client editor (client-interactive arm of the office
+      # dual-arch). The Emscripten build artifacts live under
+      # `assets/vendor/office/` (gitignored, ~210MB, built from the LibreOffice
+      # `core` checkout). Unlike rhwp's wasm-bindgen ES module, this is an
+      # auto-running Emscripten module: the JS glue (`soffice.js`) is loaded as a
+      # <script> tag at runtime (not bundled by esbuild) and fetches `soffice.wasm`
+      # + `soffice.data` via `Module.locateFile`. All three are served statically
+      # under `/assets/office/` (Plug.Static `only: ~w(assets ...)`). The copy is
+      # best-effort (`- cmd`) so a checkout without the (large, local-only) office
+      # artifacts still builds.
+      "assets.office_wasm": [
+        ~s(cmd sh -c "mkdir -p priv/static/assets/office && for f in soffice.js soffice.wasm soffice.data; do [ -f assets/vendor/office/$f ] && cp assets/vendor/office/$f priv/static/assets/office/$f || true; done")
+      ],
+      "assets.build": [
+        "compile",
+        "assets.rhwp_wasm",
+        "assets.office_wasm",
+        "tailwind ecrits",
+        "esbuild ecrits"
+      ],
       "assets.deploy": [
         "assets.rhwp_wasm",
+        "assets.office_wasm",
         "tailwind ecrits --minify",
         "esbuild ecrits --minify",
         "phx.digest"
