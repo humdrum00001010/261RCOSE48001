@@ -24,7 +24,16 @@ defmodule Ecrits.Local.AcpAgent.AcpStream do
   alias ExMCP.ACP.Adapters.Codex
   alias ExMCP.ACP.Client
 
-  @default_timeout 300_000
+  # Total ceiling for one turn (the ExMCP `prompt` RPC stays open for the whole
+  # turn — every tool call resolves through the session and the prompt completes
+  # only at turn end, so this caps total wall-clock). Generous because a single
+  # agent turn may make dozens of doc.* edits across a long document.
+  @default_timeout 1_200_000
+  # Inactivity window for the receive loop: a turn that keeps streaming session
+  # updates (tool calls, text deltas) is making progress and must NOT be killed
+  # just for being long — only a genuinely STALLED turn (no activity for this
+  # long) fails. Reset on every session update. Bounded by the total ceiling.
+  @idle_timeout 300_000
 
   @doc """
   Returns a `Stream` of normalized chat-rail events for one turn.
@@ -88,7 +97,10 @@ defmodule Ecrits.Local.AcpAgent.AcpStream do
           # provider id and the NEXT turn resumes this same conversation.
           pending_provider_event: %{type: :provider_session, provider_session_id: session_id},
           prompt_task: prompt_task,
-          deadline: deadline(timeout),
+          # Idle deadline for the receive loop (reset on each session update).
+          # Never longer than the total turn ceiling.
+          idle: min(timeout, @idle_timeout),
+          deadline: deadline(min(timeout, @idle_timeout)),
           saw_text?: false,
           done?: false,
           tool_titles: %{}
@@ -112,7 +124,10 @@ defmodule Ecrits.Local.AcpAgent.AcpStream do
   defp open_provider_session(client, cwd, prior_session_id, timeout, mcp_servers)
        when is_binary(prior_session_id) and prior_session_id != "" do
     if resume_supported?(client) do
-      case Client.load_session(client, prior_session_id, cwd, timeout: timeout, mcp_servers: mcp_servers) do
+      case Client.load_session(client, prior_session_id, cwd,
+             timeout: timeout,
+             mcp_servers: mcp_servers
+           ) do
         {:ok, %{"sessionId" => session_id}} when is_binary(session_id) and session_id != "" ->
           {:ok, session_id}
 
@@ -195,6 +210,10 @@ defmodule Ecrits.Local.AcpAgent.AcpStream do
         {:halt, %{state | done?: true}}
 
       {:acp_session_update, ^session_id, update} ->
+        # Activity — the turn is progressing; push the idle deadline forward so a
+        # long-but-active turn (many doc.* edits) is never killed mid-stream.
+        state = %{state | deadline: deadline(state.idle)}
+
         case map_update(update, state) do
           {:event, event, state} -> {[event], state}
           {:skip, state} -> next_event(state)
@@ -211,7 +230,7 @@ defmodule Ecrits.Local.AcpAgent.AcpStream do
         fail_turn(state, "ex_mcp ACP prompt task exited: #{inspect(reason)}")
     after
       remaining(deadline) ->
-        fail_turn(state, "ex_mcp ACP timeout during turn")
+        fail_turn(state, "ex_mcp ACP turn stalled: no activity for #{state.idle}ms")
     end
   end
 
@@ -332,13 +351,21 @@ defmodule Ecrits.Local.AcpAgent.AcpStream do
     case Map.get(update, "status") do
       "completed" ->
         {:event,
-         %{type: :tool_call_completed, tool_call_id: tool_call_id, name: name, result: tool_output(update)},
-         state}
+         %{
+           type: :tool_call_completed,
+           tool_call_id: tool_call_id,
+           name: name,
+           result: tool_output(update)
+         }, state}
 
       "failed" ->
         {:event,
-         %{type: :tool_call_failed, tool_call_id: tool_call_id, name: name, reason: tool_failure_reason(update)},
-         state}
+         %{
+           type: :tool_call_failed,
+           tool_call_id: tool_call_id,
+           name: name,
+           reason: tool_failure_reason(update)
+         }, state}
 
       _other ->
         {:skip, state}
@@ -375,7 +402,8 @@ defmodule Ecrits.Local.AcpAgent.AcpStream do
   end
 
   defp tool_failure_reason(update) do
-    extract_content_text(Map.get(update, "content")) || inspect(Map.get(update, "rawOutput") || "")
+    extract_content_text(Map.get(update, "content")) ||
+      inspect(Map.get(update, "rawOutput") || "")
   end
 
   defp extract_content_text(content) when is_list(content) do
