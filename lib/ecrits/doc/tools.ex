@@ -419,21 +419,26 @@ defmodule Ecrits.Doc.Tools do
 
   defp inspect_json(node) when is_map(node), do: stringify(node)
 
-  # Active/focused document + cursor/selection. The browser->server cursor
-  # reporting that would populate `cursor`/`selection` for the *viewed* document
-  # lives in the editors (owned by another agent) and is not wired yet, so we
-  # report whatever active-doc state is available server-side today.
+  # Active/focused document + cursor/selection. The active document is the one
+  # the user is viewing in the workspace: `WorkspaceLive` registers the open
+  # document in the Pool and marks it active via `Pool.set_active/2`, so we read
+  # it back here with `Pool.active/1`. Older heuristics (single browser-backed
+  # doc, or the sole doc) are kept as a fallback when no explicit active doc has
+  # been set.
+  #
+  # The `cursor`/`selection` refs still require browser->server caret reporting
+  # (editors, owned separately) and remain null for now.
   #
   # TODO(browser-wiring): once the editors report the live caret/selection back
   # to the server (e.g. Pool.attach_browser + a cursor-report message), surface
-  # the focused document's `cursor` ref and `selection` here. Until then the
-  # active document is inferred as the single browser-backed doc if one is
-  # attached, else nil, and `cursor`/`selection` are null.
+  # the focused document's `cursor` ref and `selection` here.
   defp context_json(pool) do
     docs = Pool.list(pool)
+    active_id = Pool.active(pool)
 
     active =
-      Enum.find(docs, &(&1.backing == :browser)) ||
+      Enum.find(docs, &(&1.id == active_id)) ||
+        Enum.find(docs, &(&1.backing == :browser)) ||
         (length(docs) == 1 && hd(docs)) || nil
 
     %{

@@ -94,6 +94,24 @@ defmodule Ecrits.Doc.Pool do
   def info(pool \\ @default_name, document_id),
     do: GenServer.call(pool, {:info, document_id})
 
+  @doc """
+  Mark `document_id` as the active/focused document (the one the user is
+  viewing). `doc.context` surfaces this as `active_document`. Returns
+  `{:error, :not_found}` if the document is not in the pool.
+  """
+  @spec set_active(GenServer.server(), document_id()) :: :ok | {:error, :not_found}
+  def set_active(pool \\ @default_name, document_id),
+    do: GenServer.call(pool, {:set_active, document_id})
+
+  @doc "Clear the active document if (and only if) it is `document_id`."
+  @spec clear_active(GenServer.server(), document_id()) :: :ok
+  def clear_active(pool \\ @default_name, document_id),
+    do: GenServer.call(pool, {:clear_active, document_id})
+
+  @doc "The active document id, or nil when none is set / it is gone."
+  @spec active(GenServer.server()) :: document_id() | nil
+  def active(pool \\ @default_name), do: GenServer.call(pool, :active)
+
   @spec close(GenServer.server(), document_id()) :: :ok | {:error, :not_found}
   def close(pool \\ @default_name, document_id),
     do: GenServer.call(pool, {:close, document_id})
@@ -103,7 +121,7 @@ defmodule Ecrits.Doc.Pool do
   @impl true
   def init(_opts) do
     {:ok, sup} = DynamicSupervisor.start_link(strategy: :one_for_one)
-    {:ok, %{sup: sup, docs: %{}, by_path: %{}}}
+    {:ok, %{sup: sup, docs: %{}, by_path: %{}, active: nil}}
   end
 
   @impl true
@@ -191,6 +209,23 @@ defmodule Ecrits.Doc.Pool do
     {:reply, reply, st}
   end
 
+  def handle_call({:set_active, document_id}, _from, st) do
+    if Map.has_key?(st.docs, document_id) do
+      {:reply, :ok, %{st | active: document_id}}
+    else
+      {:reply, {:error, :not_found}, st}
+    end
+  end
+
+  def handle_call({:clear_active, document_id}, _from, st) do
+    active = if st.active == document_id, do: nil, else: st.active
+    {:reply, :ok, %{st | active: active}}
+  end
+
+  def handle_call(:active, _from, st) do
+    {:reply, st.active, st}
+  end
+
   def handle_call({:close, document_id}, _from, st) do
     case Map.pop(st.docs, document_id) do
       {nil, _docs} ->
@@ -202,7 +237,8 @@ defmodule Ecrits.Doc.Pool do
         end
 
         by_path = Map.delete(st.by_path, doc.path)
-        {:reply, :ok, %{st | docs: docs, by_path: by_path}}
+        active = if st.active == document_id, do: nil, else: st.active
+        {:reply, :ok, %{st | docs: docs, by_path: by_path, active: active}}
     end
   end
 
@@ -219,7 +255,8 @@ defmodule Ecrits.Doc.Pool do
         end
       end)
 
-    {:noreply, %{st | docs: docs}}
+    active = if st.active && Map.has_key?(docs, st.active), do: st.active, else: nil
+    {:noreply, %{st | docs: docs, active: active}}
   end
 
   # --- helpers -------------------------------------------------------------

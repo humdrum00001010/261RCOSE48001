@@ -296,6 +296,23 @@ defmodule Ecrits.Doc.ToolsTest do
       assert ctx_result["cursor_reporting"] == "todo:browser_wiring"
     end
 
+    test "with multiple docs open, the explicitly-set active doc wins", %{pool: pool} do
+      {:ok, %{"document" => a}} =
+        Tools.call(ctx(pool), "doc.open", %{"path" => "a.hwp", "open_opts" => [__text__: "x"]})
+
+      {:ok, %{"document" => b}} =
+        Tools.call(ctx(pool), "doc.open", %{"path" => "b.hwp", "open_opts" => [__text__: "y"]})
+
+      # No active set yet + >1 doc => no inference.
+      assert {:ok, %{"active_document" => nil}} = Tools.call(ctx(pool), "doc.context", %{})
+
+      :ok = Ecrits.Doc.Pool.set_active(pool, b)
+      assert {:ok, %{"active_document" => ^b}} = Tools.call(ctx(pool), "doc.context", %{})
+
+      :ok = Ecrits.Doc.Pool.set_active(pool, a)
+      assert {:ok, %{"active_document" => ^a}} = Tools.call(ctx(pool), "doc.context", %{})
+    end
+
     test "context + inspect are exposed in the tool catalog as read tools" do
       by_name = Map.new(Tools.tools(), &{&1["namespace"] <> "." <> &1["name"], &1["risk"]})
       assert by_name["doc.context"] == "read"

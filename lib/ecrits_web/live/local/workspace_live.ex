@@ -5,6 +5,7 @@ defmodule EcritsWeb.Local.WorkspaceLive do
 
   use EcritsWeb, :live_view
 
+  alias Ecrits.Doc.Pool, as: DocPool
   alias Ecrits.Local.AcpAgent, as: ACP
   alias Ecrits.Local.Document
   alias Ecrits.Local.Document.RhwpAdapter
@@ -122,6 +123,7 @@ defmodule EcritsWeb.Local.WorkspaceLive do
      |> assign(:active_document, nil)
      |> assign(:open_documents, [])
      |> assign(:active_document_id, nil)
+     |> assign(:pool_document_id, nil)
      |> assign(:fs_watcher_pid, nil)
      |> assign(:fs_refresh_timer, nil)
      |> assign(:local_document_error, nil)
@@ -1614,6 +1616,7 @@ defmodule EcritsWeb.Local.WorkspaceLive do
 
     socket
     |> unsubscribe_local_hwp_stream()
+    |> clear_pool_document()
     |> assign(:active_document_path, nil)
     |> assign(:active_document, nil)
     |> assign(:active_document_id, nil)
@@ -1697,6 +1700,7 @@ defmodule EcritsWeb.Local.WorkspaceLive do
 
     socket
     |> unsubscribe_local_hwp_stream()
+    |> clear_pool_document()
     |> assign(:active_document_path, nil)
     |> assign(:active_document, nil)
     |> assign(:local_document_status, :none)
@@ -1724,6 +1728,7 @@ defmodule EcritsWeb.Local.WorkspaceLive do
           |> assign(:local_document_status, :opened)
           |> assign(:local_document_snapshot, nil)
           |> assign(:local_document_error, nil)
+          |> register_pool_document(document)
           |> render_local_document_pages(document)
 
         maybe_restart_local_agent_for_document(socket, previous_document_id)
@@ -1732,6 +1737,7 @@ defmodule EcritsWeb.Local.WorkspaceLive do
         _ = unregister_local_rhwp_materializer_editor(previous_document_id)
 
         socket
+        |> clear_pool_document()
         |> unsubscribe_local_hwp_stream()
         |> assign(:selected_path, path)
         |> assign(:active_document_path, nil)
@@ -1741,6 +1747,45 @@ defmodule EcritsWeb.Local.WorkspaceLive do
         |> clear_local_hwp_pages()
     end
   end
+
+  # Register the freshly-opened workspace document in `Ecrits.Doc.Pool` and mark
+  # it the ACTIVE document, so the chat agent's `doc.*` MCP tools (which operate
+  # against the Pool) can see, read and edit the document the user is viewing.
+  #
+  # Only the HWP/HWPX backend is server-routable today (`Ecrits.Doc.backend_for`
+  # returns a backend for :hwp/:hwpx only); other formats (Office/Markdown) have
+  # no Pool backend yet, so we just clear any stale active doc for them. The
+  # Pool keys by absolute path, so re-opening the same file reuses the handle.
+  defp register_pool_document(socket, %Document{path: path, format: format})
+       when format in ["hwp", "hwpx"] do
+    kind = String.to_existing_atom(format)
+
+    case DocPool.open(path, kind: kind) do
+      {:ok, doc_id} ->
+        previous = socket.assigns[:pool_document_id]
+        if previous && previous != doc_id, do: DocPool.clear_active(previous)
+        :ok = DocPool.set_active(doc_id)
+        assign(socket, :pool_document_id, doc_id)
+
+      {:error, _reason} ->
+        # Pool registration is best-effort: a backend open failure must not
+        # break the viewer. The agent simply won't have a handle for this doc.
+        clear_pool_document(socket)
+    end
+  end
+
+  defp register_pool_document(socket, %Document{}), do: clear_pool_document(socket)
+
+  # Drop the active-document marker for the doc this LiveView registered. We
+  # leave the Editor in the Pool (other sessions may share it); we only relinquish
+  # the "active" claim that `doc.context` surfaces.
+  defp clear_pool_document(%{assigns: %{pool_document_id: doc_id}} = socket)
+       when is_binary(doc_id) do
+    _ = DocPool.clear_active(doc_id)
+    assign(socket, :pool_document_id, nil)
+  end
+
+  defp clear_pool_document(socket), do: assign(socket, :pool_document_id, nil)
 
   defp start_local_agent_session(socket) do
     if connected?(socket) do
