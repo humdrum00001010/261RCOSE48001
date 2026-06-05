@@ -2191,12 +2191,24 @@ defmodule EcritsWeb.Local.WorkspaceLive do
 
   # Ignore the metadata tree, dotfiles, and editor swap files; everything else
   # is a workspace change worth re-listing.
+  #
+  # Exception: our own atomic-write temp files (`.<name>.tmp-<n>`, see
+  # `Ecrits.Local.FS.tmp_path/1`). An atomic save writes the bytes to that hidden
+  # temp then `rename(2)`s it onto the final name. On macOS fsevents the *only*
+  # event guaranteed to reach us for a brand-new file is the temp's create event
+  # — the final rename event is reported on the destination path but may be
+  # coalesced away or split into a separate fsevents latency batch, so we cannot
+  # rely on it. Treating the temp path as relevant schedules a (debounced)
+  # refresh; by the time it fires the rename has completed and `list_tree` sees
+  # the final file. Without this, an agent `doc.save` / atomic write of a NEW
+  # file does not show up in the tree until a manual refresh.
   defp fs_relevant_path?(path) when is_binary(path) do
     segments = path |> Path.split() |> Enum.reject(&(&1 in ["/", ""]))
     base = Path.basename(path)
 
     cond do
       Enum.any?(segments, &(&1 == ".ecrits")) -> false
+      atomic_write_temp?(base) -> true
       String.starts_with?(base, ".") -> false
       String.ends_with?(base, "~") -> false
       true -> true
@@ -2204,6 +2216,11 @@ defmodule EcritsWeb.Local.WorkspaceLive do
   end
 
   defp fs_relevant_path?(_path), do: false
+
+  # Matches `Ecrits.Local.FS.tmp_path/1`: ".<basename>.tmp-<monotonic-int>".
+  defp atomic_write_temp?(base) do
+    String.starts_with?(base, ".") and base =~ ~r/\.tmp-\d+$/
+  end
 
   # Debounce: collapse a burst of file events into a single refresh.
   defp schedule_tree_refresh(socket) do
