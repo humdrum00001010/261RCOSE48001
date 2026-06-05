@@ -142,6 +142,12 @@ defmodule EcritsWeb.Local.WorkspaceLive do
      |> assign(:local_agent_text_flush_ref, nil)
      |> assign(:local_agent_active_tools, %{})
      |> assign(:local_agent_reasoning_text, "")
+     # Tracks whether reasoning text is being appended contiguously. codex streams
+     # reasoning as token deltas with NO separator between distinct reasoning items
+     # (each resumes after a tool call), so consecutive items glue together
+     # ("…open file.The new document…"). We insert a paragraph break when reasoning
+     # resumes after a non-reasoning event; reset to false in the event funnel.
+     |> assign(:local_agent_reasoning_open?, false)
      |> assign(:local_agent_title, default_local_agent_title())
      |> assign(:local_agent_title_user_edited?, false)
      |> assign(:local_agent_title_form, local_agent_title_form())
@@ -517,6 +523,14 @@ defmodule EcritsWeb.Local.WorkspaceLive do
   @impl true
   def handle_info({:local_agent_event, %{session_id: session_id} = event}, socket)
       when session_id == socket.assigns.local_agent_session_id do
+    # Close the contiguous-reasoning run on any non-reasoning event, so the NEXT
+    # reasoning delta starts a fresh paragraph (codex glues reasoning items).
+    socket =
+      case event do
+        %{type: :reasoning_delta} -> socket
+        _ -> assign(socket, :local_agent_reasoning_open?, false)
+      end
+
     {:noreply, apply_local_agent_event(socket, event)}
   end
 
@@ -1819,13 +1833,23 @@ defmodule EcritsWeb.Local.WorkspaceLive do
 
   defp apply_local_agent_event(socket, %{type: :reasoning_delta, turn_id: turn_id, delta: delta})
        when is_binary(delta) do
-    text = socket.assigns.local_agent_reasoning_text <> delta
+    prev = socket.assigns.local_agent_reasoning_text
+
+    # New reasoning item resuming after a tool call / other event: separate it
+    # from the previous item with a paragraph break (the <pre> is whitespace-pre-
+    # wrap, so this renders as a real break). Contiguous deltas within one item
+    # append raw.
+    piece =
+      if socket.assigns[:local_agent_reasoning_open?] or prev == "",
+        do: delta,
+        else: "\n\n" <> delta
 
     socket
-    |> assign(:local_agent_reasoning_text, text)
+    |> assign(:local_agent_reasoning_text, prev <> piece)
+    |> assign(:local_agent_reasoning_open?, true)
     |> push_event("local_agent_reasoning_append", %{
       message_id: agent_reasoning_dom_id(turn_id),
-      piece: delta
+      piece: piece
     })
   end
 
