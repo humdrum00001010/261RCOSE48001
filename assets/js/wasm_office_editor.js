@@ -56,8 +56,21 @@ function dumpLog() {
   return stderrRing.slice(-40).join("\n")
 }
 
+// Wall-clock origin for the staged bootstrap logs. Set when ensureRuntime first
+// runs so every `[office-wasm] t+Nms: ...` line is relative to the load start;
+// the top-level console timeline then pinpoints exactly where the bootstrap
+// parks (runtime init vs. waiting for the API to materialize vs. timeout).
+let bootT0 = 0
+function tlog(...args) {
+  const dt = bootT0 ? (performance.now() - bootT0) | 0 : 0
+  console.log("[office-wasm] t+" + dt + "ms:", ...args)
+}
+
 function ensureRuntime() {
   if (runtimePromise) return runtimePromise
+
+  bootT0 = performance.now()
+  tlog("ensureRuntime() called; injecting glue", GLUE_URL)
 
   runtimePromise = new Promise((resolve, reject) => {
     // NOTE: we do NOT pre-empt with a hardcoded "needs cross-origin isolation"
@@ -101,8 +114,29 @@ function ensureRuntime() {
       //     emscripten_{sync,async}_run_in_main_runtime_thread — it REQUIRES the
       //     JS main thread to be free + pumping its proxy queue (i.e. inside the
       //     set_main_loop loop), not blocked inside a synchronous embind call.
-      // So we let main() run and instead gate the API on `Module.uno_init`
-      // (resolved by initJsUnoScripting once the bootstrap is ready) below.
+      // So we let main() run and gate the API on the embind export becoming
+      // callable (see the readiness poll below).
+      //
+      // WHY NOT `Module.uno_init`? (this was the prior gate, and it DEADLOCKED)
+      // `Module.uno_init` (static/emscripten/uno.js) is the *interactive desktop
+      // UNO-scripting* ready signal. It is resolved by initJsUnoScripting()
+      // (appinit.cxx InitApplicationServiceManager / init.cxx lo_initialize) via
+      // a `LOWA-channel` MessageChannel handshake — but ONLY once the desktop
+      // bootstrap (soffice_main -> Desktop::Main) runs. In THIS headless build
+      // (CONFIRMED from ~/Desktop/core) that bootstrap is kicked off lazily by
+      // the FIRST `loadFromBytes` call: loadFromBytes -> ensure_office ->
+      // lok::lok_cpp_init -> libreofficekit_hook_2 -> lo_initialize, which
+      // osl_createThread(lo_startmain)->soffice_main->Desktop::Main
+      // (desktop/source/lib/init.cxx:~8595). So `uno_init` never resolves until
+      // loadFromBytes is called — yet our hook only calls loadFromBytes AFTER
+      // ensureRuntime() (the uno_init gate) resolves. uno_init waits on
+      // loadFromBytes; loadFromBytes waits on uno_init -> permanent hang on
+      // "Loading office engine…". The correct LOK-build ready signal is simply
+      // that the embind export (loadFromBytes) is registered & callable, which
+      // happens during wasm runtime init (EMSCRIPTEN_BINDINGS(LokEditBindings),
+      // static-linked --whole-archive) — i.e. by onRuntimeInitialized. The heavy
+      // office init then happens lazily, synchronously, inside the first
+      // loadFromBytes (ensure_office), which is fine.
       noInitialRun: false,
       // Standard soffice-WASM config: main() does not "exit" (it parks in the
       // emscripten main loop); don't let Emscripten tear down the runtime.
@@ -120,6 +154,7 @@ function ensureRuntime() {
       },
       onAbort: (what) => {
         const dump = dumpLog()
+        tlog("ABORT:", what)
         console.error("[office-wasm] ABORT:", what)
         if (dump) console.error("[office-wasm] last engine output before abort:\n" + dump)
         try {
@@ -131,63 +166,122 @@ function ensureRuntime() {
             crossOriginIsolated: self.crossOriginIsolated
           })
         } catch (_) {}
-        reject(
+        // `fail` (guarded by `settled`) is defined below in this executor scope.
+        fail(
           new Error(
             "office WASM aborted: " + what + (dump ? " | last engine output: " + dump : "")
           )
         )
-      },
-      onRuntimeInitialized: () => {
-        console.log("[office-wasm] runtime initialized (wasm instantiated); awaiting desktop bootstrap")
       }
     }
     window.Module = Module
 
-    // The runtime is usable for the LOK editing API only AFTER the desktop/UNO
-    // bootstrap finishes. The standard soffice-WASM glue exposes that as the
-    // `Module.uno_init` promise (static/emscripten/uno.js, resolved from
-    // initjsunoscripting.cxx). Prefer it; fall back to onRuntimeInitialized +
-    // a loadFromBytes-presence poll if this build doesn't expose uno_init.
+    // READINESS GATE (LOK build): the editing API is the embind export
+    // `loadFromBytes` (LokEditBindings.cxx), force-registered via
+    // EMSCRIPTEN_BINDINGS during wasm runtime init. We do NOT wait on
+    // `Module.uno_init` — that is the desktop UNO-scripting signal and only
+    // resolves *inside* the first loadFromBytes call, which deadlocks against
+    // this gate (see the long note in the Module config above). Instead we wait
+    // for `loadFromBytes` to become callable (it should be present at/just after
+    // onRuntimeInitialized) with a bounded poll, so a never-arriving export
+    // surfaces a real error instead of an indefinite "Loading…".
     let settled = false
     const finish = () => {
       if (settled) return
       settled = true
       window.__officeWasmModule = Module
-      console.log("[office-wasm] bootstrap ready; document API available")
+      tlog("bootstrap ready; document API available (loadFromBytes callable)")
       resolve(Module)
     }
+    const fail = (err) => {
+      if (settled) return
+      settled = true
+      reject(err)
+    }
 
-    Module.onRuntimeInitialized = () => {
-      console.log("[office-wasm] runtime initialized (wasm instantiated); awaiting desktop bootstrap")
-      if (Module.uno_init && typeof Module.uno_init.then === "function") {
-        Module.uno_init.then(finish, (err) => {
-          console.error("[office-wasm] uno_init rejected", err, "\n" + dumpLog())
-          reject(new Error("office WASM bootstrap (uno_init) failed: " + (err && err.message || err)))
-        })
-      } else {
-        // No uno_init in this build: wait until the embind export materializes
-        // (it registers during bootstrap), then proceed. Bounded poll so a
-        // never-arriving export becomes a clear error rather than a hang.
-        let tries = 0
-        const poll = () => {
-          if (typeof Module.loadFromBytes === "function" || typeof Module._loadFromBytes === "function") {
-            finish()
-          } else if (++tries > 600) {
-            reject(new Error(
-              "office WASM: desktop bootstrap did not expose loadFromBytes within 30s. Last engine output:\n" + dumpLog()
-            ))
-          } else {
-            setTimeout(poll, 50)
-          }
-        }
-        poll()
+    const apiReady = () =>
+      typeof Module.loadFromBytes === "function" || typeof Module._loadFromBytes === "function"
+
+    // Diagnostic: surface what uno_init is doing in THIS build without gating on
+    // it. If it ever resolves/rejects, the timeline shows it (expected: never,
+    // until a doc is loaded) — proves whether uno_init was the wrong signal.
+    const probeUnoInit = () => {
+      const present = !!(Module.uno_init && typeof Module.uno_init.then === "function")
+      tlog("uno_init present?", present, "(NOT gating on it; LOK build uses loadFromBytes)")
+      if (present) {
+        Module.uno_init.then(
+          () => tlog("uno_init resolved (desktop UNO bootstrap complete — happens during/after first loadFromBytes)"),
+          (err) => tlog("uno_init rejected", err && err.message || err)
+        )
       }
     }
+
+    const POLL_INTERVAL_MS = 50
+    const POLL_MAX_MS = 120000 // 2 min: first instantiate of a 127MB wasm is slow
+    Module.onRuntimeInitialized = () => {
+      tlog("runtime initialized (wasm instantiated)")
+      probeUnoInit()
+      tlog("loadFromBytes present at runtimeInitialized?", apiReady())
+      if (apiReady()) {
+        finish()
+        return
+      }
+      // Embind export not attached yet: poll until it is. Bounded so a missing
+      // export (renamed/not linked) becomes a clear console error, not a hang.
+      const deadline = performance.now() + POLL_MAX_MS
+      let attempt = 0
+      const poll = () => {
+        if (settled) return
+        attempt++
+        const ok = apiReady()
+        // Log first few attempts + then every ~2s so the timeline isn't noisy
+        // but a stall is still visible (and never silent).
+        if (attempt <= 3 || attempt % 40 === 0) {
+          tlog("poll: loadFromBytes present?", ok, "(attempt " + attempt + ")")
+        }
+        if (ok) {
+          finish()
+        } else if (performance.now() >= deadline) {
+          tlog("poll TIMEOUT after " + (POLL_MAX_MS / 1000) + "s — loadFromBytes never appeared")
+          fail(new Error(
+            "office WASM: embind export loadFromBytes did not become callable within " +
+              (POLL_MAX_MS / 1000) + "s of runtime init. Module keys: " +
+              Object.keys(Module).filter((k) => typeof Module[k] === "function").sort().join(", ") +
+              "\nLast engine output:\n" + dumpLog()
+          ))
+        } else {
+          setTimeout(poll, POLL_INTERVAL_MS)
+        }
+      }
+      poll()
+    }
+
+    // Hard safety net: if onRuntimeInitialized itself never fires (wasm never
+    // instantiates — e.g. SharedArrayBuffer/COOP-COEP missing in this tab, or a
+    // glue/data 404 that doesn't trigger onAbort), don't sit on "Loading…"
+    // forever. Surface a real error with the captured engine output.
+    setTimeout(() => {
+      if (settled || Module.calledRun) return
+      tlog("WATCHDOG: runtime never initialized (calledRun=" + Module.calledRun +
+        ", crossOriginIsolated=" + self.crossOriginIsolated +
+        ", SharedArrayBuffer=" + (typeof SharedArrayBuffer) + ")")
+      fail(new Error(
+        "office WASM: runtime never initialized within 120s (wasm did not instantiate). " +
+          "crossOriginIsolated=" + self.crossOriginIsolated +
+          ", SharedArrayBuffer=" + (typeof SharedArrayBuffer) +
+          ". This tab likely is not cross-origin isolated (needs COOP/COEP). Last engine output:\n" +
+          dumpLog()
+      ))
+    }, 120000)
 
     const script = document.createElement("script")
     script.src = GLUE_URL
     script.async = true
-    script.onerror = () => reject(new Error("failed to load " + GLUE_URL))
+    script.onload = () => tlog("glue script loaded (soffice.js)")
+    script.onerror = () => {
+      tlog("glue script FAILED to load", GLUE_URL)
+      fail(new Error("failed to load " + GLUE_URL))
+    }
     document.head.appendChild(script)
   })
 
