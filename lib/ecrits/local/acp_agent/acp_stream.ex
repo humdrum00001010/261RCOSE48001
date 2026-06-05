@@ -76,7 +76,7 @@ defmodule Ecrits.Local.AcpAgent.AcpStream do
 
     case open_provider_session(client, cwd, prior_session_id, timeout, mcp_servers) do
       {:ok, session_id} when is_binary(session_id) and session_id != "" ->
-        input = input_text(turn.input)
+        input = build_prompt(turn)
 
         prompt_task =
           Task.async(fn -> Client.prompt(client, session_id, input, timeout: timeout) end)
@@ -450,6 +450,34 @@ defmodule Ecrits.Local.AcpAgent.AcpStream do
   defp input_text(%{content: content}) when is_binary(content), do: content
   defp input_text(%{"content" => content}) when is_binary(content), do: content
   defp input_text(input), do: inspect(input)
+
+  # Prepend a concise, provider-agnostic developer instruction so the agent knows
+  # the currently-open document is read/editable ONLY through the `doc.*` MCP
+  # tools — not by shelling out to hwp5proc / LibreOffice / file readers. Without
+  # this, codex (gpt-5.5) tends to ignore the doc.* tools and try shell tooling,
+  # or it reads with doc.context/doc.find but never follows through to doc.edit.
+  defp build_prompt(turn) do
+    doc_preamble(turn) <> input_text(turn.input)
+  end
+
+  defp doc_preamble(turn) do
+    doc = open_document_label(turn)
+
+    """
+    [System] A document is currently open in the editor#{doc}. You can read AND
+    edit that open document ONLY through the `doc.*` MCP tools — these are the one
+    and only way to touch it. Do NOT shell out to hwp5proc, LibreOffice, soffice,
+    pandoc, cat/sed, or any file reader/writer for the open document.
+
+    Workflow: `doc.context` to orient, then `doc.find` / `doc.read` to locate the
+    target text, then APPLY the change with `doc.edit` (or `doc.set`). You MUST
+    follow through and actually call the write tool — do not stop after reading.
+    After editing, confirm the resulting revision number to the user.
+    """ <> "\n"
+  end
+
+  defp open_document_label(%{document_id: id}) when is_binary(id) and id != "", do: " (#{id})"
+  defp open_document_label(_turn), do: ""
 
   defp present_list(list) when is_list(list) and list != [], do: list
   defp present_list(_other), do: nil
