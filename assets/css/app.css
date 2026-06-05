@@ -38,6 +38,31 @@
   --cs-shadow-popover: 0 18px 44px rgba(17, 24, 39, 0.12);
 }
 
+/* Chat-rail "agent is responding" typing dots: same interval, STAGGERED start
+   (a flowing wave) so it never reads as frozen. Custom keyframe because
+   Tailwind's `animate-bounce` is an `animation` shorthand that resets
+   `animation-delay` to 0 (syncing all three dots), and its -25% translate is
+   ~1px on a 4px dot (invisible). Per-dot phase offset is set inline. */
+@keyframes chat-typing-dot {
+  0%, 70%, 100% {
+    transform: translateY(0);
+    opacity: 0.3;
+  }
+  35% {
+    transform: translateY(-3px);
+    opacity: 0.9;
+  }
+}
+.chat-typing-dot {
+  animation: chat-typing-dot 1.1s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-typing-dot {
+    animation: none;
+    opacity: 0.6;
+  }
+}
+
 [data-theme="studio-dark"] {
   --cs-bg: #111111;
   --cs-surface: #181818;

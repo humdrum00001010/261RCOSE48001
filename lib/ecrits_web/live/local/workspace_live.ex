@@ -560,6 +560,9 @@ defmodule EcritsWeb.Local.WorkspaceLive do
     if session_id && turn_id do
       case ACP.cancel(nil, session_id, turn_id) do
         {:ok, _turn} ->
+          partial = socket.assigns.local_agent_text
+          segment = socket.assigns.local_agent_text_segment
+
           {:noreply,
            socket
            |> assign(:local_agent_status, :cancelled)
@@ -567,12 +570,7 @@ defmodule EcritsWeb.Local.WorkspaceLive do
            |> assign(:local_agent_text, "")
            |> stream_insert(
              :local_agent_items,
-             agent_assistant_item(
-               turn_id,
-               "Cancelled.",
-               :cancelled,
-               socket.assigns.local_agent_text_segment
-             )
+             cancelled_agent_item(turn_id, partial, segment)
            )}
 
         {:error, reason} ->
@@ -1211,6 +1209,8 @@ defmodule EcritsWeb.Local.WorkspaceLive do
                         </div>
                         <span
                           :if={agent_item_loading?(item)}
+                          id={"#{dom_id}-loading"}
+                          phx-update="ignore"
                           data-role="agent-loading"
                           role="status"
                           aria-label="Agent responding"
@@ -1218,17 +1218,19 @@ defmodule EcritsWeb.Local.WorkspaceLive do
                         >
                           <span
                             aria-hidden="true"
-                            class="size-1 rounded-full bg-current motion-safe:animate-bounce [animation-delay:-240ms]"
+                            style="animation-delay:-0.36s"
+                            class="size-1 rounded-full bg-current chat-typing-dot"
                           >
                           </span>
                           <span
                             aria-hidden="true"
-                            class="size-1 rounded-full bg-current motion-safe:animate-bounce [animation-delay:-120ms]"
+                            style="animation-delay:-0.18s"
+                            class="size-1 rounded-full bg-current chat-typing-dot"
                           >
                           </span>
                           <span
                             aria-hidden="true"
-                            class="size-1 rounded-full bg-current motion-safe:animate-bounce"
+                            class="size-1 rounded-full bg-current chat-typing-dot"
                           >
                           </span>
                         </span>
@@ -1842,6 +1844,9 @@ defmodule EcritsWeb.Local.WorkspaceLive do
        when is_binary(session_id) and is_binary(turn_id) do
     case ACP.cancel(nil, session_id, turn_id) do
       {:ok, _turn} ->
+        partial = socket.assigns.local_agent_text
+        segment = socket.assigns.local_agent_text_segment
+
         {:ok,
          socket
          |> assign(:local_agent_turn_id, nil)
@@ -1849,12 +1854,7 @@ defmodule EcritsWeb.Local.WorkspaceLive do
          |> assign(:local_agent_reasoning_text, "")
          |> stream_insert(
            :local_agent_items,
-           agent_assistant_item(
-             turn_id,
-             "Cancelled.",
-             :cancelled,
-             socket.assigns.local_agent_text_segment
-           )
+           cancelled_agent_item(turn_id, partial, segment)
          )}
 
       {:error, :no_current_turn} ->
@@ -2019,6 +2019,9 @@ defmodule EcritsWeb.Local.WorkspaceLive do
          type: :turn_cancelled,
          turn_id: turn_id
        }) do
+    partial = socket.assigns.local_agent_text
+    segment = socket.assigns.local_agent_text_segment
+
     socket
     |> cancel_local_agent_text_flush()
     |> assign(:local_agent_turn_id, nil)
@@ -2028,12 +2031,7 @@ defmodule EcritsWeb.Local.WorkspaceLive do
     |> assign(:local_agent_reasoning_text, "")
     |> stream_insert(
       :local_agent_items,
-      agent_assistant_item(
-        turn_id,
-        "Cancelled.",
-        :cancelled,
-        socket.assigns.local_agent_text_segment
-      )
+      cancelled_agent_item(turn_id, partial, segment)
     )
   end
 
@@ -3835,6 +3833,16 @@ defmodule EcritsWeb.Local.WorkspaceLive do
   end
 
   defp maybe_stream_final_agent_text(socket, _turn_id, _text), do: socket
+
+  # On cancel, keep what the agent already streamed instead of wiping it: finalize
+  # the in-flight bubble with the accumulated partial text, marked :cancelled.
+  # Reuses the same segment/dom_id so it finalizes the running placeholder in
+  # place — but now preserving the agent's own words. Only when nothing was
+  # streamed yet do we fall back to a bare "Cancelled." placeholder.
+  defp cancelled_agent_item(turn_id, partial_text, segment) do
+    body = if is_binary(partial_text) and partial_text != "", do: partial_text, else: "Cancelled."
+    agent_assistant_item(turn_id, body, :cancelled, segment)
+  end
 
   defp agent_display_tool_name(name), do: name
 
