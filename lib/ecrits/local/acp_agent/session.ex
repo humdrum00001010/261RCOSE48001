@@ -107,6 +107,10 @@ defmodule Ecrits.Local.AcpAgent.Session do
        workspace_root: Keyword.get(opts, :workspace_root),
        document_id: Keyword.get(opts, :document_id),
        mcp_servers: Keyword.get(opts, :mcp_servers, []),
+       # The provider's session/thread id, captured on turn 1 and RESUMED on
+       # turns 2+ so the conversation keeps cross-turn memory. `nil` until the
+       # first turn establishes it.
+       provider_session_id: nil,
        current: nil
      }}
   end
@@ -191,6 +195,12 @@ defmodule Ecrits.Local.AcpAgent.Session do
   end
 
   @impl true
+  # The provider session id must be captured even if the turn was just cancelled
+  # (so the conversation can still resume) — store it regardless of `current`.
+  def handle_info({:turn_event, turn_id, %{type: :provider_session} = event}, state) do
+    {:noreply, handle_turn_event(state, turn_id, event)}
+  end
+
   def handle_info({:turn_event, turn_id, event}, state) do
     with %{turn_id: ^turn_id} <- state.current do
       {:noreply, handle_turn_event(state, turn_id, event)}
@@ -260,7 +270,10 @@ defmodule Ecrits.Local.AcpAgent.Session do
         %{
           input: input,
           workspace_root: state.workspace_root,
-          document_id: state.document_id
+          document_id: state.document_id,
+          # Resume the conversation's provider session on turns 2+ (nil on turn 1)
+          # so the agent keeps cross-turn memory.
+          provider_session_id: state.provider_session_id
         },
         Keyword.put(state.adapter_opts, :mcp_servers, state.mcp_servers)
       )
@@ -272,6 +285,15 @@ defmodule Ecrits.Local.AcpAgent.Session do
   end
 
   # ── event mapping -> chat-rail events ──────────────────────────────
+
+  # The provider session/thread id for this conversation (emitted first by
+  # `AcpStream`). Persist it on the long-lived Session so the NEXT turn resumes
+  # the same provider session — this is what gives the agent cross-turn memory.
+  # Not broadcast to the chat-rail (internal plumbing only).
+  defp handle_turn_event(state, _turn_id, %{type: :provider_session, provider_session_id: id})
+       when is_binary(id) and id != "" do
+    %{state | provider_session_id: id}
+  end
 
   defp handle_turn_event(state, turn_id, %{type: :text_delta, delta: delta}) when is_binary(delta) do
     current = %{state.current | text: (state.current.text || "") <> delta}

@@ -29,8 +29,16 @@ defmodule Ecrits.Local.AcpAgent.AcpStream do
   @doc """
   Returns a `Stream` of normalized chat-rail events for one turn.
 
-  `turn` is `%{input, workspace_root, document_id}`. `opts` carries adapter
-  config (`:cwd`, `:model`, `:approval_policy`, `:sandbox`, `:mcp_servers`, …).
+  `turn` is `%{input, workspace_root, document_id}` and may carry
+  `:provider_session_id` — the provider session/thread id from a PRIOR turn of
+  this conversation. When present, the turn RESUMES that provider session
+  (`session/load`) so the agent keeps cross-turn memory, instead of minting a
+  brand-new one (`session/new`). The resolved provider session id is emitted as
+  the FIRST stream event (`%{type: :provider_session, provider_session_id: id}`)
+  so the long-lived `Session` can persist it for the next turn.
+
+  `opts` carries adapter config (`:cwd`, `:model`, `:approval_policy`,
+  `:sandbox`, `:mcp_servers`, …).
   """
   @spec turn_stream(module(), map(), keyword()) :: Enumerable.t()
   def turn_stream(exmcp_adapter, turn, opts) do
@@ -64,9 +72,10 @@ defmodule Ecrits.Local.AcpAgent.AcpStream do
 
   defp start_session_with_client(client, cwd, turn, opts, timeout) do
     mcp_servers = mcp_servers_param(Keyword.get(opts, :mcp_servers))
+    prior_session_id = prior_provider_session_id(turn)
 
-    case Client.new_session(client, cwd, timeout: timeout, mcp_servers: mcp_servers) do
-      {:ok, %{"sessionId" => session_id}} ->
+    case open_provider_session(client, cwd, prior_session_id, timeout, mcp_servers) do
+      {:ok, session_id} when is_binary(session_id) and session_id != "" ->
         input = input_text(turn.input)
 
         prompt_task =
@@ -75,6 +84,9 @@ defmodule Ecrits.Local.AcpAgent.AcpStream do
         %{
           client: client,
           session_id: session_id,
+          # The first event emitted upstream so the `Session` persists the
+          # provider id and the NEXT turn resumes this same conversation.
+          pending_provider_event: %{type: :provider_session, provider_session_id: session_id},
           prompt_task: prompt_task,
           deadline: deadline(timeout),
           saw_text?: false,
@@ -84,11 +96,71 @@ defmodule Ecrits.Local.AcpAgent.AcpStream do
 
       {:ok, other} ->
         _ = safe_disconnect(client)
-        raise "ex_mcp ACP new_session returned unexpected result: #{inspect(other)}"
+        raise "ex_mcp ACP session open returned unexpected result: #{inspect(other)}"
 
       {:error, reason} ->
         _ = safe_disconnect(client)
-        raise "ex_mcp ACP new_session failed: #{inspect(reason)}"
+        raise "ex_mcp ACP session open failed: #{inspect(reason)}"
+    end
+  end
+
+  # Resume the prior provider session when we have one AND the agent advertises
+  # resume support; otherwise create a fresh session. `load_session` maps (for
+  # codex) to the `thread/resume` request with the remembered `threadId`, which
+  # rejoins the prior rollout and is what gives the agent cross-turn memory. We
+  # keep the id WE asked to resume if the agent's response omits it.
+  defp open_provider_session(client, cwd, prior_session_id, timeout, mcp_servers)
+       when is_binary(prior_session_id) and prior_session_id != "" do
+    if resume_supported?(client) do
+      case Client.load_session(client, prior_session_id, cwd, timeout: timeout, mcp_servers: mcp_servers) do
+        {:ok, %{"sessionId" => session_id}} when is_binary(session_id) and session_id != "" ->
+          {:ok, session_id}
+
+        {:ok, _other} ->
+          {:ok, prior_session_id}
+
+        {:error, _reason} ->
+          # Resume failed (e.g. the provider dropped the thread) — fall back to a
+          # fresh session so the turn still runs, just without prior memory.
+          new_provider_session(client, cwd, timeout, mcp_servers)
+      end
+    else
+      new_provider_session(client, cwd, timeout, mcp_servers)
+    end
+  end
+
+  defp open_provider_session(client, cwd, _prior_session_id, timeout, mcp_servers) do
+    new_provider_session(client, cwd, timeout, mcp_servers)
+  end
+
+  defp new_provider_session(client, cwd, timeout, mcp_servers) do
+    case Client.new_session(client, cwd, timeout: timeout, mcp_servers: mcp_servers) do
+      {:ok, %{"sessionId" => session_id}} -> {:ok, session_id}
+      other -> other
+    end
+  end
+
+  defp resume_supported?(client) do
+    case Client.agent_capabilities(client) do
+      {:ok, caps} when is_map(caps) ->
+        truthy?(caps["loadSession"]) or
+          truthy?(get_in(caps, ["sessionCapabilities", "resume"]))
+
+      _ ->
+        false
+    end
+  catch
+    _, _ -> false
+  end
+
+  defp truthy?(nil), do: false
+  defp truthy?(false), do: false
+  defp truthy?(_), do: true
+
+  defp prior_provider_session_id(turn) do
+    case Map.get(turn, :provider_session_id) do
+      id when is_binary(id) and id != "" -> id
+      _ -> nil
     end
   end
 
@@ -99,6 +171,12 @@ defmodule Ecrits.Local.AcpAgent.AcpStream do
   defp mcp_servers_param(_servers), do: []
 
   # ── stream ──────────────────────────────────────────────────────────
+
+  # Emit the provider session id first (before any provider output) so the
+  # `Session` persists it and the next turn can resume this conversation.
+  defp next_event(%{pending_provider_event: event} = state) when not is_nil(event) do
+    {[event], %{state | pending_provider_event: nil}}
+  end
 
   defp next_event(%{done?: true} = state), do: {:halt, state}
 

@@ -395,6 +395,13 @@ defmodule ExMCP.ACP.AdapterBridge do
         state = synthesize_result(state, id, session_result(state, session_id))
         {:reply, :ok, state}
 
+      # An adapter that manages its own session ids (e.g. a one-shot adapter that
+      # cannot write to a port) supplies the id to synthesize the response with.
+      {:ok, {:session_id, session_id}, new_adapter_state} ->
+        state = %{state | adapter_state: new_adapter_state}
+        state = synthesize_result(state, id, session_result(state, session_id))
+        {:reply, :ok, state}
+
       {:ok, data, new_adapter_state} ->
         state = %{state | adapter_state: new_adapter_state}
         _ = write_to_port(state, data)
@@ -409,6 +416,11 @@ defmodule ExMCP.ACP.AdapterBridge do
         state = synthesize_result(state, id, session_state_result(state))
         {:reply, :ok, state}
 
+      {:ok, {:session_id, session_id}, new_adapter_state} ->
+        state = %{state | adapter_state: new_adapter_state}
+        state = synthesize_result(state, id, session_result(state, session_id))
+        {:reply, :ok, state}
+
       {:ok, data, new_adapter_state} ->
         state = %{state | adapter_state: new_adapter_state}
         _ = write_to_port(state, data)
@@ -421,6 +433,11 @@ defmodule ExMCP.ACP.AdapterBridge do
       {:ok, :skip, new_adapter_state} ->
         state = %{state | adapter_state: new_adapter_state}
         state = synthesize_result(state, id, session_state_result(state))
+        {:reply, :ok, state}
+
+      {:ok, {:session_id, session_id}, new_adapter_state} ->
+        state = %{state | adapter_state: new_adapter_state}
+        state = synthesize_result(state, id, session_result(state, session_id))
         {:reply, :ok, state}
 
       {:ok, data, new_adapter_state} ->

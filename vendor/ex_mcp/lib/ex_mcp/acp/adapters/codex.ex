@@ -220,7 +220,11 @@ defmodule ExMCP.ACP.Adapters.Codex do
         %{"method" => "session/load", "id" => acp_id, "params" => params},
         state
       ) do
-    # Resume an existing session by passing threadId to thread/start
+    # Resume an existing thread. Codex's `thread/start` does NOT resume when
+    # handed a `threadId` (it always begins a fresh thread, losing history) —
+    # the dedicated `thread/resume` method (codex app-server 0.137+) is what
+    # rejoins the rollout and carries the prior conversation forward. This is
+    # what gives the chat agent cross-turn memory.
     session_id = params["sessionId"]
 
     if session_id do
@@ -231,7 +235,7 @@ defmodule ExMCP.ACP.Adapters.Codex do
         |> maybe_put("model", state.model || params["model"])
         |> maybe_put("cwd", params["cwd"] || Keyword.get(state.opts, :cwd))
 
-      request = encode_request(id, "thread/start", wire_params)
+      request = encode_request(id, "thread/resume", wire_params)
       state = track_request(state, id, :thread_start, acp_id)
       {:ok, request, state}
     else
