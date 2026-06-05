@@ -920,13 +920,12 @@ defmodule ExMCP.ACP.Adapters.Codex do
     })
   end
 
-  # `server`/`tool` are split in the item (e.g. "ecrits_doc" + "doc.list");
-  # present the dotted tool name, qualified by server when both are present.
-  defp mcp_tool_name(%{"server" => server, "tool" => tool})
-       when is_binary(server) and is_binary(tool),
-       do: "#{server}.#{tool}"
-
+  # `server`/`tool` are split in the item (e.g. "doc" + "doc.list"). The `tool`
+  # field is already the dotted server-side tool name, so re-prefixing it with
+  # the MCP server registration name would yield a redundant "doc.doc.list".
+  # Present the bare dotted tool name (e.g. "doc.list") for the chat rail.
   defp mcp_tool_name(%{"tool" => tool}) when is_binary(tool), do: tool
+  defp mcp_tool_name(%{"server" => server}) when is_binary(server), do: server
   defp mcp_tool_name(%{"name" => name}) when is_binary(name), do: name
   defp mcp_tool_name(_item), do: "mcp_tool"
 

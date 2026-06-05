@@ -37,7 +37,7 @@ defmodule Ecrits.Local.AcpAgent do
     }
   ]
 
-  @doc_tools_mcp_name "ecrits_doc"
+  @doc_tools_mcp_name "doc"
 
   # ── provider metadata ──────────────────────────────────────────────
 
