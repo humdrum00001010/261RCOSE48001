@@ -124,6 +124,15 @@ defmodule EcritsWeb.Local.WorkspaceLive do
      |> assign(:open_documents, [])
      |> assign(:active_document_id, nil)
      |> assign(:pool_document_id, nil)
+     # Browser-backed agent edits (design §6.2): when the open HWP is registered
+     # `:browser` in the Pool, the agent's doc.* edits route HERE. We push the op
+     # to the WasmHwpEditor hook (authoritative WASM model) and relay its reply
+     # back to the waiting MCP caller. `doc_browser_pending` maps a per-request
+     # ref -> the caller pid so a hook reply finds its requester; `browser_revision`
+     # is the monotonic revision the WASM model has applied (the value doc.edit
+     # returns), seeded at 0 on open and bumped per applied op.
+     |> assign(:doc_browser_pending, %{})
+     |> assign(:browser_revision, 0)
      |> assign(:fs_watcher_pid, nil)
      |> assign(:fs_refresh_timer, nil)
      |> assign(:local_document_error, nil)
@@ -323,6 +332,28 @@ defmodule EcritsWeb.Local.WorkspaceLive do
     else
       {:error, reason} ->
         {:reply, %{error: error_message(reason)}, socket}
+    end
+  end
+
+  # Reply from the WasmHwpEditor hook for an agent-routed browser op (see the
+  # `{:doc_browser_request, ...}` handler). Relay the result to the MCP caller
+  # that is blocked in `Ecrits.Doc.Tools.browser_call/4`, and for an applied edit
+  # adopt the revision the WASM model reports so doc.edit returns the real value.
+  def handle_event("doc.browser_reply", %{"request_id" => request_id} = params, socket) do
+    case Map.pop(socket.assigns.doc_browser_pending, request_id) do
+      {{from, ref}, pending} ->
+        result = doc_browser_result(params)
+        send(from, {:doc_browser_reply, ref, result})
+
+        socket =
+          socket
+          |> assign(:doc_browser_pending, pending)
+          |> maybe_adopt_browser_revision(result)
+
+        {:noreply, socket}
+
+      {nil, _pending} ->
+        {:noreply, socket}
     end
   end
 
@@ -793,6 +824,27 @@ defmodule EcritsWeb.Local.WorkspaceLive do
 
         {:noreply, push_event(socket, "rhwp:positional_index.request", payload)}
     end
+  end
+
+  # Agent edit/read/find for the OPEN HWP, routed from `Ecrits.Doc.Tools` because
+  # this document is `:browser`-backed in the Pool (its authority is the WASM
+  # model in the viewer, not the server NIF). Push the verb to the WasmHwpEditor
+  # hook and remember the caller so the hook's reply (a `doc.browser_reply`
+  # client event) is relayed back to the waiting MCP process. Edits bump the
+  # browser revision the hook reports back so `doc.edit` returns a real revision.
+  def handle_info({:doc_browser_request, from, ref, verb, payload}, socket) do
+    request_id = doc_browser_request_id(ref)
+
+    socket =
+      socket
+      |> update(:doc_browser_pending, &Map.put(&1, request_id, {from, ref}))
+      |> push_event("doc.apply_edit", %{
+        request_id: request_id,
+        verb: to_string(verb),
+        payload: doc_browser_payload(payload, socket)
+      })
+
+    {:noreply, socket}
   end
 
   def handle_info({:local_document_saved, %Document{} = document, snapshot}, socket) do
@@ -1768,7 +1820,18 @@ defmodule EcritsWeb.Local.WorkspaceLive do
         previous = socket.assigns[:pool_document_id]
         if previous && previous != doc_id, do: DocPool.clear_active(previous)
         :ok = DocPool.set_active(doc_id)
-        assign(socket, :pool_document_id, doc_id)
+
+        # Mark the doc `:browser`-backed and record THIS LiveView as the owner so
+        # the agent's doc.* edits route to the WASM model the user is viewing
+        # (design §6.2) instead of a divergent server NIF copy. attach_browser is
+        # only meaningful for a connected viewer (the hook lives in the browser);
+        # on the dead static render we leave it `:server`-backed.
+        if connected?(socket), do: DocPool.attach_browser(doc_id, self())
+
+        socket
+        |> assign(:pool_document_id, doc_id)
+        |> assign(:browser_revision, 0)
+        |> assign(:doc_browser_pending, %{})
 
       {:error, _reason} ->
         # Pool registration is best-effort: a backend open failure must not
@@ -1789,6 +1852,43 @@ defmodule EcritsWeb.Local.WorkspaceLive do
   end
 
   defp clear_pool_document(socket), do: assign(socket, :pool_document_id, nil)
+
+  # --- browser-backed agent edit bridge (design §6.2) ------------------------
+
+  # Stable string id for a pending browser request (ref is not JSON-serialisable
+  # for the client round-trip, so we key by an inspected ref string).
+  defp doc_browser_request_id(ref), do: "dbr:" <> (:erlang.ref_to_list(ref) |> List.to_string())
+
+  # Augment the verb payload with the doc id + the revision the WASM model should
+  # report after applying, so the hook can echo a monotonic revision back. Values
+  # cross the wire as JSON, so keyword lists (e.g. doc.read's `opts`) are coerced
+  # into plain maps the client (and Jason) can serialise.
+  defp doc_browser_payload(payload, socket) do
+    payload
+    |> Map.put(:document_id, socket.assigns[:pool_document_id])
+    |> Map.put(:base_revision, socket.assigns[:browser_revision])
+    |> Map.new(fn {k, v} -> {k, jsonable(v)} end)
+  end
+
+  defp jsonable(kw) when is_list(kw) do
+    if Keyword.keyword?(kw), do: Map.new(kw, fn {k, v} -> {k, jsonable(v)} end), else: kw
+  end
+
+  defp jsonable(v), do: v
+
+  # Decode the hook's reply params into a `{:ok, map}` / `{:error, reason}` the
+  # MCP caller understands.
+  defp doc_browser_result(%{"error" => error}) when is_binary(error), do: {:error, error}
+  defp doc_browser_result(%{"result" => result}) when is_map(result), do: {:ok, result}
+  defp doc_browser_result(%{"ok" => true} = params), do: {:ok, Map.delete(params, "request_id")}
+  defp doc_browser_result(_params), do: {:error, "browser_apply_failed"}
+
+  # An applied edit carries a revision from the WASM model; adopt it as the
+  # authoritative browser revision (monotonic, what doc.edit returns).
+  defp maybe_adopt_browser_revision(socket, {:ok, %{"revision" => rev}}) when is_integer(rev),
+    do: assign(socket, :browser_revision, rev)
+
+  defp maybe_adopt_browser_revision(socket, _result), do: socket
 
   defp start_local_agent_session(socket) do
     if connected?(socket) do

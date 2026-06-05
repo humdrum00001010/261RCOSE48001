@@ -41,6 +41,11 @@ defmodule Ecrits.Doc.Tools do
 
   @namespace "doc"
 
+  # How long to wait for the viewing LiveView (browser WASM model) to apply an
+  # agent op and report back. The browser apply is a single push_event round-trip
+  # plus a WASM `replaceAll`/`insertText`, so this is generous.
+  @browser_timeout_ms 15_000
+
   # Hard cap on `doc.read` (design §4.4, the user's explicit limit). Sourced
   # from the backend so the tool schema and the enforcement can never drift.
   @read_cap Ecrits.Doc.Rhwp.read_paragraph_cap()
@@ -298,25 +303,36 @@ defmodule Ecrits.Doc.Tools do
   end
 
   def call(ctx, "doc.read", args) do
-    with_editor(ctx, args, fn editor ->
-      opts = take_opts(args, ["at", "size", "ref"])
-      wrap(Editor.read(editor, opts), &Map.merge(%{}, stringify(&1)))
-    end)
+    route_doc(ctx, args,
+      browser: fn lv -> browser_call(lv, args, :read, %{opts: take_opts(args, ["at", "size", "ref"])}) end,
+      server: fn editor ->
+        opts = take_opts(args, ["at", "size", "ref"])
+        wrap(Editor.read(editor, opts), &Map.merge(%{}, stringify(&1)))
+      end
+    )
   end
 
   def call(ctx, "doc.find", args) do
     with {:ok, pattern} <- require_string(args, "pattern") do
-      with_editor(ctx, args, fn editor ->
-        opts = take_opts(args, ["case_sensitive"])
+      route_doc(ctx, args,
+        browser: fn lv ->
+          browser_call(lv, args, :find, %{
+            pattern: pattern,
+            case_sensitive: get(args, ["case_sensitive"]) || false
+          })
+        end,
+        server: fn editor ->
+          opts = take_opts(args, ["case_sensitive"])
 
-        case Editor.find(editor, pattern, opts) do
-          {:ok, matches} ->
-            {:ok, %{"pattern" => pattern, "matches" => Enum.map(matches, &stringify/1)}}
+          case Editor.find(editor, pattern, opts) do
+            {:ok, matches} ->
+              {:ok, %{"pattern" => pattern, "matches" => Enum.map(matches, &stringify/1)}}
 
-          {:error, reason} ->
-            {:error, error_json(reason)}
+            {:error, reason} ->
+              {:error, error_json(reason)}
+          end
         end
-      end)
+      )
     end
   end
 
@@ -341,10 +357,16 @@ defmodule Ecrits.Doc.Tools do
 
   def call(ctx, "doc.edit", args) do
     with {:ok, op} <- require_map(args, "op") do
-      with_editor(ctx, args, fn editor ->
-        base_rev = get(args, ["base_revision"])
-        write_result(Editor.apply(editor, op, base_rev))
-      end)
+      base_rev = get(args, ["base_revision"])
+
+      route_doc(ctx, args,
+        # Viewed-HWP authority is the browser WASM model: deliver the structural
+        # edit to the owning LiveView -> WasmHwpEditor hook applies it to the rhwp
+        # WASM doc and reports the new revision. We do NOT touch the server NIF
+        # for a browser-backed doc (design §6.2) so the two models can't diverge.
+        browser: fn lv -> browser_write(lv, args, op) end,
+        server: fn editor -> write_result(Editor.apply(editor, op, base_rev)) end
+      )
     end
   end
 
@@ -370,6 +392,73 @@ defmodule Ecrits.Doc.Tools do
 
   # --- dispatch helpers ----------------------------------------------------
 
+  # Route a tool against a document whose authority may be the server NIF
+  # (`:server`) OR the browser WASM model (`:browser`, a doc open in a viewer).
+  # `opts` carries `:browser` and `:server` closures; the right one runs based on
+  # `Pool.route/2`. Tools that the browser hook can apply (read/find/edit) pass
+  # both; server-only tools use `with_editor/3` (which falls back to the server
+  # editor even for browser-backed docs — the structure is identical on open).
+  defp route_doc(ctx, args, opts) do
+    with {:ok, document} <- require_string(args, "document") do
+      case Pool.route(pool(ctx), document) do
+        {:browser, lv} -> Keyword.fetch!(opts, :browser).(lv)
+        {:server, editor} -> Keyword.fetch!(opts, :server).(editor)
+        {:error, :not_found} -> {:error, error_json(:not_found)}
+      end
+    end
+  end
+
+  # For a browser-backed doc, deliver a structural edit op to the owning LiveView
+  # and wait for the WASM apply to report the resulting revision (design §6.2).
+  # The op is normalised first (validated verb, string keys) so the browser hook
+  # always receives a well-formed `{"op": "<verb>", ...}` regardless of how the
+  # agent keyed the map.
+  defp browser_write(lv, args, op) do
+    with {:ok, normalized} <- normalize_browser_op(op) do
+      do_browser_write(lv, args, normalized)
+    else
+      {:error, reason} -> {:error, error_json(reason)}
+    end
+  end
+
+  # Re-key the validated op back to JSON string keys (Op.normalize atomises it).
+  defp normalize_browser_op(op) do
+    case Ecrits.Doc.Op.normalize(op) do
+      {:ok, atom_op} -> {:ok, Map.new(atom_op, fn {k, v} -> {to_string(k), v} end)}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp do_browser_write(lv, args, op) do
+    case browser_call(lv, args, :edit, %{op: op, base_revision: get(args, ["base_revision"])}) do
+      {:ok, %{} = applied} ->
+        {:ok,
+         %{"ok" => true, "revision" => Map.get(applied, "revision") || Map.get(applied, :revision)}
+         |> maybe_put("replaced", Map.get(applied, "replaced") || Map.get(applied, :replaced))}
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  # Synchronous request/reply against the viewing LiveView. The LiveView's
+  # `{:doc_browser_request, ...}` handler pushes the op to the WasmHwpEditor hook,
+  # the hook applies it to the WASM model and replies, and the LiveView relays the
+  # result back to us as `{:doc_browser_reply, ref, result}`. Runs in the agent's
+  # MCP process (NOT the LiveView), so we use a tagged send + selective receive.
+  defp browser_call(lv, _args, verb, payload) when is_pid(lv) do
+    ref = make_ref()
+    send(lv, {:doc_browser_request, self(), ref, verb, payload})
+
+    receive do
+      {:doc_browser_reply, ^ref, {:ok, result}} -> {:ok, stringify(result)}
+      {:doc_browser_reply, ^ref, {:error, reason}} -> {:error, error_json(reason)}
+    after
+      @browser_timeout_ms ->
+        {:error, error_json({:browser_timeout, "viewer did not apply the edit in time"})}
+    end
+  end
+
   defp with_editor(ctx, args, fun) do
     with {:ok, document} <- require_string(args, "document") do
       case Pool.route(pool(ctx), document) do
@@ -377,9 +466,13 @@ defmodule Ecrits.Doc.Tools do
           fun.(editor)
 
         {:browser, _lv} ->
-          # Viewed-HWP authority is the browser WASM model; routing an agent op
-          # to the LiveView is the live wiring left for follow-up (design §6.2).
-          {:error, error_json({:not_supported, "browser-backed routing not wired yet"})}
+          # Browser-backed doc, but this tool (inspect/outline/get/set/style/save)
+          # has no browser apply yet. The server Editor still holds the document
+          # (identical structure on open), so serve these read/meta verbs from it.
+          case Pool.with_doc(pool(ctx), document, fun) do
+            {:error, :not_found} -> {:error, error_json(:not_found)}
+            other -> other
+          end
 
         {:error, :not_found} ->
           {:error, error_json(:not_found)}

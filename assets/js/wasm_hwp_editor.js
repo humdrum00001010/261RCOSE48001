@@ -98,6 +98,12 @@ const WasmHwpEditor = {
     // change): fetch its raw bytes and hand them to the WASM engine.
     this.handleEvent("hwp_wasm_load", payload => this.loadDocument(payload))
 
+    // Agent edit/read/find routed from the server because THIS document is
+    // `:browser`-backed in the Doc Pool (the WASM model here is its authority).
+    // Apply against the same WASM doc the user is viewing, re-render, and reply
+    // with the result + new revision so the agent's doc.* tool returns it.
+    this.handleEvent("doc.apply_edit", payload => this.handleAgentOp(payload))
+
     // On a fresh mount the server's `hwp_wasm_load` push may have raced ahead of
     // this hook registering its `handleEvent` above. The host element also
     // carries the bytes URL as a data attribute, so load from it directly — the
@@ -1111,6 +1117,151 @@ const WasmHwpEditor = {
 
   paragraphCount(section) {
     try { return this.doc.getParagraphCount(section) } catch (_) { return 1 }
+  },
+
+  // ─── Agent ops (server -> browser, design §6.2) ──────────────────────────
+
+  // Apply an agent-routed op to the authoritative WASM doc and reply with the
+  // result. `verb` is read | find | edit. The reply is always sent (even on
+  // error) so the blocked MCP caller never hangs to its timeout.
+  handleAgentOp({ request_id, verb, payload }) {
+    const reply = body => this.pushEvent("doc.browser_reply", { request_id, ...body })
+    if (!this.doc) {
+      reply({ error: "document_not_loaded" })
+      return
+    }
+    try {
+      switch (verb) {
+        case "edit":
+          reply(this.applyAgentEdit(payload))
+          break
+        case "find":
+          reply({ result: this.applyAgentFind(payload) })
+          break
+        case "read":
+          reply({ result: this.applyAgentRead(payload) })
+          break
+        default:
+          reply({ error: `unsupported_verb:${verb}` })
+      }
+    } catch (error) {
+      console.error("[wasm-hwp] agent op failed", verb, error)
+      reply({ error: String((error && error.message) || error) })
+    }
+  },
+
+  // Structural edit verbs. `replace_text` (the verb the agent uses to rewrite a
+  // phrase) maps to the WASM `replaceAll(query, replacement, case_sensitive)`;
+  // it rewrites every match in the viewed model and re-renders. Other verbs are
+  // reported unsupported (the agent falls back to replace_text / re-reads).
+  applyAgentEdit({ op, base_revision }) {
+    const verb = op && op.op
+    const baseRev = typeof base_revision === "number" ? base_revision : 0
+
+    if (verb === "replace_text") {
+      const query = op.query != null ? String(op.query) : ""
+      const replacement = op.replacement != null ? String(op.replacement) : ""
+      if (!query) return { error: "replace_text requires a non-empty query" }
+
+      let replaced = 0
+      try {
+        const raw = this.doc.replaceAll(query, replacement, true)
+        replaced = this.replacedCount(raw)
+      } catch (error) {
+        return { error: `replaceAll failed: ${String((error && error.message) || error)}` }
+      }
+
+      // Re-render the whole visible window: a replace can reflow any page.
+      this.rendered.clear()
+      this.renderVisiblePages()
+      if (this.caret) this.drawCaret(this.caret)
+      // Persist the edited bytes so the change survives a reload.
+      this.scheduleSnapshot()
+      this.recordOp("AgentReplaceText", { query, replacement, replaced })
+
+      return { ok: true, result: { ok: true, revision: baseRev + 1, replaced } }
+    }
+
+    return { error: `unsupported_op:${verb}` }
+  },
+
+  // Best-effort match count from replaceAll's JSON return (shape varies across
+  // rhwp builds: {replaced}/{count}/{matches}); default to 1 when it applied.
+  replacedCount(raw) {
+    if (raw == null) return 1
+    try {
+      const j = typeof raw === "string" ? JSON.parse(raw) : raw
+      if (typeof j === "number") return j
+      const n = j.replaced ?? j.count ?? j.matches ?? j.replacedCount
+      return typeof n === "number" ? n : 1
+    } catch (_) {
+      const n = Number(raw)
+      return Number.isFinite(n) ? n : 1
+    }
+  },
+
+  // Literal search over the viewed model -> [{ref, text}] (ref carries the
+  // section/paragraph/offset so the agent can target a replace).
+  applyAgentFind({ pattern, case_sensitive }) {
+    const matches = []
+    try {
+      const raw = this.doc.searchAllText(String(pattern || ""), !!case_sensitive, true)
+      const parsed = raw ? JSON.parse(raw) : []
+      const list = Array.isArray(parsed) ? parsed : parsed.matches || []
+      for (const m of list) {
+        matches.push({
+          ref: JSON.stringify({
+            section: m.section ?? m.sectionIndex ?? 0,
+            paragraph: m.paragraph ?? m.paragraphIndex ?? 0,
+            offset: m.offset ?? m.charOffset ?? 0
+          }),
+          text: m.text ?? pattern
+        })
+      }
+    } catch (error) {
+      console.error("[wasm-hwp] searchAllText failed", error)
+    }
+    return { pattern, matches }
+  },
+
+  // Page through the document text from the viewed model. Mirrors the server
+  // doc.read shape ({text, at, size, total, next_at}) so the agent pages the
+  // same way regardless of backing.
+  applyAgentRead({ opts }) {
+    const o = opts || {}
+    const at = Math.max(0, Number(o.at || 0))
+    const size = Math.min(30, Math.max(1, Number(o.size || 30)))
+    const paragraphs = this.collectParagraphs()
+    const total = paragraphs.length
+    const window = paragraphs.slice(at, at + size)
+    const nextAt = at + window.length < total ? at + window.length : null
+    return {
+      text: window.join("\n"),
+      at,
+      size: window.length,
+      paragraphs: window,
+      total,
+      next_at: nextAt
+    }
+  },
+
+  // Flatten body paragraph text across sections via the WASM accessors.
+  collectParagraphs() {
+    const out = []
+    let sectionCount = 1
+    try { sectionCount = this.doc.getSectionCount() } catch (_) {}
+    for (let s = 0; s < sectionCount; s++) {
+      let paraCount = 0
+      try { paraCount = this.doc.getParagraphCount(s) } catch (_) { paraCount = 0 }
+      for (let p = 0; p < paraCount; p++) {
+        let len = 0
+        try { len = this.doc.getParagraphLength(s, p) } catch (_) { len = 0 }
+        let text = ""
+        try { text = this.doc.getTextRange(s, p, 0, len) || "" } catch (_) { text = "" }
+        out.push(text)
+      }
+    }
+    return out
   },
 
   // ─── Op-log + snapshot persistence ───────────────────────────────────────
