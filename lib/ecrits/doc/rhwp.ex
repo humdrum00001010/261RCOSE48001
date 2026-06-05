@@ -60,6 +60,17 @@ defmodule Ecrits.Doc.Rhwp do
   end
 
   @impl true
+  # Create a NEW blank document from the engine's embedded blank2010 template
+  # (`Ehwp.new/0`). The agent authors content into it via `edit` and persists it
+  # with `save` (which needs a target path). No path is bound to the handle.
+  def new(_opts \\ []) do
+    case Ehwp.new() do
+      {:ok, ehwp_handle, _metadata} -> {:ok, %{ehwp: ehwp_handle, sec: 0}}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  @impl true
   def close(%{ehwp: ehwp_handle}), do: Ehwp.close(ehwp_handle)
   def close(_handle), do: :ok
 

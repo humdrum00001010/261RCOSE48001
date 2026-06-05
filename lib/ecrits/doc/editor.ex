@@ -99,7 +99,19 @@ defmodule Ecrits.Doc.Editor do
     path = Keyword.fetch!(opts, :path)
     open_opts = Keyword.get(opts, :open_opts, [])
 
-    case backend.open(path, open_opts) do
+    # `create?` mints a NEW blank document (engine template) instead of reading
+    # `path` off disk; `path` is then only the save target (the file need not
+    # exist yet). Falls back to a clear error if the backend has no `new/1`.
+    load =
+      if Keyword.get(opts, :create?, false) do
+        if function_exported?(backend, :new, 1),
+          do: backend.new(open_opts),
+          else: {:error, {:create_unsupported, backend}}
+      else
+        backend.open(path, open_opts)
+      end
+
+    case load do
       {:ok, handle} ->
         {:ok,
          %{

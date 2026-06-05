@@ -58,6 +58,9 @@ defmodule Ecrits.Doc do
   @callback open(path :: String.t(), opts :: keyword()) ::
               {:ok, handle()} | {:error, term()}
 
+  @doc "Create a NEW empty document (engine blank template), returning a handle."
+  @callback new(opts :: keyword()) :: {:ok, handle()} | {:error, term()}
+
   @doc "Close/release a handle."
   @callback close(handle()) :: :ok
 
@@ -106,7 +109,7 @@ defmodule Ecrits.Doc do
   @doc "Persist to disk (or export bytes). May be unsupported on some engines."
   @callback save(handle(), opts :: keyword()) :: :ok | {:error, term()}
 
-  @optional_callbacks save: 2
+  @optional_callbacks save: 2, new: 1
 
   @doc "Backends registered for each document kind."
   @spec backend_for(kind()) :: module() | nil

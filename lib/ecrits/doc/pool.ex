@@ -67,6 +67,21 @@ defmodule Ecrits.Doc.Pool do
     GenServer.call(pool, {:open, path, opts})
   end
 
+  @doc """
+  Create a NEW empty document whose save target is `path` (the file need not
+  exist yet). Returns a stable `document_id`. Mirrors `open/2` but mints a blank
+  engine document instead of reading bytes off disk.
+  """
+  @spec create(String.t(), keyword()) :: {:ok, document_id()} | {:error, term()}
+  def create(path, opts \\ []) when is_binary(path) and is_list(opts),
+    do: create(@default_name, path, opts)
+
+  @spec create(GenServer.server(), String.t(), keyword()) ::
+          {:ok, document_id()} | {:error, term()}
+  def create(pool, path, opts) when is_binary(path) and is_list(opts) do
+    GenServer.call(pool, {:create, path, opts})
+  end
+
   @spec list(GenServer.server()) :: [map()]
   def list(pool \\ @default_name), do: GenServer.call(pool, :list)
 
@@ -144,6 +159,21 @@ defmodule Ecrits.Doc.Pool do
           _ ->
             do_open(st, document_id, path, kind, backend, opts)
         end
+    end
+  end
+
+  def handle_call({:create, path, opts}, _from, st) do
+    kind = Keyword.get(opts, :kind, :hwp)
+
+    case Doc.backend_for(kind) do
+      nil ->
+        {:reply, {:error, {:unsupported_kind, kind}}, st}
+
+      backend ->
+        document_id = Keyword.get(opts, :document_id) || document_id_for(path, kind)
+        # Reuse the same start/registration path as open, flagging the Editor to
+        # mint a blank document instead of reading `path`.
+        do_open(st, document_id, path, kind, backend, Keyword.put(opts, :create?, true))
     end
   end
 
@@ -267,6 +297,7 @@ defmodule Ecrits.Doc.Pool do
       kind: kind,
       backend: backend,
       path: path,
+      create?: Keyword.get(opts, :create?, false),
       open_opts: Keyword.get(opts, :open_opts, [])
     ]
 

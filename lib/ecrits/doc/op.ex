@@ -17,8 +17,14 @@ defmodule Ecrits.Doc.Op do
       %{op: "insert_picture", ref, src, width?, height?}
   """
 
-  @verbs ~w(insert_text delete_range replace_text split insert_node delete_node
-            move_node insert_picture)
+  # The structural edit verbs the HWP engine (ehwp apply_op EditOp) actually
+  # supports. Keep this in sync with the NIF's enum — advertising a verb the NIF
+  # rejects (e.g. the old insert_node/move_node, which never existed there) just
+  # produces bad_ops_json. `insert_table` creates a new R×C table from scratch.
+  @verbs ~w(insert_text delete_range replace_text insert_paragraph delete_paragraph
+            split merge insert_table insert_table_row delete_table_row
+            insert_table_column delete_table_column merge_cells split_cell
+            delete_node insert_picture)
 
   @doc "The full set of recognised op verbs."
   @spec verbs() :: [String.t()]

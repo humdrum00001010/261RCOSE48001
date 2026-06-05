@@ -86,6 +86,24 @@ defmodule Ecrits.Doc.Tools do
     },
     %{
       "namespace" => @namespace,
+      "name" => "create",
+      "description" =>
+        "Create a NEW empty document (blank template) whose save target is `path` " <>
+          "(the file need not exist yet). Returns {document, kind}. Author content " <>
+          "with doc.edit (insert_text/insert_paragraph/split/insert_table_*/…) and " <>
+          "persist with doc.save.",
+      "risk" => "write",
+      "inputSchema" => %{
+        "type" => "object",
+        "properties" => %{
+          "path" => %{"type" => "string", "minLength" => 1},
+          "kind" => %{"type" => "string", "enum" => ["hwp", "hwpx"]}
+        },
+        "required" => ["path"]
+      }
+    },
+    %{
+      "namespace" => @namespace,
       "name" => "read",
       "description" =>
         "Read a paragraph chunk from a document. INCREMENTAL: a single call returns " <>
@@ -205,14 +223,21 @@ defmodule Ecrits.Doc.Tools do
                 "`replacement` is SINGLE-paragraph text: do NOT put newlines in it (one paragraph per op; use `split` to add paragraphs). " <>
                 "By default only the FIRST match is replaced; scope to one paragraph with `ref` (from doc.find), or pass `all:true` to replace every match. " <>
                 "If `query` occurs in more than one place and neither `ref` nor `all` is given, the edit is REJECTED (so you never edit unrelated sample blocks by accident).\n" <>
-                "• insert_text {op, ref, text, at?}\n" <>
-                "• delete_range {op, ref, count? | to_ref?}\n" <>
-                "• split {op, ref}  • insert_node {op, parent_ref, type, at?, props?}  • delete_node {op, ref}",
+                "• insert_text {op, ref, text}\n" <>
+                "• delete_range {op, ref, count?}\n" <>
+                "• insert_paragraph {op, ref} • delete_paragraph {op, ref} • split {op, ref} • merge {op, ref}\n" <>
+                "• insert_table {op, ref, rows, cols}: create a NEW rows×cols table at `ref`. Returns native {paraIdx, controlIdx} — " <>
+                "use it to fill cells: insert_text with a ref carrying {section, paragraph: paraIdx, control: controlIdx, cell: <0-based cell index, row-major>, cell_para: 0, offset: 0}.\n" <>
+                "• insert_table_row / delete_table_row / insert_table_column / delete_table_column / merge_cells / split_cell {op, ref}: modify an EXISTING table.\n" <>
+                "• delete_node {op, ref} • insert_picture {op, ref, bins}",
             "properties" => %{
               "op" => %{
                 "type" => "string",
-                "enum" => ~w(insert_text delete_range replace_text split insert_node delete_node move_node insert_picture)
+                "enum" =>
+                  ~w(insert_text delete_range replace_text insert_paragraph delete_paragraph split merge insert_table insert_table_row delete_table_row insert_table_column delete_table_column merge_cells split_cell delete_node insert_picture)
               },
+              "rows" => %{"type" => "integer", "description" => "insert_table: number of rows."},
+              "cols" => %{"type" => "integer", "description" => "insert_table: number of columns."},
               "query" => %{"type" => "string", "description" => "replace_text: literal text to find."},
               "replacement" => %{
                 "type" => "string",
@@ -293,6 +318,21 @@ defmodule Ecrits.Doc.Tools do
 
       case Pool.open(pool(ctx), path, kind: kind, open_opts: open_opts) do
         {:ok, doc_id} ->
+          {:ok, %{"document" => doc_id, "kind" => Atom.to_string(kind)}}
+
+        {:error, reason} ->
+          {:error, error_json(reason)}
+      end
+    end
+  end
+
+  def call(ctx, "doc.create", args) do
+    with {:ok, path} <- require_string(args, "path") do
+      kind = args |> get(["kind"]) |> normalize_kind()
+
+      case Pool.create(pool(ctx), path, kind: kind) do
+        {:ok, doc_id} ->
+          _ = Pool.set_active(pool(ctx), doc_id)
           {:ok, %{"document" => doc_id, "kind" => Atom.to_string(kind)}}
 
         {:error, reason} ->
@@ -531,7 +571,10 @@ defmodule Ecrits.Doc.Tools do
     {:ok,
      %{"ok" => true, "revision" => Map.get(applied, :revision)}
      |> maybe_put("invalidated", Map.get(applied, :invalidated))
-     |> maybe_put("rebased", Map.get(applied, :rebased))}
+     |> maybe_put("rebased", Map.get(applied, :rebased))
+     # Native engine result (e.g. insert_table returns {paraIdx, controlIdx} —
+     # the agent needs it to address the new table's cells with a follow-up edit).
+     |> maybe_put("native", Map.get(applied, :native))}
   end
 
   defp write_result({:error, {:conflict, current_revision, snapshot}}) do
