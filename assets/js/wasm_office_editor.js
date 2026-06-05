@@ -162,6 +162,23 @@ function ensureRuntime() {
       // "exit" (it parks in the emscripten main loop); don't let Emscripten
       // tear down the runtime.
       ignoreApplicationExit: true,
+      // LOK-FULLY-READY gate (THE first-load fix). Our WASM main()
+      // (desktop/source/app/main.c) runs libreofficekit_hook_2 -> lo_initialize,
+      // which BLOCKS in RequestHandler::WaitForReady() until lo_startmain's
+      // Desktop::Main() has completed InitVCL() (ImplSVData / solar mutex up) and
+      // reached SetReady(true). Only THEN does main() set the shared
+      // lok_is_ready() flag and park the runtime. We MUST gate the first
+      // loadFromBytes on lok_is_ready() (polled below) — NOT on Module.uno_main,
+      // which initJsUnoScripting() resolves from inside initialize_uno() at the
+      // very START of lo_initialize (before InitVCL), so a load gated on uno_main
+      // races VCL startup and the first lo_documentLoadWithOptions()'s
+      // SolarMutexGuard dereferences a not-yet-initialized ImplSVData -> "memory
+      // access out of bounds" (which then poisons LokState::init_done as "lok
+      // office init previously failed"). A JS Module promise can't carry this
+      // signal: main() runs in the soffice-main pthread Worker whose Module is a
+      // different object from this (window) Module, so it can't resolve a promise
+      // we hold here — but the wasm memory is a SharedArrayBuffer, so the embind
+      // lok_is_ready() reads the flag main()'s worker stored.
       // Force headless and skip the IPC/socket pipe the desktop would normally
       // open (no UI / single instance handling in the browser).
       arguments: ["--headless", "--invisible", "--nologo", "--norestore", "--nolockcheck"],
@@ -201,14 +218,14 @@ function ensureRuntime() {
     // before the first loadFromBytes:
     //   1. the embind export `loadFromBytes` is callable (force-registered via
     //      EMSCRIPTEN_BINDINGS at wasm runtime init), AND
-    //   2. the UNO/VCL bootstrap driven by main()->libreofficekit_hook_2 has
-    //      COMPLETED. `Module.uno_init` (static/emscripten/uno.js) resolves from
-    //      initJsUnoScripting()'s setupMainChannel -> uno_init$resolve, i.e. once
-    //      lo_initialize finished on the proxy-main pthread. Gating on it ensures
-    //      ensure_office() (from the first loadFromBytes, on the JS main thread)
-    //      finds gImpl already created and REUSES it (idempotent hook) instead of
-    //      racing main() and re-entering lo_initialize on the JS main thread
-    //      (which is the deadlock the build-level fix removes).
+    //   2. main()->libreofficekit_hook_2->lo_initialize has FULLY completed,
+    //      including RequestHandler::WaitForReady() (i.e. lo_startmain's
+    //      Desktop::Main has run InitVCL and the solar mutex / ImplSVData are
+    //      live). main() signals that by setting the shared flag the embind
+    //      Module.lok_is_ready() reads (polled below). Gating on lok_is_ready()
+    //      — NOT uno_main, which fires mid-init before InitVCL — guarantees the
+    //      first lo_documentLoadWithOptions() finds a fully-initialized VCL and
+    //      does not trap in SolarMutexGuard.
     let settled = false
     let unoReady = false
     const finish = () => {
@@ -226,55 +243,32 @@ function ensureRuntime() {
 
     const exportReady = () =>
       typeof Module.loadFromBytes === "function" || typeof Module._loadFromBytes === "function"
-    // Ready to load a document only when the embind export exists AND the UNO
-    // bootstrap (main()->libreofficekit_hook_2->lo_initialize) has resolved
-    // uno_init. See the gate note above.
-    const apiReady = () => exportReady() && unoReady
-
-    // Bootstrap-complete signal. Our WASM main() runs libreofficekit_hook_2 (NOT
-    // soffice_main), so the desktop scripting path that resolves `uno_init`
-    // (initJsUnoScripting) is NOT taken — `uno_init` NEVER resolves on this path
-    // (confirmed live: export present=true, uno_init resolved=false, 120s hang).
-    // The signal that DOES fire when our main()->hook bootstrap finishes is
-    // `uno_main` (the uno.js wrapper resolves it when main() returns). Gate on
-    // uno_main, accept uno_init too if it ever resolves, and — since the embind
-    // export being attached already means the LOK bindings are live — fall back
-    // to "export is enough" after a short grace so a missing/renamed promise can
-    // never reproduce the 120s hang.
-    const GRACE_MS = 8000
-    const watch = (name) => {
-      const p = Module[name]
-      if (p && typeof p.then === "function") {
-        p.then(
-          () => {
-            if (settled) return
-            unoReady = true
-            tlog(name + " resolved (LOK bootstrap complete)")
-            if (exportReady()) finish()
-          },
-          (err) => {
-            tlog(name + " rejected", (err && err.message) || err)
-            fail(new Error(
-              "office WASM: UNO bootstrap (" + name + ") rejected: " +
-                ((err && err.message) || err) + "\nLast engine output:\n" + dumpLog()
-            ))
-          }
-        )
-        return true
+    // The embind `lok_is_ready()` reads the shared flag main() sets once
+    // lo_initialize has fully completed (past WaitForReady/InitVCL). Ready to
+    // load a document only when the export exists AND LOK is fully ready.
+    const lokReady = () => {
+      try {
+        return typeof Module.lok_is_ready === "function" && Module.lok_is_ready() === true
+      } catch (_) {
+        return false
       }
-      return false
     }
+    const apiReady = () => exportReady() && (unoReady || lokReady())
+
+    // Bootstrap-complete signal: main() sets lok_is_ready() ONLY after
+    // libreofficekit_hook_2 -> lo_initialize fully returns (past WaitForReady /
+    // InitVCL). uno_main fires too early (mid initialize_uno, before InitVCL) and
+    // gating on it caused the first-load SolarMutexGuard OOB, so we poll
+    // lok_is_ready() instead. A grace fallback bounds the wait so a missing
+    // lok_is_ready export can never reproduce a 120s hang (the export being
+    // attached means the bindings are live; a real load failure self-reports).
+    const GRACE_MS = 30000
     const probeUnoInit = () => {
-      const m = watch("uno_main")
-      const i = watch("uno_init")
-      tlog("bootstrap-signal present? uno_main=", m, "uno_init=", i, "(gating, export is the fallback)")
-      // Grace fallback: if the export is attached but no uno_* promise has
-      // resolved shortly after, proceed anyway — the bindings are live, and a
-      // real loadFromBytes failure self-reports instantly (no 120s hang).
+      tlog("gating on lok_is_ready() (full-VCL-ready); export=", exportReady())
       setTimeout(() => {
         if (settled || unoReady) return
         if (exportReady()) {
-          tlog("no uno_* resolve within " + GRACE_MS + "ms but export is live — proceeding")
+          tlog("lok_is_ready() not true within " + GRACE_MS + "ms but export is live — proceeding")
           unoReady = true
           finish()
         }
@@ -304,7 +298,7 @@ function ensureRuntime() {
         // Log first few attempts + then every ~2s so the timeline isn't noisy
         // but a stall is still visible (and never silent).
         if (attempt <= 3 || attempt % 40 === 0) {
-          tlog("poll: export=", exportReady(), "uno=", unoReady, "(attempt " + attempt + ")")
+          tlog("poll: export=", exportReady(), "lokReady=", lokReady(), "(attempt " + attempt + ")")
         }
         if (ok) {
           finish()
@@ -375,6 +369,8 @@ function resolveApi(Module) {
     return {
       shape: "module-functions",
       loadFromBytes,
+      loadStatus: direct("loadStatus"),
+      getPartSizesJson: direct("getPartSizesJson"),
       saveToBytes: direct("saveToBytes"),
       paintTile: direct("paintTile"),
       getDocumentSize: direct("getDocumentSize"),
@@ -491,6 +487,18 @@ const WasmOfficeEditor = {
 
   async loadDocument({ url }) {
     if (this.loadedUrl === url && this.parts.length) return
+    // Serialize loads: the hook fires loadDocument both on mount AND on the
+    // server's `office_wasm_load` push, which can race two concurrent
+    // (async, worker-dispatched) loadFromBytes for the same URL — overwriting
+    // the in-progress import and crashing. Chain on the previous load and skip
+    // a duplicate URL that is already loading.
+    if (this._loadInFlight) {
+      if (this._loadingUrl === url) return this._loadInFlight
+      try { await this._loadInFlight } catch (_) {}
+      if (this.loadedUrl === url && this.parts.length) return
+    }
+    this._loadingUrl = url
+    this._loadInFlight = (async () => {
     try {
       const Module = await ensureRuntime()
       if (!this.api) {
@@ -504,7 +512,7 @@ const WasmOfficeEditor = {
 
       this.setStatus("Opening document…")
       this.freeHandle()
-      this.openWithBytes(Module, bytes)
+      await this.openWithBytes(Module, bytes)
       this.loadedUrl = url
 
       this.parts = this.queryParts()
@@ -518,16 +526,23 @@ const WasmOfficeEditor = {
       if (dump) console.error("[office-wasm] last engine output:\n" + dump)
       this.setStatus("Office WASM failed to load: " + (error && error.message))
     }
+    })()
+    try {
+      await this._loadInFlight
+    } finally {
+      this._loadInFlight = null
+      this._loadingUrl = null
+    }
   },
 
-  // Hand the document bytes to the engine, copying into the wasm heap when the
-  // export expects a (ptr,len) pair rather than a JS typed array.
-  openWithBytes(Module, bytes) {
-    // The embind `loadFromBytes(bytes, fileName)` takes TWO arguments
-    // (LokEditBindings.cxx): the byte buffer AND a fileName whose extension
-    // selects LibreOffice's import filter. Calling it with one arg throws an
-    // embind BindingError ("called with 1 arguments, expected 2"). We pass a
-    // synthetic name carrying the document's format extension.
+  // Hand the document bytes to the engine. loadFromBytes is ASYNCHRONOUS
+  // (LokEditBindings.cxx): it kicks the real documentLoad() onto a dedicated LOK
+  // worker pthread (so a heavy Impress/PowerPoint import that blocks internally
+  // never freezes the browser main thread) and returns immediately. We then poll
+  // the embind loadStatus() (0 idle, 1 loading, 2 done, 3 failed) until the load
+  // settles. The 2-arg signature (bytes, fileName) selects LibreOffice's import
+  // filter from the extension.
+  async openWithBytes(Module, bytes) {
     const arg = this.toEmbindBytes(Module, bytes)
     const fileName = "document." + (this.format || "docx")
 
@@ -542,14 +557,25 @@ const WasmOfficeEditor = {
       return
     }
 
-    // module-functions shape: embind `loadFromBytes(bytes, fileName) -> bool`
-    // (LokEditBindings.cxx) — true on success, false when documentLoad failed
-    // (reason on stderr, captured in the ring).
-    const ok = this.api.loadFromBytes(arg, fileName)
-    if (ok === false) {
-      throw new Error("loadFromBytes returned false (open failed). Engine output:\n" + dumpLog())
+    // module-functions shape: async loadFromBytes(bytes, fileName) -> void;
+    // poll loadStatus() for completion.
+    this.api.loadFromBytes(arg, fileName)
+    if (typeof this.api.loadStatus === "function") {
+      const deadline = performance.now() + 120000 // 2 min: large Impress imports
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        const st = this.api.loadStatus()
+        if (st === 2) break
+        if (st === 3) {
+          throw new Error("loadFromBytes failed (documentLoad). Engine output:\n" + dumpLog())
+        }
+        if (performance.now() >= deadline) {
+          throw new Error("loadFromBytes timed out after 120s. Engine output:\n" + dumpLog())
+        }
+        await new Promise((r) => setTimeout(r, 50))
+      }
     }
-    this.handle = ok || true
+    this.handle = true
   },
 
   toEmbindBytes(Module, bytes) {
@@ -559,7 +585,24 @@ const WasmOfficeEditor = {
   },
 
   // Resolve page/slide geometry to [{ width, height }] in page-local px.
+  // PREFERRED: getPartSizesJson() returns the WHOLE document's geometry cached
+  // (in twips) on the LOK worker during load — a single cheap read with NO
+  // proxy, so the browser main thread never blocks (a per-part getParts/setPart/
+  // getDocumentSize storm would block it and can crash on Impress layout).
   queryParts() {
+    if (this.api.shape === "module-functions" && typeof this.api.getPartSizesJson === "function") {
+      try {
+        const info = JSON.parse(this.api.getPartSizesJson())
+        const parts = (info.parts || [])
+          .map((p) => this.parseSize(p))
+          .filter(Boolean)
+        if (parts.length) return parts
+      } catch (error) {
+        console.warn("[office-wasm] getPartSizesJson failed, falling back", error)
+      }
+    }
+
+    // Fallback (embind-class shape or missing getter): walk parts directly.
     const callDoc = (name, ...args) => {
       if (this.api.shape === "embind-class" && this.handle && typeof this.handle[name] === "function") {
         return this.handle[name](...args)
@@ -570,9 +613,6 @@ const WasmOfficeEditor = {
 
     let parts = []
     try {
-      // Embind getDocumentSize() takes NO args and returns the ACTIVE part's
-      // size; getParts() is the slide/sheet count (Impress/Calc) or 1 (Writer,
-      // where pages come from getPartPageRectangles()). Walk parts via setPart.
       const count = callDoc("getParts")
       const n = typeof count === "number" ? count : Number(count) || 1
       const baseSize = this.parseSize(callDoc("getDocumentSize")) || { width: 794, height: 1123 }
