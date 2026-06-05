@@ -285,10 +285,23 @@ defmodule Ecrits.Doc.Rhwp do
   end
 
   @impl true
-  def save(_handle, _opts) do
-    not_supported(
-      "doc.save requires HWP/HWPX export (canonical bytes) which the current ehwp NIF does not expose (design §8 #6, §9)"
-    )
+  # IR-direct: export the (incrementally re-serialized) bytes via the ehwp NIF and
+  # write them to disk. `format`/`path` come from the Tools layer (which knows the
+  # doc kind + path). Without a path we just return the byte count (caller writes).
+  def save(%{ehwp: ehwp_handle}, opts) do
+    format = Keyword.get(opts, :format, :hwp)
+    path = Keyword.get(opts, :path)
+
+    with {:ok, bytes} <- Ehwp.export(ehwp_handle, format) do
+      if is_binary(path) do
+        case File.write(path, bytes) do
+          :ok -> {:ok, %{"path" => path, "bytes" => byte_size(bytes)}}
+          {:error, reason} -> {:error, %{kind: "write_failed", message: inspect(reason)}}
+        end
+      else
+        {:ok, %{"bytes" => byte_size(bytes)}}
+      end
+    end
   end
 
   # --- edit op -> IR (apply_op) shape --------------------------------------

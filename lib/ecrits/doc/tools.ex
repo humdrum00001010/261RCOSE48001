@@ -386,12 +386,20 @@ defmodule Ecrits.Doc.Tools do
   end
 
   def call(ctx, "doc.save", args) do
-    with_editor(ctx, args, fn editor ->
-      case Editor.save(editor, []) do
-        :ok -> {:ok, %{"ok" => true}}
-        {:error, reason} -> {:error, error_json(reason)}
-      end
-    end)
+    with {:ok, document} <- require_string(args, "document"),
+         {:ok, info} <- Pool.info(pool(ctx), document) do
+      path = get(args, ["path"]) || info.path
+
+      route_doc(ctx, args,
+        # Open doc: the browser WASM model is authority — export ITS edited bytes
+        # and write them to disk (the server Editor copy is unedited).
+        browser: fn lv -> save_browser(lv, args, path) end,
+        # Headless doc: the NIF holds the edits — export via Ehwp + write.
+        server: fn editor -> save_server(editor, info, path) end
+      )
+    else
+      {:error, reason} -> {:error, error_json(reason)}
+    end
   end
 
   def call(_ctx, tool_name, _args), do: {:error, {:unknown_tool, tool_name}}
@@ -446,6 +454,39 @@ defmodule Ecrits.Doc.Tools do
         error
     end
   end
+
+  # doc.save for an open (browser) doc: round-trip the viewer for its current
+  # edited bytes, then write them to `path`.
+  defp save_browser(lv, args, path) do
+    case browser_call(lv, args, :save, %{}) do
+      {:ok, %{} = res} ->
+        b64 = res["bytes_base64"] || res[:bytes_base64]
+
+        with true <- is_binary(b64) or {:error, {:save_failed, "viewer returned no bytes"}},
+             {:ok, bytes} <- Base.decode64(b64),
+             :ok <- File.write(path, bytes) do
+          {:ok, %{"ok" => true, "path" => path, "bytes" => byte_size(bytes)}}
+        else
+          :error -> {:error, error_json({:save_failed, "viewer returned invalid base64"})}
+          {:error, reason} -> {:error, error_json(reason)}
+        end
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  # doc.save for a headless (server NIF) doc: Ehwp.export + write, via the Editor.
+  defp save_server(editor, info, path) do
+    case Editor.save(editor, format: save_format(info.kind), path: path) do
+      :ok -> {:ok, %{"ok" => true, "path" => path}}
+      {:ok, %{} = saved} -> {:ok, Map.merge(%{"ok" => true, "path" => path}, stringify(saved))}
+      {:error, reason} -> {:error, error_json(reason)}
+    end
+  end
+
+  defp save_format(:hwpx), do: :hwpx
+  defp save_format(_kind), do: :hwp
 
   # Synchronous request/reply against the viewing LiveView. The LiveView's
   # `{:doc_browser_request, ...}` handler pushes the op to the WasmHwpEditor hook,

@@ -1141,6 +1141,11 @@ const WasmHwpEditor = {
         case "read":
           reply({ result: this.applyAgentRead(payload) })
           break
+        case "save":
+          // The viewer's WASM model is authority for an open doc — export its
+          // CURRENT edited bytes so doc.save persists what the user sees.
+          reply({ result: this.exportForSave() })
+          break
         default:
           reply({ error: `unsupported_verb:${verb}` })
       }
@@ -1411,6 +1416,14 @@ const WasmHwpEditor = {
       this.snapshotTimer = null
       this.pushSnapshot()
     }, SNAPSHOT_IDLE_MS)
+  },
+
+  // Export the open doc's current edited bytes for doc.save (the server writes
+  // them to disk). Same serializer as the snapshot, but returned synchronously
+  // to the doc.save round-trip rather than pushed as a checkpoint.
+  exportForSave() {
+    const bytes = this.format === "hwpx" ? this.doc.exportHwpx() : this.doc.exportHwp()
+    return { format: this.format, bytes_base64: this.bytesToBase64(bytes), bytes: bytes.length }
   },
 
   pushSnapshot() {
