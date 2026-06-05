@@ -62,8 +62,8 @@ defmodule EcritsWeb.Live.Studio.Components.Canvas.LocalMarkdownEditor do
           phx-click={toggle_markdown_view(@id)}
           class="rounded px-2 py-0.5 text-[11px] font-medium uppercase tracking-wide text-base-content/70 hover:bg-base-300/60 hover:text-base-content"
         >
-          <span data-toggle-label="preview">Source</span>
-          <span data-toggle-label="source" class="hidden">Preview</span>
+          <span data-toggle-label="preview" title="Edit source"><.icon name="hero-code-bracket" class="size-4 align-middle" /></span>
+          <span data-toggle-label="source" class="hidden" title="Show preview"><.icon name="hero-eye" class="size-4 align-middle" /></span>
         </button>
       </header>
 
