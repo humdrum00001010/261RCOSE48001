@@ -546,15 +546,15 @@ defmodule Ecrits.Local.AcpAgent.AcpStream do
     inspection is `doc_get`.
 
     FILLING A WHOLE TEMPLATE (every blank field/cell, e.g. a contract form): call
-    `doc_find {type:"empty_cell"}` ONCE to get exactly the blank table cells (each
-    with its ref) — a small, targeted list, not the whole document. (Use
-    `{all:true}` only if you need the entire structure.) Then for each blank, edit
-    by its ref: an EMPTY cell has no text, so `replace_text` will fail ("query not
-    found") — use `doc_edit` `insert_text` with that cell's ref. A cell that already
-    holds placeholder text → `doc_edit` `replace_text` SCOPED to that ref. Work
-    through ALL the refs so no table or field is missed. Read surrounding context
-    with a couple of `doc_read` pages only as needed for what VALUES to fill — do
-    not page the whole document.
+    `doc_find {type:"empty_cell"}` ONCE to get exactly the blank table cells. Each
+    cell match carries `context` = "<column header> / <row label>" (e.g.
+    "지급금액 / 선급금") and `row`/`col`, so you already know what each blank IS —
+    you do NOT need to page `doc_read` to figure it out. Fill each by its ref with
+    `doc_edit` `insert_text` (an EMPTY cell has no text, so `replace_text` would
+    fail "query not found"). A cell that already holds placeholder text →
+    `doc_edit` `replace_text` SCOPED to that ref. Work through ALL the refs so no
+    field is missed; read at most a page or two only for a value you can't infer
+    from `context`.
 
     If the open document/session is READ-ONLY, write tools (`doc_set`, `doc_edit`,
     `doc_save`, `doc_create`) are REFUSED. When that happens, tell the user the

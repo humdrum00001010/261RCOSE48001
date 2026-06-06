@@ -158,7 +158,10 @@ defmodule Ecrits.Doc.Tools do
           "(blank table cells to fill), `\"cell\"` (all table cells), " <>
           "`\"filled_cell\"`, `\"paragraph\"` (body), or `\"empty\"` — combinable " <>
           "with `pattern`. To FILL a form, call `{type:\"empty_cell\"}` once to get " <>
-          "exactly the blanks (with refs), then insert_text into each.",
+          "exactly the blanks, then insert_text into each. Every CELL match also " <>
+          "carries `context` = \"<column header> / <row label>\" (e.g. " <>
+          "\"지급금액 / 선급금\") plus `row`/`col`, so a blank self-describes what it is " <>
+          "for — you usually do NOT need to read the table to know what to fill.",
       "risk" => "read",
       "inputSchema" => %{
         "type" => "object",

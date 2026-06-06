@@ -1433,6 +1433,7 @@ const WasmHwpEditor = {
   // Shared post-edit step: re-render the visible window (an edit can reflow any
   // page), redraw the caret, and persist the edited bytes so it survives reload.
   finishAgentEdit(baseRev, extra) {
+    this._elementsCache = null // the document changed; the cached element list is stale
     this.rendered.clear()
     this.renderVisiblePages()
     if (this.caret) this.drawCaret(this.caret)
@@ -1533,7 +1534,13 @@ const WasmHwpEditor = {
       // Stateless test: no global flag, so lastIndex never advances between calls.
       if (typeOk(el) && re.test(el.text)) {
         if (matches.length >= MATCH_CAP) { truncated = true; break }
-        matches.push({ ref: JSON.stringify(el.ref), text: el.text, table_cell: !!(el.ref && el.ref.cell) })
+        const m = { ref: JSON.stringify(el.ref), text: el.text, table_cell: !!(el.ref && el.ref.cell) }
+        // For a cell, surface what it IS (column header / row label) so a blank is
+        // self-describing and the agent fills it without reading the table.
+        if (el.context) m.context = el.context
+        if (el.row != null) m.row = el.row
+        if (el.col != null) m.col = el.col
+        matches.push(m)
       }
     }
     const out = { pattern, matches }
@@ -1551,6 +1558,10 @@ const WasmHwpEditor = {
   // last control/cell — that throw is the loop bound. If c===0&&i===0 throws there
   // is no table at (s,p), so we stop probing this paragraph entirely (cheap).
   collectElements() {
+    // Memoized: this is called on every doc.read page and doc.find, and now does
+    // getTableDimensions/getCellInfo per cell — cache until the next edit clears it
+    // (finishAgentEdit / a fresh load resets `_elementsCache`).
+    if (this._elementsCache) return this._elementsCache
     const ELEM_CAP = 5000
     const out = []
     let sectionCount = 1
@@ -1559,45 +1570,63 @@ const WasmHwpEditor = {
       let paraCount = 0
       try { paraCount = this.doc.getParagraphCount(s) } catch (_) { paraCount = 0 }
       for (let p = 0; p < paraCount; p++) {
-        if (out.length >= ELEM_CAP) return out
+        if (out.length >= ELEM_CAP) break
         let len = 0
         try { len = this.doc.getParagraphLength(s, p) } catch (_) { len = 0 }
         let text = ""
         try { text = this.doc.getTextRange(s, p, 0, len) || "" } catch (_) { text = "" }
         out.push({ ref: { section: s, paragraph: p, offset: 0 }, text })
 
-        // Probe tables anchored at this paragraph.
+        // Tables anchored at this paragraph. getTableDimensions bounds the cell
+        // loop (cellCount) and returns null when there is no table at (s,p,c). For
+        // each cell capture its (row,col) via getCellInfo, then attach the column
+        // header (row 0, same col) and row label (col 0, same row) so a BLANK cell
+        // self-describes ("지급금액 / 선급금") and the agent can fill it without
+        // having to read the whole table for context.
         for (let c = 0; c < 8; c++) {
-          let controlEmpty = true
-          for (let i = 0; i < 512; i++) {
-            if (out.length >= ELEM_CAP) return out
-            let clen
-            try {
-              clen = this.doc.getCellParagraphLength(s, p, c, i, 0)
-            } catch (_) {
-              // Past the last cell of this control. If even cell 0 of control 0
-              // threw, there is no table here at all -> stop probing controls.
-              if (c === 0 && i === 0) { c = 8 }
-              break
-            }
-            controlEmpty = false
+          let dims = null
+          try { dims = JSON.parse(this.doc.getTableDimensions(s, p, c)) } catch (_) { dims = null }
+          if (!dims || !(Number(dims.cellCount) > 0)) break
+          const cellCount = Math.min(Number(dims.cellCount), 512)
+          const cells = []
+          const byRC = {}
+          for (let i = 0; i < cellCount; i++) {
             let ctext = ""
-            try { ctext = this.doc.getTextInCell(s, p, c, i, 0, 0, clen) || "" } catch (_) { ctext = "" }
-            out.push({
+            try {
+              const clen = this.doc.getCellParagraphLength(s, p, c, i, 0)
+              ctext = this.doc.getTextInCell(s, p, c, i, 0, 0, clen) || ""
+            } catch (_) { ctext = "" }
+            let row = null, col = null
+            try { const ci = JSON.parse(this.doc.getCellInfo(s, p, c, i)); row = ci.row; col = ci.col } catch (_) {}
+            cells.push({ i, text: ctext, row, col })
+            if (row != null && col != null) byRC[row + "," + col] = ctext
+          }
+          for (const cell of cells) {
+            if (out.length >= ELEM_CAP) break
+            const el = {
               ref: {
                 section: s,
                 paragraph: p,
                 offset: 0,
-                cell: { parentParaIndex: p, controlIndex: c, cellIndex: i, cellParaIndex: 0 }
+                cell: { parentParaIndex: p, controlIndex: c, cellIndex: cell.i, cellParaIndex: 0 }
               },
-              text: ctext
-            })
+              text: cell.text
+            }
+            if (cell.row != null && cell.col != null) {
+              el.row = cell.row
+              el.col = cell.col
+              const header = cell.row > 0 ? byRC["0," + cell.col] || "" : ""
+              const rowLabel = cell.col > 0 ? byRC[cell.row + ",0"] || "" : ""
+              const ctx = [header, rowLabel].map((x) => (x || "").trim()).filter(Boolean).join(" / ")
+              if (ctx) el.context = ctx
+            }
+            out.push(el)
           }
-          // A control with zero cells means no further controls hold a table.
-          if (controlEmpty) break
         }
+        if (out.length >= ELEM_CAP) break
       }
     }
+    this._elementsCache = out
     return out
   },
 
@@ -1617,11 +1646,11 @@ const WasmHwpEditor = {
     const total = elements.length
     const window = elements.slice(at, at + size)
     const nextAt = at + window.length < total ? at + window.length : null
-    const paragraphs = window.map((el) => ({
-      text: el.text,
-      ref: JSON.stringify(el.ref),
-      table_cell: !!(el.ref && el.ref.cell)
-    }))
+    const paragraphs = window.map((el) => {
+      const o = { text: el.text, ref: JSON.stringify(el.ref), table_cell: !!(el.ref && el.ref.cell) }
+      if (el.context) o.context = el.context
+      return o
+    })
     return {
       text: window.map((el) => (el.ref && el.ref.cell ? `[cell] ${el.text}` : el.text)).join("\n"),
       at,
