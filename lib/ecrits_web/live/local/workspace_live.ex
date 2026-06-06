@@ -1910,8 +1910,18 @@ defmodule EcritsWeb.Local.WorkspaceLive do
     )
   end
 
-  defp apply_local_agent_event(socket, %{type: :turn_completed, turn_id: turn_id, text: text}) do
-    text = text || socket.assigns.local_agent_text
+  defp apply_local_agent_event(socket, %{type: :turn_completed, turn_id: turn_id}) do
+    # Flush ONLY the still-pending text segment: the text streamed AFTER the last
+    # tool call. Every earlier segment was already emitted at its tool boundary by
+    # close_local_agent_text_segment/1. The session's turn-completed `text` is the
+    # CUMULATIVE text of the WHOLE turn (every segment concatenated, never reset at
+    # tool boundaries — see Session.handle_turn_event/3); streaming THAT here writes
+    # it into the final segment's dom id and overwrites the real last bubble with a
+    # giant re-run of the preamble segments (preamble-A + preamble-B reappearing
+    # after the tools). Use the LiveView's per-segment buffer instead — it resets at
+    # each tool boundary, so it holds only the trailing segment. Same source the
+    # cancel path already uses for its partial flush.
+    pending = socket.assigns.local_agent_text
 
     socket
     |> cancel_local_agent_text_flush()
@@ -1920,7 +1930,7 @@ defmodule EcritsWeb.Local.WorkspaceLive do
     |> assign(:local_agent_status, :idle)
     |> maybe_remove_empty_reasoning(turn_id)
     |> assign(:local_agent_reasoning_text, "")
-    |> maybe_stream_final_agent_text(turn_id, text)
+    |> maybe_stream_final_agent_text(turn_id, pending)
     |> finalize_dangling_tools("Turn ended before the tool finished.")
   end
 

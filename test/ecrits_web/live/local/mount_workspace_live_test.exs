@@ -1758,6 +1758,72 @@ defmodule EcritsWeb.Local.MountWorkspaceLiveTest do
            "expected the reply once, got #{occurrences}x in: #{inspect(final_body)}"
   end
 
+  test "agent sidebar does not re-stream earlier text segments as a final bubble",
+       %{conn: conn} do
+    # Regression: a tool-using turn streams text in SEGMENTS — text before each
+    # tool call is flushed as its own bubble at the tool boundary. The session
+    # accumulates the WHOLE turn's text (every segment) and reports it as the
+    # turn-completed `text`; the Codex prompt result likewise carries that
+    # cumulative text. The LiveView must finalize ONLY the trailing (still
+    # pending) segment at turn completion — flushing the cumulative text instead
+    # overwrites the last bubble with a re-run of every earlier segment
+    # (preamble-A + preamble-B reappearing after the tools).
+    use_test_agent_adapter!(
+      adapter_opts: [
+        script: [
+          {:text_delta, "PREAMBLE-A"},
+          %{type: :tool_call_started, id: "t1", name: "doc.context", arguments: %{}},
+          %{type: :tool_call_completed, id: "t1", name: "doc.context", result: %{"ok" => true}},
+          {:text_delta, "PREAMBLE-B"},
+          %{type: :tool_call_started, id: "t2", name: "doc.find", arguments: %{}},
+          %{type: :tool_call_completed, id: "t2", name: "doc.find", result: %{"ok" => true}},
+          {:text_delta, "FINAL-ANSWER"}
+        ]
+      ]
+    )
+
+    {:ok, lv, _html} =
+      live(conn, ~p"/workspace?#{[path: LocalWorkspaceAdapterStub.valid_path()]}")
+
+    session_id = subscribe_agent(lv)
+
+    lv
+    |> form("#local-agent-form", agent: %{message: "summarize"})
+    |> render_submit()
+
+    assert_receive {:local_agent_event, %{type: :turn_completed, session_id: ^session_id}}, 1_000
+    sync_liveview(lv)
+
+    body =
+      lv
+      |> render()
+      |> LazyHTML.from_fragment()
+      |> LazyHTML.query(
+        ~s([data-role="local-agent-message"][data-message-role="agent"][data-message-status="sent"])
+      )
+      |> LazyHTML.text()
+
+    count = fn haystack, needle -> haystack |> String.split(needle) |> length() |> Kernel.-(1) end
+
+    # Each segment text must appear exactly ONCE across all bubbles. The cumulative
+    # final flush re-emitted the preamble segments, so the buggy render had
+    # "PREAMBLE-A"/"PREAMBLE-B" appearing twice (their own bubble + the cumulative
+    # final bubble). `LazyHTML.text/1` concatenates the separate bubbles, so the
+    # correct render reads "PREAMBLE-APREAMBLE-BFINAL-ANSWER" — each token once.
+    assert count.(body, "PREAMBLE-A") == 1, "preamble A duplicated in: #{inspect(body)}"
+    assert count.(body, "PREAMBLE-B") == 1, "preamble B duplicated in: #{inspect(body)}"
+    assert count.(body, "FINAL-ANSWER") == 1, "final answer duplicated in: #{inspect(body)}"
+
+    # No SINGLE bubble may carry the cumulative whole-turn text (segment A directly
+    # followed by segment B inside one element) — that is the overwrite signature.
+    sent_bubble = ~s([data-role="local-agent-message"][data-message-role="agent"][data-message-status="sent"])
+    refute has_element?(lv, sent_bubble, "PREAMBLE-APREAMBLE-B"),
+           "earlier segments were re-streamed as one cumulative bubble"
+
+    # ...and the trailing segment stands on its own as the final answer bubble.
+    assert has_element?(lv, sent_bubble, "FINAL-ANSWER")
+  end
+
   test "agent sidebar renders a final-only message when no deltas were streamed",
        %{conn: conn} do
     # A provider that sends NO incremental deltas, only a terminal `final: true`
