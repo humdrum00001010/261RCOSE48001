@@ -14,7 +14,8 @@ defmodule Ecrits.Test.FakeEhwpRuntime do
   in-memory model the same way). Injected via `config :ehwp, :runtime`.
   """
 
-  @behaviour_funs ~w(available? open page_count profile render_page_svg read find write close)a
+  @behaviour_funs ~w(available? open new page_count profile render_page_svg read find write
+                     apply_op query export close)a
 
   def funs, do: @behaviour_funs
 
@@ -47,14 +48,6 @@ defmodule Ecrits.Test.FakeEhwpRuntime do
 
   def find(_handle, _pattern, _opts), do: {:error, :invalid_handle}
 
-  # IR read-query surface. This fake predates the real NIF's `{"q":"elements"}`
-  # enumerator (and the other read verbs), so it answers with an error — exactly
-  # how an OLDER deployed NIF reports an unknown verb. That drives the
-  # backward-compat fallback in `Ecrits.Doc.Rhwp.elements/2` (which must degrade
-  # to find/read, never crash) without taking the session down.
-  def query(%{agent: _}, _query), do: {:error, :unsupported_query}
-  def query(_handle, _query), do: {:error, :invalid_handle}
-
   def write(%{agent: agent}, {:replace_one, query, replacement}, opts) do
     case_sensitive = Keyword.get(opts, :case_sensitive, false)
     body = text(agent)
@@ -71,6 +64,44 @@ defmodule Ecrits.Test.FakeEhwpRuntime do
 
   def write(_handle, _op, _opts), do: {:error, :unsupported_write}
 
+  # Mint a NEW blank document (engine template analogue): an empty text buffer.
+  def new(opts \\ []) do
+    handle = %{__fake_ehwp__: true, agent: start_agent(""), owner: Keyword.get(opts, :owner)}
+    {:ok, handle, %{page_count: 1, source_bytes: 0}}
+  end
+
+  # IR-direct edit surface (the real NIF's `apply_op`). Mirrors its contract:
+  # `ops` is a list of atom-keyed verb maps with the ref pre-flattened onto each
+  # op (section/paragraph/offset/...); returns `{:ok, results_json}` on success
+  # (a JSON array of per-op results, like the native NIF) or
+  # `{:error, {index, kind, message}}` for the first op the engine cannot apply.
+  # Edits mutate the agent-held text so a subsequent `read` observes them — the
+  # same way the real in-memory IR mutates.
+  def apply_op(%{agent: agent}, ops, _bins) when is_list(ops) do
+    apply_ops(agent, ops, 0, [])
+  end
+
+  def apply_op(_handle, _ops, _bins), do: {:error, :invalid_handle}
+
+  # Property read/query surface (`get_properties`, etc.). The fake holds only
+  # plain text — it has no property model — so report an honest unsupported
+  # error, mirroring the headless NIF's current capability gap.
+  def query(%{agent: _agent}, query) when is_map(query) do
+    {:error, {:unsupported_query, to_string(Map.get(query, :q) || Map.get(query, "q") || "query")}}
+  end
+
+  def query(_handle, _query), do: {:error, :invalid_handle}
+
+  # Serialize the current document back to bytes (the real NIF's `export`). The
+  # fake's "canonical bytes" are simply the current text, which is enough to
+  # exercise the save -> File.write round-trip server-side.
+  def export(%{agent: agent}, format) when format in [:hwp, :hwpx] do
+    _ = format
+    {:ok, text(agent)}
+  end
+
+  def export(_handle, _format), do: {:error, :unsupported_format}
+
   def close(%{agent: agent} = handle) do
     if Process.alive?(agent), do: Agent.stop(agent)
     if is_pid(handle[:owner]), do: send(handle.owner, {:closed, handle})
@@ -78,6 +109,114 @@ defmodule Ecrits.Test.FakeEhwpRuntime do
   end
 
   def close(_handle), do: :ok
+
+  # --- apply_op interpreter ------------------------------------------------
+
+  # Apply each op in order against the agent's text buffer. The first op the
+  # fake cannot model yields `{:error, {index, kind, message}}` (the native
+  # error tuple shape `Ecrits.Doc.Rhwp.edit/3` decodes). All-applied -> the
+  # JSON results array.
+  defp apply_ops(_agent, [], _index, acc),
+    do: {:ok, Jason.encode!(Enum.reverse(acc))}
+
+  defp apply_ops(agent, [op | rest], index, acc) do
+    case apply_one_op(agent, op) do
+      {:ok, result} -> apply_ops(agent, rest, index + 1, [result | acc])
+      {:error, kind, message} -> {:error, {index, kind, message}}
+    end
+  end
+
+  defp apply_one_op(agent, op) do
+    op = stringify_op(op)
+    verb = op["op"]
+    body = text(agent)
+
+    case do_op(verb, body, op) do
+      {:ok, new_body, result} ->
+        put_text(agent, new_body)
+        {:ok, result}
+
+      {:error, kind, message} ->
+        {:error, kind, message}
+    end
+  end
+
+  # Coerce an atom-keyed op map to string keys (the fake works in string keys,
+  # matching how the JSON the real NIF receives is keyed).
+  defp stringify_op(op) do
+    Map.new(op, fn {k, v} -> {to_string(k), v} end)
+  end
+
+  defp do_op("replace_text", body, op) do
+    query = op["query"]
+    replacement = op["replacement"] || ""
+
+    case do_replace_one(body, query, replacement, false) do
+      {:ok, new_body} -> {:ok, new_body, %{"ok" => true, "replaced" => 1}}
+      :not_found -> {:ok, body, %{"ok" => false, "replaced" => 0}}
+    end
+  end
+
+  defp do_op("insert_text", body, op) do
+    text_to_insert = op["text"] || ""
+    paras = paragraphs(body)
+    p = op["paragraph"] || 0
+    off = op["offset"] || 0
+
+    case Enum.at(paras, p) do
+      nil ->
+        {:error, :out_of_range, "paragraph #{p} out of range"}
+
+      para ->
+        new_para = insert_at(para, off, text_to_insert)
+        {:ok, join(List.replace_at(paras, p, new_para)), %{"ok" => true}}
+    end
+  end
+
+  defp do_op("delete_range", body, op) do
+    paras = paragraphs(body)
+    p = op["paragraph"] || 0
+    off = op["offset"] || 0
+    count = op["count"] || 0
+
+    case Enum.at(paras, p) do
+      nil -> {:error, :out_of_range, "paragraph #{p} out of range"}
+      para -> {:ok, join(List.replace_at(paras, p, delete_at(para, off, count))), %{"ok" => true}}
+    end
+  end
+
+  defp do_op("split", body, op) do
+    paras = paragraphs(body)
+    p = op["paragraph"] || 0
+    off = op["offset"] || 0
+
+    case Enum.at(paras, p) do
+      nil ->
+        {:error, :out_of_range, "paragraph #{p} out of range"}
+
+      para ->
+        {head, tail} = String.split_at(para, off)
+        new_paras = List.replace_at(paras, p, head) |> List.insert_at(p + 1, tail)
+        {:ok, join(new_paras), %{"ok" => true}}
+    end
+  end
+
+  defp do_op(verb, _body, _op),
+    do: {:error, :unsupported, "fake apply_op does not model verb #{verb}"}
+
+  defp paragraphs(body), do: String.split(body, "\n")
+  defp join(paras), do: Enum.join(paras, "\n")
+
+  defp insert_at(str, off, ins) do
+    {head, tail} = String.split_at(str, off)
+    head <> ins <> tail
+  end
+
+  defp delete_at(str, off, count) do
+    {head, rest} = String.split_at(str, off)
+    {_dropped, tail} = String.split_at(rest, count)
+    head <> tail
+  end
 
   # --- helpers -------------------------------------------------------------
 

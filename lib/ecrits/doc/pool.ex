@@ -100,10 +100,31 @@ defmodule Ecrits.Doc.Pool do
   def route(pool \\ @default_name, document_id),
     do: GenServer.call(pool, {:route, document_id})
 
-  @doc "Register a viewing LiveView so the agent's ops route to the browser model."
+  @doc """
+  Register a viewing LiveView as the browser authority for `document_id`.
+
+  A viewer is the browser authority for AT MOST ONE document — the one it is
+  currently rendering in its WASM model. Attaching `lv_pid` to a document
+  therefore *detaches* it from any OTHER document it was previously the browser
+  authority for, so navigating between documents in one viewer never leaves a
+  stale `:browser` backing behind. (The viewer's browser bridge always targets
+  its single open doc, so a stale attachment would otherwise route an unrelated
+  doc's edits to the wrong, currently-viewed document — design §6.2.)
+  """
   @spec attach_browser(GenServer.server(), document_id(), pid()) :: :ok | {:error, :not_found}
   def attach_browser(pool \\ @default_name, document_id, lv_pid) when is_pid(lv_pid),
     do: GenServer.call(pool, {:attach_browser, document_id, lv_pid})
+
+  @doc """
+  Relinquish `lv_pid`'s browser authority over `document_id` (if it holds it).
+
+  The document falls back to its server NIF editor. Used when a viewer closes a
+  document or navigates to a non-pooled file. A no-op when `lv_pid` is not the
+  current browser owner of `document_id`.
+  """
+  @spec detach_browser(GenServer.server(), document_id(), pid()) :: :ok
+  def detach_browser(pool \\ @default_name, document_id, lv_pid) when is_pid(lv_pid),
+    do: GenServer.call(pool, {:detach_browser, document_id, lv_pid})
 
   @spec info(GenServer.server(), document_id()) :: {:ok, map()} | {:error, :not_found}
   def info(pool \\ @default_name, document_id),
@@ -199,7 +220,18 @@ defmodule Ecrits.Doc.Pool do
   def handle_call({:route, document_id}, _from, st) do
     reply =
       case Map.get(st.docs, document_id) do
-        %{browser: lv} when is_pid(lv) -> {:browser, lv}
+        # A doc routes to the browser WASM ONLY while its viewer is alive. If the
+        # LiveView that claimed it has died (an orphaned attachment — pre-fix
+        # legacy, or a navigate/close race before {:DOWN} is processed), fall back
+        # to the headless server editor so the doc stays reachable instead of
+        # routing to a dead pid.
+        %{browser: lv} = doc when is_pid(lv) ->
+          cond do
+            Process.alive?(lv) -> {:browser, lv}
+            is_pid(doc[:editor]) -> {:server, doc[:editor]}
+            true -> {:error, :not_found}
+          end
+
         %{editor: editor} when is_pid(editor) -> {:server, editor}
         _ -> {:error, :not_found}
       end
@@ -212,11 +244,26 @@ defmodule Ecrits.Doc.Pool do
       nil ->
         {:reply, {:error, :not_found}, st}
 
-      doc ->
+      _doc ->
         Process.monitor(lv_pid)
-        st = put_in(st.docs[document_id], Map.put(doc, :browser, lv_pid))
-        {:reply, :ok, st}
+        # A viewer authoritatively renders ONE document. Drop any other doc this
+        # same lv_pid was browser-backing (a previously-viewed doc it navigated
+        # away from) before claiming this one, so exactly the currently-viewed
+        # doc routes `:browser` and everything else routes to its server editor.
+        docs = detach_pid_everywhere(st.docs, lv_pid)
+        docs = put_in(docs[document_id].browser, lv_pid)
+        {:reply, :ok, %{st | docs: docs}}
     end
+  end
+
+  def handle_call({:detach_browser, document_id, lv_pid}, _from, st) do
+    docs =
+      case Map.get(st.docs, document_id) do
+        %{browser: ^lv_pid} = doc -> Map.put(st.docs, document_id, Map.put(doc, :browser, nil))
+        _ -> st.docs
+      end
+
+    {:reply, :ok, %{st | docs: docs}}
   end
 
   def handle_call({:info, document_id}, _from, st) do
@@ -280,16 +327,29 @@ defmodule Ecrits.Doc.Pool do
       |> Enum.reduce(%{}, fn {id, doc}, acc ->
         cond do
           doc.editor == pid -> acc
-          Map.get(doc, :browser) == pid -> Map.put(acc, id, Map.delete(doc, :browser))
           true -> Map.put(acc, id, doc)
         end
       end)
+      # A crashed viewer relinquishes its browser claim on every doc it backed
+      # (set to nil, keeping the uniform doc shape) so those docs fall back to
+      # their server editors.
+      |> detach_pid_everywhere(pid)
 
     active = if st.active && Map.has_key?(docs, st.active), do: st.active, else: nil
     {:noreply, %{st | docs: docs, active: active}}
   end
 
   # --- helpers -------------------------------------------------------------
+
+  # Clear `lv_pid`'s `:browser` claim from EVERY document it currently backs.
+  # Keeps the `:browser` key (set to nil) so the doc shape stays uniform and
+  # `route/2` falls back to the server editor for it.
+  defp detach_pid_everywhere(docs, lv_pid) do
+    Map.new(docs, fn
+      {id, %{browser: ^lv_pid} = doc} -> {id, %{doc | browser: nil}}
+      {id, doc} -> {id, doc}
+    end)
+  end
 
   defp do_open(st, document_id, path, kind, backend, opts) do
     editor_opts = [

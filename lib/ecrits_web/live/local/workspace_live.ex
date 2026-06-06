@@ -1605,12 +1605,17 @@ defmodule EcritsWeb.Local.WorkspaceLive do
 
   defp register_pool_document(socket, %Document{}), do: clear_pool_document(socket)
 
-  # Drop the active-document marker for the doc this LiveView registered. We
-  # leave the Editor in the Pool (other sessions may share it); we only relinquish
-  # the "active" claim that `doc.context` surfaces.
+  # Drop the active-document marker for the doc this LiveView registered, AND
+  # relinquish this viewer's `:browser` authority over it. We leave the Editor in
+  # the Pool (other sessions may share it); we only give up the "active" claim
+  # `doc.context` surfaces and the browser-routing claim. Without the detach a
+  # closed/navigated-away doc would stay `:browser`-backed by this (now stale)
+  # viewer, so the agent's reads/edits for THAT doc would route to the browser
+  # and be redirected to whatever is currently open — the multi-doc bug.
   defp clear_pool_document(%{assigns: %{pool_document_id: doc_id}} = socket)
        when is_binary(doc_id) do
     _ = DocPool.clear_active(doc_id)
+    if connected?(socket), do: DocPool.detach_browser(doc_id, self())
     assign(socket, :pool_document_id, nil)
   end
 
