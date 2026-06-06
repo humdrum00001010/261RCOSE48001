@@ -48,9 +48,8 @@ npm-debug.log
 /assets/vendor/
 
 # App-local RHWP source/native runtime is provided by the ehwp dependency now.
+# (ex_mcp is a remote git fork: github.com/humdrum00001010/ex_mcp — no longer vendored.)
 /vendor/
-# ...but the ex_mcp fork (ACP mcpServers forwarding) is a tracked path dependency.
-!/vendor/ex_mcp/
 /native/
 
 # Native NIF build outputs.

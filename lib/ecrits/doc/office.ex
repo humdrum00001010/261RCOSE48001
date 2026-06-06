@@ -277,12 +277,25 @@ defmodule Ecrits.Doc.Office do
           _ -> {:ok, []}
         end
 
+      # The UNO arm wasn't built (no LO SDK at NIF build time): surface it as a
+      # capability gap so the Tools layer falls back to find/3 instead of failing
+      # the whole call.
+      {:error, :uno_unavailable} ->
+        {:error, {:not_supported, "libreofficex UNO arm not built"}}
+
       {:error, reason} ->
         {:error, reason}
     end
   end
 
   def elements(_handle), do: {:error, :invalid_handle}
+
+  @impl true
+  # `Ecrits.Doc` callback: full-IR element enumeration (docx/pptx `doc.find all:true`
+  # + table/cell/shape discovery). Delegates to the 2-arity public `elements/1` (opts
+  # are unused — the UNO walker has no windowing) and maps a missing UNO arm to the
+  # behaviour's `{:not_supported, _}` so callers fall back to find/3/read/2.
+  def elements(handle, _opts), do: elements(handle)
 
   # --- edit op -> uno_apply JSON -------------------------------------------
 

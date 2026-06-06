@@ -207,10 +207,53 @@ defmodule Ecrits.Doc.Rhwp do
     nodes
     |> Enum.map_reduce(nil, fn node, current_table ->
       table_key = table_key_of(node, current_table)
-      annotated = annotate_node(node, table_key, headers, labels)
+      annotated = node |> embed_ref_type() |> annotate_node(table_key, headers, labels)
       {annotated, table_key}
     end)
     |> elem(0)
+  end
+
+  # Make a non-cell IR control ref SELF-DESCRIBING: the enumerator emits the
+  # element `type` ("picture"/"shape"/…) as a SIBLING of the ref object, not
+  # inside it — so once a `doc.find` hands the bare ref back, the type is lost and
+  # `doc.get`/`doc.set` route it as a generic char run (returning char formatting,
+  # not the object's geometry, and rejecting geometry sets). Copy `type` INTO the
+  # ref map for control-bearing refs (those with a top-level `control` index) so
+  # `Ref.decode` yields `kind: :control, type: "picture"` and get/set hit the
+  # picture/shape native handlers. Cells (control nested under `cell`) and plain
+  # body refs are untouched.
+  defp embed_ref_type(%{} = node) do
+    type = node["type"] || node[:type]
+    ref = node["ref"] || node[:ref]
+
+    case {type, ref} do
+      {t, %{} = r} when is_binary(t) ->
+        if control_ref?(r) and is_nil(r["type"]) do
+          put_node_ref(node, Map.put(r, "type", t))
+        else
+          node
+        end
+
+      _ ->
+        node
+    end
+  end
+
+  defp embed_ref_type(node), do: node
+
+  # A non-cell control ref carries a TOP-LEVEL integer `control` and no nested
+  # `cell` object (a table cell nests its control index under `cell`).
+  defp control_ref?(%{} = ref) do
+    is_integer(ref["control"] || ref[:control]) and
+      not is_map(ref["cell"] || ref[:cell])
+  end
+
+  defp put_node_ref(node, ref) do
+    cond do
+      Map.has_key?(node, "ref") -> Map.put(node, "ref", ref)
+      Map.has_key?(node, :ref) -> Map.put(node, :ref, ref)
+      true -> node
+    end
   end
 
   # Per-table axis index: column headers by col index (row-0 cells) and row
@@ -539,7 +582,8 @@ defmodule Ecrits.Doc.Rhwp do
   # top level, the rest of the verb fields verbatim) and hand the batch straight
   # to the NIF. No per-verb translation/wrapper.
   def edit(%{ehwp: ehwp_handle}, op, _base_rev) do
-    with {:ok, op} <- Op.normalize(op) do
+    with {:ok, op} <- Op.normalize(op),
+         {:ok, op} <- resolve_picture_src(op) do
       {bins, op} = pop_bins(op)
 
       case Ehwp.apply_op(ehwp_handle, expand_ops(op), bins) do
@@ -756,6 +800,115 @@ defmodule Ecrits.Doc.Rhwp do
       v -> Map.put(acc, dest_key, v)
     end
   end
+
+  # PRODUCER: turn an `insert_picture` `src` (a file path) into the fields the
+  # ehwp `InsertPicture` EditOp wants. The engine takes the image BYTES out-of-band
+  # (the `bins` arg of apply_op, referenced by `bin_index`) plus `extension` and
+  # BOTH the placed geometry (`width`/`height`, HWPUNIT) and the image's natural
+  # pixel size (`natural_width_px`/`natural_height_px`, neither serde-default — so
+  # they MUST be set). We read the file, base64 it into a 1-element `:bins` list
+  # (consumed by `pop_bins`), set `bin_index: 0`, derive `extension` from the path,
+  # and sniff the natural pixel dims from the PNG IHDR / JPEG SOF / GIF header.
+  #
+  # Ops without `src` (or non-insert_picture ops, or ops the caller already filled
+  # with `bins`/`bin_index`) pass through untouched.
+  defp resolve_picture_src(%{op: "insert_picture", src: src} = op)
+       when is_binary(src) and src != "" do
+    cond do
+      # Caller already supplied raw bytes — respect it, just make sure bin_index is set.
+      is_list(op[:bins]) and op[:bins] != [] ->
+        {:ok, Map.put_new(op, :bin_index, 0)}
+
+      true ->
+        with {:ok, bytes} <- read_picture_file(src) do
+          ext = src |> Path.extname() |> String.trim_leading(".") |> String.downcase()
+          {nw, nh} = image_pixel_dims(bytes, ext)
+
+          op =
+            op
+            |> Map.delete(:src)
+            |> Map.put(:bins, [Base.encode64(bytes)])
+            |> Map.put(:bin_index, op[:bin_index] || 0)
+            |> Map.put(:extension, present_string(op[:extension]) || ext)
+            |> Map.put(:natural_width_px, op[:natural_width_px] || nw)
+            |> Map.put(:natural_height_px, op[:natural_height_px] || nh)
+
+          {:ok, op}
+        end
+    end
+  end
+
+  defp resolve_picture_src(op), do: {:ok, op}
+
+  defp read_picture_file(src) do
+    case File.read(src) do
+      {:ok, bytes} when byte_size(bytes) > 0 ->
+        {:ok, bytes}
+
+      {:ok, _empty} ->
+        {:error, %{kind: "insert_picture", message: "image file is empty: #{src}"}}
+
+      {:error, reason} ->
+        {:error,
+         %{kind: "insert_picture", message: "cannot read image #{src}: #{:file.format_error(reason)}"}}
+    end
+  end
+
+  defp present_string(s) when is_binary(s) and s != "", do: s
+  defp present_string(_), do: nil
+
+  # Sniff the natural pixel size from the image header. PNG: IHDR width/height are
+  # the two big-endian u32s right after the 8-byte signature + "IHDR" length/type.
+  # JPEG: scan the marker segments for an SOF (0xC0..0xCF except C4/C8/CC) whose
+  # payload holds height/width as big-endian u16s. GIF: bytes 6..9 are LE u16
+  # width/height. Falls back to {0, 0} when the header can't be parsed (the engine
+  # then has no natural size hint but still places the image at width/height).
+  defp image_pixel_dims(
+         <<0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, _len::32, "IHDR", w::32, h::32,
+           _rest::binary>>,
+         _ext
+       ),
+       do: {w, h}
+
+  defp image_pixel_dims(<<0xFF, 0xD8, rest::binary>>, _ext), do: jpeg_sof_dims(rest)
+
+  defp image_pixel_dims(<<"GIF", _v::24, w::little-16, h::little-16, _rest::binary>>, _ext),
+    do: {w, h}
+
+  defp image_pixel_dims(_bytes, _ext), do: {0, 0}
+
+  # Walk JPEG marker segments looking for a Start-Of-Frame. A segment starts with
+  # 0xFF then a type byte; SOF markers (C0..CF, excluding the non-frame C4/C8/CC)
+  # carry [length:16, precision:8, height:16, width:16, ...]. Every other framed
+  # marker carries a 16-bit length (which INCLUDES the 2 length bytes), so we skip
+  # `length - 2` payload bytes to land on the next marker. Padding 0xFF fill bytes
+  # are skipped; standalone RSTn/SOI/EOI markers (D0..D9) have no payload.
+  defp jpeg_sof_dims(<<0xFF, 0xFF, rest::binary>>), do: jpeg_sof_dims(<<0xFF, rest::binary>>)
+
+  defp jpeg_sof_dims(<<0xFF, marker, len::16, payload::binary>>)
+       when marker in 0xC0..0xCF and marker not in [0xC4, 0xC8, 0xCC] do
+    _ = len
+
+    case payload do
+      <<_precision::8, h::16, w::16, _tail::binary>> -> {w, h}
+      _ -> {0, 0}
+    end
+  end
+
+  defp jpeg_sof_dims(<<0xFF, marker, len::16, payload::binary>>)
+       when marker not in 0xD0..0xD9 do
+    body = max(len - 2, 0)
+
+    case payload do
+      <<_seg::binary-size(^body), next::binary>> -> jpeg_sof_dims(next)
+      _ -> {0, 0}
+    end
+  end
+
+  defp jpeg_sof_dims(<<0xFF, marker, rest::binary>>) when marker in 0xD0..0xD9,
+    do: jpeg_sof_dims(rest)
+
+  defp jpeg_sof_dims(_), do: {0, 0}
 
   # `insert_picture` carries image bytes as base64 in `:bins`; pull them into the
   # binary list `apply_op` takes (the op references them by `bin_index`).
