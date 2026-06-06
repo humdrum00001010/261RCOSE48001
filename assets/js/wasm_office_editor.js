@@ -518,13 +518,40 @@ const WasmOfficeEditor = {
       this.parts = this.queryParts()
       console.log("[office-wasm] parts/geometry:", this.parts)
       this.setStatus("")
+      // A clean load clears any prior one-shot reload guard for this document.
+      try { sessionStorage.removeItem("office-wasm-retry:" + url) } catch (_) {}
       this.buildPageStack()
       this.renderVisiblePages()
     } catch (error) {
       const dump = dumpLog()
       console.error("[office-wasm] load failed", error)
       if (dump) console.error("[office-wasm] last engine output:\n" + dump)
-      this.setStatus("Office WASM failed to load: " + (error && error.message))
+
+      // A LOK init failure POISONS the heavy WASM runtime singleton for the WHOLE
+      // page session: once `ensure_office` fails, every later loadFromBytes short-
+      // circuits to "lok office init previously failed", masking the real first
+      // error. The runtime can't be re-instantiated in place — re-injecting the
+      // 144MB pthreads glue beside the dead instance risks a SharedArrayBuffer/OOM
+      // clash — so the only reliable recovery is a fresh page. Self-heal with ONE
+      // guarded full reload per document (sessionStorage guard => can never loop);
+      // if the load still fails after a clean reload, surface the error so the user
+      // isn't stuck in a reload cycle.
+      const msg = (error && error.message) || String(error)
+      const poisoned = /previously failed|importScripts|postMessage|abort\(|unreachable/i.test(msg + "\n" + dump)
+      const retryKey = "office-wasm-retry:" + url
+      let alreadyRetried = false
+      try { alreadyRetried = !!sessionStorage.getItem(retryKey) } catch (_) {}
+
+      if (poisoned && !alreadyRetried) {
+        try { sessionStorage.setItem(retryKey, "1") } catch (_) {}
+        this.setStatus("Office engine hit a failed state — reloading to recover…")
+        setTimeout(() => location.reload(), 1200)
+        return
+      }
+
+      this.setStatus(
+        "Office WASM failed to load: " + msg + " — reload the page (Cmd/Ctrl+Shift+R) to retry."
+      )
     }
     })()
     try {
