@@ -259,6 +259,218 @@ body[data-chat-rail-dragging="true"] {
   font-display: swap;
 }
 
+/* ===========================================================================
+   Latin font aliases for the HWP WASM render (Canvas 2D fallback chain).
+   ---------------------------------------------------------------------------
+   The HWP WASM renderer draws Latin runs through the browser's Canvas 2D
+   `fillText`, requesting the family names embedded in the .hwp doc — commonly
+   "Calibri", "Times New Roman", "Arial". Those names are NOT installed, so the
+   browser previously fell down the CSS chain to a CJK face (Noto Sans/Serif
+   CJK KR / system 맑은 고딕), whose Latin glyphs render thin/inconsistent.
+
+   We register the requested family names against bundled, metric-compatible
+   OFL/Apache Latin faces so Latin text lands on a proper Latin face:
+     Calibri           -> Carlito (SIL OFL 1.1, metric-compatible w/ Calibri)
+     Arial / Helvetica -> Arimo   (Apache 2.0, metric-compatible w/ Arial)
+     Times New Roman   -> Tinos   (Apache 2.0, metric-compatible w/ Times)
+   `local(...)` is listed first so a real installed face still wins; the
+   bundled file is the fallback. All four weight/style variants are mapped so
+   bold/italic runs also resolve to the correct Latin face. Korean coverage is
+   unaffected (handled by the hwp/ CJK @font-face blocks above). Font binaries
+   live in priv/static/assets/fonts/latin/ (served by Plug.Static), mirroring
+   the hwp/ CJK fonts.
+   ======================================================================== */
+
+/* Calibri -> Carlito */
+@font-face {
+  font-family: "Calibri";
+  src:
+    local("Calibri"),
+    url("/assets/fonts/latin/Carlito-Regular.ttf") format("truetype");
+  font-weight: normal;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Calibri";
+  src:
+    local("Calibri Bold"),
+    url("/assets/fonts/latin/Carlito-Bold.ttf") format("truetype");
+  font-weight: bold;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Calibri";
+  src:
+    local("Calibri Italic"),
+    url("/assets/fonts/latin/Carlito-Italic.ttf") format("truetype");
+  font-weight: normal;
+  font-style: italic;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Calibri";
+  src:
+    local("Calibri Bold Italic"),
+    url("/assets/fonts/latin/Carlito-BoldItalic.ttf") format("truetype");
+  font-weight: bold;
+  font-style: italic;
+  font-display: swap;
+}
+
+/* Arial -> Arimo */
+@font-face {
+  font-family: "Arial";
+  src:
+    local("Arial"),
+    url("/assets/fonts/latin/Arimo-Regular.ttf") format("truetype");
+  font-weight: normal;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Arial";
+  src:
+    local("Arial Bold"),
+    url("/assets/fonts/latin/Arimo-Bold.ttf") format("truetype");
+  font-weight: bold;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Arial";
+  src:
+    local("Arial Italic"),
+    url("/assets/fonts/latin/Arimo-Italic.ttf") format("truetype");
+  font-weight: normal;
+  font-style: italic;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Arial";
+  src:
+    local("Arial Bold Italic"),
+    url("/assets/fonts/latin/Arimo-BoldItalic.ttf") format("truetype");
+  font-weight: bold;
+  font-style: italic;
+  font-display: swap;
+}
+
+/* Helvetica -> Arimo (Arial-compatible; common alias in HWP/Office docs) */
+@font-face {
+  font-family: "Helvetica";
+  src:
+    local("Helvetica"),
+    url("/assets/fonts/latin/Arimo-Regular.ttf") format("truetype");
+  font-weight: normal;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Helvetica";
+  src:
+    local("Helvetica Bold"),
+    url("/assets/fonts/latin/Arimo-Bold.ttf") format("truetype");
+  font-weight: bold;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Helvetica";
+  src:
+    local("Helvetica Italic"),
+    url("/assets/fonts/latin/Arimo-Italic.ttf") format("truetype");
+  font-weight: normal;
+  font-style: italic;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Helvetica";
+  src:
+    local("Helvetica Bold Italic"),
+    url("/assets/fonts/latin/Arimo-BoldItalic.ttf") format("truetype");
+  font-weight: bold;
+  font-style: italic;
+  font-display: swap;
+}
+
+/* Times New Roman -> Tinos */
+@font-face {
+  font-family: "Times New Roman";
+  src:
+    local("Times New Roman"),
+    url("/assets/fonts/latin/Tinos-Regular.ttf") format("truetype");
+  font-weight: normal;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Times New Roman";
+  src:
+    local("Times New Roman Bold"),
+    url("/assets/fonts/latin/Tinos-Bold.ttf") format("truetype");
+  font-weight: bold;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Times New Roman";
+  src:
+    local("Times New Roman Italic"),
+    url("/assets/fonts/latin/Tinos-Italic.ttf") format("truetype");
+  font-weight: normal;
+  font-style: italic;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Times New Roman";
+  src:
+    local("Times New Roman Bold Italic"),
+    url("/assets/fonts/latin/Tinos-BoldItalic.ttf") format("truetype");
+  font-weight: bold;
+  font-style: italic;
+  font-display: swap;
+}
+
+/* Times -> Tinos (short alias some docs use) */
+@font-face {
+  font-family: "Times";
+  src:
+    local("Times"),
+    url("/assets/fonts/latin/Tinos-Regular.ttf") format("truetype");
+  font-weight: normal;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Times";
+  src:
+    local("Times Bold"),
+    url("/assets/fonts/latin/Tinos-Bold.ttf") format("truetype");
+  font-weight: bold;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Times";
+  src:
+    local("Times Italic"),
+    url("/assets/fonts/latin/Tinos-Italic.ttf") format("truetype");
+  font-weight: normal;
+  font-style: italic;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Times";
+  src:
+    local("Times Bold Italic"),
+    url("/assets/fonts/latin/Tinos-BoldItalic.ttf") format("truetype");
+  font-weight: bold;
+  font-style: italic;
+  font-display: swap;
+}
+
 .ehwp-document-stack {
   display: flex;
   min-height: 100%;
