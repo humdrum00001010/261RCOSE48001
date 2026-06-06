@@ -1457,7 +1457,13 @@ const WasmHwpEditor = {
 
   // Literal search over the viewed model -> [{ref, text}] (ref carries the
   // section/paragraph/offset so the agent can target a replace).
-  applyAgentFind({ pattern, case_sensitive }) {
+  //
+  // `all` (or `regex`) flips to discovery mode: enumerate EVERY addressable
+  // element — body paragraphs AND table cells (empty ones included, which the
+  // literal searchAllText can never surface) — and filter by `pattern` as a
+  // regex. This is what lets the agent see the blank boxes in a form template.
+  applyAgentFind({ pattern, case_sensitive, all, regex }) {
+    if (all || regex) return this.applyAgentFindAll(pattern, !!case_sensitive)
     const matches = []
     try {
       const raw = this.doc.searchAllText(String(pattern || ""), !!case_sensitive, true)
@@ -1493,6 +1499,92 @@ const WasmHwpEditor = {
     return { pattern, matches }
   },
 
+  // Discovery search: enumerate every element (collectElements) and keep those
+  // whose text matches `pattern` as a regex. An empty/missing pattern becomes
+  // [\s\S]* so {all:true} lists the WHOLE structure, including empty cells.
+  applyAgentFindAll(pattern, caseSensitive) {
+    const src = pattern == null || pattern === "" ? "[\\s\\S]*" : String(pattern)
+    let re
+    try {
+      re = new RegExp(src, caseSensitive ? "" : "i")
+    } catch (error) {
+      return { pattern, error: String(error && error.message ? error.message : error), matches: [] }
+    }
+    const MATCH_CAP = 2000
+    const matches = []
+    let truncated = false
+    for (const el of this.collectElements()) {
+      // Stateless test: no global flag, so lastIndex never advances between calls.
+      if (re.test(el.text)) {
+        if (matches.length >= MATCH_CAP) { truncated = true; break }
+        matches.push({ ref: JSON.stringify(el.ref), text: el.text })
+      }
+    }
+    const out = { pattern, matches }
+    if (truncated) out.truncated = true
+    return out
+  },
+
+  // Enumerate EVERY addressable element of the viewed model -> [{ref, text}]:
+  // every body paragraph plus every table cell (empty cells included). Empty
+  // cells are invisible to searchAllText/collectParagraphs but are real edit
+  // targets, so this is what powers {all:true} template discovery.
+  //
+  // Tables are anchored at a body paragraph (s,p); we probe controls c and cells
+  // i positionally via getCellParagraphLength, which THROWS once we walk past the
+  // last control/cell — that throw is the loop bound. If c===0&&i===0 throws there
+  // is no table at (s,p), so we stop probing this paragraph entirely (cheap).
+  collectElements() {
+    const ELEM_CAP = 5000
+    const out = []
+    let sectionCount = 1
+    try { sectionCount = this.doc.getSectionCount() } catch (_) {}
+    for (let s = 0; s < sectionCount; s++) {
+      let paraCount = 0
+      try { paraCount = this.doc.getParagraphCount(s) } catch (_) { paraCount = 0 }
+      for (let p = 0; p < paraCount; p++) {
+        if (out.length >= ELEM_CAP) return out
+        let len = 0
+        try { len = this.doc.getParagraphLength(s, p) } catch (_) { len = 0 }
+        let text = ""
+        try { text = this.doc.getTextRange(s, p, 0, len) || "" } catch (_) { text = "" }
+        out.push({ ref: { section: s, paragraph: p, offset: 0 }, text })
+
+        // Probe tables anchored at this paragraph.
+        for (let c = 0; c < 8; c++) {
+          let controlEmpty = true
+          for (let i = 0; i < 512; i++) {
+            if (out.length >= ELEM_CAP) return out
+            let clen
+            try {
+              clen = this.doc.getCellParagraphLength(s, p, c, i, 0)
+            } catch (_) {
+              // Past the last cell of this control. If even cell 0 of control 0
+              // threw, there is no table here at all -> stop probing controls.
+              if (c === 0 && i === 0) { c = 8 }
+              break
+            }
+            controlEmpty = false
+            let ctext = ""
+            try { ctext = this.doc.getTextInCell(s, p, c, i, 0, 0, clen) || "" } catch (_) { ctext = "" }
+            out.push({
+              ref: {
+                section: s,
+                paragraph: p,
+                offset: 0,
+                cell: { parentParaIndex: p, controlIndex: c, cellIndex: i, cellParaIndex: 0 }
+              },
+              text: ctext
+            })
+          }
+          // A control with zero cells means no further controls hold a table.
+          if (controlEmpty) break
+        }
+      }
+    }
+    return out
+  },
+
   // Page through the document text from the viewed model. Mirrors the server
   // doc.read shape ({text, at, size, total, next_at}) so the agent pages the
   // same way regardless of backing.
@@ -1500,15 +1592,25 @@ const WasmHwpEditor = {
     const o = opts || {}
     const at = Math.max(0, Number(o.at || 0))
     const size = Math.min(30, Math.max(1, Number(o.size || 30)))
-    const paragraphs = this.collectParagraphs()
-    const total = paragraphs.length
-    const window = paragraphs.slice(at, at + size)
+    // Read the FULL element list (body paragraphs AND table cells, empty cells
+    // included) — collectParagraphs() walks only body paragraphs, so TABLES were
+    // invisible in doc.read and the agent skipped them entirely. Each element
+    // carries its `ref` so the agent can fill a cell straight from the read,
+    // and a `table_cell` flag + `[cell]` text prefix so blanks are obvious.
+    const elements = this.collectElements()
+    const total = elements.length
+    const window = elements.slice(at, at + size)
     const nextAt = at + window.length < total ? at + window.length : null
+    const paragraphs = window.map((el) => ({
+      text: el.text,
+      ref: JSON.stringify(el.ref),
+      table_cell: !!(el.ref && el.ref.cell)
+    }))
     return {
-      text: window.join("\n"),
+      text: window.map((el) => (el.ref && el.ref.cell ? `[cell] ${el.text}` : el.text)).join("\n"),
       at,
       size: window.length,
-      paragraphs: window,
+      paragraphs,
       total,
       next_at: nextAt
     }

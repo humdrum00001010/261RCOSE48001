@@ -112,11 +112,15 @@ defmodule Ecrits.Doc.Tools do
       "namespace" => @namespace,
       "name" => "read",
       "description" =>
-        "Read a paragraph chunk from a document. INCREMENTAL: a single call returns " <>
-          "AT MOST #{@read_cap} paragraphs (a hard cap) and never the whole document. " <>
-          "Start at paragraph index `at` (default 0); `size` is the requested paragraph " <>
-          "count, clamped to #{@read_cap}. The result includes `next_at` (the cursor for " <>
-          "the next page, or null at end) and `total` — page through long docs with it.",
+        "Read a chunk of a document's elements. INCREMENTAL: a single call returns " <>
+          "AT MOST #{@read_cap} elements (a hard cap) and never the whole document. " <>
+          "Start at index `at` (default 0); `size` is the requested count, clamped to " <>
+          "#{@read_cap}. Each entry in `paragraphs` is `{text, ref, table_cell}` — body " <>
+          "paragraphs AND every TABLE CELL (including EMPTY cells, prefixed `[cell]` in " <>
+          "`text`). Use the per-element `ref` to edit it directly (e.g. insert_text into " <>
+          "an empty cell, or replace_text in a filled one) — this is how you find and fill " <>
+          "blank table fields a text search can't see. The result includes `next_at` " <>
+          "(cursor for the next page, or null at end) and `total` — page through with it.",
       "risk" => "read",
       "inputSchema" => %{
         "type" => "object",
@@ -143,16 +147,35 @@ defmodule Ecrits.Doc.Tools do
     %{
       "namespace" => @namespace,
       "name" => "find",
-      "description" => "Literal search -> [{ref, text}].",
+      "description" =>
+        "Literal search -> [{ref, text}]. With `all:true`, returns EVERY element " <>
+          "including empty table cells (each with its own ref) and treats `pattern` " <>
+          "as a REGULAR EXPRESSION — use it to discover blanks to fill: " <>
+          "`{all:true}` lists the whole document structure; " <>
+          "`{all:true, pattern:\"^\\\\s*$\"}` lists only the empty elements. " <>
+          "In `all` mode `pattern` is optional (omit it to match everything).",
       "risk" => "read",
       "inputSchema" => %{
         "type" => "object",
         "properties" => %{
           "document" => %{"type" => "string"},
-          "pattern" => %{"type" => "string", "minLength" => 1},
-          "case_sensitive" => %{"type" => "boolean", "default" => false}
+          "pattern" => %{"type" => "string"},
+          "case_sensitive" => %{"type" => "boolean", "default" => false},
+          "all" => %{
+            "type" => "boolean",
+            "default" => false,
+            "description" =>
+              "Return EVERY addressable element (body paragraphs AND table cells, " <>
+                "empty cells included) and treat `pattern` as a regex. `pattern` is " <>
+                "optional in this mode."
+          },
+          "regex" => %{
+            "type" => "boolean",
+            "default" => false,
+            "description" => "Treat `pattern` as a regular expression (implied by `all`)."
+          }
         },
-        "required" => ["document", "pattern"]
+        "required" => ["document"]
       },
       "annotations" => %{"readOnlyHint" => true}
     },
@@ -336,12 +359,20 @@ defmodule Ecrits.Doc.Tools do
   end
 
   def call(ctx, "doc.find", args) do
-    with {:ok, pattern} <- require_string(args, "pattern") do
+    all = get(args, ["all"]) || false
+    regex = get(args, ["regex"]) || false
+
+    # `pattern` is required for a literal search, but optional in discovery mode
+    # (`all`/`regex`): {all:true} with no pattern enumerates the whole structure,
+    # so default to "" rather than hard-failing require_string.
+    with {:ok, pattern} <- find_pattern(args, all || regex) do
       route_doc(ctx, args,
         browser: fn lv ->
           browser_call(lv, args, :find, %{
             pattern: pattern,
-            case_sensitive: get(args, ["case_sensitive"]) || false
+            case_sensitive: get(args, ["case_sensitive"]) || false,
+            all: all,
+            regex: regex
           })
         end,
         server: fn editor ->
@@ -701,6 +732,19 @@ defmodule Ecrits.Doc.Tools do
     case get(args, [key]) do
       value when is_binary(value) and value != "" -> {:ok, value}
       _ -> {:error, {:invalid_params, "#{key} (non-empty string) is required"}}
+    end
+  end
+
+  # doc.find: in discovery mode (`all`/`regex`) an empty/missing pattern is valid
+  # (matches everything, including empty cells); a literal search still requires
+  # a non-empty pattern.
+  defp find_pattern(args, true), do: {:ok, get_string_or_empty(args, "pattern")}
+  defp find_pattern(args, false), do: require_string(args, "pattern")
+
+  defp get_string_or_empty(args, key) do
+    case get(args, [key]) do
+      value when is_binary(value) -> value
+      _ -> ""
     end
   end
 
