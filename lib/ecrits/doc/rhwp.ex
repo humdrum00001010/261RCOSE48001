@@ -174,6 +174,10 @@ defmodule Ecrits.Doc.Rhwp do
   def native_props(:picture), do: @picture_props
   def native_props(:shape), do: @shape_props
   def native_props(:cell), do: @cell_props
+  # A doc.find cell ref is a char run INSIDE a cell; for inspect/get/set surface
+  # the cell's settable names (incl. BackgroundColor) so the agent can read/fill
+  # table fields straight from the find ref.
+  def native_props(:cell_char), do: @cell_props
   def native_props(_other), do: []
 
   @impl true
@@ -233,6 +237,7 @@ defmodule Ecrits.Doc.Rhwp do
   defp element_type(:picture), do: "picture"
   defp element_type(:shape), do: "shape"
   defp element_type(:cell), do: "cell"
+  defp element_type(:cell_char), do: "cell"
   defp element_type(other), do: Atom.to_string(other)
 
   # Conceptual interface set, mirroring how Office reports XServiceInfo. For

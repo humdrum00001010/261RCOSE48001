@@ -61,6 +61,15 @@ defmodule Ecrits.Doc.Rhwp.Ref do
 
   @spec decode(t()) :: {:ok, decoded()} | {:error, term()}
   def decode(@scheme <> rest) when is_binary(rest), do: decode_body(rest)
+
+  # doc.find on a BROWSER-backed doc returns positional refs as JSON OBJECTS
+  # (`{"section","paragraph","offset"[,"length"][,"cell":{parentParaIndex,
+  # controlIndex,cellIndex,cellParaIndex}]}`), not the `hwp:` grammar. Accept that
+  # form too so the server-side inspect/get/set tools consume a doc.find ref
+  # directly instead of rejecting it as invalid — a nested `cell` decodes to a
+  # `:cell_char` ref (the table cell), otherwise a `:char` ref.
+  def decode("{" <> _ = json) when is_binary(json), do: decode_json(json)
+
   def decode(value) when is_binary(value), do: {:error, {:invalid_ref, value}}
   def decode(value), do: {:error, {:invalid_ref, value}}
 
@@ -115,6 +124,51 @@ defmodule Ecrits.Doc.Rhwp.Ref do
 
       _ ->
         {:error, {:invalid_ref, @scheme <> body}}
+    end
+  end
+
+  # --- JSON object refs (doc.find on a browser-backed doc) --------------------
+
+  defp decode_json(json) do
+    case Jason.decode(json) do
+      {:ok, %{} = map} -> from_json_map(map)
+      _ -> {:error, {:invalid_ref, json}}
+    end
+  end
+
+  # A nested `cell` object -> a char run inside a table cell. `parentParaIndex`
+  # is the body paragraph that holds the table control, so it maps to `para`.
+  defp from_json_map(%{"cell" => %{} = cell} = map) do
+    {:ok,
+     %{
+       kind: :cell_char,
+       sec: json_int(map, "section"),
+       para: json_int(cell, "parentParaIndex", json_int(map, "paragraph")),
+       control: json_int(cell, "controlIndex"),
+       cell: json_int(cell, "cellIndex"),
+       cell_para: json_int(cell, "cellParaIndex"),
+       off: json_int(map, "offset"),
+       len: json_int(map, "length")
+     }}
+  end
+
+  defp from_json_map(%{"paragraph" => _} = map) do
+    {:ok,
+     %{
+       kind: :char,
+       sec: json_int(map, "section"),
+       para: json_int(map, "paragraph"),
+       off: json_int(map, "offset"),
+       len: json_int(map, "length")
+     }}
+  end
+
+  defp from_json_map(map), do: {:error, {:invalid_ref, map}}
+
+  defp json_int(map, key, default \\ 0) do
+    case Map.get(map, key) do
+      n when is_integer(n) -> n
+      _ -> default
     end
   end
 
