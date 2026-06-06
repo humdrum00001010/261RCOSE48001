@@ -320,10 +320,14 @@ defmodule Ecrits.Doc.Tools do
                   "(the body is expanded into real paragraphs). Use this to author multi-paragraph content " <>
                   "(e.g. each contract clause / 조 on its own line) in ONE call instead of one giant run-on paragraph.\n" <>
                 "• set_cell {op, ref, text}: REPLACE a table CELL's entire content with `text` in ONE op. `ref` must be a " <>
-                  "CELL ref (from doc.find on text inside that cell). `text` is split on `\\n` into one cell paragraph per line, " <>
-                  "and EACH line inherits the cell's existing paragraph + character formatting (font, alignment, color). " <>
-                  "Use this to fill a multi-paragraph cell (e.g. an `① English sentence\\n해석(Korean)` two-line cell) without " <>
-                  "per-line replace_text/split surgery. Preferred over replace_text when you want to swap a whole cell's body.\n" <>
+                  "CELL ref (from doc.find on text inside that cell) — including a NESTED cell (a table inside a cell, whose " <>
+                  "ref carries `cellPath`): set_cell replaces nested header/title cells too. `text` is split on `\\n` into one " <>
+                  "cell paragraph per line, and EACH line inherits the cell's existing paragraph + character formatting " <>
+                  "(font, alignment, color). Use this to fill a multi-paragraph cell (e.g. an `① English sentence\\n해석(Korean)` " <>
+                  "two-line cell) without per-line replace_text/split surgery. " <>
+                  "To CHANGE a cell that ALREADY has text (e.g. a header reading 'Lesson 3' → 'Lesson 4'), ALWAYS use set_cell — " <>
+                  "it clears then rewrites the cell. NEVER insert_text into a non-empty cell: insert APPENDS, leaving the old text " <>
+                  "behind so the two overlap/render garbled. Preferred over replace_text when you want to swap a whole cell's body.\n" <>
                 "• delete_range {op, ref, count?}\n" <>
                 "• insert_paragraph {op, ref} • delete_paragraph {op, ref} • split {op, ref} • merge {op, ref}\n" <>
                 "• insert_table {op, ref, rows, cols}: create a NEW rows×cols table at `ref`. Returns native {paraIdx, controlIdx} — " <>
