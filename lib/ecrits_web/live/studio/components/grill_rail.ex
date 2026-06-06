@@ -291,12 +291,9 @@ defmodule EcritsWeb.Live.Studio.Components.GrillRail do
   # ---- Mark accessor helpers (accept structs and maps) -------------------
 
   @doc false
-  def mark_id(%MarkInput{} = m) do
-    case Map.get(m, :id) do
-      nil -> derive_id(m)
-      id -> to_string(id)
-    end
-  end
+  # `%MarkInput{}` is an embedded schema with `@primary_key false` — it carries
+  # no `:id` field, so its identity is always derived from its contents.
+  def mark_id(%MarkInput{} = m), do: derive_id(m)
 
   def mark_id(%{id: id}) when not is_nil(id), do: to_string(id)
   def mark_id(%{"id" => id}) when not is_nil(id), do: to_string(id)
@@ -331,7 +328,6 @@ defmodule EcritsWeb.Live.Studio.Components.GrillRail do
   defp draft_for(_, _), do: ""
 
   defp empty_string?(""), do: true
-  defp empty_string?(nil), do: true
   defp empty_string?(s) when is_binary(s), do: String.trim(s) == ""
   defp empty_string?(_), do: false
 

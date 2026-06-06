@@ -757,40 +757,56 @@ defmodule ExMCP.Server.Handler do
   end
 
   @doc false
-  defmacro __before_compile__(_env) do
-    quote do
-      # =================================================================
-      # Required callback defaults (injected via @before_compile)
-      #
-      # These use defoverridable so the Tool DSL's @before_compile
-      # (which runs after this one) can override them. User inline
-      # defs also override these since inline defs beat @before_compile.
-      # =================================================================
+  defmacro __before_compile__(env) do
+    # =================================================================
+    # Required callback defaults (injected via @before_compile)
+    #
+    # Only inject a default when the user hasn't supplied their own
+    # inline clause. `@before_compile` code is appended *after* the
+    # module body, so unconditionally emitting these would add an extra
+    # (overridable) clause after the user's — which Elixir 1.20's clause
+    # analysis flags as redundant. Guarding on `Module.defines?/2` keeps
+    # the default for bare handlers while letting inline defs stand alone.
+    # =================================================================
+    init = unless Module.defines?(env.module, {:handle_initialize, 2}) do
+      quote do
+        @impl ExMCP.Server.Handler
+        def handle_initialize(_params, state) do
+          {:ok,
+           %{
+             protocolVersion: "2025-03-26",
+             serverInfo: %{name: "ex_mcp", version: "0.1.0"},
+             capabilities: %{}
+           }, state}
+        end
 
-      @impl ExMCP.Server.Handler
-      def handle_initialize(_params, state) do
-        {:ok,
-         %{
-           protocolVersion: "2025-03-26",
-           serverInfo: %{name: "ex_mcp", version: "0.1.0"},
-           capabilities: %{}
-         }, state}
+        defoverridable handle_initialize: 2
       end
-
-      @impl ExMCP.Server.Handler
-      def handle_list_tools(_cursor, state) do
-        {:ok, [], nil, state}
-      end
-
-      @impl ExMCP.Server.Handler
-      def handle_call_tool(_name, _arguments, state) do
-        {:error, "Tool not found", state}
-      end
-
-      defoverridable handle_initialize: 2,
-                     handle_list_tools: 2,
-                     handle_call_tool: 3
     end
+
+    list_tools = unless Module.defines?(env.module, {:handle_list_tools, 2}) do
+      quote do
+        @impl ExMCP.Server.Handler
+        def handle_list_tools(_cursor, state) do
+          {:ok, [], nil, state}
+        end
+
+        defoverridable handle_list_tools: 2
+      end
+    end
+
+    call_tool = unless Module.defines?(env.module, {:handle_call_tool, 3}) do
+      quote do
+        @impl ExMCP.Server.Handler
+        def handle_call_tool(_name, _arguments, state) do
+          {:error, "Tool not found", state}
+        end
+
+        defoverridable handle_call_tool: 3
+      end
+    end
+
+    [init, list_tools, call_tool]
   end
 
   @doc """

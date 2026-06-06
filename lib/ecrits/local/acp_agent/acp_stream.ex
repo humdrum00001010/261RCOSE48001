@@ -17,8 +17,6 @@ defmodule Ecrits.Local.AcpAgent.AcpStream do
       provider subprocess).
   """
 
-  require Logger
-
   alias ExMCP.ACP.AdapterTransport
   alias ExMCP.ACP.Adapters.Claude
   alias ExMCP.ACP.Adapters.Codex

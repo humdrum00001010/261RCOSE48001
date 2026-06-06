@@ -27,8 +27,6 @@ defmodule Ecrits.Local.AcpAgent.Session do
 
   use GenServer
 
-  require Logger
-
   alias Ecrits.Context
   alias Ecrits.Local.AcpAgent.AcpStream
 

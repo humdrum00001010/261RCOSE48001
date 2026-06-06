@@ -1088,7 +1088,7 @@ defmodule EcritsWeb.Live.Studio.Components.ChatRail do
   # dots — otherwise the indicator keeps trailing the prose as the JS hook
   # ferries it from paragraph to paragraph during streaming.
   defp agent_loading?(msg) do
-    msg_transient?(msg) == "true" and (msg_body(msg) || "") == ""
+    msg_transient?(msg) == "true" and msg_body(msg) == ""
   end
 
   defp msg_body(%{body: body}) when is_binary(body), do: body
