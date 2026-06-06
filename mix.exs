@@ -78,6 +78,14 @@ defmodule Ecrits.MixProject do
       # Headless HWP/HWPX NIF runtime backing `Ecrits.Doc.Rhwp` (the server arm of
       # the doc-editing MCP). Provides the `Ehwp` facade used by the `doc.*` tools.
       {:ehwp, git: "https://storage.cloudxyz.org/IlYoung/ehwp", branch: "main"},
+      # Headless docx/pptx NIF runtime backing `Ecrits.Doc.Office` (the server arm
+      # for Office docs). Pure-UNO LibreOfficeKit bridge: the `uno_*` NIFs answer
+      # the SAME `doc.*` surface as HWP. The UNO arm only BUILDS when the LOK
+      # install/SDK env knobs are set (see config/dev.exs + DEV_SETUP below);
+      # without them the NIFs return {:error, :uno_unavailable} and Office docs are
+      # simply unsupported, so a checkout without a local LibreOffice build still
+      # compiles.
+      {:libreofficex, git: "https://storage.cloudxyz.org/IlYoung/libreofficex", branch: "main"},
       {:orchex, git: "https://storage.cloudxyz.org/IlYoung/Orchex.git", branch: "main"},
       # ecrits extra deps.
       {:openai_ex, "~> 0.9"},

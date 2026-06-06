@@ -29,9 +29,11 @@ defmodule Ecrits.Doc.PoolTest do
       assert entry.backing == :server
     end
 
-    test "rejects unsupported kinds (office is deferred)", %{pool: pool} do
-      assert {:error, {:unsupported_kind, :office}} =
-               Pool.open(pool, "report.pptx", kind: :office)
+    test "rejects unsupported kinds (no registered backend)", %{pool: pool} do
+      # docx/pptx/office now route to `Ecrits.Doc.Office`; an unregistered kind
+      # (e.g. xlsx, which the Office backend does not yet serve) is still rejected.
+      assert {:error, {:unsupported_kind, :xlsx}} =
+               Pool.open(pool, "report.xlsx", kind: :xlsx)
     end
 
     test "two documents get independent editors (parallel docs)", %{pool: pool} do

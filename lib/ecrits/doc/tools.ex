@@ -84,7 +84,7 @@ defmodule Ecrits.Doc.Tools do
         "type" => "object",
         "properties" => %{
           "path" => %{"type" => "string", "minLength" => 1},
-          "kind" => %{"type" => "string", "enum" => ["hwp", "hwpx"]}
+          "kind" => %{"type" => "string", "enum" => ["hwp", "hwpx", "docx", "pptx"]}
         },
         "required" => ["path"]
       },
@@ -917,6 +917,8 @@ defmodule Ecrits.Doc.Tools do
   end
 
   defp save_format(:hwpx), do: :hwpx
+  defp save_format(:docx), do: :docx
+  defp save_format(:pptx), do: :pptx
   defp save_format(_kind), do: :hwp
 
   # Synchronous request/reply against the viewing LiveView. The LiveView's
@@ -1197,7 +1199,11 @@ defmodule Ecrits.Doc.Tools do
 
   defp normalize_kind("hwpx"), do: :hwpx
   defp normalize_kind("hwp"), do: :hwp
+  defp normalize_kind("docx"), do: :docx
+  defp normalize_kind("pptx"), do: :pptx
   defp normalize_kind(:hwpx), do: :hwpx
+  defp normalize_kind(:docx), do: :docx
+  defp normalize_kind(:pptx), do: :pptx
   defp normalize_kind(_other), do: :hwp
 
   defp maybe_put(map, _key, nil), do: map

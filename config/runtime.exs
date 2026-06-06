@@ -55,6 +55,27 @@ if System.get_env("LAW_OC") not in [nil, ""] do
     server_label: "korean-law"
 end
 
+# ---------------------------------------------------------------------------
+# Headless Office (docx/pptx) editing — LibreOfficeKit UNO arm
+# ---------------------------------------------------------------------------
+# `Ecrits.Doc.Office` (the server arm for docx/pptx, mirroring `Ecrits.Doc.Rhwp`)
+# boots LibreOffice in-process via the `libreofficex` UNO NIF. It needs the LOK
+# *install dir* — the `…/LibreOffice.app/Contents/Frameworks` directory holding
+# `libsofficeapp.dylib`. We surface it WITHOUT hardcoding any developer's home:
+#
+#   * `LOK_INSTALL_DIR` (env, the SAME knob the NIF's build.rs reads) wins;
+#   * else `Ecrits.Doc.Office` discovers it at runtime under
+#     `~/Desktop/core/instdir/…` (System.user_home()-relative — see the module).
+#
+# Set it explicitly only when LibreOffice lives elsewhere. When neither the env
+# nor the discovery path exists, Office docs are simply unsupported (open returns
+# an error) and the rest of the app is unaffected. The same `~/Desktop/core`
+# tree also drives the NIF's UNO-arm BUILD via LOK_INCLUDE_DIR / LOK_CONFIG_HOST /
+# LOK_INSTALL_DIR / LOK_SDK_DIR (defaults match `~/Desktop/core`); see DEV_SETUP.
+if System.get_env("LOK_INSTALL_DIR") not in [nil, ""] do
+  config :ecrits, Ecrits.Doc.Office, install_dir: System.get_env("LOK_INSTALL_DIR")
+end
+
 # Stash the current Mix env so Ecrits.Application can branch on it
 # (the `/dev/theme` LiveView route gate reads this).
 config :ecrits, :env, config_env()

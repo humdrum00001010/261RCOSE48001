@@ -12,7 +12,8 @@ defmodule Ecrits.Doc do
   Implementations:
 
     * `Ecrits.Doc.Rhwp` — HWP/HWPX, backed by the headless `ehwp` server NIF.
-    * `Ecrits.Doc.Office` — docx/pptx/xlsx via LibreOffice (LOK NIF). **Deferred.**
+    * `Ecrits.Doc.Office` — docx/pptx via LibreOffice (the pure-UNO `libreofficex`
+      NIF). The server arm for Office docs, mirroring `Rhwp`.
 
   ## Refs are opaque
 
@@ -37,7 +38,7 @@ defmodule Ecrits.Doc do
   @type handle :: term()
 
   @typedoc "Document kind."
-  @type kind :: :hwp | :hwpx | :office
+  @type kind :: :hwp | :hwpx | :office | :docx | :pptx
 
   @typedoc """
   Engine-level result of a mutation.
@@ -124,6 +125,8 @@ defmodule Ecrits.Doc do
   @spec backend_for(kind()) :: module() | nil
   def backend_for(:hwp), do: Ecrits.Doc.Rhwp
   def backend_for(:hwpx), do: Ecrits.Doc.Rhwp
-  def backend_for(:office), do: nil
+  def backend_for(:docx), do: Ecrits.Doc.Office
+  def backend_for(:pptx), do: Ecrits.Doc.Office
+  def backend_for(:office), do: Ecrits.Doc.Office
   def backend_for(_other), do: nil
 end
