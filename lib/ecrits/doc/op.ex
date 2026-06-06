@@ -15,6 +15,7 @@ defmodule Ecrits.Doc.Op do
       %{op: "delete_node",   ref}
       %{op: "move_node",     ref, to_parent, at}
       %{op: "insert_picture", ref, src, width?, height?}
+      %{op: "set_cell",      ref, text}
   """
 
   # The structural edit verbs the HWP engine (ehwp apply_op EditOp) actually
@@ -24,7 +25,7 @@ defmodule Ecrits.Doc.Op do
   @verbs ~w(insert_text delete_range replace_text insert_paragraph delete_paragraph
             split merge insert_table insert_table_row delete_table_row
             insert_table_column delete_table_column merge_cells split_cell
-            delete_node insert_picture)
+            delete_node insert_picture set_cell)
 
   @doc "The full set of recognised op verbs."
   @spec verbs() :: [String.t()]
@@ -93,6 +94,24 @@ defmodule Ecrits.Doc.Op do
         # `\n` in text is ALLOWED and meaningful: the backend expands it into one
         # paragraph per line (insert + split), so the agent can author multi-
         # paragraph bodies (e.g. each contract clause on its own line) in one call.
+        {:ok, op}
+    end
+  end
+
+  defp validate("set_cell", %{} = op) do
+    cond do
+      is_nil(op[:ref]) ->
+        {:error,
+         {:invalid_op,
+          "set_cell requires a CELL \"ref\" (from doc.find, addressing a table cell) saying which cell to fill"}}
+
+      not is_binary(op[:text]) ->
+        {:error,
+         {:invalid_op,
+          "set_cell requires a string \"text\" — the cell's new content. Newlines (\\n) split it into one cell paragraph per line; each line inherits the cell's existing paragraph/char formatting."}}
+
+      true ->
+        # `\n` in text is the WHOLE point: it becomes one cell paragraph per line.
         {:ok, op}
     end
   end

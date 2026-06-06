@@ -36,5 +36,38 @@ defmodule Ecrits.Doc.OpTest do
         assert verb in Op.verbs()
       end
     end
+
+    test "accepts set_cell with a cell ref and multi-line text" do
+      assert {:ok, op} =
+               Op.normalize(%{
+                 "op" => "set_cell",
+                 "ref" => "hwp:s0/p0/tbl2/cell3/cp0/c0+5",
+                 "text" => "① Sleep is important.\n수면은 중요하다."
+               })
+
+      assert op.op == "set_cell"
+      assert op.ref == "hwp:s0/p0/tbl2/cell3/cp0/c0+5"
+      assert op.text == "① Sleep is important.\n수면은 중요하다."
+    end
+
+    test "set_cell allows empty text (clears the cell) but requires a string" do
+      assert {:ok, _} = Op.normalize(%{"op" => "set_cell", "ref" => "hwp:s0/p0/tbl0/cell0/cp0/c0+0", "text" => ""})
+
+      assert {:error, {:invalid_op, msg}} =
+               Op.normalize(%{"op" => "set_cell", "ref" => "hwp:s0/p0/tbl0/cell0/cp0/c0+0"})
+
+      assert msg =~ "text"
+    end
+
+    test "set_cell requires a ref" do
+      assert {:error, {:invalid_op, msg}} =
+               Op.normalize(%{"op" => "set_cell", "text" => "x"})
+
+      assert msg =~ "ref"
+    end
+
+    test "set_cell is part of the verb vocabulary" do
+      assert "set_cell" in Op.verbs()
+    end
   end
 end

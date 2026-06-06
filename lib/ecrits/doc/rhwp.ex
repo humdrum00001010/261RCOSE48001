@@ -591,25 +591,46 @@ defmodule Ecrits.Doc.Rhwp do
     |> Map.merge(flatten_ref(ref))
   end
 
-  # An `insert_text` whose text contains `\n` is authoring MULTIPLE paragraphs.
-  # The engine treats `\n` as a literal char (no paragraph break) and
-  # `insert_paragraph` ignores text, so expand it into the real primitive
-  # sequence: insert line 0, then for each further line `split` the current
-  # paragraph at its end (creating the next paragraph) and insert the line. The
-  # whole batch applies atomically via one `apply_op`. Body refs only — a cell
-  # ref (has :control) keeps the single literal insert.
+  # Map a normalized op to the engine IR op list. Two verbs are rewritten here:
+  # `set_cell` -> the engine `set_cell_text` op (whole-cell replace, format
+  # preserved), and a multi-paragraph body `insert_text` -> an insert+split
+  # primitive sequence. Everything else passes through 1:1.
   defp expand_ops(op) do
     ir = to_ir_op(op)
     text = ir[:text]
 
-    if ir[:op] == "insert_text" and is_binary(text) and String.contains?(text, "\n") and
-         is_nil(ir[:control]) do
-      sec = ir[:section] || 0
-      para = ir[:paragraph] || 0
-      off = ir[:offset] || 0
-      build_multi_para(sec, para, off, String.split(text, "\n"))
-    else
-      [ir]
+    cond do
+      # `set_cell` REPLACES a whole table cell's content: translate to the engine's
+      # `set_cell_text` op, splitting `text` on `\n` into one cell paragraph per
+      # line. Each new paragraph inherits the cell's existing ParaShape/CharShape
+      # (the engine clones the first paragraph's format), so the `EN ¶ 해석`
+      # two-paragraph shape + fonts are preserved. The cell address (control/cell)
+      # comes from the flattened cell ref. ONE op, no per-cell_para surgery.
+      ir[:op] == "set_cell" ->
+        lines = String.split(text || "", "\n")
+
+        engine_op =
+          ir
+          |> Map.delete(:text)
+          |> Map.delete(:cell_para)
+          |> Map.put(:op, "set_cell_text")
+          |> Map.put(:lines, lines)
+
+        [engine_op]
+
+      # An `insert_text` whose text contains `\n` is authoring MULTIPLE paragraphs.
+      # The engine treats `\n` as a literal char (no paragraph break) and
+      # `insert_paragraph` ignores text, so expand it into the real primitive
+      # sequence (body refs only — a cell ref keeps the single literal insert).
+      ir[:op] == "insert_text" and is_binary(text) and String.contains?(text, "\n") and
+          is_nil(ir[:control]) ->
+        sec = ir[:section] || 0
+        para = ir[:paragraph] || 0
+        off = ir[:offset] || 0
+        build_multi_para(sec, para, off, String.split(text, "\n"))
+
+      true ->
+        [ir]
     end
   end
 
@@ -672,6 +693,14 @@ defmodule Ecrits.Doc.Rhwp do
   end
 
   defp flatten_ref(%{} = ref) do
+    # The element enumerator / browser cell ref nests the cell address as a MAP
+    # (`cell: {parentParaIndex, controlIndex, cellIndex, cellParaIndex}`), but the
+    # engine ops want FLAT usizes (control/cell/cell_para + the table-holding
+    # paragraph). Unnest it first; otherwise a cell-targeted edit (set_cell/
+    # replace_text/…) passes a map where a usize is expected
+    # (`bad_ops_json: invalid type: map, expected usize`) or loses the control index.
+    ref = unnest_cell(ref)
+
     base =
       Enum.reduce([:section, :paragraph, :offset, :control, :cell, :cell_para], %{}, fn k, acc ->
         case Map.get(ref, k, Map.get(ref, Atom.to_string(k))) do
@@ -691,6 +720,31 @@ defmodule Ecrits.Doc.Rhwp do
   end
 
   defp flatten_ref(_ref), do: %{}
+
+  # Flatten a nested `cell` map ({parentParaIndex, controlIndex, cellIndex,
+  # cellParaIndex}) into the flat usize keys the engine ops expect. A flat ref
+  # (cell already a usize, or no cell) passes through unchanged.
+  defp unnest_cell(%{} = ref) do
+    case Map.get(ref, :cell, Map.get(ref, "cell")) do
+      %{} = cell ->
+        g = fn k -> Map.get(cell, k, Map.get(cell, Atom.to_string(k))) end
+
+        ref
+        |> Map.drop([:cell, "cell", :control, "control", :cell_para, "cell_para"])
+        |> maybe_put_flat("control", g.(:controlIndex))
+        |> maybe_put_flat("cell", g.(:cellIndex))
+        |> maybe_put_flat("cell_para", g.(:cellParaIndex))
+        |> maybe_put_flat("paragraph", g.(:parentParaIndex))
+
+      _ ->
+        ref
+    end
+  end
+
+  defp unnest_cell(ref), do: ref
+
+  defp maybe_put_flat(map, _k, nil), do: map
+  defp maybe_put_flat(map, k, v), do: Map.put(map, k, v)
 
   # Copy `src_key` (camelCase JSON or its atom form) from `ref` into `acc` under
   # `dest_key` when present.

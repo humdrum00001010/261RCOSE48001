@@ -615,6 +615,12 @@ defmodule Ecrits.Local.AcpAgent.AcpStream do
     between paragraphs in a single `insert_text` `text` — each `\\n` becomes a real
     paragraph break. Do NOT cram a whole multi-clause body into one run-on
     paragraph; give each clause / 조 its own line.
+    To REPLACE a whole table CELL's content (especially a multi-line cell like an
+    `① English sentence\\n해석(Korean)` two-paragraph cell), use `doc_edit` `set_cell`
+    {ref: <cell ref from doc_find>, text: "line1\\nline2"} — ONE op fills the cell,
+    `\\n` splits it into cell paragraphs, and each line keeps the cell's existing
+    font/alignment. Prefer `set_cell` over per-line `replace_text` for swapping a
+    cell's body (replace_text rejects newlines and needs one call per cell line).
 
     IMPORTANT — these tools may NOT appear directly in your initial callable tool
     list: your client defers MCP server tools behind a tool-search / MCP-tool

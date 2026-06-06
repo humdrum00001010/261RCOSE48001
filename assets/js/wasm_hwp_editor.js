@@ -1364,6 +1364,58 @@ const WasmHwpEditor = {
       return { ok: true, extra: { deleted: count } }
     }
 
+    // set_cell: REPLACE a whole table cell's content with `text`, one cell
+    // paragraph per `\n`-separated line, each inheriting the cell's existing
+    // paragraph/char formatting. Mirrors the server `set_cell` (engine
+    // set_cell_text): collapse the cell to its first paragraph (which keeps its
+    // ParaShape/CharShape), set line 0, then splitParagraphInCell + insert for
+    // each further line (splitParagraphInCell clones the format, same as the
+    // engine split_at).
+    if (verb === "set_cell") {
+      if (!ref || !ref.cell) {
+        return { error: "set_cell requires a CELL ref (doc.find text inside the cell)" }
+      }
+      const cl = ref.cell
+      const text = op.text != null ? String(op.text) : ""
+      const lines = text.split("\n")
+      const { section } = ref
+      const { parentParaIndex: pp, controlIndex: ci, cellIndex: ce } = cl
+      try {
+        // 1) Collapse to one cell paragraph: merge cellPara 1 back into 0 until
+        //    only the first remains. mergeParagraphInCell at a non-zero cellPara
+        //    joins it into the previous one; we keep merging index 1 until the
+        //    cell no longer has a second paragraph (the merge returns the prior
+        //    paragraph index / errors when there is nothing to merge).
+        let guard = 0
+        while (guard++ < 4096) {
+          const raw = this.doc.getTextInCell(section, pp, ci, ce, 1, 0, 0)
+          // getTextInCell on a non-existent cellPara throws — when it does, only
+          // paragraph 0 is left.
+          if (raw == null) break
+          this.doc.mergeParagraphInCell(section, pp, ci, ce, 1)
+        }
+      } catch (_) {
+        // No cellPara 1 (single-paragraph cell already) — nothing to collapse.
+      }
+      try {
+        // 2) Clear cellPara 0 (keeps its ParaShape/CharShape) and set line 0.
+        const len0 = this.doc.getCellParagraphLength(section, pp, ci, ce, 0)
+        if (len0 > 0) this.doc.deleteTextInCell(section, pp, ci, ce, 0, 0, len0)
+        if (lines[0]) this.doc.insertTextInCell(section, pp, ci, ce, 0, 0, lines[0])
+        // 3) Each further line: split at end of the current last paragraph
+        //    (inherits format) then insert the line.
+        for (let i = 1; i < lines.length; i++) {
+          const prevLen = this.doc.getCellParagraphLength(section, pp, ci, ce, i - 1)
+          this.doc.splitParagraphInCell(section, pp, ci, ce, i - 1, prevLen)
+          if (lines[i]) this.doc.insertTextInCell(section, pp, ci, ce, i, 0, lines[i])
+        }
+      } catch (error) {
+        return { error: `set_cell failed: ${String((error && error.message) || error)}` }
+      }
+      this.recordOp("AgentSetCell", { section, cell: cl, lines })
+      return this.finishAgentEdit(baseRev, { cellParaCount: lines.length })
+    }
+
     return { error: `unsupported_op:${verb}` }
   },
 

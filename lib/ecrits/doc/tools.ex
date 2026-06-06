@@ -319,6 +319,11 @@ defmodule Ecrits.Doc.Tools do
                 "• insert_text {op, ref, text}: `text` MAY contain `\\n` — each newline starts a NEW paragraph " <>
                   "(the body is expanded into real paragraphs). Use this to author multi-paragraph content " <>
                   "(e.g. each contract clause / 조 on its own line) in ONE call instead of one giant run-on paragraph.\n" <>
+                "• set_cell {op, ref, text}: REPLACE a table CELL's entire content with `text` in ONE op. `ref` must be a " <>
+                  "CELL ref (from doc.find on text inside that cell). `text` is split on `\\n` into one cell paragraph per line, " <>
+                  "and EACH line inherits the cell's existing paragraph + character formatting (font, alignment, color). " <>
+                  "Use this to fill a multi-paragraph cell (e.g. an `① English sentence\\n해석(Korean)` two-line cell) without " <>
+                  "per-line replace_text/split surgery. Preferred over replace_text when you want to swap a whole cell's body.\n" <>
                 "• delete_range {op, ref, count?}\n" <>
                 "• insert_paragraph {op, ref} • delete_paragraph {op, ref} • split {op, ref} • merge {op, ref}\n" <>
                 "• insert_table {op, ref, rows, cols}: create a NEW rows×cols table at `ref`. Returns native {paraIdx, controlIdx} — " <>
@@ -329,7 +334,7 @@ defmodule Ecrits.Doc.Tools do
               "op" => %{
                 "type" => "string",
                 "enum" =>
-                  ~w(insert_text delete_range replace_text insert_paragraph delete_paragraph split merge insert_table insert_table_row delete_table_row insert_table_column delete_table_column merge_cells split_cell delete_node insert_picture)
+                  ~w(insert_text delete_range replace_text insert_paragraph delete_paragraph split merge insert_table insert_table_row delete_table_row insert_table_column delete_table_column merge_cells split_cell delete_node insert_picture set_cell)
               },
               "rows" => %{"type" => "integer", "description" => "insert_table: number of rows."},
               "cols" => %{"type" => "integer", "description" => "insert_table: number of columns."},
@@ -340,7 +345,7 @@ defmodule Ecrits.Doc.Tools do
               },
               "ref" => %{"type" => "string", "description" => "Target element ref (from doc.find). Scopes the edit to that element/paragraph."},
               "all" => %{"type" => "boolean", "description" => "replace_text: replace EVERY match (default false = first match only)."},
-              "text" => %{"type" => "string", "description" => "insert_text: text to insert."},
+              "text" => %{"type" => "string", "description" => "insert_text: text to insert. set_cell: the cell's new content (\\n splits into cell paragraphs)."},
               "at" => %{"type" => "integer", "description" => "char offset within the target paragraph."},
               "count" => %{"type" => "integer", "description" => "delete_range: number of chars to delete."}
             },
