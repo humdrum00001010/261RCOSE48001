@@ -46,6 +46,19 @@ defmodule Ecrits.Doc.Tools do
 
   @namespace "doc"
 
+  # PubSub topic the workspace LiveView subscribes to so an agent file-write
+  # (doc.create-clone / doc.save) refreshes the file tree LIVE — without waiting
+  # for the (unreliable, fsevents-coalesced) FS watcher or the turn-end refresh.
+  # The message carries the ABSOLUTE written path; each LiveView filters it to
+  # paths under its own workspace root, so a write outside any open workspace
+  # (a temp/scratch file) is ignored rather than spamming every tree.
+  @workspace_files_topic "workspace:files"
+  @workspace_files_pubsub Ecrits.PubSub
+
+  @doc "PubSub topic the workspace LiveView subscribes to for agent file-writes."
+  @spec workspace_files_topic() :: String.t()
+  def workspace_files_topic, do: @workspace_files_topic
+
   # How long to wait for the viewing LiveView (browser WASM model) to apply an
   # agent op and report back. The browser apply is a single push_event round-trip
   # plus a WASM `replaceAll`/`insertText`, so this is generous.
@@ -333,12 +346,16 @@ defmodule Ecrits.Doc.Tools do
                 "• insert_table {op, ref, rows, cols}: create a NEW rows×cols table at `ref`. Returns native {paraIdx, controlIdx} — " <>
                 "use it to fill cells: insert_text with a ref carrying {section, paragraph: paraIdx, control: controlIdx, cell: <0-based cell index, row-major>, cell_para: 0, offset: 0}.\n" <>
                 "• insert_table_row / delete_table_row / insert_table_column / delete_table_column / merge_cells / split_cell {op, ref}: modify an EXISTING table.\n" <>
-                "• delete_node {op, ref} • insert_picture {op, ref, bins}",
+                "• delete_node {op, ref} • insert_picture {op, ref, bins}\n" <>
+                "• insert_equation {op, ref, script, font_size?, color?}: insert an inline equation at `ref`; `script` is HWP equation markup (e.g. \"x^2 + y^2 = z^2\").\n" <>
+                "• insert_footnote {op, ref} • insert_endnote {op, ref}: insert a footnote/endnote anchor at `ref` (number auto-assigned).\n" <>
+                "• insert_shape {op, ref, width, height, shape_type?, x?, y?}: insert a drawing shape (rectangle/ellipse/line/textbox) at `ref`; width/height in HWPUNIT.\n" <>
+                "• set_columns {op, ref, count, column_type?, same_width?, spacing?}: set the section's multi-column layout (`count` columns); `ref`'s section selects the section.",
             "properties" => %{
               "op" => %{
                 "type" => "string",
                 "enum" =>
-                  ~w(insert_text delete_range replace_text insert_paragraph delete_paragraph split merge insert_table insert_table_row delete_table_row insert_table_column delete_table_column merge_cells split_cell delete_node insert_picture set_cell)
+                  ~w(insert_text delete_range replace_text insert_paragraph delete_paragraph split merge insert_table insert_table_row delete_table_row insert_table_column delete_table_column merge_cells split_cell delete_node insert_picture set_cell insert_equation insert_footnote insert_endnote insert_shape set_columns)
               },
               "rows" => %{"type" => "integer", "description" => "insert_table: number of rows."},
               "cols" => %{"type" => "integer", "description" => "insert_table: number of columns."},
@@ -351,7 +368,51 @@ defmodule Ecrits.Doc.Tools do
               "all" => %{"type" => "boolean", "description" => "replace_text: replace EVERY match (default false = first match only)."},
               "text" => %{"type" => "string", "description" => "insert_text: text to insert. set_cell: the cell's new content (\\n splits into cell paragraphs)."},
               "at" => %{"type" => "integer", "description" => "char offset within the target paragraph."},
-              "count" => %{"type" => "integer", "description" => "delete_range: number of chars to delete."}
+              "count" => %{
+                "type" => "integer",
+                "description" =>
+                  "delete_range: number of chars to delete. set_columns: number of columns."
+              },
+              "script" => %{
+                "type" => "string",
+                "description" =>
+                  "insert_equation: HWP equation markup (the equation editor's source string), e.g. \"x^2 + y^2 = z^2\" or \"sqrt {a over b}\". REQUIRED for insert_equation."
+              },
+              "font_size" => %{
+                "type" => "integer",
+                "description" => "insert_equation: equation font size in HWPUNIT (point×100; 1000 = 10pt). Defaults to 1000."
+              },
+              "color" => %{
+                "type" => "integer",
+                "description" => "insert_equation: packed 0xBBGGRR color of the equation (default 0 = black)."
+              },
+              "shape_type" => %{
+                "type" => "string",
+                "description" =>
+                  "insert_shape: shape kind — \"rectangle\" (default), \"ellipse\", \"line\", or \"textbox\"."
+              },
+              "width" => %{
+                "type" => "integer",
+                "description" => "insert_shape: shape width in HWPUNIT (e.g. 8504 ≈ 3cm). REQUIRED for insert_shape."
+              },
+              "height" => %{
+                "type" => "integer",
+                "description" => "insert_shape: shape height in HWPUNIT. REQUIRED for insert_shape."
+              },
+              "x" => %{"type" => "integer", "description" => "insert_shape: horizontal offset (HWPUNIT, default 0)."},
+              "y" => %{"type" => "integer", "description" => "insert_shape: vertical offset (HWPUNIT, default 0)."},
+              "column_type" => %{
+                "type" => "integer",
+                "description" => "set_columns: 0=normal (default), 1=distribute, 2=parallel."
+              },
+              "same_width" => %{
+                "type" => "boolean",
+                "description" => "set_columns: equal-width columns (default true)."
+              },
+              "spacing" => %{
+                "type" => "integer",
+                "description" => "set_columns: inter-column gap in HWPUNIT (default 0)."
+              }
             },
             "required" => ["op"]
           },
@@ -599,6 +660,10 @@ defmodule Ecrits.Doc.Tools do
   defp create_from(ctx, path, kind, from) do
     with {:ok, source} <- resolve_template_path(ctx, from),
          :ok <- copy_template(source, path) do
+      # The template was byte-copied to `path`, so a NEW file now exists on disk
+      # — announce it so the workspace tree shows it without a manual refresh.
+      broadcast_file_written(path)
+
       case Pool.open(pool(ctx), path, kind: kind) do
         {:ok, doc_id} ->
           _ = Pool.set_active(pool(ctx), doc_id)
@@ -896,6 +961,7 @@ defmodule Ecrits.Doc.Tools do
         with true <- is_binary(b64) or {:error, {:save_failed, "viewer returned no bytes"}},
              {:ok, bytes} <- Base.decode64(b64),
              :ok <- File.write(path, bytes) do
+          broadcast_file_written(path)
           {:ok, %{"ok" => true, "path" => path, "bytes" => byte_size(bytes)}}
         else
           :error -> {:error, error_json({:save_failed, "viewer returned invalid base64"})}
@@ -910,11 +976,41 @@ defmodule Ecrits.Doc.Tools do
   # doc.save for a headless (server NIF) doc: Ehwp.export + write, via the Editor.
   defp save_server(editor, info, path) do
     case Editor.save(editor, format: save_format(info.kind), path: path) do
-      :ok -> {:ok, %{"ok" => true, "path" => path}}
-      {:ok, %{} = saved} -> {:ok, Map.merge(%{"ok" => true, "path" => path}, stringify(saved))}
-      {:error, reason} -> {:error, error_json(reason)}
+      :ok ->
+        broadcast_file_written(path)
+        {:ok, %{"ok" => true, "path" => path}}
+
+      {:ok, %{} = saved} ->
+        broadcast_file_written(path)
+        {:ok, Map.merge(%{"ok" => true, "path" => path}, stringify(saved))}
+
+      {:error, reason} ->
+        {:error, error_json(reason)}
     end
   end
+
+  # Announce a successful agent file-write so any workspace LiveView whose root
+  # contains `path` refreshes its file tree. Best-effort and fire-and-forget:
+  # broadcast never raises in practice, but we guard so a PubSub hiccup can never
+  # fail the write the agent just completed.
+  defp broadcast_file_written(path) when is_binary(path) and path != "" do
+    abs_path = Path.expand(path)
+
+    _ =
+      Phoenix.PubSub.broadcast(
+        @workspace_files_pubsub,
+        @workspace_files_topic,
+        {:workspace_file_written, abs_path}
+      )
+
+    :ok
+  rescue
+    _ -> :ok
+  catch
+    :exit, _ -> :ok
+  end
+
+  defp broadcast_file_written(_path), do: :ok
 
   defp save_format(:hwpx), do: :hwpx
   defp save_format(:docx), do: :docx

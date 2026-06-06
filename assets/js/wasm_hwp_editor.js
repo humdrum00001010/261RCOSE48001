@@ -1416,6 +1416,96 @@ const WasmHwpEditor = {
       return this.finishAgentEdit(baseRev, { cellParaCount: lines.length })
     }
 
+    // insert_equation: an inline equation at the body ref. `script` is HWP
+    // equation markup; font_size (HWPUNIT, default 1000=10pt) and color (packed
+    // 0xBBGGRR, default 0) style it. Calls the EXISTING wasm insertEquation.
+    if (verb === "insert_equation") {
+      if (!ref) return { error: "insert_equation requires a ref {section,paragraph,offset} (from doc.find)" }
+      const script = op.script != null ? String(op.script) : ""
+      if (!script) return { error: "insert_equation requires a non-empty 'script' (HWP equation markup, e.g. 'x^2 + y^2 = z^2')" }
+      const offset = Number.isInteger(ref.offset) ? ref.offset : 0
+      const fontSize = Number.isInteger(op.font_size) ? op.font_size : 1000
+      const color = Number.isInteger(op.color) ? op.color : 0
+      try {
+        this.doc.insertEquation(ref.section, ref.paragraph, offset, script, fontSize, color)
+      } catch (error) {
+        return { error: `insertEquation failed: ${String((error && error.message) || error)}` }
+      }
+      this.recordOp("AgentInsertEquation", { section: ref.section, para: ref.paragraph, offset, script, fontSize, color })
+      return { ok: true, extra: { script } }
+    }
+
+    // insert_footnote / insert_endnote: a footnote/endnote anchor at the body
+    // ref (number auto-assigned). Calls the EXISTING wasm insertFootnote/insertEndnote.
+    if (verb === "insert_footnote" || verb === "insert_endnote") {
+      if (!ref) return { error: `${verb} requires a ref {section,paragraph,offset} (from doc.find)` }
+      const offset = Number.isInteger(ref.offset) ? ref.offset : 0
+      try {
+        if (verb === "insert_footnote") {
+          this.doc.insertFootnote(ref.section, ref.paragraph, offset)
+        } else {
+          this.doc.insertEndnote(ref.section, ref.paragraph, offset)
+        }
+      } catch (error) {
+        return { error: `${verb} failed: ${String((error && error.message) || error)}` }
+      }
+      this.recordOp(verb === "insert_footnote" ? "AgentInsertFootnote" : "AgentInsertEndnote", { section: ref.section, para: ref.paragraph, offset })
+      return { ok: true, extra: {} }
+    }
+
+    // insert_shape: a drawing shape (rectangle/ellipse/line/textbox) at the body
+    // ref. width/height are HWPUNIT (required); x/y are offsets. Calls the
+    // EXISTING wasm createShapeControl(json) — map the verb fields onto its JSON.
+    if (verb === "insert_shape") {
+      if (!ref) return { error: "insert_shape requires a ref {section,paragraph,offset} (from doc.find)" }
+      const width = Number.isInteger(op.width) ? op.width : null
+      const height = Number.isInteger(op.height) ? op.height : null
+      if (width == null || height == null) {
+        return { error: "insert_shape requires integer 'width' and 'height' (HWPUNIT, e.g. 8504 ≈ 3cm)" }
+      }
+      const offset = Number.isInteger(ref.offset) ? ref.offset : 0
+      const shapeType = op.shape_type != null ? String(op.shape_type) : "rectangle"
+      const shapeJson = JSON.stringify({
+        sectionIdx: ref.section,
+        paraIdx: ref.paragraph,
+        charOffset: offset,
+        width,
+        height,
+        horzOffset: Number.isInteger(op.x) ? op.x : 0,
+        vertOffset: Number.isInteger(op.y) ? op.y : 0,
+        shapeType,
+        treatAsChar: true
+      })
+      try {
+        this.doc.createShapeControl(shapeJson)
+      } catch (error) {
+        return { error: `createShapeControl failed: ${String((error && error.message) || error)}` }
+      }
+      this.recordOp("AgentInsertShape", { section: ref.section, para: ref.paragraph, offset, shapeType, width, height })
+      return { ok: true, extra: { shapeType } }
+    }
+
+    // set_columns: the section's multi-column layout. `count` columns; column_type
+    // 0=normal/1=distribute/2=parallel; same_width; spacing (HWPUNIT). The ref's
+    // section selects the section. Calls the EXISTING wasm setColumnDef.
+    if (verb === "set_columns") {
+      const section = ref ? ref.section : 0
+      const count = Number.isInteger(op.count) ? op.count : null
+      if (count == null || count <= 0) {
+        return { error: "set_columns requires an integer 'count' > 0 (the number of columns)" }
+      }
+      const columnType = Number.isInteger(op.column_type) ? op.column_type : 0
+      const sameWidth = op.same_width === false ? 0 : 1
+      const spacing = Number.isInteger(op.spacing) ? op.spacing : 0
+      try {
+        this.doc.setColumnDef(section, count, columnType, sameWidth, spacing)
+      } catch (error) {
+        return { error: `setColumnDef failed: ${String((error && error.message) || error)}` }
+      }
+      this.recordOp("AgentSetColumns", { section, count, columnType, sameWidth, spacing })
+      return { ok: true, extra: { count } }
+    }
+
     return { error: `unsupported_op:${verb}` }
   },
 

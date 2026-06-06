@@ -594,7 +594,11 @@ defmodule Ecrits.Doc.Rhwp do
   # Map a normalized op to the engine IR op list. Two verbs are rewritten here:
   # `set_cell` -> the engine `set_cell_text` op (whole-cell replace, format
   # preserved), and a multi-paragraph body `insert_text` -> an insert+split
-  # primitive sequence. Everything else passes through 1:1.
+  # primitive sequence. Everything else passes through 1:1 — including the creator
+  # verbs (insert_equation/insert_footnote/insert_endnote/insert_shape/set_columns),
+  # whose verb fields (script/font_size/color, shape_type/width/height/x/y,
+  # count/column_type/same_width/spacing) are carried verbatim onto the flattened
+  # IR op so the ehwp EditOp #[serde(flatten)] variant deserializes them directly.
   defp expand_ops(op) do
     ir = to_ir_op(op)
     text = ir[:text]

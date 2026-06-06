@@ -25,7 +25,8 @@ defmodule Ecrits.Doc.Op do
   @verbs ~w(insert_text delete_range replace_text insert_paragraph delete_paragraph
             split merge insert_table insert_table_row delete_table_row
             insert_table_column delete_table_column merge_cells split_cell
-            delete_node insert_picture set_cell)
+            delete_node insert_picture set_cell
+            insert_equation insert_footnote insert_endnote insert_shape set_columns)
 
   @doc "The full set of recognised op verbs."
   @spec verbs() :: [String.t()]
@@ -121,6 +122,44 @@ defmodule Ecrits.Doc.Op do
       {:error, {:invalid_op, "delete_range requires a \"ref\" (from doc.find) saying what to delete"}}
     else
       {:ok, op}
+    end
+  end
+
+  defp validate("insert_equation", %{} = op) do
+    cond do
+      is_nil(op[:ref]) ->
+        {:error, {:invalid_op, "insert_equation requires a \"ref\" (from doc.find) saying where to insert"}}
+
+      not is_binary(op[:script]) or op[:script] == "" ->
+        {:error,
+         {:invalid_op,
+          "insert_equation requires a non-empty string \"script\" (HWP equation markup, e.g. \"x^2 + y^2 = z^2\")"}}
+
+      true ->
+        {:ok, op}
+    end
+  end
+
+  defp validate("insert_shape", %{} = op) do
+    cond do
+      is_nil(op[:ref]) ->
+        {:error, {:invalid_op, "insert_shape requires a \"ref\" (from doc.find) saying where to insert"}}
+
+      not is_integer(op[:width]) or not is_integer(op[:height]) ->
+        {:error,
+         {:invalid_op,
+          "insert_shape requires integer \"width\" and \"height\" (HWPUNIT, e.g. 8504 ≈ 3cm)"}}
+
+      true ->
+        {:ok, op}
+    end
+  end
+
+  defp validate("set_columns", %{} = op) do
+    if is_integer(op[:count]) and op[:count] > 0 do
+      {:ok, op}
+    else
+      {:error, {:invalid_op, "set_columns requires an integer \"count\" > 0 (the number of columns)"}}
     end
   end
 
