@@ -1115,6 +1115,22 @@ const WasmHwpEditor = {
     try { return this.doc.getParagraphLength(section, paragraph) } catch (_) { return 0 }
   },
 
+  // Read a note (footnote/endnote) body sub-paragraph's text via getFootnoteInfo,
+  // which returns {ok, paraCount, totalTextLen, number, texts:[...]} for BOTH
+  // footnotes and endnotes (the native impl is control-type agnostic). `note`
+  // carries {controlIndex, subParaIndex}; returns the sub-paragraph text or ""
+  // (so an empty note reads as "" rather than throwing).
+  noteParagraphText(section, paragraph, note) {
+    try {
+      const info = JSON.parse(this.doc.getFootnoteInfo(section, paragraph, note.controlIndex) || "{}")
+      const texts = Array.isArray(info.texts) ? info.texts : []
+      const t = texts[note.subParaIndex]
+      return typeof t === "string" ? t : ""
+    } catch (_) {
+      return ""
+    }
+  },
+
   paragraphCount(section) {
     try { return this.doc.getParagraphCount(section) } catch (_) { return 1 }
   },
@@ -1243,6 +1259,26 @@ const WasmHwpEditor = {
         return { ok: true, extra: { replaced: 1 } }
       }
 
+      // note-scoped: replace the query inside a footnote/endnote BODY sub-paragraph.
+      // Read the note text via getFootnoteInfo, find the literal offset, then
+      // delete+insert via the note primitives (both control-type agnostic).
+      if (ref.note) {
+        const nt = ref.note
+        const noteText = this.noteParagraphText(ref.section, ref.paragraph, nt)
+        const idx = noteText.indexOf(query)
+        if (idx < 0) {
+          return { error: `replace_text: query not found in target note body (note text: ${JSON.stringify(noteText.slice(0, 80))})` }
+        }
+        try {
+          this.doc.deleteTextInFootnote(ref.section, ref.paragraph, nt.controlIndex, nt.subParaIndex, idx, query.length)
+          this.doc.insertTextInFootnote(ref.section, ref.paragraph, nt.controlIndex, nt.subParaIndex, idx, replacement)
+        } catch (error) {
+          return { error: `note replace failed: ${String((error && error.message) || error)}` }
+        }
+        this.recordOp("AgentReplaceText", { section: ref.section, para: ref.paragraph, note: nt, offset: idx, query, replacement, replaced: 1 })
+        return { ok: true, extra: { replaced: 1 } }
+      }
+
       // ref-scoped: replace the query ONLY inside the referenced paragraph, so a
       // phrase that recurs across sample blocks is edited exactly where intended.
       if (ref) {
@@ -1310,6 +1346,21 @@ const WasmHwpEditor = {
       if (!text) return { error: "insert_text requires non-empty 'text'" }
       if (text.includes("\n")) return { error: "insert_text 'text' must be a single paragraph (no newlines); use 'split' for new paragraphs" }
       const offset = Number.isInteger(ref.offset) ? ref.offset : 0
+      // note (footnote/endnote) BODY sub-paragraph: route to insertTextInFootnote,
+      // which the native engine handles for both footnotes and endnotes. The body
+      // paragraph at ref.paragraph HOLDS the note anchor (ref.note.controlIndex);
+      // ref.note.subParaIndex indexes the note's own paragraph. This is what makes
+      // an (empty) endnote body a writable target via doc.* on a viewed doc.
+      if (ref.note) {
+        const nt = ref.note
+        try {
+          this.doc.insertTextInFootnote(ref.section, ref.paragraph, nt.controlIndex, nt.subParaIndex, offset, text)
+        } catch (error) {
+          return { error: `insertTextInFootnote failed: ${String((error && error.message) || error)}` }
+        }
+        this.recordOp("AgentInsertText", { section: ref.section, para: ref.paragraph, note: nt, offset, text })
+        return { ok: true, extra: { inserted: text.length } }
+      }
       if (ref.cell) {
         const cl = ref.cell
         try {
@@ -1335,14 +1386,19 @@ const WasmHwpEditor = {
       if (!ref) return { error: "delete_range requires a ref {section,paragraph,offset} (from doc.find)" }
       const offset = Number.isInteger(ref.offset) ? ref.offset : 0
       const cl = ref.cell
+      const nt = ref.note
       // count defaults to "rest of the paragraph from offset" when omitted.
       let count = Number.isInteger(op.count) ? op.count : null
       if (count == null) {
         let len = 0
         try {
-          len = cl
-            ? this.doc.getCellParagraphLength(ref.section, cl.parentParaIndex, cl.controlIndex, cl.cellIndex, cl.cellParaIndex)
-            : this.paragraphLength(ref.section, ref.paragraph)
+          if (cl) {
+            len = this.doc.getCellParagraphLength(ref.section, cl.parentParaIndex, cl.controlIndex, cl.cellIndex, cl.cellParaIndex)
+          } else if (nt) {
+            len = this.noteParagraphText(ref.section, ref.paragraph, nt).length
+          } else {
+            len = this.paragraphLength(ref.section, ref.paragraph)
+          }
         } catch (_) {
           len = 0
         }
@@ -1354,13 +1410,15 @@ const WasmHwpEditor = {
           this.doc.deleteTextInCell(
             ref.section, cl.parentParaIndex, cl.controlIndex, cl.cellIndex, cl.cellParaIndex, offset, count
           )
+        } else if (nt) {
+          this.doc.deleteTextInFootnote(ref.section, ref.paragraph, nt.controlIndex, nt.subParaIndex, offset, count)
         } else {
           this.doc.deleteText(ref.section, ref.paragraph, offset, count)
         }
       } catch (error) {
         return { error: `deleteText failed: ${String((error && error.message) || error)}` }
       }
-      this.recordOp("AgentDeleteRange", { section: ref.section, cell: cl, para: ref.paragraph, offset, count })
+      this.recordOp("AgentDeleteRange", { section: ref.section, cell: cl, note: nt, para: ref.paragraph, offset, count })
       return { ok: true, extra: { deleted: count } }
     }
 
@@ -1581,6 +1639,7 @@ const WasmHwpEditor = {
     if (!op || typeof op !== "object") return false
     const ref = this.parseRef(op.ref)
     if (ref && ref.cell) return false // cell-targeted: order-independent
+    if (ref && ref.note) return false // note (footnote/endnote) body: never shifts BODY indices
     switch (op.op) {
       case "insert_paragraph":
       case "delete_paragraph":
@@ -1727,6 +1786,17 @@ const WasmHwpEditor = {
           cellParaIndex: Number(cell.cellParaIndex ?? cell.cellPara ?? 0)
         }
       }
+    }
+    // Note (footnote/endnote) BODY sub-paragraph address. enumerateElements emits
+    // a note's inner paragraph as {section,paragraph,control,subParagraph} (the
+    // body paragraph at `paragraph` HOLDS the note anchor at control `control`;
+    // `subParagraph` indexes the note's own paragraph). Without this the address
+    // collapses to a plain {section,paragraph} body insert and the note body is
+    // never writable. Both control and subParagraph must be integers to qualify.
+    const control = Number(r.control ?? r.controlIndex)
+    const subPara = Number(r.subParagraph ?? r.subParagraphIndex ?? r.sub_paragraph)
+    if (Number.isInteger(control) && Number.isInteger(subPara)) {
+      out.note = { controlIndex: control, subParaIndex: subPara }
     }
     return out
   },
