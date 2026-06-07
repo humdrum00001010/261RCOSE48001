@@ -477,7 +477,9 @@ defmodule Ecrits.Doc.Tools do
   end
 
   def call(ctx, "doc.open", args) do
-    with {:ok, path} <- require_string(args, "path") do
+    with {:ok, path} <- require_string(args, "path"),
+         # Don't open files outside the workspace (prompt-injection guard).
+         {:ok, path} <- confine_path(ctx, path) do
       kind = args |> get(["kind"]) |> normalize_kind()
       open_opts = args |> get(["open_opts"]) |> List.wrap()
 
@@ -494,11 +496,15 @@ defmodule Ecrits.Doc.Tools do
         {:error, structured} ->
           {:error, structured}
       end
+    else
+      {:error, reason} -> {:error, error_json(reason)}
     end
   end
 
   def call(ctx, "doc.create", args) do
-    with {:ok, path} <- require_string(args, "path") do
+    with :ok <- enforce_writable(ctx),
+         {:ok, path} <- require_string(args, "path"),
+         {:ok, path} <- confine_path(ctx, path) do
       kind = args |> get(["kind"]) |> normalize_kind()
 
       case get(args, ["from"]) do
@@ -506,6 +512,8 @@ defmodule Ecrits.Doc.Tools do
         from when is_binary(from) and from != "" -> create_from(ctx, path, kind, from)
         _ -> {:error, error_json({:invalid_params, "from must be a non-empty string"})}
       end
+    else
+      {:error, reason} -> {:error, error_json(reason)}
     end
   end
 
@@ -590,27 +598,31 @@ defmodule Ecrits.Doc.Tools do
   def call(ctx, "doc.set", args) do
     base_rev = get(args, ["base_revision"])
 
-    case get(args, ["sets"]) do
-      sets when is_list(sets) ->
-        # Batch form: set many elements in one call, best-effort per-set result.
-        route_doc(ctx, args,
-          browser: fn lv -> browser_set_batch(lv, args, sets) end,
-          server: fn editor -> set_batch_server(editor, sets, base_rev) end
-        )
-
-      _ ->
-        with {:ok, ref} <- require_string(args, "ref"),
-             {:ok, props} <- require_map(args, "props") do
+    with :ok <- enforce_writable(ctx) do
+      case get(args, ["sets"]) do
+        sets when is_list(sets) ->
+          # Batch form: set many elements in one call, best-effort per-set result.
           route_doc(ctx, args,
-            # Viewed-HWP authority is the browser WASM model (design §6.2): deliver the
-            # property set to the owning LiveView -> WasmHwpEditor applies it
-            # (setCellProperties / applyCharFormat) so the change RENDERS in the viewer.
-            # A server-NIF set would mutate the unedited server copy the user never
-            # sees — invisible — so set MUST route to the browser for an open doc.
-            browser: fn lv -> browser_set(lv, args, ref, props) end,
-            server: fn editor -> write_result(Editor.set(editor, ref, props, base_rev)) end
+            browser: fn lv -> browser_set_batch(lv, args, sets) end,
+            server: fn editor -> set_batch_server(editor, sets, base_rev) end
           )
-        end
+
+        _ ->
+          with {:ok, ref} <- require_string(args, "ref"),
+               {:ok, props} <- require_map(args, "props") do
+            route_doc(ctx, args,
+              # Viewed-HWP authority is the browser WASM model (design §6.2): deliver the
+              # property set to the owning LiveView -> WasmHwpEditor applies it
+              # (setCellProperties / applyCharFormat) so the change RENDERS in the viewer.
+              # A server-NIF set would mutate the unedited server copy the user never
+              # sees — invisible — so set MUST route to the browser for an open doc.
+              browser: fn lv -> browser_set(lv, args, ref, props) end,
+              server: fn editor -> write_result(Editor.set(editor, ref, props, base_rev)) end
+            )
+          end
+      end
+    else
+      {:error, reason} -> {:error, error_json(reason)}
     end
   end
 
@@ -623,17 +635,20 @@ defmodule Ecrits.Doc.Tools do
     # viewed HWP) is editable and is lazily claimed by this agent on first edit,
     # so the common single-agent flow keeps working while a 2nd agent is fenced
     # out. A bare pool-only context skips the check entirely.
-    with {:ok, document} <- require_string(args, "document"),
+    with :ok <- enforce_writable(ctx),
+         {:ok, document} <- require_string(args, "document"),
          :ok <- enforce_ownership(ctx, document) do
       do_edit(ctx, args, base_rev)
+    else
+      {:error, reason} -> {:error, error_json(reason)}
     end
   end
 
   def call(ctx, "doc.save", args) do
-    with {:ok, document} <- require_string(args, "document"),
-         {:ok, info} <- Pool.info(pool(ctx), document) do
-      path = get(args, ["path"]) || info.path
-
+    with :ok <- enforce_writable(ctx),
+         {:ok, document} <- require_string(args, "document"),
+         {:ok, info} <- Pool.info(pool(ctx), document),
+         {:ok, path} <- confine_path(ctx, get(args, ["path"]) || info.path) do
       route_doc(ctx, args,
         # Open doc: the browser WASM model is authority — export ITS edited bytes
         # and write them to disk (the server Editor copy is unedited).
@@ -1395,6 +1410,11 @@ defmodule Ecrits.Doc.Tools do
   # / test) that sets no `:active_doc` simply reports no active document.
   defp active_doc_id(ctx, _pool), do: Map.get(ctx, :active_doc)
 
+  # Already-structured error maps (e.g. `enforce_ownership` -> forbidden) pass
+  # through unchanged so the uniform `else error_json/1` wrapping never re-wraps a
+  # map the MCP server already surfaces as structured JSON content.
+  defp error_json(%{} = structured), do: structured
+
   defp error_json({:not_supported, reason}),
     do: %{"not_supported" => true, "reason" => to_string(reason)}
 
@@ -1412,6 +1432,23 @@ defmodule Ecrits.Doc.Tools do
   defp error_json({:clone_failed, reason}),
     do: %{"error" => "clone_failed", "reason" => inspect(reason)}
 
+  defp error_json({:invalid_params, message}),
+    do: %{"error" => "invalid_params", "message" => to_string(message)}
+
+  defp error_json(:read_only),
+    do: %{
+      "error" => "read_only",
+      "message" =>
+        "read-only session — switch access to Ask/Full workspace to edit/save"
+    }
+
+  defp error_json({:outside_workspace, root}),
+    do: %{
+      "error" => "outside_workspace",
+      "message" => "path must stay within the workspace root: #{root}",
+      "workspace_root" => root
+    }
+
   defp error_json(reason) when is_atom(reason), do: %{"error" => to_string(reason)}
   defp error_json(reason), do: %{"error" => inspect(reason)}
 
@@ -1426,6 +1463,44 @@ defmodule Ecrits.Doc.Tools do
   end
 
   defp pool(ctx), do: Map.get(ctx, :pool, Ecrits.Doc.Pool)
+
+  # Access-control guards (security review #1): the doc.* tools run in-process and
+  # bypass the agent CLI sandbox, so they must honour the workspace access setting
+  # themselves. `:read_only` is set from the agent's sandbox == "read-only"
+  # (workspace_live.ex access controls); `:session_path` is the workspace root.
+
+  # Refuse mutating tools in a read-only session.
+  defp enforce_writable(ctx) do
+    if Map.get(ctx, :read_only, false), do: {:error, :read_only}, else: :ok
+  end
+
+  # Confine a caller-supplied path to the workspace root so a prompt-injected path
+  # can't open/create/save outside the workspace. A bare pool-only context (no
+  # `:session_path`) is the legacy unisolated path and is left unconstrained.
+  #
+  # The workspace root is the agent's CWD (acp_stream working_dir == workspace_root
+  # == session_path), so caller paths are workspace-RELATIVE: expand them AGAINST
+  # the root (`Path.expand/2`). A relative path resolves under the root; an absolute
+  # path is normalised (the base is ignored) and must already be within the root.
+  # Either way `..`-escapes are normalised away before the prefix check, so a
+  # lexical `<root>/../x` that escapes the root is rejected.
+  defp confine_path(ctx, path) do
+    case Map.get(ctx, :session_path) do
+      root when is_binary(root) and root != "" ->
+        root_expanded = Path.expand(root)
+        expanded = Path.expand(path, root_expanded)
+
+        if expanded == root_expanded or
+             String.starts_with?(expanded, root_expanded <> "/") do
+          {:ok, expanded}
+        else
+          {:error, {:outside_workspace, root_expanded}}
+        end
+
+      _ ->
+        {:ok, path}
+    end
+  end
 
   defp get(args, keys), do: get_in_args(args, keys)
 

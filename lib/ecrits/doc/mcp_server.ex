@@ -116,7 +116,7 @@ defmodule Ecrits.Doc.MCPServer do
   defp resolve_tool_context(agent_id) when is_binary(agent_id) do
     case WorkspaceSession.fetch_agent(agent_id) do
       {:ok, pid} ->
-        %{active_doc: active_doc, workspace_root: workspace_root} = AgentLive.tool_context(pid)
+        %{active_doc: active_doc, workspace_root: workspace_root} = tc = AgentLive.tool_context(pid)
 
         {:ok,
          %{
@@ -127,7 +127,12 @@ defmodule Ecrits.Doc.MCPServer do
            # so the doc.* tools reach Session for per-doc ownership (invariant 2),
            # the human-viewer registry, and the wasm/NIF routing decision — the
            # real home of what Phase 2 parked in the global Pool.
-           session_path: workspace_root
+           session_path: workspace_root,
+           # Honour the workspace access-control setting server-side: the doc.*
+           # tools run in-process and bypass the agent CLI sandbox, so without
+           # this a read-only agent could still write. Defaults false when the
+           # tool_context predates this field.
+           read_only: Map.get(tc, :read_only, false)
          }}
 
       :error ->

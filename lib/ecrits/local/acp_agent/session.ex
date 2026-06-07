@@ -228,7 +228,13 @@ defmodule Ecrits.Local.AcpAgent.Session do
      %{
        active_doc: state.pool_document_id,
        agent_id: state.id,
-       workspace_root: state.workspace_root
+       workspace_root: state.workspace_root,
+       # Access modes map to sandbox: read-only → "read-only"; ask /
+       # full-workspace → "workspace-write" (see workspace_live.ex
+       # @local_agent_access_controls). So sandbox == "read-only" ⟺ the user
+       # put this agent in read-only mode; the doc.* MCP tools (which run
+       # server-side and bypass the CLI sandbox) consult this to gate writes.
+       read_only: Keyword.get(state.adapter_opts, :sandbox) == "read-only"
      }, state}
   end
 

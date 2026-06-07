@@ -538,6 +538,171 @@ defmodule Ecrits.Doc.ToolsTest do
     end
   end
 
+  # Access-control guards (security review #1): the doc.* tools run server-side
+  # and bypass the agent CLI sandbox, so they must honour the workspace access
+  # setting themselves. `read_only: true` ⟺ the agent's sandbox == "read-only";
+  # `session_path` is the workspace root that confines caller-supplied paths.
+  describe "access control: read-only session" do
+    # ctx mirroring a read-only agent (session_path set, read_only true).
+    defp ro_ctx(pool, root),
+      do: %{pool: pool, agent_id: "ro", session_path: root, read_only: true}
+
+    defp rw_ctx(pool, root),
+      do: %{pool: pool, agent_id: "rw", session_path: root, read_only: false}
+
+    setup do
+      root = Path.join(System.tmp_dir!(), "ws_ac_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(root)
+      on_exit(fn -> File.rm_rf(root) end)
+      {:ok, root: root}
+    end
+
+    test "refuses doc.create with a read_only error", %{pool: pool, root: root} do
+      assert {:error, %{"error" => "read_only", "message" => msg}} =
+               Tools.call(ro_ctx(pool, root), "doc.create", %{
+                 "path" => Path.join(root, "new.hwp")
+               })
+
+      assert msg =~ "read-only"
+    end
+
+    test "refuses doc.save with a read_only error", %{pool: pool, root: root} do
+      # Open a doc as a writable agent first so a doc id exists to target.
+      {:ok, %{"document" => doc_id}} =
+        Tools.call(rw_ctx(pool, root), "doc.open", %{
+          "path" => Path.join(root, "saveme.hwp"),
+          "open_opts" => [__text__: "x"]
+        })
+
+      assert {:error, %{"error" => "read_only"}} =
+               Tools.call(ro_ctx(pool, root), "doc.save", %{"document" => doc_id})
+    end
+
+    test "refuses doc.edit with a read_only error", %{pool: pool, root: root} do
+      {:ok, %{"document" => doc_id}} =
+        Tools.call(rw_ctx(pool, root), "doc.open", %{
+          "path" => Path.join(root, "editme.hwp"),
+          "open_opts" => [__text__: "제1조"]
+        })
+
+      assert {:error, %{"error" => "read_only"}} =
+               Tools.call(ro_ctx(pool, root), "doc.edit", %{
+                 "document" => doc_id,
+                 "op" => %{"op" => "replace_text", "query" => "제1조", "replacement" => "X"},
+                 "base_revision" => 0
+               })
+    end
+
+    test "refuses doc.set with a read_only error", %{pool: pool, root: root} do
+      assert {:error, %{"error" => "read_only"}} =
+               Tools.call(ro_ctx(pool, root), "doc.set", %{
+                 "ref" => "hwp:foo",
+                 "props" => %{"bold" => true}
+               })
+    end
+
+    test "still allows reads (doc.read / doc.find / doc.context)", %{pool: pool, root: root} do
+      {:ok, %{"document" => doc_id}} =
+        Tools.call(rw_ctx(pool, root), "doc.open", %{
+          "path" => Path.join(root, "readme.hwp"),
+          "open_opts" => [__text__: "제1조 (목적)\n제2조 (기간)"]
+        })
+
+      assert {:ok, %{"text" => text}} =
+               Tools.call(ro_ctx(pool, root), "doc.read", %{"document" => doc_id})
+
+      assert text =~ "제2조"
+
+      assert {:ok, %{"matches" => [_ | _]}} =
+               Tools.call(ro_ctx(pool, root), "doc.find", %{
+                 "document" => doc_id,
+                 "pattern" => "제1조"
+               })
+
+      assert {:ok, _} = Tools.call(ro_ctx(pool, root), "doc.context", %{})
+    end
+  end
+
+  describe "access control: workspace path confinement" do
+    setup do
+      root = Path.join(System.tmp_dir!(), "ws_pc_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(root)
+      on_exit(fn -> File.rm_rf(root) end)
+      {:ok, root: root}
+    end
+
+    defp ws_ctx(pool, root),
+      do: %{pool: pool, agent_id: "ws", session_path: root, read_only: false}
+
+    test "doc.create OUTSIDE the workspace root is refused", %{pool: pool, root: root} do
+      outside = Path.join(System.tmp_dir!(), "outside_#{System.unique_integer([:positive])}.hwp")
+
+      assert {:error, %{"error" => "outside_workspace", "workspace_root" => reported}} =
+               Tools.call(ws_ctx(pool, root), "doc.create", %{"path" => outside})
+
+      assert reported == Path.expand(root)
+      refute File.exists?(outside)
+    end
+
+    test "a `..`-escape path is refused even if it lexically starts with the root",
+         %{pool: pool, root: root} do
+      # `<root>/../<sibling>` expands OUTSIDE root — the guard must expand before
+      # comparing, not do a raw prefix check.
+      escape = Path.join(root, "../escape_#{System.unique_integer([:positive])}.hwp")
+
+      assert {:error, %{"error" => "outside_workspace"}} =
+               Tools.call(ws_ctx(pool, root), "doc.create", %{"path" => escape})
+
+      refute File.exists?(Path.expand(escape))
+    end
+
+    test "doc.open OUTSIDE the workspace root is refused", %{pool: pool, root: root} do
+      outside = Path.join(System.tmp_dir!(), "outside_open_#{System.unique_integer([:positive])}.hwp")
+      File.write!(outside, "x")
+      on_exit(fn -> File.rm_rf(outside) end)
+
+      assert {:error, %{"error" => "outside_workspace"}} =
+               Tools.call(ws_ctx(pool, root), "doc.open", %{"path" => outside})
+    end
+
+    test "doc.create/open INSIDE the workspace root works (incl. nested dirs)",
+         %{pool: pool, root: root} do
+      inside = Path.join(root, "sub/dir/inside.hwp")
+
+      # A blank create may surface an engine create-unsupported error from the fake
+      # runtime, but it must NOT be the outside_workspace gate — the in-workspace
+      # path passes confinement. Use a clone (which writes real bytes) to assert
+      # an in-workspace write actually succeeds end-to-end.
+      source = Path.join(root, "tmpl.hwp")
+      File.write!(source, :crypto.strong_rand_bytes(512))
+
+      assert {:ok, %{"document" => doc_id}} =
+               Tools.call(ws_ctx(pool, root), "doc.create", %{
+                 "path" => inside,
+                 "from" => source
+               })
+
+      assert File.exists?(inside)
+
+      # The clone opened as an editable doc whose save target is the in-workspace
+      # path (no regression in the normal in-workspace write flow).
+      assert {:ok, %{path: ^inside}} = Pool.info(pool, doc_id)
+    end
+
+    test "no session_path (legacy pool-only ctx) leaves paths unconstrained",
+         %{pool: pool} do
+      # The legacy bare-pool ctx has no :session_path; confine_path is a passthrough
+      # so an absolute path anywhere still opens (preserving pre-isolation behaviour).
+      anywhere = Path.join(System.tmp_dir!(), "legacy_#{System.unique_integer([:positive])}.hwp")
+
+      assert {:ok, %{"document" => _}} =
+               Tools.call(%{pool: pool}, "doc.open", %{
+                 "path" => anywhere,
+                 "open_opts" => [__text__: "x"]
+               })
+    end
+  end
+
   defp restore(app, key, nil), do: Application.delete_env(app, key)
   defp restore(app, key, value), do: Application.put_env(app, key, value)
 end
