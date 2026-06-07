@@ -62,40 +62,42 @@ defmodule EcritsWeb.Local.WorkspaceLive do
       label: "GPT-5.3 Codex Spark",
       description: "Fast coding model"
     },
-    # Claude model ids the `claude` CLI (`--model`) actually accepts. Aliases
-    # (`opus`/`sonnet`/`haiku`) resolve to the latest of each family; pinned full
-    # ids (`claude-opus-4-7`, …) are forwarded verbatim. Confirmed against
-    # `claude --help` (`--model` doc) + a live `claude -p --model <id>` probe
-    # (an unknown id errors "It may not exist or you may not have access to it").
+    # Claude follows Claude's own selection style: aliases, not pinned versions.
+    # `--model` takes "an alias for the latest model" (claude --help), so
+    # `opus`/`sonnet`/`haiku` always resolve to the newest of each family the
+    # installed `claude` CLI supports — they never go stale like a pinned
+    # `claude-opus-4-7`. `default` forwards no `--model` (the CLI's own
+    # recommended default). To get a newer model (e.g. Opus 4.8), update the
+    # `claude` CLI — no change here is needed.
     %{
-      id: "claude-opus-4-7",
+      id: "default",
       provider: "claude",
-      label: "Claude Opus 4.7",
-      description: "Most capable Claude model"
+      label: "Default",
+      description: "Recommended — latest Claude"
     },
     %{
-      id: "claude-opus-4-6",
+      id: "opus",
       provider: "claude",
-      label: "Claude Opus 4.6",
-      description: "Prior frontier Opus"
+      label: "Opus",
+      description: "Most capable — latest Opus"
     },
     %{
-      id: "claude-sonnet-4-6",
+      id: "sonnet",
       provider: "claude",
-      label: "Claude Sonnet 4.6",
+      label: "Sonnet",
       description: "Balanced speed and capability"
     },
     %{
-      id: "claude-haiku-4-5",
+      id: "haiku",
       provider: "claude",
-      label: "Claude Haiku 4.5",
+      label: "Haiku",
       description: "Fastest, lowest cost"
     },
     %{
       id: "opusplan",
       provider: "claude",
-      label: "Claude Opus Plan",
-      description: "Opus to plan, Sonnet to execute"
+      label: "Opus Plan",
+      description: "Opus plans, Sonnet executes"
     }
   ]
   @local_agent_access_controls [
@@ -997,6 +999,7 @@ defmodule EcritsWeb.Local.WorkspaceLive do
                   for={@local_agent_title_form}
                   id="local-agent-title-form"
                   phx-change="update_local_agent_title"
+                  phx-submit="update_local_agent_title"
                   data-role="chat-thread-title-form"
                   class="min-w-0 flex-1"
                 >
@@ -3210,12 +3213,15 @@ defmodule EcritsWeb.Local.WorkspaceLive do
     Enum.filter(@local_agent_models, &(&1.provider == provider_id))
   end
 
-  defp default_agent_model_id("claude"), do: "claude-opus-4-7"
+  defp default_agent_model_id("claude"), do: "default"
   defp default_agent_model_id(_provider), do: "gpt-5.5"
 
   # The model id forwarded to the adapter (→ `--model <id>` on the provider CLI).
-  # Every catalog id is a real, accepted model id now, so forward it verbatim;
-  # only an unknown/blank id yields nil (let the CLI fall back to its default).
+  # Claude's `default` alias forwards NO `--model` (the CLI picks its own
+  # recommended latest); every other catalog id is a real accepted alias/id and
+  # is forwarded verbatim. An unknown/blank id yields nil.
+  defp local_agent_adapter_model("default"), do: nil
+
   defp local_agent_adapter_model(model_id) do
     case local_agent_model(model_id) do
       %{id: id} -> id
