@@ -1418,7 +1418,7 @@ defmodule EcritsWeb.Local.WorkspaceLive do
                             )
                           ]}
                         >
-                          <span class="whitespace-nowrap">{local_agent_reasoning_label(effort)}</span>
+                          <span class="min-w-0 flex-1 truncate">{local_agent_reasoning_label(effort)}</span>
                           <.icon
                             :if={@local_agent_reasoning_effort == effort}
                             name="hero-check"
@@ -3402,7 +3402,7 @@ defmodule EcritsWeb.Local.WorkspaceLive do
   defp local_agent_reasoning_label("xhigh"), do: "XHigh - maximum reasoning/tokens"
 
   defp local_agent_reasoning_label("ultracode"),
-    do: "Ultracode - exhaustive multi-step reasoning"
+    do: "Ultracode - exhaustive reasoning"
 
   defp local_agent_reasoning_label(reasoning), do: reasoning
 
