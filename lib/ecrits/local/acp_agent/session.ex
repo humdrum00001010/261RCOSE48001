@@ -68,8 +68,47 @@ defmodule Ecrits.Local.AcpAgent.Session do
   def whereis(_id), do: nil
 
   def snapshot(pid), do: GenServer.call(pid, :snapshot)
-  def send_turn(pid, ctx, input, opts \\ []), do: GenServer.call(pid, {:send_turn, ctx, input, opts})
+
+  def send_turn(pid, ctx, input, opts \\ []),
+    do: GenServer.call(pid, {:send_turn, ctx, input, opts})
+
   def cancel(pid, ctx, turn_id \\ nil), do: GenServer.call(pid, {:cancel, ctx, turn_id})
+
+  @doc """
+  Display-only snapshot for the workspace Session / chat-rail repaint after a
+  browser refresh: `%{transcript, status, title}`. The transcript is the prior
+  user/agent text bubbles (oldest-first); status is `:idle`/`:running`; title is
+  the derived/renamed chat title. The conversation itself stays provider-owned
+  (codex `thread/resume`), so this is purely the visible history + header.
+  """
+  def agent_snapshot(pid) when is_pid(pid), do: GenServer.call(pid, :agent_snapshot)
+
+  @doc "The current chat title (nil/empty when no first-prompt title yet)."
+  def title(pid) when is_pid(pid), do: GenServer.call(pid, :title)
+
+  @doc """
+  Set the chat title explicitly (a user rename). Marks the title user-edited so
+  the first-prompt auto-title never overrides it afterwards, and broadcasts a
+  `:thread_title` event so every attached LiveView updates its header.
+  """
+  def rename(pid, title) when is_pid(pid) and is_binary(title),
+    do: GenServer.call(pid, {:rename, title})
+
+  @doc """
+  Lightweight, display-only transcript of completed turns for repaint after a
+  browser refresh. The conversation itself stays provider-owned (codex resumes it
+  via `provider_session_id`); this is only the prior `user`/`agent` text bubbles
+  so the chat pane is not blank on re-attach. A list (oldest first) of
+  `%{turn_id, user, agent}` where each text field may be `nil`/empty.
+  """
+  def transcript(pid) when is_pid(pid), do: GenServer.call(pid, :transcript)
+
+  def transcript(id) when is_binary(id) do
+    case whereis(id) do
+      pid when is_pid(pid) -> transcript(pid)
+      nil -> []
+    end
+  end
 
   @doc """
   Updates this live session's turn parameters (access/approval mode, reasoning
@@ -110,16 +149,46 @@ defmodule Ecrits.Local.AcpAgent.Session do
        # first turn establishes it.
        provider_session_id: nil,
        current: nil,
+       # Display-only transcript of COMPLETED turns (oldest first), so a browser
+       # refresh can repaint the prior bubbles. codex `thread/resume` restores the
+       # agent's memory but does NOT re-stream past messages, so without this the
+       # re-attached pane is blank. Each entry: %{turn_id, user, agent}.
+       transcript: [],
        # Codex (unlike the `pi` adapter) never emits a session/thread title over
        # ACP, so a fresh conversation would stay "New Chat" forever. We derive a
        # title from the FIRST turn's prompt and emit it once; this flag gates that.
-       title_emitted?: false
+       title_emitted?: false,
+       # The current chat title, RETAINED on the durable agent so a re-attach
+       # (browser refresh) can recover it from `agent_snapshot/1` even though
+       # codex never re-streams it. `nil` until the first prompt derives one (or a
+       # user rename sets it). `title_user_edited?` pins a manual rename so the
+       # first-prompt auto-title never clobbers it.
+       title: nil,
+       title_user_edited?: false
      }}
   end
 
   @impl true
   def handle_call(:snapshot, _from, state) do
     {:reply, {:ok, public_snapshot(state)}, state}
+  end
+
+  def handle_call(:agent_snapshot, _from, state) do
+    {:reply, agent_snapshot_payload(state), state}
+  end
+
+  def handle_call(:title, _from, state) do
+    {:reply, state.title, state}
+  end
+
+  def handle_call({:rename, title}, _from, state) do
+    title = String.trim(title)
+    state = %{state | title: title, title_user_edited?: true, title_emitted?: true}
+    {:reply, :ok, emit(state, %{type: :thread_title, title: title})}
+  end
+
+  def handle_call(:transcript, _from, state) do
+    {:reply, Enum.reverse(state.transcript), state}
   end
 
   def handle_call({:update_options, new_opts}, _from, state) do
@@ -152,7 +221,17 @@ defmodule Ecrits.Local.AcpAgent.Session do
 
         Process.unlink(task.pid)
 
-        state = %{state | current: %{turn_id: turn_id, task_ref: task.ref, task_pid: task.pid, text: ""}}
+        state = %{
+          state
+          | current: %{
+              turn_id: turn_id,
+              task_ref: task.ref,
+              task_pid: task.pid,
+              text: "",
+              input: input
+            }
+        }
+
         state = emit(state, %{type: :turn_started, turn_id: turn_id, input: input})
         state = maybe_emit_thread_title(state, input)
 
@@ -182,6 +261,7 @@ defmodule Ecrits.Local.AcpAgent.Session do
         # losing the conversation. A bounded fallback still hard-kills a task that
         # refuses to wind down, so cancel can never hang.
         cancelled_turn_id = state.current.turn_id
+        cancelled_current = state.current
 
         if state.current.task_pid do
           send(state.current.task_pid, :acp_cancel_turn)
@@ -190,6 +270,7 @@ defmodule Ecrits.Local.AcpAgent.Session do
 
         state =
           state
+          |> record_transcript_turn(cancelled_current)
           |> emit(%{type: :turn_cancelled, turn_id: cancelled_turn_id})
           |> Map.put(:current, nil)
 
@@ -216,6 +297,7 @@ defmodule Ecrits.Local.AcpAgent.Session do
     with %{turn_id: ^turn_id} = current <- state.current do
       state =
         state
+        |> record_transcript_turn(current)
         |> emit(%{type: :turn_completed, turn_id: turn_id, text: current.text})
         |> Map.put(:current, nil)
 
@@ -226,9 +308,10 @@ defmodule Ecrits.Local.AcpAgent.Session do
   end
 
   def handle_info({:turn_failed, turn_id, reason}, state) do
-    with %{turn_id: ^turn_id} <- state.current do
+    with %{turn_id: ^turn_id} = current <- state.current do
       state =
         state
+        |> record_transcript_turn(current)
         |> emit(%{type: :turn_failed, turn_id: turn_id, reason: inspect(reason)})
         |> Map.put(:current, nil)
 
@@ -252,10 +335,14 @@ defmodule Ecrits.Local.AcpAgent.Session do
     {:noreply, state}
   end
 
-  def handle_info({:DOWN, ref, :process, _pid, reason}, %{current: %{task_ref: ref, turn_id: turn_id}} = state)
+  def handle_info(
+        {:DOWN, ref, :process, _pid, reason},
+        %{current: %{task_ref: ref, turn_id: turn_id} = current} = state
+      )
       when reason not in [:normal, :killed] do
     state =
       state
+      |> record_transcript_turn(current)
       |> emit(%{type: :turn_failed, turn_id: turn_id, reason: inspect(reason)})
       |> Map.put(:current, nil)
 
@@ -298,7 +385,8 @@ defmodule Ecrits.Local.AcpAgent.Session do
     %{state | provider_session_id: id}
   end
 
-  defp handle_turn_event(state, turn_id, %{type: :text_delta, delta: delta}) when is_binary(delta) do
+  defp handle_turn_event(state, turn_id, %{type: :text_delta, delta: delta})
+       when is_binary(delta) do
     current = %{state.current | text: (state.current.text || "") <> delta}
 
     state
@@ -306,7 +394,8 @@ defmodule Ecrits.Local.AcpAgent.Session do
     |> emit(%{type: :text_delta, turn_id: turn_id, delta: delta})
   end
 
-  defp handle_turn_event(state, turn_id, %{type: :reasoning_delta, delta: delta}) when is_binary(delta) do
+  defp handle_turn_event(state, turn_id, %{type: :reasoning_delta, delta: delta})
+       when is_binary(delta) do
     emit(state, %{type: :reasoning_delta, turn_id: turn_id, delta: delta})
   end
 
@@ -344,6 +433,25 @@ defmodule Ecrits.Local.AcpAgent.Session do
 
   # ── helpers ────────────────────────────────────────────────────────
 
+  # Append a finished turn to the display-only transcript (newest-prepended;
+  # `transcript/1` reverses to oldest-first). Skips an empty turn (no user text
+  # and no agent text) so a no-op turn never leaves a blank pair on repaint.
+  defp record_transcript_turn(state, current) do
+    user = current[:input]
+    agent = current[:text]
+
+    if blank?(user) and blank?(agent) do
+      state
+    else
+      entry = %{turn_id: current.turn_id, user: user, agent: agent}
+      %{state | transcript: [entry | state.transcript]}
+    end
+  end
+
+  defp blank?(nil), do: true
+  defp blank?(text) when is_binary(text), do: String.trim(text) == ""
+  defp blank?(_), do: false
+
   defp public_snapshot(state) do
     %{
       id: state.id,
@@ -355,11 +463,26 @@ defmodule Ecrits.Local.AcpAgent.Session do
     }
   end
 
+  # Display-only snapshot for chat-rail repaint after a refresh.
+  defp agent_snapshot_payload(state) do
+    %{
+      transcript: Enum.reverse(state.transcript),
+      status: status(state),
+      title: state.title
+    }
+  end
+
+  defp status(%{current: nil}), do: :idle
+  defp status(_state), do: :running
+
   defp emit(state, event) do
     event =
       event
       |> Map.put(:session_id, state.id)
-      |> Map.put(:at, DateTime.utc_now() |> DateTime.truncate(:millisecond) |> DateTime.to_iso8601())
+      |> Map.put(
+        :at,
+        DateTime.utc_now() |> DateTime.truncate(:millisecond) |> DateTime.to_iso8601()
+      )
 
     Phoenix.PubSub.broadcast(@pubsub, topic(state.id), {:local_agent_event, event})
     state
@@ -375,7 +498,9 @@ defmodule Ecrits.Local.AcpAgent.Session do
   defp maybe_emit_thread_title(state, input) do
     case derive_title(input) do
       title when is_binary(title) and title != "" ->
-        emit(%{state | title_emitted?: true}, %{type: :thread_title, title: title})
+        # RETAIN the title on the durable agent (so a re-attach recovers it) AND
+        # emit it once so attached LiveViews update their header.
+        emit(%{state | title_emitted?: true, title: title}, %{type: :thread_title, title: title})
 
       _ ->
         %{state | title_emitted?: true}

@@ -91,7 +91,14 @@ defmodule EcritsWeb.Local.MountWorkspaceLiveTest do
 
     prepare_local_workspace_fixture()
 
+    # The foreground agent is now owned by the path-keyed `Ecrits.Workspace.Session`
+    # (durable, shared across tests at the same `valid_path()`). Clear any Session
+    # left over from a prior test so each test starts with a fresh agent — without
+    # this, a leaked in-flight turn / provider thread bleeds across tests.
+    stop_workspace_session(LocalWorkspaceAdapterStub.valid_path())
+
     on_exit(fn ->
+      stop_workspace_session(LocalWorkspaceAdapterStub.valid_path())
       cleanup_local_workspace_fixture()
 
       if previous do
@@ -1250,6 +1257,71 @@ defmodule EcritsWeb.Local.MountWorkspaceLiveTest do
     assert {:ok, %{document_id: ^new_document_id}} = AcpAgent.status(nil, session_id)
   end
 
+  test "a browser refresh re-attaches the SAME durable agent (pid/thread/title/transcript)",
+       %{conn: conn} do
+    # The hard one: after a turn, a hard refresh (a fresh LiveView mount at the
+    # same workspace path) must RE-ATTACH the path-keyed workspace Session's
+    # foreground agent — SAME process / provider thread — and recover the chat
+    # title + repaint the prior bubbles. NOT a recreated session.
+    use_test_agent_adapter!(adapter_opts: [script: [{:text_delta, "ack reply"}]])
+
+    {:ok, lv, _html} =
+      live(
+        conn,
+        ~p"/workspace?#{[path: LocalWorkspaceAdapterStub.valid_path(), provider: "codex"]}"
+      )
+
+    session_id = subscribe_agent(lv)
+    agent_pid = AcpAgent.whereis(session_id)
+    assert is_pid(agent_pid)
+
+    # A turn that completes → builds the transcript AND derives the auto-title.
+    lv
+    |> form("#local-agent-form", agent: %{message: "한 단어로 확인만"})
+    |> render_submit()
+
+    assert_receive {:local_agent_event, %{type: :turn_completed, session_id: ^session_id}}, 1_000
+    sync_liveview(lv)
+
+    # The durable agent retained the derived title + transcript.
+    assert AcpAgent.title(session_id) == "한 단어로 확인만"
+    snapshot = AcpAgent.agent_snapshot(session_id)
+    assert [%{user: "한 단어로 확인만"} | _] = snapshot.transcript
+
+    # --- the "refresh": a brand-new LiveView mount at the SAME path ---
+    {:ok, lv2, _html2} =
+      live(
+        conn,
+        ~p"/workspace?#{[path: LocalWorkspaceAdapterStub.valid_path(), provider: "codex"]}"
+      )
+
+    sync_liveview(lv2)
+
+    # Same foreground agent: same id, same pid, still alive (provider thread kept).
+    assert local_agent_session_id(lv2) == session_id
+    assert AcpAgent.whereis(session_id) == agent_pid
+    assert Process.alive?(agent_pid)
+
+    # Title recovered into the header (NOT the "New Chat" default).
+    assert has_element?(lv2, "#local-agent-title-label[value='한 단어로 확인만']")
+
+    # Prior user bubble repainted from the durable transcript.
+    assert has_element?(
+             lv2,
+             ~s([data-role="local-agent-message"][data-message-role="user"]),
+             "한 단어로 확인만"
+           )
+
+    # Tear down the durable workspace Session + agent so the shared valid_path()
+    # doesn't leak this agent into sibling tests.
+    on_exit(fn ->
+      case Ecrits.Workspace.Session.whereis(LocalWorkspaceAdapterStub.valid_path()) do
+        pid when is_pid(pid) -> GenServer.stop(pid)
+        nil -> :ok
+      end
+    end)
+  end
+
   test "agent rail shows provider logo in model selector for codex route display", %{conn: conn} do
     {:ok, lv, _html} =
       live(
@@ -1344,7 +1416,7 @@ defmodule EcritsWeb.Local.MountWorkspaceLiveTest do
            )
   end
 
-  test "agent refresh belongs to chat rail and starts a fresh local agent session", %{conn: conn} do
+  test "agent refresh belongs to chat rail and re-attaches the durable agent", %{conn: conn} do
     {:ok, lv, _html} =
       live(
         conn,
@@ -1359,8 +1431,11 @@ defmodule EcritsWeb.Local.MountWorkspaceLiveTest do
 
     sync_liveview(lv)
 
+    # The foreground agent is owned by the path-keyed workspace Session and is
+    # durable: a chat "refresh" detaches+re-attaches THIS LiveView to the SAME
+    # agent (same id / provider thread), it does NOT create a new conversation.
     new_session_id = local_agent_session_id(lv)
-    refute new_session_id == old_session_id
+    assert new_session_id == old_session_id
     track_agent_session(new_session_id)
 
     refute has_element?(lv, "#local-agent-system")
@@ -1816,7 +1891,9 @@ defmodule EcritsWeb.Local.MountWorkspaceLiveTest do
 
     # No SINGLE bubble may carry the cumulative whole-turn text (segment A directly
     # followed by segment B inside one element) — that is the overwrite signature.
-    sent_bubble = ~s([data-role="local-agent-message"][data-message-role="agent"][data-message-status="sent"])
+    sent_bubble =
+      ~s([data-role="local-agent-message"][data-message-role="agent"][data-message-status="sent"])
+
     refute has_element?(lv, sent_bubble, "PREAMBLE-APREAMBLE-B"),
            "earlier segments were re-streamed as one cumulative bubble"
 
@@ -2137,6 +2214,33 @@ defmodule EcritsWeb.Local.MountWorkspaceLiveTest do
         nil -> :ok
       end
     end)
+  end
+
+  # Tear down the durable, path-keyed workspace Session AND its foreground agent
+  # (the agent lives under its own supervisor, so stopping the Session alone would
+  # leave the agent running for the next test). Tolerant of nothing being started.
+  defp stop_workspace_session(path) do
+    case Ecrits.Workspace.Session.whereis(path) do
+      pid when is_pid(pid) ->
+        case Ecrits.Workspace.Session.foreground_agent(%{path: path}) do
+          %{pid: agent_pid} when is_pid(agent_pid) -> stop_pid(agent_pid)
+          _ -> :ok
+        end
+
+        stop_pid(pid)
+
+      nil ->
+        :ok
+    end
+  end
+
+  defp stop_pid(pid) do
+    if Process.alive?(pid), do: GenServer.stop(pid, :normal, 1_000)
+    :ok
+  rescue
+    _ -> :ok
+  catch
+    :exit, _ -> :ok
   end
 
   defp local_agent_session_id(lv) do

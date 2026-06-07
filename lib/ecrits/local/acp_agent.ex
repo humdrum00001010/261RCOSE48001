@@ -81,7 +81,12 @@ defmodule Ecrits.Local.AcpAgent do
   defp integration_option(%{id: id, label: label, executables: executables}) do
     case resolve_executable(executables) do
       {:ok, %{command: command, path: path}} ->
-        %{id: id, label: provider_integration_label(label), status: :ready, detail: "#{command} at #{path}"}
+        %{
+          id: id,
+          label: provider_integration_label(label),
+          status: :ready,
+          detail: "#{command} at #{path}"
+        }
 
       {:error, {:executable_missing, candidates}} ->
         %{
@@ -181,6 +186,30 @@ defmodule Ecrits.Local.AcpAgent do
   def status(_ctx, session_id) do
     with {:ok, pid} <- fetch_session(session_id) do
       Session.snapshot(pid)
+    end
+  end
+
+  @doc "Display-only `%{transcript, status, title}` for a refresh-time repaint."
+  def agent_snapshot(session_id) when is_binary(session_id) do
+    case Session.whereis(session_id) do
+      pid when is_pid(pid) -> Session.agent_snapshot(pid)
+      nil -> %{transcript: [], status: :offline, title: nil}
+    end
+  end
+
+  @doc "The session's current chat title (nil when not yet derived)."
+  def title(session_id) when is_binary(session_id) do
+    case Session.whereis(session_id) do
+      pid when is_pid(pid) -> Session.title(pid)
+      nil -> nil
+    end
+  end
+
+  @doc "Rename a session's chat thread (user edit)."
+  def rename(session_id, title) when is_binary(session_id) and is_binary(title) do
+    case Session.whereis(session_id) do
+      pid when is_pid(pid) -> Session.rename(pid, title)
+      nil -> {:error, :not_found}
     end
   end
 

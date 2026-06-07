@@ -14,6 +14,7 @@ defmodule EcritsWeb.Local.WorkspaceLive do
   alias Ecrits.Local.Document.RhwpAdapter
   alias Ecrits.Local.Path, as: LocalPath
   alias Ecrits.Local.Workspace
+  alias Ecrits.Workspace.Session, as: WorkspaceSession
   alias EcritsWeb.Components.LocalFileTree
   alias EcritsWeb.Live.Studio.Components.ChatRail
   alias EcritsWeb.Live.Studio.Components.EditorSurface
@@ -98,16 +99,13 @@ defmodule EcritsWeb.Local.WorkspaceLive do
   ]
 
   @impl true
-  def mount(_params, session, socket) do
-    # Stable per-browser handle planted in the phx session (WorkspaceSession plug).
-    # It keys the long-running agent Session (chat re-attaches on refresh) and the
-    # in-memory ShellStore (tabs/path). Fallback id keeps tests/odd mounts working.
-    ws_id = session["ws_id"] || Ecto.UUID.generate()
-    saved = Ecrits.Local.Workspace.ShellStore.get(ws_id)
-
+  def mount(_params, _session, socket) do
     {:ok,
      socket
-     |> assign(:ws_id, ws_id)
+     # The durable per-workspace `Ecrits.Workspace.Session` (keyed by canonical
+     # path, cookieless) owns the foreground agent and survives this LiveView; a
+     # refresh re-attaches in handle_params. `nil` until the first attach.
+     |> assign(:workspace_session, nil)
      # NAMED captures (not anon closures): a stream `dom_id` resolver is stored on
      # the long-lived LiveView at mount. An anonymous `& &1.dom_id` is compiled
      # INTO this module, so a dev hot-reload that purges the old module version
@@ -130,7 +128,7 @@ defmodule EcritsWeb.Local.WorkspaceLive do
      |> assign(:selected_path, nil)
      |> assign(:active_document_path, nil)
      |> assign(:active_document, nil)
-     |> assign(:open_documents, Map.get(saved, :tabs, []))
+     |> assign(:open_documents, [])
      |> assign(:active_document_id, nil)
      |> assign(:pool_document_id, nil)
      # Browser-backed agent edits (design §6.2): when the open HWP is registered
@@ -216,10 +214,6 @@ defmodule EcritsWeb.Local.WorkspaceLive do
     reasoning_changed? = reasoning_effort != socket.assigns.local_agent_reasoning_effort
     access_control = normalize_access_control(Map.get(params, "access"))
     access_changed? = access_control != socket.assigns.local_agent_access_control
-    previous_agent_context = local_agent_session_context(socket)
-
-    same_workspace? =
-      socket.assigns.workspace_path == path and not is_nil(socket.assigns.workspace)
 
     socket =
       socket
@@ -230,26 +224,22 @@ defmodule EcritsWeb.Local.WorkspaceLive do
       |> assign_local_agent_access(access_control)
       |> assign(:local_agent_integrations, local_agent_integrations())
       |> mount_workspace(path)
+      # Attach the durable per-path workspace Session and bind its foreground
+      # agent BEFORE opening the document — this is the refresh-survival seam.
+      # `Session.attach` get-or-starts the path-keyed Session (cookieless), which
+      # get-or-starts the foreground agent: on a browser refresh the SAME agent
+      # pid / provider thread / transcript / title are re-attached, NOT recreated.
+      |> attach_workspace_session()
       |> maybe_open_local_document(params)
 
-    # Access/reasoning/same-provider-model changes must NOT recreate the session
-    # (that starts a brand-new ACP session and loses the conversation). They are
-    # per-turn options, so apply them to the LIVE session in place — the next
-    # turn picks them up — and restart only on a real provider switch (codex<->
-    # claude) or a workspace/document-context change that needs a fresh session.
-    options_changed? = access_changed? or reasoning_changed? or model_changed?
+    # Access/reasoning/same-provider-model changes must NOT recreate the agent
+    # (that loses the conversation). They are per-turn options applied LIVE to the
+    # foreground agent — the next turn picks them up. A provider switch (codex<->
+    # claude) is also applied live this phase (the agent's adapter is per-turn).
+    options_changed? =
+      access_changed? or reasoning_changed? or model_changed? or provider_changed?
 
-    socket =
-      if should_restart_local_agent_session?(
-           socket,
-           same_workspace?,
-           provider_changed?,
-           previous_agent_context
-         ) do
-        restart_local_agent_session(socket)
-      else
-        maybe_apply_live_local_agent_options(socket, options_changed?)
-      end
+    socket = maybe_apply_live_local_agent_options(socket, options_changed?)
 
     socket =
       if (provider_param_invalid?(requested_provider) or model_param_invalid?(requested_model)) and
@@ -259,44 +249,13 @@ defmodule EcritsWeb.Local.WorkspaceLive do
         socket
       end
 
-    {:noreply, persist_workspace_shell(socket)}
+    {:noreply, socket}
   end
 
   def handle_params(_params, _uri, socket) do
-    # No workspace path in the URL. If this browser had a workspace open before
-    # (ShellStore, keyed by the session ws_id), restore it; otherwise send to the
-    # folder picker ("/").
-    case Ecrits.Local.Workspace.ShellStore.get(socket.assigns[:ws_id]) do
-      %{path: path} = saved when is_binary(path) and path != "" ->
-        {:noreply, push_patch(socket, to: workspace_restore_path(path, Map.get(saved, :active_path)))}
-
-      _ ->
-        {:noreply, push_navigate(socket, to: ~p"/")}
-    end
-  end
-
-  # Record the per-browser workspace shell (mounted path + open tabs + active
-  # document) so a refresh or bare remount rehydrates it. In-memory only.
-  defp persist_workspace_shell(socket) do
-    Ecrits.Local.Workspace.ShellStore.merge(socket.assigns[:ws_id], %{
-      path: socket.assigns.workspace_path,
-      tabs: socket.assigns.open_documents,
-      active_id: socket.assigns.active_document_id,
-      active_path: socket.assigns.active_document_path
-    })
-
-    socket
-  end
-
-  defp workspace_restore_path(path, active_path) do
-    params = %{"path" => path}
-
-    params =
-      if is_binary(active_path) and active_path != "",
-        do: Map.put(params, "document", Path.basename(active_path)),
-        else: params
-
-    "/workspace?" <> URI.encode_query(params)
+    # No workspace path in the URL — there is no cookie/store to restore from
+    # (the path keys everything now), so send to the folder picker ("/").
+    {:noreply, push_navigate(socket, to: ~p"/")}
   end
 
   @impl true
@@ -309,6 +268,10 @@ defmodule EcritsWeb.Local.WorkspaceLive do
         %{"local_agent_title" => %{"title" => title}},
         socket
       ) do
+    # Persist the rename on the durable foreground agent so it survives a refresh
+    # (and pins the auto-title). No-op before the first attach.
+    if w = ws(socket), do: WorkspaceSession.rename(w, title)
+
     {:noreply,
      socket
      |> assign(:local_agent_title_user_edited?, true)
@@ -578,11 +541,10 @@ defmodule EcritsWeb.Local.WorkspaceLive do
   end
 
   def handle_event("cancel_local_agent", _params, socket) do
-    session_id = socket.assigns.local_agent_session_id
     turn_id = socket.assigns.local_agent_turn_id
 
-    if session_id && turn_id do
-      case ACP.cancel(nil, session_id, turn_id) do
+    if ws(socket) && turn_id do
+      case WorkspaceSession.cancel(ws(socket), turn_id) do
         {:ok, _turn} ->
           partial = socket.assigns.local_agent_text
           segment = socket.assigns.local_agent_text_segment
@@ -1794,36 +1756,145 @@ defmodule EcritsWeb.Local.WorkspaceLive do
 
   defp maybe_adopt_browser_revision(socket, _result), do: socket
 
-  defp start_local_agent_session(socket) do
-    if connected?(socket) do
-      case ACP.start_session(nil, local_agent_session_opts(socket)) do
-        {:ok, %{id: session_id}} ->
-          :ok = ACP.subscribe(session_id)
+  # Attach this LiveView to the durable per-workspace `Ecrits.Workspace.Session`
+  # (keyed by canonical path) and bind its foreground agent. This is the
+  # refresh-survival seam: `Session.attach` get-or-starts the path-keyed Session,
+  # which get-or-starts the foreground agent — so on a browser refresh the SAME
+  # agent pid / provider thread / transcript / title are re-attached, NEVER
+  # recreated. The static (disconnected) render does nothing so no agent is
+  # spawned for the throwaway mount.
+  defp attach_workspace_session(%{assigns: %{workspace_error: error}} = socket)
+       when is_binary(error),
+       do: assign(socket, :local_agent_status, :offline)
 
-          socket
-          |> assign(:local_agent_session_id, session_id)
-          |> assign(:local_agent_status, :idle)
-          |> assign(:local_agent_error, nil)
-          |> stream(:local_agent_items, [], reset: true)
+  defp attach_workspace_session(socket) do
+    path = socket.assigns.workspace_path
 
-        {:error, reason} ->
-          socket
-          |> assign(:local_agent_status, :offline)
-          |> assign(:local_agent_error, local_agent_error(reason))
-      end
-    else
-      socket
-      |> assign(:local_agent_status, :starting)
-      |> assign(:local_agent_error, nil)
+    cond do
+      not connected?(socket) ->
+        socket
+        |> assign(:local_agent_status, :starting)
+        |> assign(:local_agent_error, nil)
+
+      not (is_binary(path) and path != "") ->
+        socket
+
+      true ->
+        do_attach_workspace_session(socket, path)
     end
   end
 
+  defp do_attach_workspace_session(socket, path) do
+    case safe_attach_workspace_session(path, local_agent_attach_settings(socket)) do
+      {:ok, %{agent_id: agent_id} = ws} when is_binary(agent_id) ->
+        # Subscribe + repaint ONCE per foreground agent. A doc switch re-runs
+        # handle_params with the SAME path/agent; re-subscribing would double the
+        # event delivery and re-streaming would re-render the whole transcript.
+        already_attached? = socket.assigns.local_agent_session_id == agent_id
+
+        socket =
+          socket
+          |> assign(:workspace_session, ws)
+          |> assign(:local_agent_session_id, agent_id)
+          |> assign(:local_agent_error, nil)
+
+        if already_attached? do
+          socket
+        else
+          :ok = WorkspaceSession.subscribe(ws)
+          snapshot = WorkspaceSession.snapshot(ws)
+
+          socket
+          |> assign(:local_agent_status, snapshot.status)
+          |> maybe_restore_agent_title(snapshot.title)
+          |> stream(:local_agent_items, [], reset: true)
+          # codex `thread/resume` restores the agent's MEMORY but does NOT
+          # re-stream past messages, so without this the re-attached pane is
+          # blank. Repaint the prior bubbles from the durable transcript.
+          |> replay_local_agent_transcript(snapshot.transcript)
+        end
+
+      {:error, reason, _ws} ->
+        socket
+        |> assign(:local_agent_status, :offline)
+        |> assign(:local_agent_error, local_agent_error(reason))
+
+      {:error, reason} ->
+        socket
+        |> assign(:local_agent_status, :offline)
+        |> assign(:local_agent_error, local_agent_error(reason))
+    end
+  end
+
+  # Tolerate the workspace-Session supervision infra not being up yet (e.g. the
+  # SessionSupervisor/Registry child was added to the tree but the server hasn't
+  # been restarted to activate it). Degrade to an offline chat rail rather than
+  # crashing the whole workspace mount.
+  defp safe_attach_workspace_session(path, settings) do
+    WorkspaceSession.attach(path, settings)
+  rescue
+    e -> {:error, {:session_unavailable, Exception.message(e)}}
+  catch
+    :exit, reason -> {:error, {:session_unavailable, reason}}
+  end
+
+  # Restore the chat header from the durable agent's retained title (after a
+  # refresh). A brand-new agent has no title yet (keep the "New Chat" default).
+  defp maybe_restore_agent_title(socket, title) when is_binary(title) and title != "" do
+    socket
+    |> assign(:local_agent_title_user_edited?, true)
+    |> assign_local_agent_title(title)
+  end
+
+  defp maybe_restore_agent_title(socket, _title), do: socket
+
+  # Settings used to SEED the foreground agent on first attach (later attaches
+  # re-use the agent and these are applied live). Mirrors local_agent_session_opts
+  # minus the explicit `:id` (the Session derives the stable foreground id).
+  defp local_agent_attach_settings(socket) do
+    socket
+    |> local_agent_session_opts()
+    |> Keyword.delete(:id)
+  end
+
+  # Repaint the chat pane from the durable agent's display-only transcript (used
+  # after a browser refresh re-attaches the foreground agent). Each completed turn
+  # was stored as %{turn_id, user, agent}; re-stream one user bubble and one agent
+  # bubble per turn using the SAME dom-id scheme live turns use (so a later live
+  # turn with the same id reconciles rather than duplicating). The provider still
+  # owns the real conversation/memory — this only re-renders the visible history.
+  defp replay_local_agent_transcript(socket, turns) when is_list(turns) do
+    Enum.reduce(turns, socket, fn turn, acc ->
+      acc
+      |> maybe_stream_transcript_user(turn)
+      |> maybe_stream_transcript_agent(turn)
+    end)
+  end
+
+  defp replay_local_agent_transcript(socket, _turns), do: socket
+
+  defp maybe_stream_transcript_user(socket, %{turn_id: turn_id, user: user})
+       when is_binary(user) and user != "" do
+    stream_insert(socket, :local_agent_items, agent_user_item(turn_id, user))
+  end
+
+  defp maybe_stream_transcript_user(socket, _turn), do: socket
+
+  defp maybe_stream_transcript_agent(socket, %{turn_id: turn_id, agent: agent})
+       when is_binary(agent) and agent != "" do
+    stream_insert(socket, :local_agent_items, agent_assistant_item(turn_id, agent, :sent))
+  end
+
+  defp maybe_stream_transcript_agent(socket, _turn), do: socket
+
+  # Reset the chat-rail to a fresh foreground agent. The path-keyed Session owns
+  # the durable agent, so a "refresh chat" detaches THIS LiveView and re-attaches
+  # — clearing the pane locally and repainting from the (now possibly empty) live
+  # transcript. It does NOT tear down the agent (no provider-thread loss); to start
+  # a genuinely new conversation the user changes workspace (a new path → a new
+  # Session → a new foreground agent).
   defp restart_local_agent_session(socket) do
     maybe_cancel_active_local_agent(socket)
-    # The Session is keyed by the stable ws_id, so a genuine restart (provider /
-    # workspace switch) must TERMINATE the old one first — otherwise the restart
-    # below would just re-attach to the prior conversation via {:already_started}.
-    if id = socket.assigns[:local_agent_session_id], do: Ecrits.Local.AcpAgent.close(id)
 
     socket
     |> assign(:local_agent_session_id, nil)
@@ -1835,45 +1906,23 @@ defmodule EcritsWeb.Local.WorkspaceLive do
     |> assign_local_agent_title(default_local_agent_title())
     |> assign(:local_agent_form, local_agent_form())
     |> stream(:local_agent_items, [], reset: true)
-    |> start_local_agent_session()
+    |> attach_workspace_session()
   end
 
-  # Restart (new ACP session, conversation reset) ONLY on a genuine
-  # provider switch (codex<->claude) or a workspace/document-context change.
-  # Access/reasoning/same-provider-model changes are applied live instead — see
-  # maybe_apply_live_local_agent_options/2 — so they preserve the conversation.
-  defp should_restart_local_agent_session?(
-         socket,
-         same_workspace?,
-         provider_changed?,
-         previous_agent_context
-       ) do
-    # Only a LIVE session can be "restarted". On a fresh mount / reconnect /
-    # browser refresh there is no session yet — it is started (and RE-ATTACHED to
-    # the ws_id-keyed Session) by start_local_agent_session. Without this guard the
-    # fresh-mount defaults look like a workspace/context "change" and we would tear
-    # down the very conversation we just re-attached to.
-    not is_nil(socket.assigns.local_agent_session_id) and
-      is_nil(socket.assigns.workspace_error) and
-      (not same_workspace? or provider_changed? or
-         previous_agent_context != local_agent_session_context(socket))
-  end
-
-  # Apply per-turn option changes (access/reasoning/same-provider model) to the
-  # running session without recreating it, preserving the conversation. No live
-  # session yet -> nothing to do (the next start picks up the assigns).
+  # Apply per-turn option changes (access/reasoning/model/provider) to the LIVE
+  # foreground agent without recreating it, preserving the conversation. No agent
+  # bound yet -> nothing to do (the first attach seeds these from the assigns).
   defp maybe_apply_live_local_agent_options(socket, false), do: socket
 
   defp maybe_apply_live_local_agent_options(
-         %{assigns: %{local_agent_session_id: session_id}} = socket,
+         %{assigns: %{workspace_session: %{} = ws}} = socket,
          true
-       )
-       when is_binary(session_id) do
+       ) do
     workspace_path = workspace_root_path(socket.assigns.workspace || %{})
 
     _ =
-      ACP.update_session_options(
-        session_id,
+      WorkspaceSession.update_options(
+        ws,
         local_agent_provider_adapter_opts(socket, workspace_path)
       )
 
@@ -1882,23 +1931,16 @@ defmodule EcritsWeb.Local.WorkspaceLive do
 
   defp maybe_apply_live_local_agent_options(socket, _changed?), do: socket
 
-  # NOTE: neither the active document NOR local_agent_model is part of the
-  # restart context. The chat-rail conversation is WORKSPACE-scoped, not
-  # document-scoped: selecting/opening a document must preserve the conversation
-  # (the document is per-turn context applied live via
-  # maybe_restart_local_agent_for_document/2 — mirroring the access/reasoning
-  # decoupling). A same-provider model swap is likewise a live per-turn option.
-  # Only a workspace change (here) or a cross-provider switch (provider_changed?
-  # in handle_params) recreates the session.
-  defp local_agent_session_context(socket) do
-    socket.assigns.workspace_path
-  end
+  # The workspace Session handle (delegates send/cancel/rename to the foreground
+  # agent), or nil before the first attach.
+  defp ws(%{assigns: %{workspace_session: %{} = ws}}), do: ws
+  defp ws(_socket), do: nil
 
   defp maybe_cancel_active_local_agent(%{
-         assigns: %{local_agent_session_id: session_id, local_agent_turn_id: turn_id}
+         assigns: %{workspace_session: %{} = ws, local_agent_turn_id: turn_id}
        })
-       when is_binary(session_id) and is_binary(turn_id) do
-    _ = ACP.cancel(nil, session_id, turn_id)
+       when is_binary(turn_id) do
+    _ = WorkspaceSession.cancel(ws, turn_id)
     :ok
   end
 
@@ -1906,11 +1948,11 @@ defmodule EcritsWeb.Local.WorkspaceLive do
 
   defp maybe_cancel_active_local_agent_for_new_turn(
          %{
-           assigns: %{local_agent_session_id: session_id, local_agent_turn_id: turn_id}
+           assigns: %{workspace_session: %{} = ws, local_agent_turn_id: turn_id}
          } = socket
        )
-       when is_binary(session_id) and is_binary(turn_id) do
-    case ACP.cancel(nil, session_id, turn_id) do
+       when is_binary(turn_id) do
+    case WorkspaceSession.cancel(ws, turn_id) do
       {:ok, _turn} ->
         partial = socket.assigns.local_agent_text
         segment = socket.assigns.local_agent_text_segment
@@ -1938,9 +1980,7 @@ defmodule EcritsWeb.Local.WorkspaceLive do
   defp maybe_cancel_active_local_agent_for_new_turn(socket), do: {:ok, socket}
 
   defp send_local_agent_turn(socket, message) do
-    session_id = socket.assigns.local_agent_session_id
-
-    case ACP.send_turn(nil, session_id, message) do
+    case WorkspaceSession.send_turn(ws(socket), message) do
       {:ok, %{id: turn_id}} ->
         {:noreply,
          socket
@@ -2389,10 +2429,11 @@ defmodule EcritsWeb.Local.WorkspaceLive do
     |> Keyword.put(:document_path, socket.assigns.active_document_path)
     |> Keyword.put(:workspace_path, workspace_path)
     |> put_current_document_id(active_document_id(socket))
-    # Key the long-running Session by the stable per-browser ws_id so a refresh
-    # re-attaches to the SAME conversation (acp_agent.ex returns the existing one
-    # on {:already_started}) instead of starting a fresh codex thread.
-    |> Keyword.put(:id, socket.assigns.ws_id)
+
+    # NOTE: no `:id` here. The durable foreground-agent id is derived from the
+    # canonical workspace PATH by `Ecrits.Workspace.Session` (cookieless), so a
+    # refresh re-derives the SAME id and re-attaches to the SAME agent / provider
+    # thread. (local_agent_attach_settings also strips any stray :id defensively.)
   end
 
   defp put_current_document_id(opts, document_id)
@@ -2401,12 +2442,12 @@ defmodule EcritsWeb.Local.WorkspaceLive do
 
   defp put_current_document_id(opts, _document_id), do: opts
 
-  # Selecting/opening a document must NOT recreate the ACP session (that would
-  # wipe the chat-rail conversation). The active document is per-turn context, so
-  # — exactly like access/reasoning changes (#54) — apply it to the LIVE session
-  # in place; the next turn's doc.* tools then target the now-active document.
-  # With no live session yet, the next start picks up the current document from
-  # local_agent_session_opts, so there is nothing to do.
+  # Selecting/opening a document must NOT recreate the agent (that would wipe the
+  # chat-rail conversation). The active document is per-turn context, so apply it
+  # LIVE to the foreground agent; the next turn's doc.* tools then target the
+  # now-active document. The foreground agent is already bound by
+  # attach_workspace_session (run earlier in handle_params), so this only nudges
+  # the document_id when it actually changed.
   defp maybe_restart_local_agent_for_document(socket, previous_document_id) do
     current_document_id = active_document_id(socket)
 
@@ -2417,12 +2458,12 @@ defmodule EcritsWeb.Local.WorkspaceLive do
       previous_document_id == current_document_id ->
         socket
 
-      is_nil(socket.assigns.local_agent_session_id) ->
-        start_local_agent_session(socket)
+      not match?(%{}, socket.assigns.workspace_session) ->
+        socket
 
       true ->
         _ =
-          ACP.update_session_options(socket.assigns.local_agent_session_id,
+          WorkspaceSession.update_options(socket.assigns.workspace_session,
             document_id: current_document_id
           )
 

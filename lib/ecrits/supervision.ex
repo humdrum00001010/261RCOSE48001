@@ -104,17 +104,20 @@ defmodule Ecrits.Supervision do
   defp local_document_runtime_children do
     [
       {Registry, keys: :unique, name: Ecrits.Local.Document.Registry},
-      Ecrits.Local.Document.Supervisor,
-      # In-memory per-browser workspace shell state (open tabs + last path),
-      # keyed by the session `ws_id`. Survives a LiveView dying; lost on restart.
-      Ecrits.Local.Workspace.ShellStore
+      Ecrits.Local.Document.Supervisor
     ]
   end
 
   defp local_agent_runtime_children do
     [
       {Registry, keys: :unique, name: Ecrits.Local.AcpAgent.SessionRegistry},
-      Ecrits.Local.AcpAgent.SessionSupervisor
+      Ecrits.Local.AcpAgent.SessionSupervisor,
+      # Per-workspace Session directory (keyed by canonical path, cookieless).
+      # Durable: survives the workspace LiveView dying / a browser refresh, so
+      # re-attaching by path returns the same foreground agent (same provider
+      # thread + transcript + title). Replaces the cookie `ws_id` + ShellStore.
+      {Registry, keys: :unique, name: Ecrits.Workspace.SessionRegistry},
+      Ecrits.Workspace.SessionSupervisor
     ]
   end
 end
