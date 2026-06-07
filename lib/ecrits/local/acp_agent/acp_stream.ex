@@ -472,11 +472,6 @@ defmodule Ecrits.Local.AcpAgent.AcpStream do
     end
   end
 
-  defp input_text(input) when is_binary(input), do: input
-  defp input_text(%{content: content}) when is_binary(content), do: content
-  defp input_text(%{"content" => content}) when is_binary(content), do: content
-  defp input_text(input), do: inspect(input)
-
   # Prepend a concise, provider-agnostic developer instruction so the agent knows
   # the currently-open document is read/editable ONLY through the document MCP
   # tools — not by shelling out to hwp5proc / LibreOffice / file readers. Without
@@ -500,8 +495,14 @@ defmodule Ecrits.Local.AcpAgent.AcpStream do
   #    tools array. The earlier preamble FORBADE `tool_search`/`list_mcp_*`, so the
   #    model never surfaced the deferred doc tools and declared them missing. The
   #    fix REQUIRES the model to use discovery to load the `doc` tools first.
+  # `turn.input` arrives already normalized by `Session` (a bare string for the
+  # legacy path, OR a validated multi-modal block list — Phase 5). Map it onto the
+  # ACP prompt content shape via `Ecrits.Local.AcpAgent.Prompt`: a string input
+  # yields `preamble <> string` (UNCHANGED — `ExMCP.ACP.Client` auto-wraps it as
+  # one text block, exactly as before); a block list yields a leading preamble
+  # text block followed by one ACP block per input block.
   defp build_prompt(turn) do
-    doc_preamble(turn) <> input_text(turn.input)
+    Ecrits.Local.AcpAgent.Prompt.to_acp_content(turn.input, doc_preamble(turn))
   end
 
   defp doc_preamble(turn) do
