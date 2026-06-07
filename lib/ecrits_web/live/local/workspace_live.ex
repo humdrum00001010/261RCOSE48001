@@ -1912,7 +1912,29 @@ defmodule EcritsWeb.Local.WorkspaceLive do
     end
   end
 
-  defp apply_local_agent_event(socket, %{type: :turn_started, turn_id: turn_id}) do
+  # `send_local_agent_turn/2` already set `local_agent_turn_id` (and :running) from
+  # the synchronous send_turn reply, which carries the SAME id this event echoes.
+  # So a turn_started whose id != the current turn is stale (from an already-
+  # replaced turn) and must be ignored, otherwise it re-points turn_id/status back
+  # at a dead turn. Guard on the current turn; the catch-all clause drops the rest.
+  defp apply_local_agent_event(
+         %{assigns: %{local_agent_turn_id: turn_id}} = socket,
+         %{type: :turn_started, turn_id: turn_id}
+       ) do
+    socket
+    |> assign(:local_agent_turn_id, turn_id)
+    |> assign(:local_agent_status, :running)
+  end
+
+  # First turn_started after a fresh send may legitimately arrive while the
+  # current turn_id is still nil (no synchronous reply yet, e.g. resumed session
+  # flows). Adopt it as the active turn. A turn_started carrying a *different*
+  # non-nil turn_id is stale and falls through to the catch-all (ignored).
+  defp apply_local_agent_event(
+         %{assigns: %{local_agent_turn_id: nil}} = socket,
+         %{type: :turn_started, turn_id: turn_id}
+       )
+       when is_binary(turn_id) do
     socket
     |> assign(:local_agent_turn_id, turn_id)
     |> assign(:local_agent_status, :running)
@@ -1927,7 +1949,10 @@ defmodule EcritsWeb.Local.WorkspaceLive do
     end
   end
 
-  defp apply_local_agent_event(socket, %{type: :text_delta, turn_id: turn_id, delta: delta})
+  defp apply_local_agent_event(
+         %{assigns: %{local_agent_turn_id: turn_id}} = socket,
+         %{type: :text_delta, turn_id: turn_id, delta: delta}
+       )
        when is_binary(delta) do
     text = socket.assigns.local_agent_text <> delta
     segment = socket.assigns.local_agent_text_segment
@@ -1941,7 +1966,10 @@ defmodule EcritsWeb.Local.WorkspaceLive do
     |> schedule_local_agent_text_flush()
   end
 
-  defp apply_local_agent_event(socket, %{type: :reasoning_delta, turn_id: turn_id, delta: delta})
+  defp apply_local_agent_event(
+         %{assigns: %{local_agent_turn_id: turn_id}} = socket,
+         %{type: :reasoning_delta, turn_id: turn_id, delta: delta}
+       )
        when is_binary(delta) do
     prev = socket.assigns.local_agent_reasoning_text
 
@@ -2020,7 +2048,10 @@ defmodule EcritsWeb.Local.WorkspaceLive do
     )
   end
 
-  defp apply_local_agent_event(socket, %{type: :turn_completed, turn_id: turn_id}) do
+  defp apply_local_agent_event(
+         %{assigns: %{local_agent_turn_id: turn_id}} = socket,
+         %{type: :turn_completed, turn_id: turn_id}
+       ) do
     # Flush ONLY the still-pending text segment: the text streamed AFTER the last
     # tool call. Every earlier segment was already emitted at its tool boundary by
     # close_local_agent_text_segment/1. The session's turn-completed `text` is the
@@ -2056,7 +2087,10 @@ defmodule EcritsWeb.Local.WorkspaceLive do
     |> refresh_tree(socket.assigns.expanded_paths)
   end
 
-  defp apply_local_agent_event(socket, %{type: :turn_failed, turn_id: turn_id, reason: reason}) do
+  defp apply_local_agent_event(
+         %{assigns: %{local_agent_turn_id: turn_id}} = socket,
+         %{type: :turn_failed, turn_id: turn_id, reason: reason}
+       ) do
     socket
     |> cancel_local_agent_text_flush()
     |> assign(:local_agent_turn_id, nil)

@@ -143,9 +143,14 @@ const LocalChatRailResizer = {
     }
     this.onLocalAgentTextAppend = event => this.appendLocalAgentText(event)
     this.onLocalAgentReasoningAppend = event => this.appendLocalAgentReasoning(event)
+    this.agentSubmitPending = false
+    this.onAgentFormSubmit = event => this.guardAgentFormSubmit(event)
 
     this.el.addEventListener("pointerdown", this.onPointerDown)
     this.el.addEventListener("click", this.onClick)
+    // Capture-phase so we can stop a rapid second submit (e.g. double-Enter while
+    // a turn is streaming) BEFORE LiveView's form binding handles it.
+    this.el.addEventListener("submit", this.onAgentFormSubmit, true)
     document.addEventListener("click", this.onDocumentClick)
     document.addEventListener("focusin", this.onDocumentFocusIn)
     window.addEventListener("resize", this.onResize)
@@ -158,11 +163,15 @@ const LocalChatRailResizer = {
     this.applyFileTreeCollapsed(this.fileTreeCollapsed, {persist: false})
     this.normalizeLayout()
     this.applyMobilePane(this.mobilePane)
+    // The server processed the in-flight send (form was re-rendered): release the
+    // single-flight guard so the next deliberate submit can go through.
+    this.agentSubmitPending = false
   },
 
   destroyed() {
     this.el.removeEventListener("pointerdown", this.onPointerDown)
     this.el.removeEventListener("click", this.onClick)
+    this.el.removeEventListener("submit", this.onAgentFormSubmit, true)
     document.removeEventListener("click", this.onDocumentClick)
     document.removeEventListener("focusin", this.onDocumentFocusIn)
     window.removeEventListener("resize", this.onResize)
@@ -170,6 +179,25 @@ const LocalChatRailResizer = {
     window.removeEventListener("phx:local_agent_reasoning_append", this.onLocalAgentReasoningAppend)
     this.detachDragEvents()
     document.body.removeAttribute("data-chat-rail-dragging")
+  },
+
+  // Single-flight guard for the chat composer. Sending a new message while a turn
+  // is streaming is allowed (it cancels the in-flight turn and starts a new one),
+  // but a SECOND submit fired before the first round-trip is acknowledged would
+  // race the server's turn bookkeeping and can leave orphaned empty bubbles. Drop
+  // any submit that arrives while one is still pending; `updated()` clears the
+  // flag once the server has re-rendered the form.
+  guardAgentFormSubmit(event) {
+    const form = event.target.closest?.('[data-role="chat-form"]')
+    if (!form || !this.el.contains(form)) return
+
+    if (this.agentSubmitPending) {
+      event.preventDefault()
+      event.stopPropagation()
+      return
+    }
+
+    this.agentSubmitPending = true
   },
 
   refreshWorkspaceRefs() {

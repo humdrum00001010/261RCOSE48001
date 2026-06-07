@@ -2025,6 +2025,90 @@ defmodule EcritsWeb.Local.MountWorkspaceLiveTest do
                    1_000
   end
 
+  test "late events from a cancelled turn do not corrupt the new turn", %{conn: conn} do
+    use_test_agent_adapter!(
+      adapter_opts: [
+        test_pid: self(),
+        wait_for: :release_local_agent_ui,
+        script: [{:text_delta, "B-streaming"}]
+      ]
+    )
+
+    {:ok, lv, _html} =
+      live(conn, ~p"/workspace?#{[path: LocalWorkspaceAdapterStub.valid_path()]}")
+
+    session_id = subscribe_agent(lv)
+
+    # Turn A: start it and let it become :running (blocked on wait_for).
+    lv
+    |> form("#local-agent-form", agent: %{message: "first"})
+    |> render_submit()
+
+    assert_receive {:local_agent_adapter_waiting, _first_stream_pid}, 1_000
+    sync_liveview(lv)
+
+    turn_a = liveview_assign(lv, :local_agent_turn_id)
+    assert is_binary(turn_a)
+
+    # Submit a SECOND message mid-stream: cancels A, starts B (the "new message
+    # replaces in-flight turn" UX).
+    lv
+    |> form("#local-agent-form", agent: %{message: "second"})
+    |> render_submit()
+
+    assert_receive {:local_agent_event, %{type: :turn_cancelled, session_id: ^session_id}}, 1_000
+    assert_receive {:local_agent_adapter_waiting, _second_stream_pid}, 1_000
+    sync_liveview(lv)
+
+    turn_b = liveview_assign(lv, :local_agent_turn_id)
+    assert is_binary(turn_b)
+    assert turn_b != turn_a
+    assert liveview_assign(lv, :local_agent_status) == :running
+
+    # Now simulate LATE events from the already-cancelled turn A arriving on the
+    # session topic after B is the current turn. These must be ignored: A's late
+    # text_delta must not pollute B's buffer, and A's turn_completed must not flip
+    # B's status to :idle or clear B's turn_id.
+    broadcast_agent_event(session_id, %{
+      type: :text_delta,
+      session_id: session_id,
+      turn_id: turn_a,
+      delta: "STALE-A"
+    })
+
+    broadcast_agent_event(session_id, %{
+      type: :turn_completed,
+      session_id: session_id,
+      turn_id: turn_a,
+      text: "STALE-A"
+    })
+
+    sync_liveview(lv)
+
+    # Turn B must be intact: still running, still B's turn_id, buffer not polluted
+    # with A's stale delta.
+    assert liveview_assign(lv, :local_agent_status) == :running
+    assert liveview_assign(lv, :local_agent_turn_id) == turn_b
+    refute liveview_assign(lv, :local_agent_text) =~ "STALE-A"
+
+    # And the live B assistant bubble must still be the running placeholder, not
+    # finalized with A's text.
+    assert has_element?(
+             lv,
+             ~s([data-role="local-agent-message"][data-message-role="agent"][data-message-status="running"])
+           )
+
+    refute render(lv) =~ "STALE-A"
+  end
+
+  defp broadcast_agent_event(session_id, event) do
+    Phoenix.PubSub.broadcast(
+      Ecrits.PubSub,
+      AcpAgent.topic(session_id),
+      {:local_agent_event, event}
+    )
+  end
+
   # Inject the test-only fake ex_mcp ACP adapter so the chat-rail rendering can be
   # driven deterministically through the real ExMCP.ACP stack (no provider CLI).
   defp use_test_agent_adapter!(opts) do
