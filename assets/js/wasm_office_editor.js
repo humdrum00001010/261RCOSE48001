@@ -438,12 +438,35 @@ const WasmOfficeEditor = {
     this.api = null
     this.handle = null // document handle (embind-class shape) or null
     this.parts = [] // [{ width, height }] page/slide geometry, page-local px
+    // Per-page document-twip rectangles {x,y,w,h} from getPartPageRectangles(),
+    // index 0 == page 1. Used to map page-local px <-> absolute document twips so
+    // setTextSelection (which takes document twips) can be driven from a mouse
+    // drag whose coords are page-local px.
+    this.pageRects = []
     this.rendered = new Map() // pageIndex -> true
     this.visible = new Set()
     this.scale = window.devicePixelRatio || 1
 
+    // ─── Interactive-edit state (mirrors wasm_hwp_editor.js) ────────────────
+    // LOK owns the real text cursor + selection internally; we only TRACK the
+    // caret rect for rendering. caret = { page (1-based), x, y, height } in
+    // page-local px (the shape getCursor()/hitTest() return), or null.
+    this.caret = null
+    this.caretBlinkOn = true
+    // Live drag-select gesture (set only while the primary button is held).
+    //   dragSelect = { page, startX, startY, moved }  (px, page-local)
+    this.dragSelect = null
+    // True while an active LOK selection exists (so typing/keys know to let LOK
+    // replace it and we know to repaint).
+    this.hasActiveSelection = false
+    // True while the OS IME is composing (Korean). While composing, keydown and
+    // the plain input path must NOT also post keys — the composition* path owns
+    // the keystrokes (else Hangul double-inserts).
+    this.composing = false
+
     this.pageStack = this.el.querySelector("[data-role='office-wasm-pages']")
     this.statusEl = this.el.querySelector("[data-role='office-wasm-status']")
+    this.imeProxy = this.el.querySelector("[data-role='office-wasm-ime-proxy']")
 
     this.documentId = this.el.dataset.documentId
     this.format = this.el.dataset.localDocumentFormat || "docx"
@@ -475,12 +498,38 @@ const WasmOfficeEditor = {
       { root: this.el, rootMargin: "1200px 0px", threshold: 0 }
     )
 
+    // ─── Interactive editing: mouse (caret + drag-select) ───────────────────
+    // mousedown anchors on a page canvas; mousemove/mouseup are bound on the
+    // document so a drag that leaves the canvas (or the window) still tracks and
+    // finalizes (matching the HWP arm).
+    this.onMouseDown = event => this.onCanvasMouseDown(event)
+    this.onMouseMove = event => this.onCanvasMouseMove(event)
+    this.onMouseUp = event => this.onCanvasMouseUp(event)
+    this.el.addEventListener("mousedown", this.onMouseDown)
+    document.addEventListener("mousemove", this.onMouseMove)
+    document.addEventListener("mouseup", this.onMouseUp)
+
+    // Keyboard + Korean IME — bound to the hidden IME proxy (the OS-focused
+    // editable element). Plain keys -> postKeyEvent; composition -> ExtTextInput.
+    this.bindEditing()
+
+    // Blinking caret (overlay redraw only — never re-rasterizes the page tile).
+    this.blink = setInterval(() => {
+      this.caretBlinkOn = !this.caretBlinkOn
+      if (this.caret) this.drawCaret()
+    }, 530)
+
     window.__officeWasmEditor = this
   },
 
   destroyed() {
     if (this.io) this.io.disconnect()
+    if (this.blink) clearInterval(this.blink)
     window.removeEventListener("resize", this.onResize)
+    this.el.removeEventListener("mousedown", this.onMouseDown)
+    document.removeEventListener("mousemove", this.onMouseMove)
+    document.removeEventListener("mouseup", this.onMouseUp)
+    this.unbindEditing()
     this.freeHandle()
     if (window.__officeWasmEditor === this) window.__officeWasmEditor = null
   },
@@ -536,7 +585,11 @@ const WasmOfficeEditor = {
       this.loadedUrl = url
 
       this.parts = this.queryParts()
-      console.log("[office-wasm] parts/geometry:", this.parts)
+      this.pageRects = this.queryPageRects()
+      this.caret = null
+      this.hasActiveSelection = false
+      this.composing = false
+      console.log("[office-wasm] parts/geometry:", this.parts, "pageRects:", this.pageRects)
       this.setStatus("")
       // A clean load clears any prior one-shot reload guard for this document.
       try { sessionStorage.removeItem("office-wasm-retry:" + url) } catch (_) {}
@@ -781,7 +834,19 @@ const WasmOfficeEditor = {
         ctx.fillRect(0, 0, canvas.width, canvas.height)
       }
 
+      // Caret/selection overlay (same backing-store size as the render canvas).
+      // The blinking caret is drawn here so a caret blink never re-rasterizes the
+      // page tile. The LOK selection highlight is painted by paintTile itself
+      // (into the page canvas), so the overlay only carries the caret.
+      const overlay = document.createElement("canvas")
+      overlay.dataset.role = "office-wasm-caret-overlay"
+      overlay.width = canvas.width
+      overlay.height = canvas.height
+      overlay.style.cssText =
+        "position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none"
+
       section.appendChild(canvas)
+      section.appendChild(overlay)
       this.pageStack.appendChild(section)
       this.io.observe(section)
     })
@@ -833,7 +898,17 @@ const WasmOfficeEditor = {
       const imageData = new ImageData(buf, pxW, pxH)
       const ctx = canvas.getContext("2d")
       if (ctx) ctx.putImageData(imageData, 0, 0)
+      // Keep the caret overlay's backing store in lockstep with the page canvas
+      // (resize/dpr changes), and redraw the caret if it lives on this page (the
+      // re-paint of the page canvas does not touch the overlay, but a buildPage/
+      // resize can have reset it).
+      const overlay = section.querySelector("[data-role='office-wasm-caret-overlay']")
+      if (overlay && (overlay.width !== pxW || overlay.height !== pxH)) {
+        overlay.width = pxW
+        overlay.height = pxH
+      }
       this.rendered.set(index, true)
+      if (this.caret && this.caret.page - 1 === index) this.drawCaret()
     } catch (error) {
       console.error(`[office-wasm] renderPage(${index}) failed`, error)
       this.setStatus("Render failed on page " + (index + 1) + ": " + (error && error.message))
@@ -849,6 +924,450 @@ const WasmOfficeEditor = {
     }
     if (this.api.paintTile) return this.api.paintTile(...args)
     throw new Error("paintTile export not found")
+  },
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // INTERACTIVE EDITING (caret + selection + keyboard/Korean-IME typing)
+  //
+  // This is the LOK twin of wasm_hwp_editor.js's edit loop. Unlike the HWP arm —
+  // which owns a structural document model (HwpDocument) and computes caret/
+  // selection rects itself — LibreOfficeKit (LOK) owns the real text cursor and
+  // selection INTERNALLY. We therefore drive it with the LOK input primitives
+  // and read back the cursor rect, rather than maintaining a paragraph/offset
+  // model:
+  //
+  //   click            -> hitTest(page1based, xPx, yPx)        (place caret)
+  //   drag             -> setTextSelection(START|END, xTwip,yTwip) + repaint
+  //   typing (ASCII)   -> postKeyEvent(KEYINPUT, charCode, 0) + KEYUP
+  //   Backspace/Enter/… -> postKeyEvent with the awt keyCode
+  //   Korean IME       -> postWindowExtTextInputEvent(0, TEXTINPUT, preedit)
+  //                       then …(0, TEXTINPUT_END, "") on commit
+  //
+  // After every input we re-paint ONLY the caret's page tile (and any other
+  // visible page, for reflow) and refresh the caret rect from getCursor(), so
+  // the typed text + caret show at the cursor immediately.
+  // ══════════════════════════════════════════════════════════════════════════
+
+  // LOK enum values (LibreOfficeKitEnums.h), inlined so we don't depend on a
+  // wasm-side export. Verified against the deployed binary.
+  // LibreOfficeKitKeyEventType
+  LOK_KEYEVENT_KEYINPUT: 0,
+  LOK_KEYEVENT_KEYUP: 1,
+  // LibreOfficeKitExtTextInputType
+  LOK_EXT_TEXTINPUT: 0,
+  LOK_EXT_TEXTINPUT_END: 2,
+  // LibreOfficeKitSetTextSelectionType
+  LOK_SETTEXTSELECTION_START: 0,
+  LOK_SETTEXTSELECTION_END: 1,
+  LOK_SETTEXTSELECTION_RESET: 2,
+
+  // awt::Key codes (offapi/com/sun/star/awt/Key.idl == vcl KEY_*). postKeyEvent's
+  // `keyCode` arg is exactly these; `charCode` is the Unicode code point (and the
+  // ASCII control char for Backspace/Delete/Enter, matching init.cxx usage).
+  AWT_KEY: {
+    DOWN: 1024, UP: 1025, LEFT: 1026, RIGHT: 1027,
+    HOME: 1028, END: 1029, PAGEUP: 1030, PAGEDOWN: 1031,
+    RETURN: 1280, ESCAPE: 1281, TAB: 1282, BACKSPACE: 1283,
+    SPACE: 1284, INSERT: 1285, DELETE: 1286
+  },
+
+  // ─── LOK API call wrappers (shape-agnostic, like callPaintTile) ────────────
+  callApi(name, ...args) {
+    if (this.api.shape === "embind-class" && this.handle && typeof this.handle[name] === "function") {
+      return this.handle[name](...args)
+    }
+    if (this.api[name]) return this.api[name](...args)
+    return undefined
+  },
+
+  // ─── Per-page document-twip rects (for px <-> twip conversion) ─────────────
+  // getPartPageRectangles() -> "x, y, w, h; x, y, w, h; ..." in document twips.
+  queryPageRects() {
+    try {
+      const raw = this.callApi("getPartPageRectangles")
+      if (!raw || typeof raw !== "string") return []
+      return raw
+        .split(";")
+        .map(s => s.trim())
+        .filter(Boolean)
+        .map(s => {
+          const m = s.match(/(-?\d+)\D+(-?\d+)\D+(-?\d+)\D+(-?\d+)/)
+          if (!m) return null
+          return { x: +m[1], y: +m[2], w: +m[3], h: +m[4] }
+        })
+        .filter(Boolean)
+    } catch (error) {
+      console.warn("[office-wasm] getPartPageRectangles failed", error)
+      return []
+    }
+  },
+
+  // Map a page-local px point on page `pageIndex0` (0-based) to ABSOLUTE document
+  // twips, the coordinate space setTextSelection expects. 1 px @96dpi == 15 twip
+  // (TWIPS_PER_PX in LokEditBindings.cxx); the page's twip origin comes from its
+  // page rect.
+  pageLocalPxToDocTwip(pageIndex0, xPx, yPx) {
+    const r = this.pageRects[pageIndex0]
+    const ox = r ? r.x : 0
+    const oy = r ? r.y : 0
+    return { x: Math.round(ox + xPx * 15), y: Math.round(oy + yPx * 15) }
+  },
+
+  // ─── Mouse: click -> caret, drag -> selection ──────────────────────────────
+
+  onCanvasMouseDown(event) {
+    if (event.button !== 0 || !this.api || !this.parts.length) return
+    const loc = this.eventToPageLocal(event)
+    if (!loc) return
+
+    // Place the LOK caret at the press point and capture its rect.
+    this.placeCaret(loc.pageIndex, loc.x, loc.y)
+
+    // Start a LOK text selection at the press point (document twips). The drag
+    // extends the END; a plain click with no movement resets it on mouseup.
+    const t = this.pageLocalPxToDocTwip(loc.pageIndex, loc.x, loc.y)
+    try {
+      this.callApi("setTextSelection", this.LOK_SETTEXTSELECTION_START, t.x, t.y)
+    } catch (error) {
+      console.error("[office-wasm] setTextSelection(START) failed", error)
+    }
+    this.dragSelect = { page: loc.pageIndex, startX: loc.x, startY: loc.y, moved: false }
+    this.clearSelectionState()
+
+    // Keep the OS IME composition target focused + anchored at the caret so the
+    // Korean candidate window pops next to the cursor.
+    if (this.imeProxy) {
+      event.preventDefault()
+      this.imeProxy.focus({ preventScroll: true })
+      this.anchorProxy()
+    }
+  },
+
+  onCanvasMouseMove(event) {
+    if (!this.dragSelect || !this.api) return
+    if ((event.buttons & 1) === 0) {
+      this.onCanvasMouseUp(event)
+      return
+    }
+    // Resolve the current point, preferring the page the drag started on so a
+    // drag that runs past the page edge still extends the selection.
+    const loc = this.eventToPageLocal(event, this.dragSelect.page)
+    if (!loc) return
+    const ds = this.dragSelect
+    if (Math.abs(loc.x - ds.startX) > 1 || Math.abs(loc.y - ds.startY) > 1 || loc.pageIndex !== ds.page) {
+      ds.moved = true
+    }
+    const t = this.pageLocalPxToDocTwip(loc.pageIndex, loc.x, loc.y)
+    try {
+      this.callApi("setTextSelection", this.LOK_SETTEXTSELECTION_END, t.x, t.y)
+    } catch (error) {
+      console.error("[office-wasm] setTextSelection(END) failed", error)
+    }
+    this.hasActiveSelection = ds.moved
+    // LOK paints the selection highlight INTO the tile, so re-paint the affected
+    // page(s) to reveal it, then refresh + redraw the caret on top.
+    if (ds.moved) {
+      this.renderCaretWindow()
+      this.refreshCaret()
+    }
+    this.anchorProxy()
+    if (event.cancelable) event.preventDefault()
+  },
+
+  onCanvasMouseUp(_event) {
+    if (!this.dragSelect) return
+    const ds = this.dragSelect
+    this.dragSelect = null
+    if (!ds.moved) {
+      // Plain click — collapse any LOK selection back to a caret.
+      try {
+        this.callApi("setTextSelection", this.LOK_SETTEXTSELECTION_RESET, 0, 0)
+      } catch (_) {}
+      this.hasActiveSelection = false
+    }
+  },
+
+  // Map a pointer event to { pageIndex (0-based), x, y } in page-local px (the
+  // space hitTest/getCursor use). Clamps into the page box so a drag past the
+  // edge still resolves; `preferPage` (0-based) is used when the pointer left the
+  // canvas during a drag.
+  eventToPageLocal(event, preferPage) {
+    let section = event.target && event.target.closest
+      ? event.target.closest("[data-role='office-wasm-page']")
+      : null
+    let pageIndex = section ? Number(section.dataset.pageIndex) : preferPage
+    if (!section && typeof preferPage === "number") section = this.pageSection(preferPage)
+    if (!section) return null
+    if (typeof pageIndex !== "number" || Number.isNaN(pageIndex)) {
+      pageIndex = Number(section.dataset.pageIndex)
+    }
+    const canvas = section.querySelector("[data-role='office-wasm-canvas']")
+    if (!canvas) return null
+
+    const rect = canvas.getBoundingClientRect()
+    if (!rect.width || !rect.height) return null
+    // CSS px -> backing px ratio, then / scale to get page-local px (matches the
+    // HWP arm's coordinate derivation).
+    const backingRatio = canvas.width / rect.width
+    const clientX = Math.min(Math.max(event.clientX, rect.left), rect.right)
+    const clientY = Math.min(Math.max(event.clientY, rect.top), rect.bottom)
+    const x = ((clientX - rect.left) * backingRatio) / this.scale
+    const y = ((clientY - rect.top) * backingRatio) / this.scale
+    return { pageIndex, x, y }
+  },
+
+  // Place the LOK caret via hitTest (page is 1-based) and adopt the returned
+  // page-local rect. hitTest returns {ok,page,x,y,height}.
+  placeCaret(pageIndex0, xPx, yPx) {
+    try {
+      const res = this.callApi("hitTest", pageIndex0 + 1, xPx, yPx)
+      if (res && res.ok) {
+        this.caret = { page: res.page, x: res.x, y: res.y, height: res.height }
+      } else {
+        // hitTest didn't resolve a caret (e.g. empty area) — keep the click point
+        // as a best-effort caret so the overlay still shows where the user clicked.
+        this.caret = { page: pageIndex0 + 1, x: xPx, y: yPx, height: 16 }
+      }
+    } catch (error) {
+      console.error("[office-wasm] hitTest failed", error)
+      this.caret = { page: pageIndex0 + 1, x: xPx, y: yPx, height: 16 }
+    }
+    this.caretBlinkOn = true
+    this.drawCaret()
+    window.__officeWasmCaret = this.caret
+  },
+
+  // Refresh the caret rect from getCursor() (after a key/IME edit moved it).
+  refreshCaret() {
+    try {
+      const res = this.callApi("getCursor")
+      if (res && res.ok) {
+        this.caret = { page: res.page, x: res.x, y: res.y, height: res.height }
+        window.__officeWasmCaret = this.caret
+      }
+    } catch (error) {
+      console.error("[office-wasm] getCursor failed", error)
+    }
+    this.caretBlinkOn = true
+    this.drawCaret()
+    this.anchorProxy()
+  },
+
+  // ─── Caret overlay rendering ───────────────────────────────────────────────
+
+  caretOverlay(pageIndex0) {
+    const section = this.pageSection(pageIndex0)
+    return section ? section.querySelector("[data-role='office-wasm-caret-overlay']") : null
+  },
+
+  clearAllCaretOverlays() {
+    if (!this.pageStack) return
+    const overlays = this.pageStack.querySelectorAll("[data-role='office-wasm-caret-overlay']")
+    for (const o of overlays) {
+      const ctx = o.getContext("2d")
+      if (ctx) ctx.clearRect(0, 0, o.width, o.height)
+    }
+  },
+
+  // Draw the blinking caret on its page's overlay (page-local px scaled to the
+  // overlay backing store == page canvas size). Clears every overlay first so a
+  // caret that moved to a new page never leaves a stale one behind.
+  drawCaret() {
+    const c = this.caret
+    if (!c) return
+    this.clearAllCaretOverlays()
+    if (!this.caretBlinkOn) return
+    const overlay = this.caretOverlay(c.page - 1)
+    if (!overlay) return
+    const ctx = overlay.getContext("2d")
+    if (!ctx) return
+    const s = this.scale
+    ctx.fillStyle = "#1d4ed8"
+    ctx.fillRect(c.x * s, c.y * s, 1.5 * s, Math.max(8, c.height || 16) * s)
+  },
+
+  // Position the hidden IME proxy textarea over the caret so the OS candidate
+  // window (Korean) anchors there and keystrokes target it.
+  anchorProxy() {
+    if (!this.imeProxy || !this.caret) return
+    const c = this.caret
+    const section = this.pageSection(c.page - 1)
+    if (!section) return
+    const canvas = section.querySelector("[data-role='office-wasm-canvas']")
+    if (!canvas) return
+    const cr = canvas.getBoundingClientRect()
+    const hostRect = this.el.getBoundingClientRect()
+    const cssPerPage = cr.width / (canvas.width / this.scale)
+    const left = cr.left - hostRect.left + this.el.scrollLeft + c.x * cssPerPage
+    const top = cr.top - hostRect.top + this.el.scrollTop + c.y * cssPerPage
+    this.imeProxy.style.left = `${Math.round(left)}px`
+    this.imeProxy.style.top = `${Math.round(top)}px`
+    this.imeProxy.style.height = `${Math.max(12, Math.round((c.height || 16) * cssPerPage))}px`
+  },
+
+  clearSelectionState() {
+    this.hasActiveSelection = false
+  },
+
+  // Re-paint the caret's page tile (+ any other visible page, for reflow) so a
+  // just-applied edit / selection shows immediately.
+  renderCaretWindow() {
+    const idx = this.caret ? this.caret.page - 1 : null
+    if (typeof idx === "number") this.renderPage(idx)
+    for (const v of this.visible) if (v !== idx) this.renderPage(v)
+  },
+
+  // ─── Keyboard + IME wiring (the IME proxy is the OS-focused element) ────────
+
+  bindEditing() {
+    if (!this.imeProxy) return
+    this.onInput = e => this.handleInput(e)
+    this.onCompositionStart = e => this.handleCompositionStart(e)
+    this.onCompositionUpdate = e => this.handleCompositionUpdate(e)
+    this.onCompositionEnd = e => this.handleCompositionEnd(e)
+    this.onKeyDown = e => this.handleKeyDown(e)
+
+    this.imeProxy.addEventListener("input", this.onInput)
+    this.imeProxy.addEventListener("compositionstart", this.onCompositionStart)
+    this.imeProxy.addEventListener("compositionupdate", this.onCompositionUpdate)
+    this.imeProxy.addEventListener("compositionend", this.onCompositionEnd)
+    this.imeProxy.addEventListener("keydown", this.onKeyDown)
+  },
+
+  unbindEditing() {
+    if (!this.imeProxy) return
+    this.imeProxy.removeEventListener("input", this.onInput)
+    this.imeProxy.removeEventListener("compositionstart", this.onCompositionStart)
+    this.imeProxy.removeEventListener("compositionupdate", this.onCompositionUpdate)
+    this.imeProxy.removeEventListener("compositionend", this.onCompositionEnd)
+    this.imeProxy.removeEventListener("keydown", this.onKeyDown)
+  },
+
+  // keydown — non-composing keys only. Printable chars and special keys both go
+  // through postKeyEvent; composition keystrokes are owned by the composition*
+  // path (we must skip them here, else Hangul double-inserts). Editing shortcuts
+  // (Cmd/Ctrl) pass through to the browser/UNO.
+  handleKeyDown(event) {
+    if (!this.api || !this.parts.length) return
+    if (event.isComposing || this.composing) return // IME owns the keystroke
+    if (event.metaKey || event.ctrlKey || event.altKey) return // shortcuts pass through
+
+    const k = event.key
+    const special = this.specialKeyCode(k)
+    if (special != null) {
+      event.preventDefault()
+      this.postKey(special.charCode, special.keyCode)
+      // Caret-moving keys (arrows/home/end) don't change content -> just refresh
+      // the caret; content keys repaint the page first.
+      if (special.repaint) this.renderCaretWindow()
+      this.refreshCaret()
+      return
+    }
+
+    // Printable single character (length-1 key, no modifier). Multi-char keys
+    // ("Shift", "Tab"→handled above, "Dead", etc.) are not text.
+    if (k && k.length === 1) {
+      event.preventDefault()
+      const cp = k.codePointAt(0)
+      this.postKey(cp, 0)
+      this.renderCaretWindow()
+      this.refreshCaret()
+    }
+  },
+
+  // Map a KeyboardEvent.key to {charCode,keyCode,repaint} for the special keys we
+  // handle; null for everything else (printable / unhandled). charCode mirrors
+  // init.cxx (Backspace=8, Delete=46, Enter=13, Tab=9); arrows have charCode 0.
+  specialKeyCode(key) {
+    const K = this.AWT_KEY
+    switch (key) {
+      case "Backspace": return { charCode: 8, keyCode: K.BACKSPACE, repaint: true }
+      case "Delete": return { charCode: 46, keyCode: K.DELETE, repaint: true }
+      case "Enter": return { charCode: 13, keyCode: K.RETURN, repaint: true }
+      case "Tab": return { charCode: 9, keyCode: K.TAB, repaint: true }
+      case "ArrowLeft": return { charCode: 0, keyCode: K.LEFT, repaint: false }
+      case "ArrowRight": return { charCode: 0, keyCode: K.RIGHT, repaint: false }
+      case "ArrowUp": return { charCode: 0, keyCode: K.UP, repaint: false }
+      case "ArrowDown": return { charCode: 0, keyCode: K.DOWN, repaint: false }
+      case "Home": return { charCode: 0, keyCode: K.HOME, repaint: false }
+      case "End": return { charCode: 0, keyCode: K.END, repaint: false }
+      case "PageUp": return { charCode: 0, keyCode: K.PAGEUP, repaint: false }
+      case "PageDown": return { charCode: 0, keyCode: K.PAGEDOWN, repaint: false }
+      default: return null
+    }
+  },
+
+  // Post a full key press (KEYINPUT then KEYUP), as the LOK/online clients do.
+  postKey(charCode, keyCode) {
+    try {
+      this.callApi("postKeyEvent", this.LOK_KEYEVENT_KEYINPUT, charCode, keyCode)
+      this.callApi("postKeyEvent", this.LOK_KEYEVENT_KEYUP, charCode, keyCode)
+      this.hasActiveSelection = false
+    } catch (error) {
+      console.error("[office-wasm] postKeyEvent failed", error)
+    }
+    // Always drain the proxy so it never accumulates state.
+    if (this.imeProxy) this.imeProxy.value = ""
+  },
+
+  // Plain (non-composing) text input — fires for some IMEs / paste / dictation
+  // where keydown doesn't carry the char. Korean composition is handled by the
+  // composition* path and skipped here.
+  handleInput(event) {
+    if (!this.api) return
+    if (event.isComposing || this.composing) return
+    const type = event.inputType || ""
+    if (type.startsWith("insert")) {
+      const data = event.data != null ? event.data : this.imeProxy.value
+      if (data) {
+        for (const ch of data) this.postKey(ch.codePointAt(0), 0)
+        this.renderCaretWindow()
+        this.refreshCaret()
+      }
+    }
+    if (this.imeProxy) this.imeProxy.value = ""
+  },
+
+  // Korean IME — compositionstart marks composing; the in-document preedit is
+  // driven by postWindowExtTextInputEvent on each update so Hangul composes and
+  // shows live at the caret (not a separate overlay).
+  handleCompositionStart(_event) {
+    if (!this.api) return
+    this.composing = true
+  },
+
+  // compositionupdate — push the current preedit string to LOK as a single
+  // ExtTextInput; LOK replaces the live preedit run each time. Re-paint + refresh
+  // so the composing Hangul shows at the caret immediately.
+  handleCompositionUpdate(event) {
+    if (!this.api) return
+    const str = event.data || ""
+    try {
+      this.callApi("postWindowExtTextInputEvent", 0, this.LOK_EXT_TEXTINPUT, str)
+    } catch (error) {
+      console.error("[office-wasm] postWindowExtTextInputEvent(update) failed", error)
+    }
+    this.renderCaretWindow()
+    this.refreshCaret()
+  },
+
+  // compositionend — commit. Push the final string once more (some IMEs only send
+  // the resolved text here) then END the composition so LOK turns the preedit
+  // into committed text.
+  handleCompositionEnd(event) {
+    if (!this.api) { this.composing = false; return }
+    const str = event.data || ""
+    try {
+      if (str) this.callApi("postWindowExtTextInputEvent", 0, this.LOK_EXT_TEXTINPUT, str)
+      this.callApi("postWindowExtTextInputEvent", 0, this.LOK_EXT_TEXTINPUT_END, "")
+    } catch (error) {
+      console.error("[office-wasm] postWindowExtTextInputEvent(end) failed", error)
+    }
+    this.composing = false
+    this.hasActiveSelection = false
+    if (this.imeProxy) this.imeProxy.value = ""
+    this.renderCaretWindow()
+    this.refreshCaret()
   }
 }
 

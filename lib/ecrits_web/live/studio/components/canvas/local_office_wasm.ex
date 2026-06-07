@@ -37,6 +37,25 @@ defmodule EcritsWeb.Live.Studio.Components.Canvas.LocalOfficeWasm do
       data-bytes-url={@bytes_url}
       phx-hook="WasmOfficeEditor"
     >
+      <%!-- The OS IME needs an editable element to compose into (Korean editing).
+            Kept TRULY INVISIBLE — transparent text AND caret — and glued to the
+            WASM caret so the OS candidate window anchors there. phx-update="ignore"
+            so LiveView patches keep it. Mirrors the HWP arm's ime-proxy. --%>
+      <textarea
+        id={"#{@id}-ime-proxy"}
+        data-role="office-wasm-ime-proxy"
+        autocomplete="off"
+        autocorrect="off"
+        autocapitalize="off"
+        spellcheck="false"
+        aria-hidden="true"
+        tabindex="-1"
+        rows="1"
+        phx-update="ignore"
+        class="absolute left-0 top-0 m-0 p-0 border-0 outline-none bg-transparent resize-none overflow-hidden"
+        style="width:1.5em;height:1em;color:transparent;caret-color:transparent;white-space:pre;line-height:1;font-size:16px;z-index:20;pointer-events:none"
+      ></textarea>
+
       <div
         data-role="office-wasm-status"
         class="px-5 py-2 text-sm text-base-content/60"
