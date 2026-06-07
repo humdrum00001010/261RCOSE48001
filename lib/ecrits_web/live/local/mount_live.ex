@@ -138,11 +138,17 @@ defmodule EcritsWeb.Local.MountLive do
                 </label>
                 <div class="mount-field">
                   <span class="mount-field__chevron" aria-hidden="true">&rsaquo;</span>
-                  <.input
-                    field={@path_form[:path]}
+                  <%!-- Bare <input>, NOT <.input>: the core component wraps the
+                       field in a `div.fieldset > label` whose flex/padding nests
+                       the control and knocks it out of vertical alignment with the
+                       chevron and submit button. .mount-field is a flat 3-item flex
+                       row (chevron / input / submit), so the input is a direct
+                       child styled by .mount-field__input. --%>
+                  <input
                     id="local-path-input"
                     name="path"
                     type="text"
+                    value={Phoenix.HTML.Form.normalize_value("text", @path_form[:path].value)}
                     autocomplete="off"
                     spellcheck="false"
                     placeholder="/Users/name/workspace"

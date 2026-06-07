@@ -109,7 +109,11 @@ defmodule Ecrits.Local.AcpAgent.Session do
        # turns 2+ so the conversation keeps cross-turn memory. `nil` until the
        # first turn establishes it.
        provider_session_id: nil,
-       current: nil
+       current: nil,
+       # Codex (unlike the `pi` adapter) never emits a session/thread title over
+       # ACP, so a fresh conversation would stay "New Chat" forever. We derive a
+       # title from the FIRST turn's prompt and emit it once; this flag gates that.
+       title_emitted?: false
      }}
   end
 
@@ -150,6 +154,7 @@ defmodule Ecrits.Local.AcpAgent.Session do
 
         state = %{state | current: %{turn_id: turn_id, task_ref: task.ref, task_pid: task.pid, text: ""}}
         state = emit(state, %{type: :turn_started, turn_id: turn_id, input: input})
+        state = maybe_emit_thread_title(state, input)
 
         {:reply, {:ok, %{id: turn_id, session_id: state.id, status: :running}}, state}
     end
@@ -358,6 +363,45 @@ defmodule Ecrits.Local.AcpAgent.Session do
 
     Phoenix.PubSub.broadcast(@pubsub, topic(state.id), {:local_agent_event, event})
     state
+  end
+
+  # Auto-title a fresh conversation from its first user message. Codex does not
+  # emit a session/thread title over ACP (only the `pi` adapter does via
+  # session_info_update), so without this a `New Chat` stays untitled. We emit a
+  # `:thread_title` event ONCE, on the first turn; the LiveView applies it unless
+  # the user has manually renamed the thread (local_agent_title_user_edited?).
+  defp maybe_emit_thread_title(%{title_emitted?: true} = state, _input), do: state
+
+  defp maybe_emit_thread_title(state, input) do
+    case derive_title(input) do
+      title when is_binary(title) and title != "" ->
+        emit(%{state | title_emitted?: true}, %{type: :thread_title, title: title})
+
+      _ ->
+        %{state | title_emitted?: true}
+    end
+  end
+
+  @title_max_chars 48
+
+  # First non-empty line of the prompt, whitespace-collapsed and length-capped.
+  defp derive_title(input) when is_binary(input) do
+    input
+    |> String.replace(~r/\s+/u, " ")
+    |> String.trim()
+    |> truncate_title()
+  end
+
+  defp derive_title(_input), do: ""
+
+  defp truncate_title(""), do: ""
+
+  defp truncate_title(text) do
+    if String.length(text) > @title_max_chars do
+      (text |> String.slice(0, @title_max_chars) |> String.trim_trailing()) <> "…"
+    else
+      text
+    end
   end
 
   defp authorized?(ctx, %{owner_id: nil}), do: is_nil(owner_id(ctx))
