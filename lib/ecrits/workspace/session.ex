@@ -83,6 +83,68 @@ defmodule Ecrits.Workspace.Session do
     call_if_alive(path, :foreground_agent, nil)
   end
 
+  # ── orchestration: background worker agents (Phase 5) ───────────────
+  #
+  # An orchestrator (the foreground AgentLive, or any caller) can spawn WORKER
+  # AgentLives in the same workspace. A worker is tagged `role: :background` in
+  # the roster with its `parent` — per the plan's lifecycle table: a foreground
+  # agent's lifecycle is owned by its Session, a worker's by its parent. A worker
+  # is NEVER returned as the workspace's foreground agent (`foreground_agent/1` /
+  # `foreground_ws/1` read only the foreground binding), so an observer chat-rail
+  # never accidentally fronts a background worker. It IS observable on its own
+  # PubSub topic so an orchestrator/dashboard can watch it.
+
+  @doc """
+  Spawn a BACKGROUND worker AgentLive in `path`'s workspace, owned (lifecycle) by
+  `parent_agent_id`. The worker is a full `Ecrits.Local.AcpAgent.Session` started
+  through the same `SessionSupervisor` as the foreground agent (so it has its own
+  per-agent MCP url + doc context — invariant 3), tagged `:background` in the
+  roster. Returns `{:ok, %{id, pid, topic}}`; the caller `subscribe_agent/1`s the
+  returned topic to observe the worker's stream.
+
+  `opts` seed the worker exactly like the foreground agent
+  (provider / adapter_opts / workspace_root / document_id); a fresh agent id is
+  minted unless one is passed via `:id`.
+  """
+  @spec spawn_worker(String.t(), String.t(), keyword()) ::
+          {:ok, %{id: String.t(), pid: pid(), topic: String.t()}} | {:error, term()}
+  def spawn_worker(path, parent_agent_id, opts \\ [])
+      when is_binary(path) and is_binary(parent_agent_id) and is_list(opts) do
+    with {:ok, _pid} <- ensure_started(canonical_path(path)) do
+      GenServer.call(via(canonical_path(path)), {:spawn_worker, parent_agent_id, opts})
+    end
+  end
+
+  @doc """
+  The background worker agents in `path`'s workspace as a list of
+  `%{id, pid, parent}` (foreground excluded). Drops any whose pid has died so a
+  crashed worker is not reported as live.
+  """
+  @spec workers(String.t()) :: [%{id: String.t(), pid: pid(), parent: String.t() | nil}]
+  def workers(path) when is_binary(path) do
+    call_if_alive(path, :workers, [])
+  end
+
+  @doc "The roster role of `agent_id` in `path`'s workspace (`:foreground` / `:background` / nil)."
+  @spec agent_role(String.t(), String.t()) :: :foreground | :background | nil
+  def agent_role(path, agent_id) when is_binary(path) and is_binary(agent_id) do
+    call_if_alive(path, {:agent_role, agent_id}, nil)
+  end
+
+  @doc """
+  Subscribe the CALLER to a worker (or any agent's) PubSub topic so it observes
+  that agent's streamed events (`{:local_agent_event, ev}`). Client-side: runs in
+  the caller process, like `subscribe/1`.
+  """
+  @spec subscribe_agent(String.t()) :: :ok | {:error, term()}
+  def subscribe_agent(agent_id) when is_binary(agent_id) do
+    AcpAgent.subscribe(agent_id)
+  end
+
+  @doc "The PubSub topic an agent (worker or foreground) publishes its stream on."
+  @spec agent_topic(String.t()) :: String.t()
+  def agent_topic(agent_id) when is_binary(agent_id), do: AcpAgent.topic(agent_id)
+
   @doc """
   A READ-ONLY workspace handle (`t:ws/0`) for `path`'s already-bound foreground
   agent, or `nil` when none is bound yet. Unlike `attach/2`, this NEVER starts a
@@ -390,6 +452,58 @@ defmodule Ecrits.Workspace.Session do
 
   def handle_call(:foreground_agent, _from, state) do
     {:reply, current_foreground(state), state}
+  end
+
+  # ── orchestration: background workers ──────────────────────────────
+
+  def handle_call({:spawn_worker, parent_agent_id, opts}, _from, state) do
+    worker_id = Keyword.get(opts, :id, Ecto.UUID.generate())
+    opts = Keyword.put(opts, :id, worker_id)
+
+    case AcpAgent.start_session(nil, opts) do
+      {:ok, %{id: ^worker_id}} ->
+        pid = AcpAgent.whereis(worker_id)
+
+        state = %{
+          state
+          | agents:
+              Map.put(state.agents, worker_id, %{
+                role: :background,
+                pid: pid,
+                parent: parent_agent_id
+              })
+        }
+
+        {:reply, {:ok, %{id: worker_id, pid: pid, topic: AcpAgent.topic(worker_id)}}, state}
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
+  end
+
+  def handle_call(:workers, _from, state) do
+    workers =
+      state.agents
+      |> Enum.filter(fn {_id, meta} -> meta[:role] == :background end)
+      |> Enum.flat_map(fn {id, meta} ->
+        case AcpAgent.whereis(id) do
+          pid when is_pid(pid) -> [%{id: id, pid: pid, parent: meta[:parent]}]
+          _ -> []
+        end
+      end)
+
+    {:reply, workers, state}
+  end
+
+  def handle_call({:agent_role, agent_id}, _from, state) do
+    role =
+      cond do
+        agent_id == state.foreground_id -> :foreground
+        match?(%{role: _}, Map.get(state.agents, agent_id)) -> state.agents[agent_id].role
+        true -> nil
+      end
+
+    {:reply, role, state}
   end
 
   # ── routing + viewers + ownership ──────────────────────────────────
