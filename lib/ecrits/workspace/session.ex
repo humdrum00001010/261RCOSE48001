@@ -269,6 +269,29 @@ defmodule Ecrits.Workspace.Session do
 
   def update_options(_ws, _opts), do: {:error, :no_agent}
 
+  @doc """
+  GENUINE restart of the foreground agent for a PROVIDER change (codex<->claude,
+  or a cross-provider model selection). The ACP adapter (`exmcp_adapter`) is bound
+  at `start_session` and CANNOT be swapped on a running session, so a provider
+  switch must TERMINATE the current foreground agent and START a fresh one with
+  the new provider/adapter + `settings`. The new agent reuses the stable
+  path-keyed id ONLY after the old process is fully dead, and starts with an EMPTY
+  transcript + the default "New Chat" title — a genuinely new conversation, NOT a
+  replay across providers.
+
+  Returns the rebound `t:ws/0` so the caller can re-subscribe + re-snapshot the
+  fresh (empty) transcript. Same-provider option changes must NOT call this — they
+  use `update_options/2` (live-apply, conversation preserved).
+  """
+  @spec restart_foreground(String.t(), keyword()) :: {:ok, ws()} | {:error, term()}
+  def restart_foreground(path, settings \\ []) when is_binary(path) and is_list(settings) do
+    canonical = canonical_path(path)
+
+    with {:ok, _pid} <- ensure_started(canonical) do
+      GenServer.call(via(canonical), {:restart_foreground, settings})
+    end
+  end
+
   # ── doc ownership + viewers + wasm/NIF routing (Phase 3) ────────────
   #
   # The per-doc `owners` (one agent per doc — invariant 2) and `viewers` (a human
@@ -454,6 +477,17 @@ defmodule Ecrits.Workspace.Session do
     {:reply, current_foreground(state), state}
   end
 
+  def handle_call({:restart_foreground, settings}, _from, state) do
+    case restart_foreground_agent(state, settings) do
+      {:ok, state, %{id: agent_id}} ->
+        ws = %{path: state.path, agent_id: agent_id, agent_topic: AcpAgent.topic(agent_id)}
+        {:reply, {:ok, ws}, state}
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
+  end
+
   # ── orchestration: background workers ──────────────────────────────
 
   def handle_call({:spawn_worker, parent_agent_id, opts}, _from, state) do
@@ -623,6 +657,60 @@ defmodule Ecrits.Workspace.Session do
           {:error, reason} ->
             {:error, reason}
         end
+    end
+  end
+
+  # GENUINE restart for a provider change: terminate the current foreground agent
+  # (its ACP adapter is bound at start and cannot be swapped), wait for the
+  # path-keyed id to be fully released from the registry, then start a fresh agent
+  # with the new provider/adapter + settings. The new agent reuses the same stable
+  # id but begins with an EMPTY transcript + default title.
+  defp restart_foreground_agent(state, settings) do
+    agent_id = foreground_agent_id(state.path)
+
+    # Terminate any live agent under the path-keyed id (current foreground, or a
+    # stale-roster pid) and ensure the registry slot is free before respawning —
+    # otherwise start_session re-attaches via {:already_started, pid}.
+    _ = AcpAgent.close(agent_id)
+    :ok = await_agent_dead(agent_id)
+
+    # Drop the old foreground binding so a respawn failure leaves no dangling id.
+    state = %{
+      state
+      | foreground_id: nil,
+        agents: Map.delete(state.agents, agent_id)
+    }
+
+    opts = Keyword.put(settings, :id, agent_id)
+
+    case AcpAgent.start_session(nil, opts) do
+      {:ok, %{id: ^agent_id}} ->
+        pid = AcpAgent.whereis(agent_id)
+
+        state = %{
+          state
+          | foreground_id: agent_id,
+            agents: Map.put(state.agents, agent_id, %{role: :foreground, pid: pid})
+        }
+
+        {:ok, state, %{id: agent_id, pid: pid}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  # Block (bounded) until the path-keyed agent id is no longer registered — the
+  # Registry unregisters asynchronously on process DOWN, so even though
+  # `terminate_child` returned after the exit, the id may briefly still resolve.
+  # Reusing it before it clears would re-attach to the dying process.
+  defp await_agent_dead(agent_id, attempts \\ 50) do
+    cond do
+      is_nil(AcpAgent.whereis(agent_id)) -> :ok
+      attempts <= 0 -> :ok
+      true ->
+        Process.sleep(10)
+        await_agent_dead(agent_id, attempts - 1)
     end
   end
 

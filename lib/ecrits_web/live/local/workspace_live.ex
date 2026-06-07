@@ -213,7 +213,15 @@ defmodule EcritsWeb.Local.WorkspaceLive do
     {provider, provider_warning} = local_agent_provider_from_params(requested_provider)
     model = local_agent_model_from_params(requested_model, provider.key)
     provider = local_agent_provider_display(model.provider)
+    # `model.provider` already drives `provider`, so a Claude model selected while
+    # on Codex flips `provider` here — `provider_changed?` therefore captures BOTH
+    # a dropdown provider switch AND a cross-provider model selection (each is a
+    # genuine provider/adapter change, not a per-turn option).
     provider_changed? = provider.key != socket.assigns.local_agent_provider.key
+    # Whether a foreground agent was ALREADY bound (under the OLD provider) before
+    # this phase. A provider switch only RESTARTS when one already exists; the very
+    # first connected attach seeds the right provider directly (no restart needed).
+    had_bound_agent? = is_binary(socket.assigns.local_agent_session_id)
     model_changed? = model.id != socket.assigns.local_agent_model
     reasoning_effort = normalize_reasoning_effort(Map.get(params, "reasoning"), model.provider)
     reasoning_changed? = reasoning_effort != socket.assigns.local_agent_reasoning_effort
@@ -237,14 +245,22 @@ defmodule EcritsWeb.Local.WorkspaceLive do
       |> attach_workspace_session()
       |> maybe_open_local_document(params)
 
-    # Access/reasoning/same-provider-model changes must NOT recreate the agent
-    # (that loses the conversation). They are per-turn options applied LIVE to the
-    # foreground agent — the next turn picks them up. A provider switch (codex<->
-    # claude) is also applied live this phase (the agent's adapter is per-turn).
-    options_changed? =
-      access_changed? or reasoning_changed? or model_changed? or provider_changed?
+    # A PROVIDER change (codex<->claude, or a cross-provider model selection) is
+    # NOT a per-turn option: the ACP adapter is bound at start_session and cannot
+    # be swapped on a running session. So when an agent is already bound under the
+    # old provider, KILL it and start a fresh one (empty transcript, "New Chat"),
+    # then re-bind the LiveView. SAME-provider changes (access / reasoning /
+    # same-provider model) stay on the live-apply path — they preserve the
+    # conversation.
+    restart_for_provider? = provider_changed? and had_bound_agent? and connected?(socket)
 
-    socket = maybe_apply_live_local_agent_options(socket, options_changed?)
+    socket =
+      if restart_for_provider? do
+        restart_local_agent_for_provider(socket)
+      else
+        options_changed? = access_changed? or reasoning_changed? or model_changed?
+        maybe_apply_live_local_agent_options(socket, options_changed?)
+      end
 
     socket =
       if (provider_param_invalid?(requested_provider) or model_param_invalid?(requested_model)) and
@@ -1983,6 +1999,58 @@ defmodule EcritsWeb.Local.WorkspaceLive do
     |> stream(:local_agent_items, [], reset: true)
     |> replay_local_agent_transcript(snapshot.transcript)
   end
+
+  # GENUINE restart of the foreground agent on a PROVIDER switch (codex<->claude,
+  # or a cross-provider model selection). The ACP adapter is bound at the agent's
+  # start and cannot be swapped on a running session, so we TERMINATE the current
+  # agent and START a fresh one (new adapter + the now-updated provider/model/
+  # access settings), then re-bind the LiveView to a genuinely-new, EMPTY session:
+  #   * the path-keyed agent id is unchanged, so the LiveView's existing PubSub
+  #     subscription to `local_agent:<id>` still routes the NEW agent's events —
+  #     we must NOT re-subscribe (that would double-deliver every event); and
+  #   * the transcript is CLEARED, title reset to "New Chat", queue/pending/turn/
+  #     error cleared — no chat-log replay across providers.
+  defp restart_local_agent_for_provider(socket) do
+    path = socket.assigns.workspace_path
+
+    case safe_restart_foreground(path, local_agent_attach_settings(socket)) do
+      {:ok, %{agent_id: agent_id} = ws} when is_binary(agent_id) ->
+        socket
+        |> assign(:workspace_session, ws)
+        |> assign(:local_agent_session_id, agent_id)
+        |> assign(:local_agent_error, nil)
+        |> assign(:local_agent_status, :idle)
+        |> assign(:local_agent_pending, 0)
+        |> assign(:local_agent_turn_id, nil)
+        |> assign(:local_agent_text, "")
+        |> assign(:local_agent_text_segment, 0)
+        |> assign(:local_agent_reasoning_text, "")
+        |> assign(:local_agent_reasoning_open?, false)
+        |> assign(:local_agent_active_tools, %{})
+        |> assign(:local_agent_title_user_edited?, false)
+        |> assign_local_agent_title(default_local_agent_title())
+        |> assign(:local_agent_form, local_agent_form())
+        |> stream(:local_agent_items, [], reset: true)
+
+      _ ->
+        # Restart failed (provider CLI missing / infra down). Leave the existing
+        # session bound and surface the warning rather than wiping the chat.
+        socket
+    end
+  end
+
+  # Tolerate the workspace-Session infra not being up (mirrors
+  # safe_attach_workspace_session) so a provider switch degrades instead of
+  # crashing the live process.
+  defp safe_restart_foreground(path, settings) when is_binary(path) and path != "" do
+    WorkspaceSession.restart_foreground(path, settings)
+  rescue
+    e -> {:error, {:session_unavailable, Exception.message(e)}}
+  catch
+    :exit, reason -> {:error, {:session_unavailable, reason}}
+  end
+
+  defp safe_restart_foreground(_path, _settings), do: {:error, :no_path}
 
   # Tolerate the workspace-Session supervision infra not being up yet (e.g. the
   # SessionSupervisor/Registry child was added to the tree but the server hasn't
