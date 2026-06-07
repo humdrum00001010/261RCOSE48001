@@ -1643,10 +1643,10 @@ defmodule EcritsWeb.Local.WorkspaceLive do
   # it the ACTIVE document, so the chat agent's `doc.*` MCP tools (which operate
   # against the Pool) can see, read and edit the document the user is viewing.
   #
-  # Only the HWP/HWPX backend is server-routable today (`Ecrits.Doc.backend_for`
-  # returns a backend for :hwp/:hwpx only); other formats (Office/Markdown) have
-  # no Pool backend yet, so we just clear any stale active doc for them. The
-  # Pool keys by absolute path, so re-opening the same file reuses the handle.
+  # HWP/HWPX route to the browser-WASM model (this clause); Office docx/pptx route
+  # to the server libreofficex UNO NIF (separate clause below). Other formats
+  # (Markdown) have no Pool backend yet, so we just clear any stale active doc for
+  # them. The Pool keys by absolute path, so re-opening the same file reuses the handle.
   defp register_pool_document(socket, %Document{path: path, format: format})
        when format in ["hwp", "hwpx"] do
     kind = String.to_existing_atom(format)
@@ -1672,6 +1672,31 @@ defmodule EcritsWeb.Local.WorkspaceLive do
       {:error, _reason} ->
         # Pool registration is best-effort: a backend open failure must not
         # break the viewer. The agent simply won't have a handle for this doc.
+        clear_pool_document(socket)
+    end
+  end
+
+  # Office formats (docx/pptx) are :server-backed via the libreofficex UNO NIF
+  # (Ecrits.Doc.Office) — register + activate them too so the chat agent's doc.*
+  # tools can read/edit the open Office doc. No `attach_browser`: Office has no
+  # browser-WASM authority arm (display is the client office WASM; edits go to
+  # the server NIF), so the agent's doc.* edits route straight to Ecrits.Doc.Office.
+  defp register_pool_document(socket, %Document{path: path, format: format})
+       when format in ["docx", "pptx"] do
+    kind = String.to_existing_atom(format)
+
+    case DocPool.open(path, kind: kind) do
+      {:ok, doc_id} ->
+        previous = socket.assigns[:pool_document_id]
+        if previous && previous != doc_id, do: DocPool.clear_active(previous)
+        :ok = DocPool.set_active(doc_id)
+
+        socket
+        |> assign(:pool_document_id, doc_id)
+        |> assign(:browser_revision, 0)
+        |> assign(:doc_browser_pending, %{})
+
+      {:error, _reason} ->
         clear_pool_document(socket)
     end
   end
