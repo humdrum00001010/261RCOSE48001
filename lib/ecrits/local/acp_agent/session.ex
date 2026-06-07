@@ -23,6 +23,15 @@ defmodule Ecrits.Local.AcpAgent.Session do
   Cancellation kills the streaming task; its `Stream.resource` cleanup issues the
   ACP cancel (`turn/interrupt` for codex) and disconnects the client, which
   terminates the agent subprocess.
+
+  ## AgentLive boundary (Phase 5)
+
+  This is the concrete **AgentLive** — see `Ecrits.Agent.AgentLive` for the
+  extraction-boundary contract (the generic transcript / queue / title / topic
+  mechanics this module implements, vs. the ACP-provider-specific turn driver in
+  `AcpStream`). A `use Ecrits.Agent.AgentLive` behaviour extraction is
+  deliberately deferred to avoid restructuring this GenServer's live `handle_*`
+  surface; this module already satisfies that contract function-for-function.
   """
 
   use GenServer
