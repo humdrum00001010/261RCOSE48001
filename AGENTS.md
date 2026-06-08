@@ -44,6 +44,40 @@ custom classes must fully style the input
 - Focus on **delightful details** like hover effects, loading states, and smooth page transitions
 
 
+## Browser WASM build & delivery (rhwp + office)
+
+The in-browser editors' WebAssembly is delivered **through the `ehwp` /
+`libreofficex` deps via git-LFS** — do NOT hand-`cp` builds into `assets/vendor/`
+(retired; `assets/vendor/{rhwp,office}` is local scratch the mix aliases populate
+from `deps/`).
+
+Cycle: **build in the source repo → ship the wasm into the dep repo (git-LFS, ssh
+push) → `mix deps.update <dep>` (ecrits; https + LFS smudge) → `mix
+assets.<dep>_wasm` → restart `:4000`.**
+
+| editor | source repo | build → output | shipped in | served at |
+|---|---|---|---|---|
+| HWP (rhwp) | `~/Desktop/rhwp_core` | `wasm-pack build --target web` → `pkg/{rhwp_bg.wasm,rhwp.js,*.d.ts}` | `ehwp` `priv/wasm/` | `/assets/rhwp/rhwp_bg.wasm`; `rhwp.js` esbuild-bundled |
+| Office | `~/Desktop/core` (build dir `~/Desktop/core-wasm-build`, see its `BUILD-NOTES.md`) | `./run-build.sh Executable_soffice_bin -j14` → `instdir/program/soffice.{wasm,js,data}` | `libreofficex` `priv/wasm/` | `/assets/office/soffice.*` |
+
+Ship: `cp` the build into `~/Desktop/{ehwp,libreofficex}/priv/wasm/`, `git add
+priv/wasm/` (LFS auto-tracks `*.wasm`/`*.data` via `.gitattributes`), commit,
+`git push origin HEAD`.
+
+- **mix-deps fetch = https** (`storage.cloudxyz.org`) — NEVER change the `mix.exs` dep URLs to ssh.
+- **LFS push = ssh** (`git@code.cloudxyz.org:IlYoung/<repo>.git`, set as the repo's push-url only) — https push of large LFS objects fails on this gitea server.
+- `git-lfs` must be installed; smudge over https works, so `mix deps.get` delivers the real wasm to newcomers.
+
+Pull into ecrits: `mise exec -- mix deps.update ehwp` (or `libreofficex`) →
+`mise exec -- mix assets.rhwp_wasm` / `assets.office_wasm` (run them as SEPARATE
+invocations — `mix a b` runs task `a` with arg `b`) → `restart_app_server`
+`deps_changed`. Then **verify the editor on the live document — never harness-only.**
+
+Gotchas: the office push is ~246MB (slow — background it); stage only the
+`ehwp`/`libreofficex` lines of `mix.lock` (it carries unrelated pre-existing
+bumps); only ONE build of a given source repo at a time (concurrent builds of the
+same repo stomp each other).
+
 <!-- phoenix-gen-auth-start -->
 ## Authentication
 
