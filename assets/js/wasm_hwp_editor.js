@@ -1196,7 +1196,15 @@ const WasmHwpEditor = {
   // mutate many ops and finish a single time.
   applyAgentEdit({ op, base_revision }) {
     const baseRev = typeof base_revision === "number" ? base_revision : 0
-    const r = this.applyOneOp(op)
+    // try/catch parity with applyAgentEditBatch: an op-level throw (e.g. a WASM
+    // primitive error) must surface as a structured {error}, never a raw
+    // uncaught exception to the agent.
+    let r
+    try {
+      r = this.applyOneOp(op)
+    } catch (error) {
+      return { error: String((error && error.message) || error) }
+    }
     if (r.error) return { error: r.error }
     return this.finishAgentEdit(baseRev, r.extra || {})
   },
@@ -1262,7 +1270,12 @@ const WasmHwpEditor = {
       // note-scoped: replace the query inside a footnote/endnote BODY sub-paragraph.
       // Read the note text via getFootnoteInfo, find the literal offset, then
       // delete+insert via the note primitives (both control-type agnostic).
-      if (ref.note) {
+      // BUGFIX: guard `ref &&` — a no-ref (global) replace_text has ref===null,
+      // and this branch (unlike the `if (ref && ref.cell)` above) used to read
+      // `ref.note` → "Cannot read properties of null (reading 'note')", which
+      // blocked every global replace_text. Null ref now falls through to the
+      // count-guarded global path below.
+      if (ref && ref.note) {
         const nt = ref.note
         const noteText = this.noteParagraphText(ref.section, ref.paragraph, nt)
         const idx = noteText.indexOf(query)
@@ -1471,7 +1484,12 @@ const WasmHwpEditor = {
         return { error: `set_cell failed: ${String((error && error.message) || error)}` }
       }
       this.recordOp("AgentSetCell", { section, cell: cl, lines })
-      return this.finishAgentEdit(baseRev, { cellParaCount: lines.length })
+      // BUGFIX: obey the applyOneOp contract — return {ok, extra} and let the
+      // CALLER (applyAgentEdit / applyAgentEditBatch) call finishAgentEdit. The
+      // old line called `finishAgentEdit(baseRev, …)` here, but `baseRev` is NOT
+      // in scope inside applyOneOp → "ReferenceError: baseRev is not defined" on
+      // every set_cell (single, and every set_cell op inside a batch).
+      return { ok: true, extra: { cellParaCount: lines.length } }
     }
 
     // insert_equation: an inline equation at the body ref. `script` is HWP
