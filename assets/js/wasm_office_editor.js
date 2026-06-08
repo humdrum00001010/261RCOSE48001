@@ -1642,17 +1642,145 @@ const WasmOfficeEditor = {
     if (typeof fn !== "function") return { error: "uno_apply export not found in this office WASM build" }
     const verb = op && op.op
     if (!verb) return { error: "edit op requires an 'op' verb" }
+
+    // ── Deployed-binary op compatibility shim (ecrits #150) ───────────────────
+    // The deployed soffice.wasm `uno_apply` exposes a LIMITED verb set:
+    //   insert_text ✓   set_text ✓   delete ✓
+    //   replace_text — recognised but BROKEN: it deletes the matched text and
+    //                  reports {ok:true} but NEVER inserts the replacement, so the
+    //                  target paragraph/shape is left EMPTY (verified live on both
+    //                  docx p<idx> refs and pptx shape refs).
+    //   delete_range / delete_paragraph / insert_paragraph / set_cell / split /
+    //   insert_node / delete_node — "unknown op" (not in the build at all).
+    // Until the office WASM is relinked with a corrected LokEditBindings, compose
+    // the broken/missing text verbs from the WORKING `set_text` (full-paragraph
+    // set), which we verified produces exactly the intended text on both engines.
+    // This is the actual fix for the "agentic replace does nothing / empties the
+    // text" symptom — replace is by far the most common agent edit. A relink can
+    // later remove this shim with no behaviour change.
+    const rewritten = this.rewriteUnsupportedEditOp(op)
+    if (rewritten && rewritten.error) return { error: `${verb} failed: ${rewritten.error}` }
+    const finalOp = rewritten && rewritten.op ? rewritten.op : op
+    const finalVerb = finalOp.op
+
     let res
     try {
-      res = fn(JSON.stringify(op))
+      res = fn(JSON.stringify(finalOp))
       // uno_apply dispatches onto the LOK worker; await a possible thenable.
       if (res && typeof res.then === "function") res = await res
     } catch (error) {
       return { error: `${verb} failed: ${String((error && error.message) || error)}` }
     }
     const status = this.parseStatus(res)
-    if (status && status.error) return { error: `${verb} failed: ${status.error}` }
-    return { ok: true, extra: status && typeof status === "object" ? this.editExtra(status) : {} }
+    if (status && status.error) return { error: `${finalVerb} failed: ${status.error}` }
+    const extra = status && typeof status === "object" ? this.editExtra(status) : {}
+    // Surface the synthesized replace count when we composed the op ourselves.
+    if (rewritten && typeof rewritten.replaced === "number") extra.replaced = rewritten.replaced
+    // When we composed a set_text from the IR, the cached IR is now stale; a
+    // following op in the SAME batch (e.g. another replace on the same ref) must
+    // re-read the post-edit text. finishAgentEdit also clears it, but only once at
+    // the end of the batch, so clear here too for intra-batch correctness.
+    if (rewritten && rewritten.op) this._elementsCache = null
+    return { ok: true, extra }
+  },
+
+  // Rewrite an edit op that the deployed `uno_apply` can't apply correctly into a
+  // `set_text` op it CAN. Returns:
+  //   { op: <set_text op> }   — apply this instead
+  //   null                    — op is natively supported; apply it unchanged
+  //   { error: "<reason>" }   — op can't be composed (e.g. query not found)
+  // Targets the text-bearing element by its `ref` (paragraph `p<idx>` or a shape
+  // `…/shape[Name]` text frame); a run ref `…/r<n>` collapses to its paragraph,
+  // which is the only ref `set_text` resolves against (verified).
+  rewriteUnsupportedEditOp(op) {
+    const verb = op.op
+    if (verb !== "replace_text" && verb !== "delete_range" && verb !== "delete_paragraph") {
+      return null // insert_text / set_text / delete etc. are native — pass through
+    }
+
+    // Resolve the target element(s) from the IR.
+    let elements
+    try {
+      elements = this.officeElements()
+    } catch (error) {
+      return { error: String((error && error.message) || error) }
+    }
+    const setTargetRef = (ref) => this.setTextRefFor(String(ref))
+    const byRef = new Map(elements.map((el) => [el.ref, el]))
+
+    if (verb === "delete_range" || verb === "delete_paragraph") {
+      // Neither verb exists in the binary; a whole-element delete (the only
+      // granularity the IR ref gives us) is the closest faithful effect — empty
+      // the target's text so the agent then sees an empty paragraph/shape.
+      if (op.ref == null) return { error: `${verb} requires a 'ref'` }
+      const targetRef = setTargetRef(op.ref)
+      const el = byRef.get(targetRef) || byRef.get(String(op.ref))
+      if (!el) return { error: `unresolved ref: ${op.ref}` }
+      return { op: { op: "set_text", ref: targetRef, text: "" } }
+    }
+
+    // replace_text: substitute `query` -> `replacement` in the target's text and
+    // re-set it whole. With a ref, scope to that element; without one, the server
+    // schema still allows it — replace in the FIRST text-bearing element that
+    // contains the query (mirrors a doc-wide first-match replace).
+    const query = op.query
+    const replacement = op.replacement != null ? String(op.replacement) : ""
+    if (typeof query !== "string" || query === "") {
+      return { error: "replace_text requires a non-empty string 'query'" }
+    }
+
+    if (op.ref != null) {
+      const targetRef = setTargetRef(op.ref)
+      const el = byRef.get(targetRef) || byRef.get(String(op.ref))
+      if (!el) return { error: `unresolved ref: ${op.ref}` }
+      if (!el.text.includes(query)) {
+        return { error: `query not found in ${op.ref}: ${JSON.stringify(query)}` }
+      }
+      const { text: next, count } = this.replaceAllCounted(el.text, query, replacement)
+      return { op: { op: "set_text", ref: targetRef, text: next }, replaced: count }
+    }
+
+    // No ref: first text-bearing PARAGRAPH/SHAPE element containing the query
+    // (skip run refs to avoid double-application; set_text targets paragraphs).
+    const target = elements.find(
+      (el) => this.isSetTextTarget(el.ref) && el.text.includes(query)
+    )
+    if (!target) return { error: `query not found in document: ${JSON.stringify(query)}` }
+    const { text: next, count } = this.replaceAllCounted(target.text, query, replacement)
+    return { op: { op: "set_text", ref: target.ref, text: next }, replaced: count }
+  },
+
+  // The ref `set_text` resolves against: a run ref `…/r<n>` collapses to its
+  // owning paragraph/shape; everything else passes through.
+  setTextRefFor(ref) {
+    return ref.replace(/\/r\d+$/, "")
+  },
+
+  // True for refs `set_text` accepts as whole-text targets: a top-level paragraph
+  // `p<idx>`, a paragraph under a shape `…/p<idx>`, or a shape text frame
+  // `…/shape[Name]`. Excludes bare run refs and the slide container `page[…]`.
+  isSetTextTarget(ref) {
+    if (/\/r\d+$/.test(ref)) return false
+    if (/^page\[[^\]]+\]$/.test(ref)) return false
+    return /(?:^|\/)p\d+$/.test(ref) || /\/shape\[[^\]]+\]$/.test(ref) || /\/cell\[[^\]]+\]$/.test(ref)
+  },
+
+  // String replace-all that also returns how many occurrences were replaced.
+  replaceAllCounted(haystack, needle, replacement) {
+    let count = 0
+    let out = ""
+    let i = 0
+    while (i <= haystack.length) {
+      const at = haystack.indexOf(needle, i)
+      if (at === -1) {
+        out += haystack.slice(i)
+        break
+      }
+      out += haystack.slice(i, at) + replacement
+      count++
+      i = at + needle.length
+    }
+    return { text: out, count }
   },
 
   // Project the verb-specific count fields uno_apply may echo back into the
