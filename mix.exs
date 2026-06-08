@@ -120,9 +120,12 @@ defmodule Ecrits.MixProject do
       # glue (`rhwp.js`) into app.js, but the `.wasm` itself must be served as a
       # static file, so copy it under `priv/static/assets/rhwp/` where Plug.Static
       # (only: ~w(assets ...)) serves it at `/assets/rhwp/rhwp_bg.wasm`.
+      # Sourced from the `ehwp` dep (delivered by `mix deps.get` + git-lfs), NOT a
+      # manual cp from a local ~/Desktop checkout — so a fresh clone gets the wasm
+      # and it is pinned lockstep with the NIF. esbuild bundles `rhwp.js` from
+      # assets/vendor/rhwp; `rhwp_bg.wasm` is served static at /assets/rhwp/.
       "assets.rhwp_wasm": [
-        "cmd mkdir -p priv/static/assets/rhwp",
-        "cmd cp assets/vendor/rhwp/rhwp_bg.wasm priv/static/assets/rhwp/rhwp_bg.wasm"
+        ~s(cmd sh -c "mkdir -p assets/vendor/rhwp priv/static/assets/rhwp && cp deps/ehwp/priv/wasm/rhwp.js deps/ehwp/priv/wasm/rhwp.d.ts deps/ehwp/priv/wasm/rhwp_bg.wasm deps/ehwp/priv/wasm/rhwp_bg.wasm.d.ts assets/vendor/rhwp/ && cp deps/ehwp/priv/wasm/rhwp_bg.wasm priv/static/assets/rhwp/rhwp_bg.wasm")
       ],
       # The LibreOffice->WASM client editor (client-interactive arm of the office
       # dual-arch). The Emscripten build artifacts live under
@@ -134,8 +137,9 @@ defmodule Ecrits.MixProject do
       # under `/assets/office/` (Plug.Static `only: ~w(assets ...)`). The copy is
       # best-effort (the shell loop skips missing files) so a checkout without the
       # (large, local-only) office artifacts still builds.
+      # Sourced from the `libreofficex` dep (mix deps.get + git-lfs), NOT assets/vendor.
       "assets.office_wasm": [
-        ~s(cmd sh -c "mkdir -p priv/static/assets/office && for f in soffice.js soffice.wasm soffice.data soffice.data.js.metadata; do [ -f assets/vendor/office/$f ] && cp assets/vendor/office/$f priv/static/assets/office/$f || true; done")
+        ~s(cmd sh -c "mkdir -p priv/static/assets/office && for f in soffice.js soffice.wasm soffice.data soffice.data.js.metadata; do [ -f deps/libreofficex/priv/wasm/$f ] && cp deps/libreofficex/priv/wasm/$f priv/static/assets/office/$f || true; done")
       ],
       "assets.build": [
         "compile",
