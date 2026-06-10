@@ -1,9 +1,8 @@
 > **Status:** Design reference (v31 final synthesis, 2026-05-17).
 > Treat as guidance, not ground truth. Where this conflicts with
 > SPEC.md v0.5 (e.g. routes), SPEC.md wins. Where this conflicts with
-> the binding memory entries in `~/.claude/projects/-home-ereignis/memory/`
-> (mature-visual-language, generated-imagery, responsive-scope,
-> personal-visual-review), those memories win.
+> private local assistant memory notes (mature-visual-language,
+> generated-imagery, responsive-scope, personal-visual-review), those notes win.
 
 # ecrits SPEC.md — Final UI/Frontend Direction
 

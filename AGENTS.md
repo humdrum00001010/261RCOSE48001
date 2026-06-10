@@ -55,13 +55,23 @@ Cycle: **build in the source repo → ship the wasm into the dep repo (git-LFS, 
 push) → `mix deps.update <dep>` (ecrits; https + LFS smudge) → `mix
 assets.<dep>_wasm` → restart `:4000`.**
 
+Use local environment variables for private checkout locations; do not commit
+machine-local paths:
+
+- `RHWP_CORE_DIR`: rhwp source checkout
+- `LIBREOFFICE_CORE_DIR`: LibreOffice source checkout
+- `LIBREOFFICE_WASM_BUILD_DIR`: LibreOffice WASM build directory
+- `EHWP_DEP_DIR`: ehwp dependency checkout
+- `LIBREOFFICEX_DEP_DIR`: libreofficex dependency checkout
+
 | editor | source repo | build → output | shipped in | served at |
 |---|---|---|---|---|
-| HWP (rhwp) | `~/Desktop/rhwp_core` | `wasm-pack build --target web` → `pkg/{rhwp_bg.wasm,rhwp.js,*.d.ts}` | `ehwp` `priv/wasm/` | `/assets/rhwp/rhwp_bg.wasm`; `rhwp.js` esbuild-bundled |
-| Office | `~/Desktop/core` (build dir `~/Desktop/core-wasm-build`, see its `BUILD-NOTES.md`) | `./run-build.sh Executable_soffice_bin -j14` → `instdir/program/soffice.{wasm,js,data}` | `libreofficex` `priv/wasm/` | `/assets/office/soffice.*` |
+| HWP (rhwp) | `$RHWP_CORE_DIR` | `wasm-pack build --target web` → `pkg/{rhwp_bg.wasm,rhwp.js,*.d.ts}` | `ehwp` `priv/wasm/` | `/assets/rhwp/rhwp_bg.wasm`; `rhwp.js` esbuild-bundled |
+| Office | `$LIBREOFFICE_CORE_DIR` (build dir `$LIBREOFFICE_WASM_BUILD_DIR`, see its `BUILD-NOTES.md`) | `./run-build.sh Executable_soffice_bin -j14` → `instdir/program/soffice.{wasm,js,data}` | `libreofficex` `priv/wasm/` | `/assets/office/soffice.*` |
 
-Ship: `cp` the build into `~/Desktop/{ehwp,libreofficex}/priv/wasm/`, `git add
-priv/wasm/` (LFS auto-tracks `*.wasm`/`*.data` via `.gitattributes`), commit,
+Ship: `cp` the build into `$EHWP_DEP_DIR/priv/wasm/` or
+`$LIBREOFFICEX_DEP_DIR/priv/wasm/`, `git add priv/wasm/` (LFS auto-tracks
+`*.wasm`/`*.data` via `.gitattributes`), commit,
 `git push origin HEAD`.
 
 - **mix-deps fetch = https** (`storage.cloudxyz.org`) — NEVER change the `mix.exs` dep URLs to ssh.

@@ -4,8 +4,8 @@ Drives real Chromium against the **public sprite URL**
 `https://ecrits-studio-v7zk.sprites.app/`.
 
 Not `localhost:4002`. Not in-process. Not Wallaby. See
-`~/.claude/projects/-home-ereignis/memory/feedback-browser-persona-tests.md`
-for the binding acceptance bar.
+the private local assistant memory note `feedback-browser-persona-tests` for the
+binding acceptance bar.
 
 ## Run
 

@@ -1,7 +1,7 @@
-## Revision history
+## Version history
 - 2026-05-15: Pivot from Matter-primary to Document-primary product framing. Document is now the primary user-facing object; document routes and sessions are document-first.
 - 2026-05-16: Remove the persistent Context Reservoir from the product surface; left-rail context becomes optional outline / related-docs UI.
-- 2026-05-16 (v0.5): Substantial revision. Rename Action → Command. Move Engine → Session.Reducer (internal). REMOVE Matter entirely (Document.owner_id replaces it). Add new persistent schemas: ChatThread, SourceDocument, SourceClaim, EvidenceSnapshot, AgentRun, ToolCall, BlobRef. Replace Ecrits.IO with Ecrits.Blobs + Ecrits.Providers. Expand Ecrits.MCP to full resource+tool surface (20 tools, 16 resources). Add Lawyer packet as export format. StudioLive handle_event names switch to dotted notation ("document.edit", "chat.submit", "source_claim.confirm", ...). Context Reservoir REMOVED from this draft — left rail becomes optional outline / related-docs.
+- 2026-05-16 (v0.5): Substantial version. Rename Action → Command. Move Engine → Session.Reducer (internal). REMOVE Matter entirely (Document.owner_id replaces it). Add new persistent schemas: ChatThread, SourceDocument, SourceClaim, EvidenceSnapshot, AgentRun, ToolCall, BlobRef. Replace Ecrits.IO with Ecrits.Blobs + Ecrits.Providers. Expand Ecrits.MCP to full resource+tool surface (20 tools, 16 resources). Add Lawyer packet as export format. StudioLive handle_event names switch to dotted notation ("document.edit", "chat.submit", "source_claim.confirm", ...). Context Reservoir REMOVED from this draft — left rail becomes optional outline / related-docs.
 
 ---
 
@@ -127,7 +127,7 @@ It contains:
 * document status,
 * metadata quick view,
 * export/share button,
-* optional version/revision indicator.
+* optional version indicator.
 
 Title editing behavior:
 
@@ -477,7 +477,7 @@ Lawyer packet UI explains what will be included:
 * marks,
 * EvidenceSnapshots,
 * citation status,
-* document revision.
+* document version.
 
 4.11 Conversion UI
 
@@ -594,7 +594,7 @@ def handle_info({:export_failed, export_id, reason}, socket)
 Rules:
 
 LiveView tracks selected_document_id.
-LiveView tracks last_seen_revision.
+LiveView tracks last_seen_version.
 LiveView tracks expand/collapse UI state in socket.assigns.expanded.
 LiveView never owns truth.
 LiveView never owns Session.
@@ -659,7 +659,7 @@ defmodule Ecrits.Types do
   @type export_id :: id()
   @type evidence_id :: id()
   @type blob_ref_id :: id()
-  @type revision :: non_neg_integer()
+  @type version :: non_neg_integer()
   @type idempotency_key :: String.t()
   @type contract_type_key :: String.t()
   @type route_ref_token :: String.t()
@@ -691,7 +691,7 @@ defmodule Ecrits.Document do
     field :status, Ecto.Enum,
       values: [:draft, :importing, :editing, :reviewing, :export_ready, :archived],
       default: :draft
-    field :current_revision, :integer, default: 0
+    field :current_version, :integer, default: 0
     field :state_snapshot, :map, default: %{}
     has_many :changes, Ecrits.Change
     has_many :marks, Ecrits.Mark
@@ -879,7 +879,7 @@ defmodule Ecrits.Command do
     field :actor_type, Ecto.Enum,
       values: [:user, :agent, :lawyer, :slack, :system]
     field :actor_id, :binary_id
-    field :base_revision, :integer
+    field :base_version, :integer
     field :idempotency_key, :string
     field :payload, :map, default: %{}
     field :message, :string
@@ -918,8 +918,8 @@ defmodule Ecrits.Change do
     field :actor_type, Ecto.Enum,
       values: [:user, :agent, :lawyer, :slack, :system]
     field :actor_id, :binary_id
-    field :base_revision, :integer
-    field :applied_revision, :integer
+    field :base_version, :integer
+    field :applied_version, :integer
     field :idempotency_key, :string
     field :ops, {:array, :map}, default: []
     field :marks, {:array, :map}, default: []
@@ -1058,8 +1058,8 @@ defmodule Ecrits.AgentRun do
     field :input_message, :string
     field :final_message, :string
     field :final_command, :map
-    field :started_revision, :integer
-    field :completed_revision, :integer
+    field :started_version, :integer
+    field :completed_version, :integer
     field :metadata, :map, default: %{}
     timestamps()
   end
@@ -1102,7 +1102,7 @@ defmodule Ecrits.Export do
     field :document_id, :binary_id
     field :format, Ecto.Enum,
       values: [:pdf, :hwpx, :docx, :markdown, :lawyer_packet]
-    field :source_revision, :integer
+    field :source_version, :integer
     field :status, Ecto.Enum,
       values: [:queued, :rendering, :available, :failed]
     field :blob_ref, :map
@@ -1187,7 +1187,7 @@ defmodule EcritsWeb.StudioLive do
   def handle_event("export.request", params, socket)
   def handle_event("ui.toggle_expand", params, socket)
   # Document/change protocol
-  def handle_info({:document_selected, document_id, revision}, socket)
+  def handle_info({:document_selected, document_id, version}, socket)
   def handle_info({:change_committed, document_id, change}, socket)
   def handle_info({:change_revoked, document_id, change}, socket)
   def handle_info({:revoke_requested, document_id, request}, socket)
@@ -1211,7 +1211,7 @@ defmodule EcritsWeb.StudioLive do
   def handle_info({:evidence_attached, evidence, mark}, socket)
   # Session recovery protocol
   def handle_info({:session_stale, document_id}, socket)
-  def handle_info({:session_recovered, document_id, revision}, socket)
+  def handle_info({:session_recovered, document_id, version}, socket)
   # Import/export protocol
   def handle_info({:import_started, import_id}, socket)
   def handle_info({:import_completed, document}, socket)
@@ -1226,12 +1226,12 @@ end
 StudioLive invariants
 
 LiveView tracks selected_document_id.
-LiveView tracks last_seen_revision.
+LiveView tracks last_seen_version.
 LiveView never owns truth.
 LiveView never owns Session.
 LiveView never calls OpenAI directly.
 PubSub is notification only.
-If revision gap appears, LiveView syncs from Store.
+If version gap appears, LiveView syncs from Store.
 Agent streams/tool deltas mutate only UI.
 Only committed Change updates document projection.
 
@@ -1244,7 +1244,7 @@ Studio is the product façade.
 defmodule Ecrits.Studio do
   def open(ctx, params)
   def command(ctx, command)
-  def sync(ctx, document_id, from_revision)
+  def sync(ctx, document_id, from_version)
   def subscribe(ctx, document_id)
   def route_ref(ctx, document_or_thread, opts)
 end
@@ -1267,7 +1267,7 @@ defmodule Ecrits.Session do
   def ensure(ctx, document_id)
   def command(document_id, command)
   def current(document_id)
-  def sync_since(document_id, revision)
+  def sync_since(document_id, version)
   def renew_lease(pid)
   def shutdown_if_stale(pid)
 end
@@ -1284,8 +1284,8 @@ Store is durable truth.
 defmodule Ecrits.Store do
   def load(document_id)
   def append(document_id, change, fencing_token)
-  def changes_since(document_id, revision)
-  def latest_revision(document_id)
+  def changes_since(document_id, version)
+  def latest_version(document_id)
   def idempotency_seen?(document_id, idempotency_key)
   def previous_result(document_id, idempotency_key)
   def transaction(fun)
@@ -1418,7 +1418,7 @@ user_id
 document_id
 chat_thread_id
 agent_run_id
-base_revision
+base_version
 home_region
 expires_at
 
@@ -1704,7 +1704,7 @@ The lawyer packet should include:
 * EvidenceSnapshots,
 * citation verification status,
 * export timestamp,
-* document revision.
+* document version.
 
 Export flow
 
@@ -1835,7 +1835,7 @@ Agent may continue
 Store remains truth
 LiveView remounts
 loads current state
-syncs from revision
+syncs from version
 
 Session crash
 
