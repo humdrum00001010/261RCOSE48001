@@ -19,8 +19,8 @@ defmodule EcritsWeb.Live.Studio.Components.Canvas.LocalOfficeWasm do
 
   attr :id, :string, required: true
   attr :document_id, :string, required: true
+  attr :document_path, :string, default: nil
   attr :local_document_format, :string, required: true
-  attr :local_document_revision, :integer, required: true
   attr :bytes_url, :string, default: nil
 
   def render(assigns) do
@@ -32,8 +32,9 @@ defmodule EcritsWeb.Live.Studio.Components.Canvas.LocalOfficeWasm do
       data-renderer="libreoffice-wasm"
       data-role="office-wasm-viewer"
       data-document-id={@document_id}
+      data-document-path={@document_path}
       data-local-document-format={@local_document_format}
-      data-local-document-revision={@local_document_revision}
+      data-office-asset-version={office_asset_version()}
       data-bytes-url={@bytes_url}
       phx-hook="WasmOfficeEditor"
     >
@@ -60,7 +61,6 @@ defmodule EcritsWeb.Live.Studio.Components.Canvas.LocalOfficeWasm do
         data-role="office-wasm-status"
         class="px-5 py-2 text-sm text-base-content/60"
       >
-        Loading office engine…
       </div>
 
       <%!-- The hook owns this stack (one page <canvas> per page/slide, painted by
@@ -74,5 +74,18 @@ defmodule EcritsWeb.Live.Studio.Components.Canvas.LocalOfficeWasm do
       </div>
     </div>
     """
+  end
+
+  defp office_asset_version do
+    path = Application.app_dir(:ecrits, "priv/static/assets/office/soffice.wasm")
+
+    case File.stat(path) do
+      {:ok, %File.Stat{mtime: mtime, size: size}} ->
+        :erlang.phash2({mtime, size})
+        |> Integer.to_string(36)
+
+      {:error, _reason} ->
+        "missing"
+    end
   end
 end

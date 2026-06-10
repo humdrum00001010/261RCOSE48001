@@ -156,6 +156,15 @@ const LocalChatRailResizer = {
     window.addEventListener("resize", this.onResize)
     window.addEventListener("phx:local_agent_text_append", this.onLocalAgentTextAppend)
     window.addEventListener("phx:local_agent_reasoning_append", this.onLocalAgentReasoningAppend)
+
+    this.handleEvent("local_agent_title_reset", payload => {
+      const input = this.el.querySelector("#local-agent-title-label")
+      if (!input) return
+
+      const title = typeof payload?.title === "string" ? payload.title : ""
+      input.value = title
+      input.setAttribute("value", title)
+    })
   },
 
   updated() {

@@ -147,11 +147,10 @@ defmodule EcritsWeb.Local.MountWorkspaceLiveTest do
     {:ok, lv, html} = live(conn, ~p"/")
 
     assert has_element?(lv, "#local-mount-root")
-    assert has_element?(lv, "#local-mount-picker")
     assert has_element?(lv, "#local-native-directory-picker[data-role='native-directory-picker']")
     assert has_element?(lv, "#local-mount-picker-surface[data-role='mount-picker-surface']")
     assert has_element?(lv, "#local-mount-control-row[data-role='mount-control-row']")
-    assert has_element?(lv, "#local-mount-control-row #local-mount-choose", "Choose folder")
+    assert has_element?(lv, "#local-mount-control-row #local-mount-choose", "Open folder")
     assert has_element?(lv, "#local-mount-control-row #local-path-form[method='get']")
 
     assert has_element?(
@@ -161,12 +160,10 @@ defmodule EcritsWeb.Local.MountWorkspaceLiveTest do
 
     assert has_element?(
              lv,
-             "#local-mount-control-row #local-path-submit[type='submit'][aria-label='Open path'][title='Open path'] .hero-arrow-turn-down-left"
+             "#local-mount-control-row #local-path-submit[type='submit'][aria-label='Open path'][title='Open this path']"
            )
 
-    refute has_element?(lv, "#local-path-submit", "Open")
-    refute has_element?(lv, "footer")
-
+    assert has_element?(lv, "#local-path-submit", "Open")
     refute has_element?(lv, "#local-manual-path-picker")
     refute has_element?(lv, "#local-provider-picker")
     refute has_element?(lv, "#local-agent-provider-picker")
@@ -200,16 +197,15 @@ defmodule EcritsWeb.Local.MountWorkspaceLiveTest do
     |> render_click()
 
     assert has_element?(lv, "#local-mount-error", "Workspace path does not exist.")
-    assert has_element?(lv, "#local-mount-picker")
+    assert has_element?(lv, "#local-mount-picker-surface")
   end
 
   test "workspace path query rejects an invalid path", %{conn: conn} do
     file_path = Path.join(LocalWorkspaceAdapterStub.valid_path(), "not-a-directory.txt")
     File.write!(file_path, "not a directory")
 
-    {:ok, lv, _html} = live(conn, ~p"/workspace?#{[path: file_path]}")
-
-    assert has_element?(lv, "#local-workspace-error", "Workspace path does not exist.")
+    assert {:error, {:live_redirect, %{to: "/"}}} =
+             live(conn, ~p"/workspace?#{[path: file_path]}")
   end
 
   test "native picker unavailable renders inline error", %{conn: conn} do
@@ -567,13 +563,13 @@ defmodule EcritsWeb.Local.MountWorkspaceLiveTest do
 
     assert_patch(
       lv,
-      ~p"/workspace?#{[path: LocalWorkspaceAdapterStub.valid_path(), provider: "claude", model: "claude-opus-4-7", reasoning: "medium", access: "read-only"]}"
+      ~p"/workspace?#{[path: LocalWorkspaceAdapterStub.valid_path(), provider: "claude", model: "default", reasoning: "medium", access: "read-only"]}"
     )
 
     assert has_element?(
              lv,
-             "#local-agent-provider-options[data-selected-provider='claude'][data-selected-model='claude-opus-4-7'] #local-agent-model-select[data-selected-provider='claude'][data-selected-model='claude-opus-4-7']",
-             "Claude Opus 4.7"
+             "#local-agent-provider-options[data-selected-provider='claude'][data-selected-model='default'] #local-agent-model-select[data-selected-provider='claude'][data-selected-model='default']",
+             "Default"
            )
 
     refute has_element?(
@@ -657,7 +653,7 @@ defmodule EcritsWeb.Local.MountWorkspaceLiveTest do
 
     # The selected inline options are forwarded through to the ACP adapter_opts;
     # the fake ex_mcp adapter echoes them back so we can assert the wiring.
-    assert text =~ "Test response: selected rail opts"
+    assert text =~ "selected rail opts"
     assert text =~ "model=gpt-5.3-codex-spark"
     assert text =~ "reasoning=xhigh"
     assert text =~ "sandbox=workspace-write"
@@ -682,13 +678,13 @@ defmodule EcritsWeb.Local.MountWorkspaceLiveTest do
     refute to =~ "provider=fake"
   end
 
-  test "file tree supports metadata, expansion, row-open, and format affordances", %{conn: conn} do
+  test "file tree supports expansion, row-open, and format affordances", %{conn: conn} do
     {:ok, lv, _html} =
       live(conn, ~p"/workspace?#{[path: LocalWorkspaceAdapterStub.valid_path()]}")
 
     assert has_element?(lv, "#local-file-tree")
     assert has_element?(lv, ~s(#local-file-tree ul[role="tree"]))
-    assert has_element?(lv, ~s([data-node-path=".ecrits"][data-metadata="true"]))
+    refute has_element?(lv, ~s([data-node-path=".ecrits"]))
     assert has_element?(lv, ~s([data-node-path="Assignment #2"][data-expanded="false"]))
     assert has_element?(lv, ~s([data-node-path="drafts"][data-expanded="false"]))
 
@@ -749,27 +745,12 @@ defmodule EcritsWeb.Local.MountWorkspaceLiveTest do
 
     assert has_element?(
              lv,
-             "#local-file-node-rulebook-md-acceptance-certificate-acceptance-certificate-md[data-tree-depth='2'][phx-click='select_file']"
+             "#local-file-node-rulebook-md-acceptance-certificate-acceptance-certificate-md[data-tree-depth='2'][phx-click='open_file'][data-openable='true']"
            )
 
     refute has_element?(
              lv,
              "#local-file-node-rulebook-md-acceptance-certificate #local-file-node-rulebook-md-acceptance-certificate-acceptance-certificate-md"
-           )
-
-    lv
-    |> element("#local-file-node-rulebook-md-acceptance-certificate-acceptance-certificate-md")
-    |> render_click()
-
-    assert has_element?(
-             lv,
-             ~s([data-node-path="rulebook.md/acceptance_certificate/acceptance_certificate.md"][data-selected="true"])
-           )
-
-    assert has_element?(
-             lv,
-             "#local-selected-file",
-             "rulebook.md/acceptance_certificate/acceptance_certificate.md"
            )
 
     refute has_element?(lv, "#local-rhwp-shell")
@@ -786,8 +767,11 @@ defmodule EcritsWeb.Local.MountWorkspaceLiveTest do
 
     assert has_element?(lv, ~s([data-node-path="drafts/service.hwpx"][data-selected="true"]))
     assert has_element?(lv, ~s([data-node-path="drafts/service.hwpx"][class*="bg-base-300/70"]))
+    assert has_element?(lv, "#studio-document-tab-drafts-service-hwpx[data-active='true']")
     refute has_element?(lv, "#local-file-tree-breadcrumb")
-    assert has_element?(lv, "#local-active-document-badge", "Open")
+
+    sync_liveview(lv)
+    assert has_element?(lv, "#local-rhwp-save-state", "Loaded -")
 
     lv
     |> element("#local-file-node-template-hwp")
@@ -798,7 +782,6 @@ defmodule EcritsWeb.Local.MountWorkspaceLiveTest do
       ~p"/workspace?#{[path: LocalWorkspaceAdapterStub.valid_path(), document: "template.hwp", provider: "codex", model: "gpt-5.5", reasoning: "medium", access: "read-only"]}"
     )
 
-    assert has_element?(lv, "#local-active-document-badge", "Open")
     refute has_element?(lv, "#local-file-tree-breadcrumb")
   end
 
@@ -816,8 +799,9 @@ defmodule EcritsWeb.Local.MountWorkspaceLiveTest do
     assert has_element?(lv, "#studio-root[data-component='studio-document-surface']")
     assert has_element?(lv, "#studio-document-header")
     refute has_element?(lv, "#local-file-tree-breadcrumb")
-    assert has_element?(lv, "#studio-document-title-form[data-role='document-title-form']")
-    assert has_element?(lv, ~s(#studio-document-title-input[value="drafts/service.hwpx"]))
+    assert has_element?(lv, "#studio-document-tabs[data-role='document-tabs']")
+    assert has_element?(lv, "#studio-document-tab-drafts-service-hwpx[data-active='true']")
+    assert has_element?(lv, "#studio-document-tab-drafts-service-hwpx", "service.hwpx")
     refute has_element?(lv, "#studio-document-header details")
     refute has_element?(lv, "#studio-document-header summary")
     refute has_element?(lv, "#studio-document-header [data-role='document-picker']")
@@ -829,7 +813,7 @@ defmodule EcritsWeb.Local.MountWorkspaceLiveTest do
     refute has_element?(lv, ~s([data-role="rhwp-prev-edit-target"]))
     refute has_element?(lv, ~s([data-role="rhwp-next-edit-target"]))
     assert has_element?(lv, "#local-rhwp-fullscreen[data-role='toggle-chat-rail']")
-    assert has_element?(lv, "#local-rhwp-save-state", "Loaded revision 0")
+    assert has_element?(lv, "#local-rhwp-save-state", "Loaded -")
     refute has_element?(lv, "#local-rhwp-checkpoint")
     refute has_element?(lv, "#local-rhwp-save")
     refute has_element?(lv, ~s([data-role="rhwp-local-checkpoint"]))
@@ -838,7 +822,7 @@ defmodule EcritsWeb.Local.MountWorkspaceLiveTest do
 
     assert has_element?(
              lv,
-             ~s([data-role="local-hwp-editor"][data-renderer="rhwp-wasm"][data-local-document-format="hwpx"][data-local-document-revision="0"])
+             ~s([data-role="local-hwp-editor"][data-renderer="rhwp-wasm"][data-local-document-format="hwpx"])
            )
 
     assert has_element?(
@@ -905,7 +889,8 @@ defmodule EcritsWeb.Local.MountWorkspaceLiveTest do
       )
 
     assert has_element?(lv, "#local-rhwp-shell")
-    assert has_element?(lv, ~s(#studio-document-title-input[value="drafts/reference.docx"]))
+    assert has_element?(lv, "#studio-document-tab-drafts-reference-docx[data-active='true']")
+    assert has_element?(lv, "#studio-document-tab-drafts-reference-docx", "reference.docx")
 
     # Office documents render SOLELY through the in-browser LibreOffice WASM
     # editor (the `WasmOfficeEditor` hook); there is no server-side LOK tile
@@ -972,10 +957,10 @@ defmodule EcritsWeb.Local.MountWorkspaceLiveTest do
     assert has_element?(lv, "#local-rhwp-shell[data-component='studio-local-document-surface']")
     assert has_element?(lv, "#studio-root[data-local-document-id]")
     assert has_element?(lv, "#studio-document-header")
-    assert has_element?(lv, "#studio-document-header.flex-wrap")
     refute has_element?(lv, "#local-file-tree-breadcrumb")
-    assert has_element?(lv, "#studio-document-title-form[data-role='document-title-form']")
-    assert has_element?(lv, ~s(#studio-document-title-input[value="template.hwp"]))
+    assert has_element?(lv, "#studio-document-tabs[data-role='document-tabs']")
+    assert has_element?(lv, "#studio-document-tab-template-hwp[data-active='true']")
+    assert has_element?(lv, "#studio-document-tab-template-hwp", "template.hwp")
     refute has_element?(lv, "#studio-document-header details")
     refute has_element?(lv, "#studio-document-header summary")
     refute has_element?(lv, "#studio-document-header [data-role='document-picker']")
@@ -1021,7 +1006,7 @@ defmodule EcritsWeb.Local.MountWorkspaceLiveTest do
     refute has_element?(lv, ~s([data-role="local-hwp-editor"][data-editable-spec-candidates]))
   end
 
-  test "local rhwp events load bytes, checkpoint, save, and reload saved revision", %{conn: conn} do
+  test "local rhwp events load bytes, checkpoint, save, and reload saved bytes", %{conn: conn} do
     root = LocalWorkspaceAdapterStub.valid_path()
     relative_path = "drafts/service.hwpx"
     path = Path.join(root, relative_path)
@@ -1033,36 +1018,34 @@ defmodule EcritsWeb.Local.MountWorkspaceLiveTest do
     document_id = local_rhwp_document_id(lv)
 
     render_hook(lv, "rhwp.local.load", %{"document_id" => document_id})
-    assert has_element?(lv, "#local-rhwp-save-state", "Loaded revision 0")
+    assert has_element?(lv, "#local-rhwp-save-state", "Loaded -")
 
     render_hook(lv, "rhwp.local.snapshot.checkpoint", %{
       "document_id" => document_id,
       "bytes_base64" => Base.encode64(original),
-      "format" => "hwpx",
-      "min_revision" => 0
+      "format" => "hwpx"
     })
 
     assert File.read!(path) == original
-    assert has_element?(lv, "#local-rhwp-save-state", "Checkpointed revision 1")
+    assert has_element?(lv, "#local-rhwp-save-state", "Checkpointed - canonical file unchanged")
 
     saved = File.read!("test/fixtures/hwpx/real_contract.hwpx")
 
     render_hook(lv, "rhwp.local.snapshot.save", %{
       "document_id" => document_id,
       "bytes_base64" => Base.encode64(saved),
-      "format" => "hwpx",
-      "min_revision" => 1
+      "format" => "hwpx"
     })
 
     assert File.read!(path) == saved
-    assert has_element?(lv, "#local-rhwp-save-state", "Saved revision 2")
+    assert has_element?(lv, "#local-rhwp-save-state", "Saved -")
 
     {:ok, reloaded_lv, _html} =
       live(conn, ~p"/workspace?#{[path: root, document: relative_path]}")
 
     assert has_element?(
              reloaded_lv,
-             ~s([data-role="local-hwp-editor"][data-local-document-revision="2"])
+             ~s([data-role="local-hwp-editor"][data-local-document-format="hwpx"])
            )
   end
 
@@ -1097,22 +1080,8 @@ defmodule EcritsWeb.Local.MountWorkspaceLiveTest do
              ~s([data-role="local-hwp-editor"][data-local-document-id="#{document_id}"])
            )
 
-    assert {:ok, document} = Document.document(document_id)
-
-    records =
-      document
-      |> Document.metadata_paths()
-      |> Map.fetch!(:mutations)
-      |> read_jsonl!()
-
-    assert [
-             %{
-               "event_id" => "local-edit-1",
-               "site_id" => "local",
-               "lamport" => 11,
-               "body" => %{"type" => "TextDeleted"}
-             }
-           ] = records
+    assert {:ok, %Document{id: ^document_id}} = Document.document(document_id)
+    refute File.exists?(Path.join(root, ".ecrits"))
   end
 
   test "agent form reports real provider unavailable without fake response", %{conn: conn} do
@@ -1322,6 +1291,124 @@ defmodule EcritsWeb.Local.MountWorkspaceLiveTest do
     end)
   end
 
+  test "a browser refresh repaints local agent tool-call history", %{conn: conn} do
+    use_test_agent_adapter!(
+      adapter_opts: [
+        script: [
+          {:text_delta, "Before tool."},
+          %{
+            type: :tool_call_started,
+            id: "tool-doc-context",
+            name: "doc.context",
+            arguments: %{"document" => "active"}
+          },
+          %{
+            type: :tool_call_completed,
+            id: "tool-doc-context",
+            name: "doc.context",
+            result: %{
+              "ok" => true,
+              "revision" => 7,
+              "base_version" => 6,
+              "content" => [
+                %{
+                  "type" => "text",
+                  "text" => ~s({"ok":true,"revision":7,"base_version":6})
+                }
+              ],
+              "structuredContent" => %{"ok" => true, "revision" => 7}
+            }
+          },
+          {:text_delta, "After tool."}
+        ]
+      ]
+    )
+
+    {:ok, lv, _html} =
+      live(
+        conn,
+        ~p"/workspace?#{[path: LocalWorkspaceAdapterStub.valid_path(), provider: "codex"]}"
+      )
+
+    session_id = subscribe_agent(lv)
+    agent_pid = AcpAgent.whereis(session_id)
+
+    lv
+    |> form("#local-agent-form", agent: %{message: "use one tool"})
+    |> render_submit()
+
+    assert_receive {:local_agent_event, %{type: :turn_completed, session_id: ^session_id}}, 1_000
+    sync_liveview(lv)
+
+    assert [%{items: items}] = AcpAgent.agent_snapshot(session_id).transcript
+
+    assert Enum.any?(
+             items,
+             &(Map.get(&1, :role) == :tool and Map.get(&1, :name) == "doc.context" and
+                 Map.get(&1, :status) == :completed)
+           )
+
+    legacy_body =
+      Jason.encode!(
+        %{
+          "_meta" => nil,
+          "content" => [
+            %{
+              "type" => "text",
+              "text" => ~s({"ok":true,"revision":3,"base_version":2,"native":[{"revision":3}]})
+            }
+          ],
+          "structuredContent" => %{
+            "ok" => true,
+            "revision" => 3,
+            "base_version" => 2,
+            "native" => [%{"revision" => 3}]
+          }
+        },
+        pretty: true
+      )
+
+    :sys.replace_state(agent_pid, fn state ->
+      Map.put(state, :transcript, [
+        %{
+          turn_id: "legacy-turn",
+          user: "legacy doc tool",
+          agent: "",
+          items: [
+            %{
+              role: :tool,
+              tool_call_id: "legacy-doc-edit",
+              name: "doc.edit",
+              status: :completed,
+              body: legacy_body
+            }
+          ]
+        }
+      ])
+    end)
+
+    {:ok, lv2, _html2} =
+      live(
+        conn,
+        ~p"/workspace?#{[path: LocalWorkspaceAdapterStub.valid_path(), provider: "codex"]}"
+      )
+
+    sync_liveview(lv2)
+
+    assert has_element?(
+             lv2,
+             ~s([data-role="local-agent-tool"][data-message-role="tool"][data-message-status="completed"]),
+             "doc.edit"
+           )
+
+    details = "#local-agent-tool-legacy-doc-edit-details[hidden][data-role='operation-details']"
+
+    assert has_element?(lv2, details, ~s("ok": true))
+    refute has_element?(lv2, details, "revision")
+    refute has_element?(lv2, details, "base_version")
+    refute has_element?(lv2, details, ~s("version"))
+  end
+
   test "agent rail shows provider logo in model selector for codex route display", %{conn: conn} do
     {:ok, lv, _html} =
       live(
@@ -1416,7 +1503,9 @@ defmodule EcritsWeb.Local.MountWorkspaceLiveTest do
            )
   end
 
-  test "agent refresh belongs to chat rail and re-attaches the durable agent", %{conn: conn} do
+  test "agent reset button restarts the foreground agent and clears chat rail", %{conn: conn} do
+    use_test_agent_adapter!(adapter_opts: [script: [{:text_delta, "ack reply"}]])
+
     {:ok, lv, _html} =
       live(
         conn,
@@ -1424,23 +1513,50 @@ defmodule EcritsWeb.Local.MountWorkspaceLiveTest do
       )
 
     old_session_id = subscribe_agent(lv)
+    old_pid = AcpAgent.whereis(old_session_id)
+    old_ref = Process.monitor(old_pid)
+
+    lv
+    |> form("#local-agent-form", agent: %{message: "reset this chat"})
+    |> render_submit()
+
+    assert_receive {:local_agent_event, %{type: :turn_completed, session_id: ^old_session_id}},
+                   1_000
+
+    sync_liveview(lv)
+
+    assert has_element?(
+             lv,
+             ~s([data-role="local-agent-message"][data-message-role="user"]),
+             "reset this chat"
+           )
+
+    assert [%{user: "reset this chat"} | _] = AcpAgent.agent_snapshot(old_session_id).transcript
 
     lv
     |> element("#local-agent-refresh")
     |> render_click()
 
+    assert_receive {:DOWN, ^old_ref, :process, ^old_pid, _reason}, 1_000
     sync_liveview(lv)
 
-    # The foreground agent is owned by the path-keyed workspace Session and is
-    # durable: a chat "refresh" detaches+re-attaches THIS LiveView to the SAME
-    # agent (same id / provider thread), it does NOT create a new conversation.
+    # The path-keyed foreground id remains stable, but the button starts a fresh
+    # agent process with an empty transcript.
     new_session_id = local_agent_session_id(lv)
     assert new_session_id == old_session_id
-    track_agent_session(new_session_id)
+    new_pid = AcpAgent.whereis(new_session_id)
+    assert is_pid(new_pid)
+    refute new_pid == old_pid
 
-    refute has_element?(lv, "#local-agent-system")
-
+    assert AcpAgent.agent_snapshot(new_session_id).transcript == []
+    assert has_element?(lv, "#local-agent-title-label[value='New Chat']")
     assert has_element?(lv, "#local-agent-sidebar[data-agent-status='idle']")
+
+    refute has_element?(
+             lv,
+             ~s([data-role="local-agent-message"][data-message-role="user"]),
+             "reset this chat"
+           )
   end
 
   test "agent selector supports codex route favicon without provider badge", %{conn: conn} do
@@ -1548,8 +1664,7 @@ defmodule EcritsWeb.Local.MountWorkspaceLiveTest do
             result: %{
               "items" => [
                 %{"index" => 1, "text" => "사업주: 주식회사 한빛"}
-              ],
-              "revision" => 3
+              ]
             }
           },
           %{
@@ -1565,8 +1680,7 @@ defmodule EcritsWeb.Local.MountWorkspaceLiveTest do
             result: %{
               "matches" => [
                 %{"sec" => 0, "para" => 0, "off" => 2, "count" => 3, "text" => "사업주"}
-              ],
-              "revision" => 3
+              ]
             }
           },
           {:text_delta, "done"}
@@ -1635,7 +1749,7 @@ defmodule EcritsWeb.Local.MountWorkspaceLiveTest do
     assert has_element?(
              lv,
              "#local-agent-tool-tool-ui-json-read-details[hidden][data-role='operation-details']",
-             ~s("revision": 3)
+             ~s("items")
            )
 
     refute has_element?(
@@ -1661,6 +1775,125 @@ defmodule EcritsWeb.Local.MountWorkspaceLiveTest do
              "#local-agent-tool-tool-ui-read-details[hidden][data-role='operation-details']",
              "missing document session"
            )
+  end
+
+  test "agent chat rail renders unversioned doc edit and save tool results", %{conn: conn} do
+    use_test_agent_adapter!(
+      adapter_opts: [
+        script: [
+          %{
+            type: :tool_call_started,
+            id: "tool-edit-no-version",
+            name: "doc.edit",
+            arguments: %{
+              "document" => "service_agreement_v1-4.hwp",
+              "base_version" => 12,
+              "ops" => [
+                %{
+                  "ref" => "{\"section\":0,\"paragraph\":422}",
+                  "action" => "replace",
+                  "text" => "계약 당사자는 다음과 같이 정한다.",
+                  "attrs" => %{"char_style" => "body", "para_style" => "normal"}
+                }
+              ]
+            }
+          },
+          %{
+            type: :tool_call_completed,
+            id: "tool-edit-no-version",
+            name: "doc.edit",
+            result: %{
+              "ok" => true,
+              "revision" => 13,
+              "base_version" => 12,
+              "current_version" => 13,
+              "rebased" => true,
+              "invalidated" => [],
+              "native" => [%{"ok" => true, "op" => "replace_text", "revision" => 13}],
+              "content" => [
+                %{
+                  "type" => "text",
+                  "text" => ~s({"ok":true,"revision":13,"base_version":12,"current_version":13})
+                }
+              ],
+              "structuredContent" => %{
+                "ok" => true,
+                "revision" => 13,
+                "base_version" => 12,
+                "current_version" => 13
+              }
+            }
+          },
+          %{
+            type: :tool_call_started,
+            id: "tool-save-no-version",
+            name: "doc.save",
+            arguments: %{
+              "document" => "service_agreement_v1-4.hwp"
+            }
+          },
+          %{
+            type: :tool_call_completed,
+            id: "tool-save-no-version",
+            name: "doc.save",
+            result: %{
+              "ok" => true
+            }
+          },
+          {:text_delta, "done"}
+        ]
+      ]
+    )
+
+    {:ok, lv, _html} =
+      live(conn, ~p"/workspace?#{[path: LocalWorkspaceAdapterStub.valid_path()]}")
+
+    session_id = subscribe_agent(lv)
+
+    lv
+    |> form("#local-agent-form", agent: %{message: "make requested edits"})
+    |> render_submit()
+
+    assert_receive {:local_agent_event,
+                    %{
+                      type: :tool_call_completed,
+                      session_id: ^session_id,
+                      tool_call_id: "tool-edit-no-version"
+                    }},
+                   1_000
+
+    assert_receive {:local_agent_event,
+                    %{
+                      type: :tool_call_completed,
+                      session_id: ^session_id,
+                      tool_call_id: "tool-save-no-version"
+                    }},
+                   1_000
+
+    assert_receive {:local_agent_event, %{type: :turn_completed, session_id: ^session_id}},
+                   1_000
+
+    sync_liveview(lv)
+
+    for {tool_call_id, tool_name} <- [
+          {"tool-edit-no-version", "doc.edit"},
+          {"tool-save-no-version", "doc.save"}
+        ] do
+      row = "#local-agent-tool-#{tool_call_id}"
+      details = "#{row}-details[hidden][data-role='operation-details']"
+
+      assert has_element?(lv, "#{row}[data-role='local-agent-tool']", tool_name)
+      assert has_element?(lv, details, ~s("ok": true))
+
+      refute has_element?(lv, details, "base_version")
+      refute has_element?(lv, details, "base_revision")
+      refute has_element?(lv, details, "revision")
+      refute has_element?(lv, details, ~s("version"))
+      refute has_element?(lv, details, ~s("current_version"))
+      refute has_element?(lv, details, ~s("saved_version"))
+      refute has_element?(lv, details, "rebased")
+      refute has_element?(lv, details, "stale_version")
+    end
   end
 
   test "agent sidebar appends local token deltas through push events", %{conn: conn} do
@@ -2041,14 +2274,13 @@ defmodule EcritsWeb.Local.MountWorkspaceLiveTest do
 
     assert has_element?(lv, "#local-agent-sidebar[data-agent-status='cancelled']")
 
-    assert has_element?(
+    refute has_element?(
              lv,
-             ~s([data-role="local-agent-message"][data-message-role="agent"][data-message-status="cancelled"]),
-             "Cancelled."
+             ~s([data-role="local-agent-message"][data-message-role="agent"][data-message-status="cancelled"])
            )
   end
 
-  test "agent sidebar submit during running cancels current turn and starts new turn", %{
+  test "agent sidebar submit during running queues the next turn", %{
     conn: conn
   } do
     use_test_agent_adapter!(
@@ -2068,7 +2300,7 @@ defmodule EcritsWeb.Local.MountWorkspaceLiveTest do
     |> form("#local-agent-form", agent: %{message: "first"})
     |> render_submit()
 
-    assert_receive {:local_agent_adapter_waiting, _first_stream_pid}, 1_000
+    assert_receive {:local_agent_adapter_waiting, first_stream_pid}, 1_000
     sync_liveview(lv)
 
     assert has_element?(lv, "#local-agent-sidebar[data-agent-status='running']")
@@ -2080,7 +2312,13 @@ defmodule EcritsWeb.Local.MountWorkspaceLiveTest do
     |> form("#local-agent-form", agent: %{message: "second"})
     |> render_submit()
 
-    assert_receive {:local_agent_event, %{type: :turn_cancelled, session_id: ^session_id}}, 1_000
+    assert_receive {:local_agent_event,
+                    %{type: :turn_queued, session_id: ^session_id, pending: 1}},
+                   1_000
+
+    refute_received {:local_agent_event, %{type: :turn_cancelled, session_id: ^session_id}}
+
+    send(first_stream_pid, :release_local_agent_ui)
     assert_receive {:local_agent_adapter_waiting, second_stream_pid}, 1_000
 
     sync_liveview(lv)
@@ -2102,7 +2340,7 @@ defmodule EcritsWeb.Local.MountWorkspaceLiveTest do
                    1_000
   end
 
-  test "late events from a cancelled turn do not corrupt the new turn", %{conn: conn} do
+  test "queued turn waits for the running turn before taking over", %{conn: conn} do
     use_test_agent_adapter!(
       adapter_opts: [
         test_pid: self(),
@@ -2121,69 +2359,48 @@ defmodule EcritsWeb.Local.MountWorkspaceLiveTest do
     |> form("#local-agent-form", agent: %{message: "first"})
     |> render_submit()
 
-    assert_receive {:local_agent_adapter_waiting, _first_stream_pid}, 1_000
+    assert_receive {:local_agent_adapter_waiting, first_stream_pid}, 1_000
     sync_liveview(lv)
 
     turn_a = liveview_assign(lv, :local_agent_turn_id)
     assert is_binary(turn_a)
 
-    # Submit a SECOND message mid-stream: cancels A, starts B (the "new message
-    # replaces in-flight turn" UX).
+    # Submit a SECOND message mid-stream: queue B behind A.
     lv
     |> form("#local-agent-form", agent: %{message: "second"})
     |> render_submit()
 
-    assert_receive {:local_agent_event, %{type: :turn_cancelled, session_id: ^session_id}}, 1_000
-    assert_receive {:local_agent_adapter_waiting, _second_stream_pid}, 1_000
+    assert_receive {:local_agent_event,
+                    %{
+                      type: :turn_queued,
+                      session_id: ^session_id,
+                      turn_id: turn_b,
+                      pending: 1
+                    }},
+                   1_000
+
     sync_liveview(lv)
 
-    turn_b = liveview_assign(lv, :local_agent_turn_id)
     assert is_binary(turn_b)
     assert turn_b != turn_a
+    assert liveview_assign(lv, :local_agent_turn_id) == turn_a
     assert liveview_assign(lv, :local_agent_status) == :running
 
-    # Now simulate LATE events from the already-cancelled turn A arriving on the
-    # session topic after B is the current turn. These must be ignored: A's late
-    # text_delta must not pollute B's buffer, and A's turn_completed must not flip
-    # B's status to :idle or clear B's turn_id.
-    broadcast_agent_event(session_id, %{
-      type: :text_delta,
-      session_id: session_id,
-      turn_id: turn_a,
-      delta: "STALE-A"
-    })
-
-    broadcast_agent_event(session_id, %{
-      type: :turn_completed,
-      session_id: session_id,
-      turn_id: turn_a,
-      text: "STALE-A"
-    })
+    send(first_stream_pid, :release_local_agent_ui)
+    assert_receive {:local_agent_event, %{type: :turn_completed, turn_id: ^turn_a}}, 1_000
+    assert_receive {:local_agent_adapter_waiting, second_stream_pid}, 1_000
 
     sync_liveview(lv)
 
-    # Turn B must be intact: still running, still B's turn_id, buffer not polluted
-    # with A's stale delta.
     assert liveview_assign(lv, :local_agent_status) == :running
-    assert liveview_assign(lv, :local_agent_turn_id) == turn_b
-    refute liveview_assign(lv, :local_agent_text) =~ "STALE-A"
+    assert liveview_assign(lv, :local_agent_turn_id) != turn_a
 
-    # And the live B assistant bubble must still be the running placeholder, not
-    # finalized with A's text.
     assert has_element?(
              lv,
              ~s([data-role="local-agent-message"][data-message-role="agent"][data-message-status="running"])
            )
 
-    refute render(lv) =~ "STALE-A"
-  end
-
-  defp broadcast_agent_event(session_id, event) do
-    Phoenix.PubSub.broadcast(
-      Ecrits.PubSub,
-      AcpAgent.topic(session_id),
-      {:local_agent_event, event}
-    )
+    send(second_stream_pid, :release_local_agent_ui)
   end
 
   # Inject the test-only fake ex_mcp ACP adapter so the chat-rail rendering can be
@@ -2262,54 +2479,11 @@ defmodule EcritsWeb.Local.MountWorkspaceLiveTest do
     :ok
   end
 
-  defp assert_eventually_has_element(lv, selector) do
-    deadline = System.monotonic_time(:millisecond) + 1_000
-    assert_eventually_has_element(lv, selector, deadline)
-  end
-
-  defp assert_eventually_has_element(lv, selector, deadline) do
-    if has_element?(lv, selector) do
-      :ok
-    else
-      if System.monotonic_time(:millisecond) < deadline do
-        Process.sleep(10)
-        assert_eventually_has_element(lv, selector, deadline)
-      else
-        assert has_element?(lv, selector)
-      end
-    end
-  end
-
-  defp assert_eventually_assign(lv, key, expected) do
-    deadline = System.monotonic_time(:millisecond) + 1_000
-    assert_eventually_assign(lv, key, expected, deadline)
-  end
-
-  defp assert_eventually_assign(lv, key, expected, deadline) do
-    if liveview_assign(lv, key) == expected do
-      :ok
-    else
-      if System.monotonic_time(:millisecond) < deadline do
-        Process.sleep(10)
-        assert_eventually_assign(lv, key, expected, deadline)
-      else
-        assert liveview_assign(lv, key) == expected
-      end
-    end
-  end
-
   defp liveview_assign(lv, key) do
     lv.pid
     |> :sys.get_state()
     |> Map.get(:socket)
     |> then(& &1.assigns[key])
-  end
-
-  defp read_jsonl!(path) do
-    path
-    |> File.read!()
-    |> String.split("\n", trim: true)
-    |> Enum.map(&Jason.decode!/1)
   end
 
   defp local_rhwp_document_id(lv) do
@@ -2324,62 +2498,6 @@ defmodule EcritsWeb.Local.MountWorkspaceLiveTest do
     assert is_binary(document_id)
     assert document_id != ""
     document_id
-  end
-
-  defp employment_party_paragraph(employer, worker) do
-    "  " <>
-      String.pad_trailing(employer, 14) <>
-      "(이하 “사업주”라 함)과 " <>
-      "   " <>
-      String.pad_trailing(worker, 11) <>
-      "(이하 “근로자”라 함)은 근로계약을 체결한다."
-  end
-
-  defp local_agent_edit_ir(paragraphs, opts) do
-    title = Keyword.get(opts, :title, "service.hwpx")
-    contract_type = Keyword.get(opts, :contract_type, "local_hwpx")
-
-    %{
-      "version" => 1,
-      "title" => title,
-      "contract_type" => contract_type,
-      "sections" => [
-        %{
-          "idx" => 0,
-          "paragraphs" =>
-            paragraphs
-            |> Enum.with_index()
-            |> Enum.map(fn {text, index} -> %{"idx" => index, "text" => text} end)
-        }
-      ],
-      "positional_index" => %{
-        "version" => 1,
-        "paragraphs" =>
-          paragraphs
-          |> Enum.with_index()
-          |> Enum.map(fn {text, index} ->
-            %{
-              "sec" => 0,
-              "para" => index,
-              "page" => 0,
-              "off_start" => 0,
-              "off_end" => String.length(text)
-            }
-          end),
-        "tables" => []
-      }
-    }
-  end
-
-  defp local_agent_context_texts(%Document{} = document) do
-    %{"context" => %{"sections" => [%{"paragraphs" => paragraphs}]}} =
-      document
-      |> Document.metadata_paths()
-      |> Map.fetch!(:context)
-      |> File.read!()
-      |> Jason.decode!()
-
-    Enum.map(paragraphs, &Map.fetch!(&1, "text"))
   end
 
   defp prepare_local_workspace_fixture do

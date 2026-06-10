@@ -23,7 +23,10 @@ const MarkdownEditor = {
     this.el.value = this.el.dataset.initialSource || ""
     this.debounce = null
 
-    this.onInput = () => this.scheduleSync()
+    this.onInput = () => {
+      this.userEdited = true
+      this.scheduleSync()
+    }
     this.onKeyDown = e => this.handleKeyDown(e)
 
     this.el.addEventListener("input", this.onInput)
@@ -38,11 +41,11 @@ const MarkdownEditor = {
 
   updated() {
     // A fresh document was opened in the same hook element: reseed if the
-    // server handed us a new initial source (the canvas id changes per document,
-    // so this mostly guards in-place revision bumps after save).
+    // server handed us a new initial source.
     const next = this.el.dataset.initialSource
     if (typeof next === "string" && next !== this.lastSeeded && document.activeElement !== this.el) {
       this.el.value = next
+      this.userEdited = false
       this.sync()
     }
   },
@@ -60,7 +63,7 @@ const MarkdownEditor = {
 
   sync() {
     this.lastSeeded = this.el.value
-    this.pushEvent("markdown.source_changed", {source: this.el.value})
+    this.pushEvent("markdown.source_changed", {source: this.el.value, dirty: !!this.userEdited})
   },
 
   handleKeyDown(e) {
@@ -77,7 +80,10 @@ const MarkdownEditor = {
   },
 
   onSaved(payload) {
-    if (!payload || payload.ok !== false) return
+    if (!payload || payload.ok !== false) {
+      this.userEdited = false
+      return
+    }
     // Surface a non-fatal save error in the console; the server keeps the file
     // intact on failure.
     console.warn("[markdown_editor] save failed:", payload.error)

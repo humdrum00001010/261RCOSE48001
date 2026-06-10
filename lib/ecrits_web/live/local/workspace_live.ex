@@ -159,16 +159,15 @@ defmodule EcritsWeb.Local.WorkspaceLive do
      |> assign(:active_document, nil)
      |> assign(:open_documents, [])
      |> assign(:active_document_id, nil)
+     |> assign(:pending_document_open_ref, nil)
+     |> assign(:pending_document_path, nil)
      |> assign(:pool_document_id, nil)
      # Browser-backed agent edits (design §6.2): when the open HWP is registered
      # `:browser` in the Pool, the agent's doc.* edits route HERE. We push the op
      # to the WasmHwpEditor hook (authoritative WASM model) and relay its reply
      # back to the waiting MCP caller. `doc_browser_pending` maps a per-request
-     # ref -> the caller pid so a hook reply finds its requester; `browser_revision`
-     # is the monotonic revision the WASM model has applied (the value doc.edit
-     # returns), seeded at 0 on open and bumped per applied op.
+     # ref -> the caller pid so a hook reply finds its requester.
      |> assign(:doc_browser_pending, %{})
-     |> assign(:browser_revision, 0)
      # Unsaved-changes tracking (LiveView is the source of truth). A document id
      # is in `dirty_document_ids` once it is touched (user edit via
      # `rhwp.text.mutated`, or an agent doc.edit/doc.set routed through the browser
@@ -190,7 +189,6 @@ defmodule EcritsWeb.Local.WorkspaceLive do
      |> assign(:local_hwp_page_count, 0)
      |> assign(:local_hwp_stream_renderer, nil)
      |> assign(:local_hwp_stream_document_id, nil)
-     |> assign(:local_hwp_stream_revision, nil)
      |> assign(:local_hwp_stream_loading?, false)
      |> assign(:last_caret, nil)
      |> assign(:workspace_error, nil)
@@ -333,7 +331,7 @@ defmodule EcritsWeb.Local.WorkspaceLive do
   def handle_event("open_file", %{"path" => path}, socket) do
     {:noreply,
      socket
-     |> assign(:selected_path, path)
+     |> prepare_local_document_loading(path)
      |> push_patch(to: workspace_document_path(socket, path))}
   end
 
@@ -345,7 +343,7 @@ defmodule EcritsWeb.Local.WorkspaceLive do
       %{path: path} ->
         {:noreply,
          socket
-         |> assign(:selected_path, path)
+         |> prepare_local_document_loading(path)
          |> push_patch(to: workspace_document_path(socket, path))}
     end
   end
@@ -397,8 +395,7 @@ defmodule EcritsWeb.Local.WorkspaceLive do
 
   # Reply from the WasmHwpEditor hook for an agent-routed browser op (see the
   # `{:doc_browser_request, ...}` handler). Relay the result to the MCP caller
-  # that is blocked in `Ecrits.Doc.Tools.browser_call/4`, and for an applied edit
-  # adopt the revision the WASM model reports so doc.edit returns the real value.
+  # that is blocked in `Ecrits.Doc.Tools.browser_call/4`.
   def handle_event("doc.browser_reply", %{"request_id" => request_id} = params, socket) do
     case Map.pop(socket.assigns.doc_browser_pending, request_id) do
       {{from, ref, verb}, pending} ->
@@ -408,7 +405,6 @@ defmodule EcritsWeb.Local.WorkspaceLive do
         socket =
           socket
           |> assign(:doc_browser_pending, pending)
-          |> maybe_adopt_browser_revision(result)
           |> apply_browser_op_dirty(verb, result)
 
         {:noreply, socket}
@@ -441,19 +437,42 @@ defmodule EcritsWeb.Local.WorkspaceLive do
     persist_local_rhwp_snapshot(:save, params, socket)
   end
 
+  def handle_event("local_document.viewer_save", params, socket) do
+    persist_local_viewer_save(params, socket)
+  end
+
+  def handle_event("local_document.viewer_mutated", %{"document_id" => document_id}, socket) do
+    with :ok <- verify_active_document(socket, document_id) do
+      {:noreply, socket |> mark_doc_dirty(document_id) |> arm_autosave(document_id)}
+    else
+      {:error, _reason} -> {:noreply, socket}
+    end
+  end
+
+  def handle_event("local_document.viewer_mutated", _params, socket), do: {:noreply, socket}
+
   # --- Markdown (.md/.markdown) editor events (from the MarkdownEditor hook) ----
   # Debounced source changes re-render the live preview; Ctrl/Cmd+S persists the
   # current source to the canonical workspace file via the file-based Document
   # persistence. Both are no-ops unless the active document is markdown, so a
   # stray client event can never crash the LiveView.
 
-  def handle_event("markdown.source_changed", %{"source" => source}, socket)
+  def handle_event("markdown.source_changed", %{"source" => source} = params, socket)
       when is_binary(source) do
     if markdown_document_active?(socket) do
-      {:noreply,
-       socket
-       |> assign(:local_markdown_source, source)
-       |> assign(:local_markdown_preview_html, EcritsWeb.Markdown.to_safe_html(source))}
+      socket =
+        socket
+        |> assign(:local_markdown_source, source)
+        |> assign(:local_markdown_preview_html, EcritsWeb.Markdown.to_safe_html(source))
+
+      socket =
+        if params["dirty"] do
+          mark_doc_dirty(socket, active_document_id(socket))
+        else
+          socket
+        end
+
+      {:noreply, socket}
     else
       {:noreply, socket}
     end
@@ -465,7 +484,7 @@ defmodule EcritsWeb.Local.WorkspaceLive do
     with %{id: document_id} <- socket.assigns[:active_document],
          true <- markdown_document_active?(socket),
          {:ok, _document, _snapshot} <- Document.save(document_id, source) do
-      # The `:local_document_saved` broadcast updates save_state + revision via
+      # The `:local_document_saved` broadcast updates save_state via
       # apply_local_document_snapshot/4; we just confirm the save to the client.
       {:noreply, push_event(socket, "markdown_saved", %{ok: true})}
     else
@@ -661,7 +680,6 @@ defmodule EcritsWeb.Local.WorkspaceLive do
     selected_document_id = active_document_id(socket)
     request_id = rhwp_request_value(request, ["request_id", :request_id])
     requested_document_id = rhwp_request_value(request, ["document_id", :document_id])
-    min_revision = rhwp_request_value(request, ["min_revision", :min_revision])
     text_events = rhwp_request_value(request, ["text_events", :text_events]) || []
     base_snapshot = rhwp_request_value(request, ["base_snapshot", :base_snapshot])
     document_id = requested_document_id || selected_document_id
@@ -683,7 +701,6 @@ defmodule EcritsWeb.Local.WorkspaceLive do
           %{
             request_id: request_id,
             document_id: selected_document_id,
-            min_revision: min_revision,
             text_events: text_events
           }
           |> maybe_put_base_snapshot(base_snapshot)
@@ -692,12 +709,20 @@ defmodule EcritsWeb.Local.WorkspaceLive do
     end
   end
 
+  def handle_info({:open_local_document, ref, path}, socket) do
+    if socket.assigns.pending_document_open_ref == ref and
+         socket.assigns.pending_document_path == path do
+      {:noreply, do_open_local_document(socket, path)}
+    else
+      {:noreply, socket}
+    end
+  end
+
   # Agent edit/read/find for the OPEN HWP, routed from `Ecrits.Doc.Tools` because
   # this document is `:browser`-backed in the Pool (its authority is the WASM
   # model in the viewer, not the server NIF). Push the verb to the WasmHwpEditor
   # hook and remember the caller so the hook's reply (a `doc.browser_reply`
-  # client event) is relayed back to the waiting MCP process. Edits bump the
-  # browser revision the hook reports back so `doc.edit` returns a real revision.
+  # client event) is relayed back to the waiting MCP process.
   def handle_info({:doc_browser_request, from, ref, verb, payload}, socket) do
     request_id = doc_browser_request_id(ref)
 
@@ -903,6 +928,8 @@ defmodule EcritsWeb.Local.WorkspaceLive do
               toolbar_id="local-rhwp-toolbar"
               frame_id="local-rhwp-editor-frame"
               document={@active_document}
+              document_path={@active_document_path}
+              document_loading?={@local_document_status == :loading}
               document_spec={@active_document && local_document_spec(@active_document)}
               canvas_id={@active_document && local_rhwp_dom_id(@active_document)}
               hwp_bytes_url={
@@ -1051,7 +1078,7 @@ defmodule EcritsWeb.Local.WorkspaceLive do
                 type="button"
                 phx-click="refresh_local_agent"
                 class="inline-flex size-7 shrink-0 items-center justify-center rounded text-base-content/55 hover:bg-base-100 hover:text-base-content disabled:pointer-events-none disabled:opacity-45"
-                aria-label="Refresh agent chat"
+                aria-label="Reset agent chat"
                 disabled={@local_agent_status == :starting}
               >
                 <.icon name="hero-arrow-path" class="size-4" />
@@ -1197,7 +1224,10 @@ defmodule EcritsWeb.Local.WorkspaceLive do
                             class="size-1 rounded-full bg-current chat-typing-dot"
                           >
                           </span>
-                          <span aria-hidden="true" class="size-1 rounded-full bg-current chat-typing-dot">
+                          <span
+                            aria-hidden="true"
+                            class="size-1 rounded-full bg-current chat-typing-dot"
+                          >
                           </span>
                         </span>
                       </div>
@@ -1234,12 +1264,13 @@ defmodule EcritsWeb.Local.WorkspaceLive do
                     <.input
                       field={@local_agent_form[:message]}
                       id="local-agent-input"
-                      type="text"
+                      type="textarea"
+                      rows="1"
                       autocomplete="off"
                       data-role="chat-textarea"
                       disabled={@local_agent_status in [:offline, :starting]}
                       placeholder={agent_input_placeholder(@local_agent_status)}
-                      class="block h-8 w-full border-0 bg-transparent px-3 py-1 text-[13px] leading-snug text-base-content outline-none placeholder:text-base-content/35 focus:outline-none focus:ring-0 disabled:cursor-not-allowed disabled:text-base-content/40"
+                      class="block max-h-40 min-h-8 w-full resize-none overflow-y-auto border-0 bg-transparent px-3 py-1 text-[13px] leading-snug text-base-content outline-none placeholder:text-base-content/35 focus:outline-none focus:ring-0 disabled:cursor-not-allowed disabled:text-base-content/40"
                     />
                     <div class="flex items-center justify-end gap-1 px-2 pb-1.5 pt-0.5">
                       <%!-- 📎 attach sits next to Send; its hidden file input stays
@@ -1420,7 +1451,9 @@ defmodule EcritsWeb.Local.WorkspaceLive do
                             )
                           ]}
                         >
-                          <span class="min-w-0 flex-1 truncate">{local_agent_reasoning_label(effort)}</span>
+                          <span class="min-w-0 flex-1 truncate">
+                            {local_agent_reasoning_label(effort)}
+                          </span>
                           <.icon
                             :if={@local_agent_reasoning_effort == effort}
                             name="hero-check"
@@ -1551,6 +1584,12 @@ defmodule EcritsWeb.Local.WorkspaceLive do
                   // Resolve the live input each call — morphdom may swap the node
                   // across patches, so a cached ref can go stale.
                   const input = () => this.form.querySelector('[data-role="chat-textarea"]')
+                  this.resizeInput = () => {
+                    const el = input()
+                    if (!el || el.tagName !== "TEXTAREA") return
+                    el.style.height = "auto"
+                    el.style.height = `${Math.min(el.scrollHeight, 160)}px`
+                  }
 
                   this.send = (e) => {
                     if (e) e.preventDefault()
@@ -1565,6 +1604,7 @@ defmodule EcritsWeb.Local.WorkspaceLive do
                     }
                     this.pushEvent("send_local_agent", { message: value })
                     el.value = ""
+                    this.resizeInput()
                     // Keep focus on the input so the keyboard never hides mid-thread.
                     el.focus({ preventScroll: true })
                   }
@@ -1577,6 +1617,10 @@ defmodule EcritsWeb.Local.WorkspaceLive do
                         && e.key === "Enter" && !e.shiftKey && !e.isComposing) {
                       this.send(e)
                     }
+                  }
+
+                  this.onFormInput = (e) => {
+                    if (e.target.matches('[data-role="chat-textarea"]')) this.resizeInput()
                   }
 
                   // Send on pointerdown (with preventDefault to keep input focus so
@@ -1609,15 +1653,18 @@ defmodule EcritsWeb.Local.WorkspaceLive do
                   this.onFormSubmit = (e) => this.send(e)
 
                   this.form.addEventListener("keydown", this.onFormKeydown)
+                  this.form.addEventListener("input", this.onFormInput)
                   this.form.addEventListener("pointerdown", this.onFormPointerDown)
                   this.form.addEventListener("mousedown", this.onFormPointerDown)
                   this.form.addEventListener("click", this.onFormClick)
                   this.form.addEventListener("submit", this.onFormSubmit)
+                  this.resizeInput()
                 },
                 destroyed() {
                   clearTimeout(this._sendPressTimer)
                   if (!this.form) return
                   this.form.removeEventListener("keydown", this.onFormKeydown)
+                  this.form.removeEventListener("input", this.onFormInput)
                   this.form.removeEventListener("pointerdown", this.onFormPointerDown)
                   this.form.removeEventListener("mousedown", this.onFormPointerDown)
                   this.form.removeEventListener("click", this.onFormClick)
@@ -1673,7 +1720,19 @@ defmodule EcritsWeb.Local.WorkspaceLive do
 
   defp maybe_open_local_document(socket, %{"document" => path})
        when is_binary(path) and path != "" do
-    open_local_document(socket, path)
+    cond do
+      socket.assigns.active_document_path == path and socket.assigns.active_document ->
+        socket
+        |> upsert_open_document_tab(path)
+        |> assign(:selected_path, path)
+
+      socket.assigns.pending_document_path == path and
+          socket.assigns.local_document_status == :loading ->
+        socket
+
+      true ->
+        schedule_local_document_open(socket, path)
+    end
   end
 
   defp maybe_open_local_document(socket, _params) do
@@ -1686,18 +1745,44 @@ defmodule EcritsWeb.Local.WorkspaceLive do
     |> assign(:active_document_path, nil)
     |> assign(:active_document, nil)
     |> assign(:active_document_id, nil)
+    |> assign(:pending_document_open_ref, nil)
+    |> assign(:pending_document_path, nil)
     |> assign(:local_document_status, :none)
     |> assign(:local_document_snapshot, nil)
     |> clear_local_hwp_pages()
     |> maybe_restart_local_agent_for_document(previous_document_id)
   end
 
-  defp open_local_document(%{assigns: %{workspace: nil}} = socket, _path), do: socket
+  defp schedule_local_document_open(%{assigns: %{workspace: nil}} = socket, _path), do: socket
 
-  defp open_local_document(socket, path) do
+  defp schedule_local_document_open(socket, path) do
+    ref = make_ref()
+    Process.send_after(self(), {:open_local_document, ref, path}, 0)
+
     socket
+    |> prepare_local_document_loading(path)
+    |> assign(:pending_document_open_ref, ref)
+    |> assign(:pending_document_path, path)
+  end
+
+  defp prepare_local_document_loading(%{assigns: %{workspace: nil}} = socket, _path), do: socket
+
+  defp prepare_local_document_loading(socket, path) do
+    previous_document_id = active_document_id(socket)
+    _ = unregister_local_rhwp_materializer_editor(previous_document_id)
+
+    socket
+    |> unsubscribe_local_hwp_stream()
+    |> clear_pool_document()
     |> upsert_open_document_tab(path)
-    |> do_open_local_document(path)
+    |> assign(:selected_path, path)
+    |> assign(:active_document_path, path)
+    |> assign(:active_document, nil)
+    |> assign(:local_document_status, :loading)
+    |> assign(:local_document_snapshot, nil)
+    |> assign(:local_document_error, nil)
+    |> clear_local_hwp_pages()
+    |> maybe_restart_local_agent_for_document(previous_document_id)
   end
 
   # Open-or-focus tab tracking. The id is a deterministic token of the relative
@@ -1797,6 +1882,8 @@ defmodule EcritsWeb.Local.WorkspaceLive do
           |> assign(:selected_path, document.relative_path)
           |> assign(:active_document_path, document.relative_path)
           |> assign(:active_document, document_summary(document))
+          |> assign(:pending_document_open_ref, nil)
+          |> assign(:pending_document_path, nil)
           |> assign(:local_document_status, :opened)
           |> assign(:local_document_snapshot, nil)
           |> assign(:local_document_error, nil)
@@ -1814,6 +1901,8 @@ defmodule EcritsWeb.Local.WorkspaceLive do
         |> assign(:selected_path, path)
         |> assign(:active_document_path, nil)
         |> assign(:active_document, nil)
+        |> assign(:pending_document_open_ref, nil)
+        |> assign(:pending_document_path, nil)
         |> assign(:local_document_status, :error)
         |> assign(:local_document_error, error_message(reason))
         |> clear_local_hwp_pages()
@@ -1848,7 +1937,6 @@ defmodule EcritsWeb.Local.WorkspaceLive do
 
         socket
         |> assign(:pool_document_id, doc_id)
-        |> assign(:browser_revision, 0)
         |> assign(:doc_browser_pending, %{})
 
       {:error, _reason} ->
@@ -1876,7 +1964,6 @@ defmodule EcritsWeb.Local.WorkspaceLive do
 
         socket
         |> assign(:pool_document_id, doc_id)
-        |> assign(:browser_revision, 0)
         |> assign(:doc_browser_pending, %{})
 
       {:error, _reason} ->
@@ -1931,14 +2018,12 @@ defmodule EcritsWeb.Local.WorkspaceLive do
   # for the client round-trip, so we key by an inspected ref string).
   defp doc_browser_request_id(ref), do: "dbr:" <> (:erlang.ref_to_list(ref) |> List.to_string())
 
-  # Augment the verb payload with the doc id + the revision the WASM model should
-  # report after applying, so the hook can echo a monotonic revision back. Values
-  # cross the wire as JSON, so keyword lists (e.g. doc.read's `opts`) are coerced
-  # into plain maps the client (and Jason) can serialise.
+  # Augment the verb payload with the doc id. Values cross the wire as JSON, so
+  # keyword lists (e.g. doc.read's `opts`) are coerced into plain maps the client
+  # (and Jason) can serialise.
   defp doc_browser_payload(payload, socket) do
     payload
     |> Map.put(:document_id, socket.assigns[:pool_document_id])
-    |> Map.put(:base_revision, socket.assigns[:browser_revision])
     |> Map.new(fn {k, v} -> {k, jsonable(v)} end)
   end
 
@@ -1954,13 +2039,6 @@ defmodule EcritsWeb.Local.WorkspaceLive do
   defp doc_browser_result(%{"result" => result}) when is_map(result), do: {:ok, result}
   defp doc_browser_result(%{"ok" => true} = params), do: {:ok, Map.delete(params, "request_id")}
   defp doc_browser_result(_params), do: {:error, "browser_apply_failed"}
-
-  # An applied edit carries a revision from the WASM model; adopt it as the
-  # authoritative browser revision (monotonic, what doc.edit returns).
-  defp maybe_adopt_browser_revision(socket, {:ok, %{"revision" => rev}}) when is_integer(rev),
-    do: assign(socket, :browser_revision, rev)
-
-  defp maybe_adopt_browser_revision(socket, _result), do: socket
 
   # Attach this LiveView to the durable per-workspace `Ecrits.Workspace.Session`
   # (keyed by canonical path) and START + SEED its foreground agent. This is the
@@ -2052,22 +2130,7 @@ defmodule EcritsWeb.Local.WorkspaceLive do
 
     case safe_restart_foreground(path, local_agent_attach_settings(socket)) do
       {:ok, %{agent_id: agent_id} = ws} when is_binary(agent_id) ->
-        socket
-        |> assign(:workspace_session, ws)
-        |> assign(:local_agent_session_id, agent_id)
-        |> assign(:local_agent_error, nil)
-        |> assign(:local_agent_status, :idle)
-        |> assign(:local_agent_pending, 0)
-        |> assign(:local_agent_turn_id, nil)
-        |> assign(:local_agent_text, "")
-        |> assign(:local_agent_text_segment, 0)
-        |> assign(:local_agent_reasoning_text, "")
-        |> assign(:local_agent_reasoning_open?, false)
-        |> assign(:local_agent_active_tools, %{})
-        |> assign(:local_agent_title_user_edited?, false)
-        |> assign_local_agent_title(default_local_agent_title())
-        |> assign(:local_agent_form, local_agent_form())
-        |> stream(:local_agent_items, [], reset: true)
+        bind_fresh_local_agent_session(socket, ws, agent_id)
 
       _ ->
         # Restart failed (provider CLI missing / infra down). Leave the existing
@@ -2088,6 +2151,27 @@ defmodule EcritsWeb.Local.WorkspaceLive do
   end
 
   defp safe_restart_foreground(_path, _settings), do: {:error, :no_path}
+
+  defp bind_fresh_local_agent_session(socket, ws, agent_id) do
+    socket
+    |> cancel_local_agent_text_flush()
+    |> assign(:workspace_session, ws)
+    |> assign(:local_agent_session_id, agent_id)
+    |> assign(:local_agent_error, nil)
+    |> assign(:local_agent_status, :idle)
+    |> assign(:local_agent_pending, 0)
+    |> assign(:local_agent_turn_id, nil)
+    |> assign(:local_agent_text, "")
+    |> assign(:local_agent_text_segment, 0)
+    |> assign(:local_agent_reasoning_text, "")
+    |> assign(:local_agent_reasoning_open?, false)
+    |> assign(:local_agent_active_tools, %{})
+    |> assign(:local_agent_title_user_edited?, false)
+    |> assign_local_agent_title(default_local_agent_title())
+    |> assign(:local_agent_form, local_agent_form())
+    |> stream(:local_agent_items, [], reset: true)
+    |> push_event("local_agent_title_reset", %{title: default_local_agent_title()})
+  end
 
   # Tolerate the workspace-Session supervision infra not being up yet (e.g. the
   # SessionSupervisor/Registry child was added to the tree but the server hasn't
@@ -2135,7 +2219,7 @@ defmodule EcritsWeb.Local.WorkspaceLive do
   # final `doc_save` (observed with codex/gpt-5.5 on "make a worksheet …"),
   # leaving in-memory edits that never reach disk — so the file the user opens
   # stays the unedited template. On turn end we persist any server-backed pooled
-  # doc that is *dirty* (current revision > last-saved) AND carries a real
+  # doc that is *dirty* and carries a real
   # save-target path (the created/cloned/headless worksheet case). It is
   # idempotent: a turn that already `doc_save`d leaves nothing dirty -> no-op.
   # `Pool.dirty_docs/1` already excludes browser-backed (viewed) docs, so a doc
@@ -2677,8 +2761,7 @@ defmodule EcritsWeb.Local.WorkspaceLive do
 
   defp error_message(:not_found), do: "Local document session was not found."
   defp error_message(:format_mismatch), do: "Local document format did not match."
-  defp error_message(:missing_bytes), do: "Local rhwp payload did not include document bytes."
-  defp error_message(:stale_revision), do: "Local document changed before this save."
+  defp error_message(:missing_bytes), do: "Local document payload did not include document bytes."
   defp error_message(:unsupported_format), do: "Select a supported document."
   defp error_message(:workspace_not_mounted), do: "Workspace is not mounted."
   defp error_message(:import_name_conflict), do: "Could not choose a local import path."
@@ -2714,7 +2797,6 @@ defmodule EcritsWeb.Local.WorkspaceLive do
       {:reply,
        %{
          ok: true,
-         revision: response.revision,
          format: response.format,
          snapshot: response.snapshot
        }, socket}
@@ -2733,6 +2815,40 @@ defmodule EcritsWeb.Local.WorkspaceLive do
   defp local_rhwp_persist(:save, document_id, params),
     do: RhwpAdapter.save(document_id, params)
 
+  defp persist_local_viewer_save(%{"error" => error}, socket)
+       when is_binary(error) do
+    error = error_message(error)
+
+    {:reply, %{error: error}, assign(socket, :local_document_error, error)}
+  end
+
+  defp persist_local_viewer_save(params, socket) when is_map(params) do
+    document_id = params["document_id"] || active_document_id(socket)
+
+    with :ok <- verify_active_document(socket, document_id),
+         {:ok, response} <- RhwpAdapter.save(document_id, params) do
+      socket =
+        socket
+        |> assign(:active_document, document_summary(response))
+        |> assign(:local_document_status, :saved)
+        |> assign(:local_document_snapshot, response.snapshot)
+        |> assign(:local_document_error, nil)
+        |> mark_doc_clean(document_id)
+
+      {:reply,
+       %{
+         ok: true,
+         format: response.format,
+         snapshot: response.snapshot
+       }, socket}
+    else
+      {:error, reason} ->
+        error = error_message(reason)
+
+        {:reply, %{error: error}, assign(socket, :local_document_error, error)}
+    end
+  end
+
   defp verify_active_document(socket, document_id) when is_binary(document_id) do
     if document_id == active_document_id(socket), do: :ok, else: {:error, :not_found}
   end
@@ -2745,8 +2861,9 @@ defmodule EcritsWeb.Local.WorkspaceLive do
   # --- Unsaved-changes (dirty) tracking + debounced auto-save ----------------
   # `:dirty_document_ids` (a MapSet) is the single source of truth for which
   # tabs render the "unsaved changes" dot. A doc becomes dirty on a user edit
-  # (`rhwp.text.mutated`) or an agent `doc.edit`/`doc.set` routed through the
-  # browser bridge, and clean on a save (Ctrl/Cmd+S, auto-save, or `doc.save`).
+  # (`rhwp.text.mutated`, office viewer input) or an agent `doc.edit`/`doc.set`
+  # routed through the browser bridge, and clean on a save (Ctrl/Cmd+S,
+  # auto-save, or `doc.save`).
 
   defp mark_doc_dirty(socket, nil), do: socket
 
@@ -2810,6 +2927,23 @@ defmodule EcritsWeb.Local.WorkspaceLive do
   defp save_document(socket, nil), do: socket
 
   defp save_document(socket, id) do
+    case socket.assigns[:active_document] do
+      %{id: ^id, format: format} ->
+        if local_viewer_save_format?(format) do
+          push_event(socket, "local_document.save.request", %{
+            document_id: id,
+            request_id: "local-save:#{System.unique_integer([:positive])}"
+          })
+        else
+          save_pool_document(socket, id)
+        end
+
+      _ ->
+        save_pool_document(socket, id)
+    end
+  end
+
+  defp save_pool_document(socket, id) do
     # Fire-and-forget in a SEPARATE process: `Ecrits.Doc.Tools.call/3` for a
     # browser-backed doc sends `{:doc_browser_request, ...}` to THIS LiveView
     # pid and blocks in `receive`, so calling it inline here would deadlock.
@@ -2822,20 +2956,28 @@ defmodule EcritsWeb.Local.WorkspaceLive do
     socket
   end
 
+  defp local_viewer_save_format?(format) when is_binary(format),
+    do: Document.ehwp_format?(format) or Document.libreoffice_format?(format)
+
+  defp local_viewer_save_format?(_format), do: false
+
   defp action_status(:checkpoint), do: :checkpointed
   defp action_status(:save), do: :saved
 
   defp apply_local_document_snapshot(socket, status, %Document{id: id} = document, snapshot) do
-    if id == active_document_id(socket) do
-      socket
-      |> assign(:active_document, document_summary(document))
-      |> assign(:local_document_status, status)
-      |> assign(:local_document_snapshot, snapshot)
-      |> assign(:local_document_error, nil)
-      |> render_local_document_pages(document)
-    else
-      socket
-    end
+    socket =
+      if id == active_document_id(socket) do
+        socket
+        |> assign(:active_document, document_summary(document))
+        |> assign(:local_document_status, status)
+        |> assign(:local_document_snapshot, snapshot)
+        |> assign(:local_document_error, nil)
+        |> render_local_document_pages(document)
+      else
+        socket
+      end
+
+    if status == :saved, do: mark_doc_clean(socket, id), else: socket
   end
 
   defp document_summary(%Document{} = document) do
@@ -2843,7 +2985,6 @@ defmodule EcritsWeb.Local.WorkspaceLive do
       id: document.id,
       relative_path: document.relative_path,
       format: document.format,
-      revision: document.revision,
       byte_size: document.byte_size,
       sha256: document.sha256
     }
@@ -2854,7 +2995,6 @@ defmodule EcritsWeb.Local.WorkspaceLive do
       id: response.document_id,
       relative_path: response.relative_path,
       format: response.format,
-      revision: response.revision,
       byte_size: response[:byte_size],
       sha256: response[:sha256]
     }
@@ -2869,8 +3009,7 @@ defmodule EcritsWeb.Local.WorkspaceLive do
   defp mutation_reply(mutation) when is_map(mutation) do
     %{
       event_id: mutation["event_id"],
-      lamport: mutation["lamport"],
-      revision: mutation["revision"]
+      lamport: mutation["lamport"]
     }
   end
 
@@ -2925,7 +3064,6 @@ defmodule EcritsWeb.Local.WorkspaceLive do
       |> clear_local_hwp_pages()
       |> assign(:local_hwp_stream_renderer, :markdown)
       |> assign(:local_hwp_stream_document_id, document.id)
-      |> assign(:local_hwp_stream_revision, document.revision)
       |> assign(:local_hwp_stream_loading?, false)
 
     source =
@@ -2950,7 +3088,6 @@ defmodule EcritsWeb.Local.WorkspaceLive do
       |> clear_local_hwp_pages()
       |> assign(:local_hwp_stream_renderer, :rhwp_wasm)
       |> assign(:local_hwp_stream_document_id, document.id)
-      |> assign(:local_hwp_stream_revision, document.revision)
       |> assign(:local_hwp_stream_loading?, false)
 
     if connected?(socket) do
@@ -2959,8 +3096,7 @@ defmodule EcritsWeb.Local.WorkspaceLive do
 
       push_event(socket, "hwp_wasm_load", %{
         url: url,
-        document_id: document.id,
-        revision: document.revision
+        document_id: document.id
       })
     else
       socket
@@ -2987,7 +3123,6 @@ defmodule EcritsWeb.Local.WorkspaceLive do
       |> clear_local_hwp_pages()
       |> assign(:local_hwp_stream_renderer, :office_wasm)
       |> assign(:local_hwp_stream_document_id, document.id)
-      |> assign(:local_hwp_stream_revision, document.revision)
       |> assign(:local_hwp_stream_loading?, false)
 
     if connected?(socket) do
@@ -2995,8 +3130,7 @@ defmodule EcritsWeb.Local.WorkspaceLive do
 
       push_event(socket, "office_wasm_load", %{
         url: url,
-        document_id: document.id,
-        revision: document.revision
+        document_id: document.id
       })
     else
       socket
@@ -3015,7 +3149,6 @@ defmodule EcritsWeb.Local.WorkspaceLive do
     |> assign(:local_hwp_page_count, 0)
     |> assign(:local_hwp_stream_renderer, nil)
     |> assign(:local_hwp_stream_document_id, nil)
-    |> assign(:local_hwp_stream_revision, nil)
     |> assign(:local_hwp_stream_loading?, false)
     |> stream(:local_hwp_pages, [], reset: true)
   end
@@ -3069,11 +3202,9 @@ defmodule EcritsWeb.Local.WorkspaceLive do
       status: :committed,
       request_id: request_id,
       document_id: document_id,
-      revision: response.revision,
       snapshot: %{
         path: response.snapshot["path"],
-        format: response.format,
-        revision: response.revision
+        format: response.format
       }
     })
   end
@@ -3104,18 +3235,17 @@ defmodule EcritsWeb.Local.WorkspaceLive do
   end
 
   defp local_save_state(document, snapshot, status) do
-    revision = document.revision || 0
     size = document.byte_size || 0
 
     case {status, snapshot} do
-      {:saved, %{"revision" => saved_revision}} ->
-        "Saved revision #{saved_revision} - #{format_byte_size(size)} - #{document.format}"
+      {:saved, %{} = _snapshot} ->
+        "Saved - #{format_byte_size(size)} - #{document.format}"
 
-      {:checkpointed, %{"revision" => checkpoint_revision}} ->
-        "Checkpointed revision #{checkpoint_revision} - canonical file unchanged - #{document.format}"
+      {:checkpointed, %{} = _snapshot} ->
+        "Checkpointed - canonical file unchanged - #{document.format}"
 
       _ ->
-        "Loaded revision #{revision} - #{format_byte_size(size)} - #{document.format}"
+        "Loaded - #{format_byte_size(size)} - #{document.format}"
     end
   end
 
@@ -3623,37 +3753,22 @@ defmodule EcritsWeb.Local.WorkspaceLive do
     end
   end
 
-  # Re-sync the chat to the durable foreground agent. The path-keyed Session owns
-  # the agent, so "refresh chat" just clears the pane locally and repaints from
-  # the (now possibly empty) live transcript — it does NOT tear down the agent (no
-  # provider-thread loss).
+  # Reset the durable foreground agent while preserving the workspace binding.
+  # Browser reloads still re-attach to the same agent in `attach_workspace_session/1`;
+  # this explicit button is different: it kills the path-keyed agent and starts a
+  # fresh empty conversation with the current provider/model/access settings.
   defp restart_local_agent_session(socket) do
     _ = maybe_cancel_active_local_agent(socket)
 
-    socket =
-      socket
-      |> assign(:local_agent_turn_id, nil)
-      |> assign(:local_agent_text, "")
-      |> assign(:local_agent_text_segment, 0)
-      |> assign(:local_agent_reasoning_text, "")
-      |> assign(:local_agent_title_user_edited?, false)
-      |> assign_local_agent_title(default_local_agent_title())
-      |> assign(:local_agent_form, local_agent_form())
-      |> stream(:local_agent_items, [], reset: true)
+    case safe_restart_foreground(
+           socket.assigns.workspace_path,
+           local_agent_attach_settings(socket)
+         ) do
+      {:ok, %{agent_id: agent_id} = ws} when is_binary(agent_id) ->
+        bind_fresh_local_agent_session(socket, ws, agent_id)
 
-    case ws(socket) do
-      %{agent_id: agent_id} = ws when is_binary(agent_id) ->
-        snapshot = WorkspaceSession.snapshot(ws)
-
-        socket
-        |> assign(:local_agent_error, nil)
-        |> assign(:local_agent_status, snapshot.status)
-        |> assign(:local_agent_pending, Map.get(snapshot, :pending, 0))
-        |> maybe_restore_agent_title(snapshot.title)
-        |> replay_local_agent_transcript(snapshot.transcript)
-
-      _ ->
-        socket
+      {:error, reason} ->
+        assign(socket, :local_agent_error, local_agent_error(reason))
     end
   end
 
@@ -3772,7 +3887,7 @@ defmodule EcritsWeb.Local.WorkspaceLive do
     |> update(:local_agent_active_tools, &Map.put(&1 || %{}, tool_call_id, name))
     |> stream_insert(
       :local_agent_items,
-      agent_tool_item(tool_call_id, name, :running, agent_tool_payload(arguments))
+      agent_tool_item(tool_call_id, name, :running, agent_tool_payload(name, arguments))
     )
   end
 
@@ -3786,7 +3901,7 @@ defmodule EcritsWeb.Local.WorkspaceLive do
     |> update(:local_agent_active_tools, &Map.delete(&1 || %{}, tool_call_id))
     |> stream_insert(
       :local_agent_items,
-      agent_tool_item(tool_call_id, name, :completed, agent_tool_payload(result))
+      agent_tool_item(tool_call_id, name, :completed, agent_tool_payload(name, result))
     )
   end
 
@@ -3810,7 +3925,7 @@ defmodule EcritsWeb.Local.WorkspaceLive do
     stream_insert(
       socket |> maybe_remove_empty_agent_placeholder(),
       :local_agent_items,
-      agent_tool_item(tool_call_id, name, :approval_required, agent_tool_payload(arguments))
+      agent_tool_item(tool_call_id, name, :approval_required, agent_tool_payload(name, arguments))
     )
   end
 
@@ -3884,19 +3999,121 @@ defmodule EcritsWeb.Local.WorkspaceLive do
   defp maybe_restore_agent_title(socket, _title), do: socket
 
   # Repaint the chat pane from the durable agent's display-only transcript (used
-  # after a browser refresh re-binds the foreground agent). Each completed turn
-  # was stored as %{turn_id, user, agent}; re-stream one user + one agent bubble
-  # per turn using the SAME dom-id scheme live turns use (so a later live turn with
-  # the same id reconciles rather than duplicating).
+  # after a browser refresh re-binds the foreground agent). New transcript entries
+  # store ordered display rows (`items`) so tool-call history survives refresh.
+  # Older in-memory sessions only have %{turn_id, user, agent}; keep that fallback.
   defp replay_local_agent_transcript(socket, turns) when is_list(turns) do
     Enum.reduce(turns, socket, fn turn, acc ->
-      acc
-      |> maybe_stream_transcript_user(turn)
-      |> maybe_stream_transcript_agent(turn)
+      case transcript_items(turn) do
+        items when is_list(items) and items != [] ->
+          items
+          |> Enum.with_index()
+          |> Enum.reduce(acc, fn {item, index}, item_acc ->
+            stream_transcript_item(item_acc, turn, item, index)
+          end)
+
+        _empty ->
+          acc
+          |> maybe_stream_transcript_user(turn)
+          |> maybe_stream_transcript_agent(turn)
+      end
     end)
   end
 
   defp replay_local_agent_transcript(socket, _turns), do: socket
+
+  defp transcript_items(%{items: items}) when is_list(items), do: items
+  defp transcript_items(%{"items" => items}) when is_list(items), do: items
+  defp transcript_items(_turn), do: []
+
+  defp stream_transcript_item(socket, turn, item, index) do
+    turn_id = turn_id(turn)
+
+    case item_field(item, :role) |> to_string() do
+      "user" ->
+        case item_field(item, :body) do
+          body when is_binary(body) and body != "" ->
+            stream_insert(socket, :local_agent_items, agent_user_item(turn_id, body))
+
+          _empty ->
+            socket
+        end
+
+      "agent" ->
+        case item_field(item, :body) do
+          body when is_binary(body) and body != "" ->
+            segment = item_field(item, :segment) |> transcript_segment(index)
+
+            stream_insert(
+              socket,
+              :local_agent_items,
+              agent_assistant_item(turn_id, body, :sent, segment)
+            )
+
+          _empty ->
+            socket
+        end
+
+      "tool" ->
+        tool_call_id =
+          item_field(item, :tool_call_id) ||
+            item_field(item, :id) ||
+            "#{turn_id}-#{index}"
+
+        name = item_field(item, :name) || item_field(item, :title) || "tool"
+        body = agent_tool_body(name, item_field(item, :body))
+
+        stream_insert(
+          socket,
+          :local_agent_items,
+          agent_tool_item(
+            tool_call_id,
+            name,
+            transcript_status(item_field(item, :status)),
+            body
+          )
+        )
+
+      _other ->
+        socket
+    end
+  end
+
+  defp turn_id(%{turn_id: turn_id}), do: turn_id
+  defp turn_id(%{"turn_id" => turn_id}), do: turn_id
+
+  defp item_field(map, key) when is_map(map) do
+    Map.get(map, key) || Map.get(map, Atom.to_string(key))
+  end
+
+  defp item_field(_map, _key), do: nil
+
+  defp transcript_segment(segment, _index) when is_integer(segment) and segment >= 0, do: segment
+
+  defp transcript_segment(segment, _index) when is_binary(segment) do
+    case Integer.parse(segment) do
+      {int, ""} when int >= 0 -> int
+      _other -> 0
+    end
+  end
+
+  defp transcript_segment(_segment, index), do: index
+
+  defp transcript_status(status)
+       when status in [:running, :completed, :failed, :approval_required],
+       do: status
+
+  defp transcript_status(status) when is_binary(status) do
+    case status do
+      "running" -> :running
+      "completed" -> :completed
+      "failed" -> :failed
+      "approval_required" -> :approval_required
+      _other -> :completed
+    end
+  end
+
+  defp transcript_status(_status), do: :completed
 
   defp maybe_stream_transcript_user(socket, %{turn_id: turn_id, user: user})
        when is_binary(user) and user != "" do
@@ -4024,13 +4241,12 @@ defmodule EcritsWeb.Local.WorkspaceLive do
     end
   end
 
-  defp agent_tool_payload(payload) when is_binary(payload), do: payload
+  defp agent_tool_payload(name, payload) do
+    Ecrits.Doc.ToolPayloadSanitizer.encode_tool_payload(name, payload)
+  end
 
-  defp agent_tool_payload(payload) do
-    case Jason.encode(payload, pretty: true) do
-      {:ok, json} -> json
-      {:error, _reason} -> inspect(payload, pretty: true)
-    end
+  defp agent_tool_body(name, body) do
+    Ecrits.Doc.ToolPayloadSanitizer.sanitize_tool_body(name, body)
   end
 
   # A turn can end (complete/fail/cancel/die) while a tool_call is still

@@ -14,6 +14,8 @@ defmodule EcritsWeb.Live.Studio.Components.EditorSurface do
   attr :toolbar_id, :string, required: true
   attr :frame_id, :string, required: true
   attr :document, :map, default: nil
+  attr :document_path, :string, default: nil
+  attr :document_loading?, :boolean, default: false
   attr :document_spec, :map, default: nil
   attr :canvas_id, :string, default: nil
   attr :hwp_bytes_url, :string, default: nil
@@ -28,7 +30,7 @@ defmodule EcritsWeb.Live.Studio.Components.EditorSurface do
 
   def local_document(assigns) do
     assigns =
-      assign(assigns, :document_path, assigns.document && assigns.document.relative_path)
+      assign(assigns, :document_path, assigns.document_path || document_path(assigns.document))
 
     ~H"""
     <div
@@ -77,11 +79,12 @@ defmodule EcritsWeb.Live.Studio.Components.EditorSurface do
                 >
                   <span
                     :if={@dirty_document_ids && MapSet.member?(@dirty_document_ids, tab.id)}
-                    data-role="document-dirty-dot"
-                    class="size-1.5 shrink-0 rounded-full bg-primary"
+                    data-role="document-dirty-icon"
+                    class="inline-flex size-4 shrink-0 items-center justify-center text-amber-500"
                     title="Unsaved changes"
                     aria-label="Unsaved changes"
                   >
+                    <.icon name="hero-pencil" class="size-3" />
                   </span>
                   <button
                     type="button"
@@ -129,6 +132,21 @@ defmodule EcritsWeb.Live.Studio.Components.EditorSurface do
                 </button>
 
                 <button
+                  id="local-document-element-picker"
+                  type="button"
+                  phx-click={JS.dispatch("ecrits:document-element-picker.toggle", to: "body")}
+                  class="hidden h-8 w-8 shrink-0 items-center justify-center rounded-md text-base-content/60 transition-colors hover:bg-base-200 hover:text-base-content data-[active=true]:bg-base-200 data-[active=true]:text-base-content lg:inline-flex"
+                  aria-label="Pick document element"
+                  aria-controls="local-editor-shell local-agent-input"
+                  aria-pressed="false"
+                  data-active="false"
+                  data-role="document-element-picker-toggle"
+                  title="Pick document element"
+                >
+                  <.icon name="hero-cursor-arrow-rays" class="size-4" />
+                </button>
+
+                <button
                   id="local-rhwp-fullscreen"
                   type="button"
                   phx-click={toggle_local_fullscreen()}
@@ -162,14 +180,12 @@ defmodule EcritsWeb.Live.Studio.Components.EditorSurface do
                   document_id={@document.id}
                   bytes_url={@hwp_bytes_url}
                   local_document_format={@document.format}
-                  local_document_revision={@document.revision}
                 />
                 <LocalMarkdownEditor.render
                   :if={markdown_format?(@document.format)}
                   id={@canvas_id}
                   document_id={@document.id}
                   local_document_format={@document.format}
-                  local_document_revision={@document.revision}
                   source={@markdown_source}
                   preview_html={@markdown_preview_html}
                 />
@@ -180,14 +196,26 @@ defmodule EcritsWeb.Live.Studio.Components.EditorSurface do
                   }
                   id={@canvas_id}
                   document_id={@document.id}
+                  document_path={@document_path}
                   local_document_format={@document.format}
-                  local_document_revision={@document.revision}
                   bytes_url={@hwp_bytes_url}
                 />
               </div>
 
               <div
-                :if={!@document}
+                :if={!@document && @document_loading?}
+                id="studio-document-loading-body"
+                data-role="document-loading"
+                class="flex h-full min-h-0 w-full items-start justify-center gap-2 px-5 py-6 text-sm text-base-content/60"
+              >
+                <.icon name="hero-arrow-path" class="mt-0.5 size-4 animate-spin" />
+                <span class="truncate">
+                  Opening {Path.basename(@document_path || "document")}
+                </span>
+              </div>
+
+              <div
+                :if={!@document && !@document_loading?}
                 id="studio-document-empty-body"
                 class="flex h-full min-h-0 w-full items-start justify-center px-5 py-6 text-sm text-base-content/60"
               >
@@ -203,6 +231,8 @@ defmodule EcritsWeb.Live.Studio.Components.EditorSurface do
 
   defp ehwp_format?(format), do: format in ~w(hwp hwpx)
   defp markdown_format?(format), do: format in ~w(md markdown)
+  defp document_path(%{relative_path: relative_path}), do: relative_path
+  defp document_path(_document), do: nil
 
   defp toggle_local_fullscreen(js \\ %JS{}) do
     js

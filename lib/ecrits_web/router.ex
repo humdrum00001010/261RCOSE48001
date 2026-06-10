@@ -63,7 +63,7 @@ defmodule EcritsWeb.Router do
     get "/studio/:document_id", RetiredController, :gone
 
     put "/documents/direct-upload", RetiredController, :gone
-    get "/documents/:document_id/rhwp-snapshots/:revision", RetiredController, :gone
+    get "/documents/:document_id/rhwp-snapshots/:snapshot_id", RetiredController, :gone
     get "/documents/:document_id/review", RetiredController, :gone
     get "/documents/:document_id", RetiredController, :gone
 

@@ -139,7 +139,7 @@ defmodule Ecrits.MixProject do
       # (large, local-only) office artifacts still builds.
       # Sourced from the `libreofficex` dep (mix deps.get + git-lfs), NOT assets/vendor.
       "assets.office_wasm": [
-        ~s(cmd sh -c "mkdir -p priv/static/assets/office && for f in soffice.js soffice.wasm soffice.data soffice.data.js.metadata; do [ -f deps/libreofficex/priv/wasm/$f ] && cp deps/libreofficex/priv/wasm/$f priv/static/assets/office/$f || true; done")
+        ~s(cmd sh -c "mkdir -p priv/static/assets/office && for f in soffice.js soffice.wasm soffice.data soffice.data.js.metadata; do src=deps/libreofficex/priv/wasm/$f; dst=priv/static/assets/office/$f; rm -f $dst $dst.br; if [ -f $src ]; then cp $src $dst; command -v brotli >/dev/null 2>&1 && brotli -f -q 11 $dst || true; fi; done")
       ],
       "assets.build": [
         "compile",

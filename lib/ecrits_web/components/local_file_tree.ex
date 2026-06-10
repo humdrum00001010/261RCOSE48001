@@ -119,7 +119,14 @@ defmodule EcritsWeb.Components.LocalFileTree do
             !@selected? && "text-base-content/85"
           ]}
         >
-          <.icon name={file_icon(@extension)} class="size-4 shrink-0 text-base-content/50" />
+          <span
+            id={"#{@node_dom_id}-icon"}
+            phx-update="ignore"
+            class="inline-flex size-4 shrink-0 items-center justify-center text-base-content/50"
+            aria-hidden="true"
+          >
+            <.icon name={file_icon(@extension)} class="size-4 shrink-0" />
+          </span>
           <span class="truncate">{@node_name}</span>
         </span>
       </div>
@@ -143,10 +150,16 @@ defmodule EcritsWeb.Components.LocalFileTree do
   defp node_path(node), do: Map.fetch!(node, :path)
   defp metadata?(node), do: Map.get(node, :metadata?, node_name(node) == ".ecrits")
 
-  defp visible_nodes(nodes), do: Enum.filter(nodes, &visible_node?/1)
+  defp visible_nodes(nodes) do
+    nodes
+    |> Enum.filter(&visible_node?/1)
+    |> Enum.uniq_by(&node_path/1)
+  end
 
   defp visible_node?(node),
-    do: directory?(node) or extension(node) in (@open_extensions ++ ["md"])
+    do:
+      not metadata?(node) and
+        (directory?(node) or extension(node) in (@open_extensions ++ ["md"]))
 
   defp selected?(node, selected_path),
     do: not directory?(node) and node_path(node) == selected_path
@@ -196,12 +209,30 @@ defmodule EcritsWeb.Components.LocalFileTree do
   defp node_dom_id(node), do: "local-file-node-#{dom_token(node_path(node))}"
 
   defp dom_token(path) do
+    path = path |> to_string() |> String.normalize(:nfc)
+    token = path |> ascii_dom_token() |> maybe_hash_token(path)
+
+    if token == "", do: "root", else: token
+  end
+
+  defp ascii_dom_token(path) do
     path
     |> String.replace(~r/[^a-zA-Z0-9]+/, "-")
     |> String.trim("-")
-    |> case do
-      "" -> "root"
-      token -> token
+  end
+
+  defp maybe_hash_token(token, path) do
+    if String.match?(path, ~r/^[\x00-\x7F]*$/) do
+      token
+    else
+      base = if token == "", do: "node", else: token
+      "#{base}-#{short_hash(path)}"
     end
+  end
+
+  defp short_hash(path) do
+    :crypto.hash(:sha256, path)
+    |> Base.url_encode64(padding: false)
+    |> binary_part(0, 10)
   end
 end

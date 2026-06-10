@@ -12,13 +12,13 @@ defmodule EcritsWeb.Plugs.CrossOriginIsolationPlug do
   requires the document response to carry:
 
       Cross-Origin-Opener-Policy:   same-origin
-      Cross-Origin-Embedder-Policy: credentialless
+      Cross-Origin-Embedder-Policy: require-corp
 
   We set these ONLY on the local workspace page and the `/assets/office/*` WASM
   artifacts (not the whole app) to keep the blast radius small — COOP/COEP can
-  block cross-origin embeds elsewhere. `credentialless` (vs `require-corp`) lets
-  cross-origin no-cors subresources (e.g. provider favicons in the chat rail)
-  still load without the remote opting in via CORP, while keeping isolation.
+  block cross-origin embeds elsewhere. `require-corp` has broader browser
+  support than `credentialless`, and the local workspace uses same-origin assets
+  for the chrome needed by the office editor.
 
   We also stamp `Cross-Origin-Resource-Policy: same-origin` so the same-origin
   WASM/data files remain loadable from the isolated page.
@@ -63,7 +63,7 @@ defmodule EcritsWeb.Plugs.CrossOriginIsolationPlug do
     if isolate?(conn) do
       conn
       |> put_resp_header("cross-origin-opener-policy", "same-origin")
-      |> put_resp_header("cross-origin-embedder-policy", "credentialless")
+      |> put_resp_header("cross-origin-embedder-policy", "require-corp")
       |> put_resp_header("cross-origin-resource-policy", "same-origin")
     else
       conn
@@ -85,7 +85,9 @@ defmodule EcritsWeb.Plugs.CrossOriginIsolationPlug do
       true ->
         case brotli_file(path) do
           {:ok, br_path, content_type} when conn.method == "GET" ->
-            if accepts_brotli?(conn), do: send_brotli(conn, br_path, content_type), else: revalidate_office(conn)
+            if accepts_brotli?(conn),
+              do: send_brotli(conn, br_path, content_type),
+              else: revalidate_office(conn)
 
           # HEAD with a .br available: advertise br + content-type but no body.
           {:ok, _br_path, content_type} ->

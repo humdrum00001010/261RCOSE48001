@@ -57,7 +57,7 @@ defmodule EcritsWeb.Local.MountLive do
       with :ok <- validate_directory(path),
            {:ok, workspace} <- WorkspaceAdapter.mount(path) do
         {:noreply,
-         push_navigate(socket,
+         redirect(socket,
            to: ~p"/workspace?#{[path: Map.get(workspace, :root_path, path)]}"
          )}
       else

@@ -30,14 +30,50 @@
 // at runtime (`resolveApi`) rather than hard-coding one calling convention, and
 // log the resolved surface so a missing/renamed export is a clear console error
 // (not a silent blank canvas).
+import { appendPickedElementToComposer, bindElementPickerTarget } from "./document_element_picker.js"
 
 const OFFICE_BASE = "/assets/office/"
-const GLUE_URL = OFFICE_BASE + "soffice.js"
+
+function withAssetVersion(url, version) {
+  if (!version) return url
+  return url + (url.includes("?") ? "&" : "?") + "v=" + encodeURIComponent(version)
+}
+
+function officeAssetUrl(path, version) {
+  return withAssetVersion(OFFICE_BASE + path, version)
+}
 
 // Module-level singleton: the Emscripten runtime is heavy (127MB wasm + 82MB
 // data) and pthread-based; we instantiate it ONCE per page load and share it
 // across hook instances.
 let runtimePromise = null
+let runtimeAssetVersion = null
+let runtimeModule = null
+let activeOfficeDocument = null
+
+function runtimeReadyFor(assetVersion = "") {
+  return !!runtimePromise && !!runtimeModule && runtimeAssetVersion === assetVersion
+}
+
+function cachedDocumentMatches(url, assetVersion = "", format = "") {
+  return !!activeOfficeDocument &&
+    activeOfficeDocument.url === url &&
+    activeOfficeDocument.assetVersion === assetVersion &&
+    activeOfficeDocument.format === format &&
+    Array.isArray(activeOfficeDocument.parts) &&
+    activeOfficeDocument.parts.length > 0
+}
+
+function closeCachedOfficeDocument() {
+  if (!activeOfficeDocument) return
+  const cached = activeOfficeDocument
+  activeOfficeDocument = null
+  if (cached.handle && typeof cached.handle.delete === "function") {
+    try { cached.handle.delete() } catch (_) {}
+  } else if (cached.api && typeof cached.api.closeDocument === "function") {
+    try { cached.api.closeDocument() } catch (_) {}
+  }
+}
 
 // Ring buffer of the last stderr/stdout lines. A WebAssembly `unreachable`
 // trap (e.g. `O3TL_UNREACHABLE`/`std::unreachable` in the headless VCL event
@@ -86,24 +122,29 @@ function tlog(...args) {
   console.log("[office-wasm] t+" + dt + "ms:", ...args)
 }
 
-function ensureRuntime() {
-  if (runtimePromise) return runtimePromise
+function ensureRuntime(assetVersion = "") {
+  if (runtimePromise) {
+    if (runtimeAssetVersion !== assetVersion) {
+      return Promise.reject(new Error("office WASM asset version changed during page session; reload required"))
+    }
+    return runtimePromise
+  }
 
+  runtimeAssetVersion = assetVersion
   bootT0 = performance.now()
-  tlog("ensureRuntime() called; injecting glue", GLUE_URL)
+  const glueUrl = officeAssetUrl("soffice.js", assetVersion)
+  tlog("ensureRuntime() called; injecting glue", glueUrl)
 
   runtimePromise = new Promise((resolve, reject) => {
-    // NOTE: we do NOT pre-empt with a hardcoded "needs cross-origin isolation"
-    // message. The Emscripten PThreads glue will surface the REAL failure itself
-    // (e.g. a SharedArrayBuffer/`shared:true` memory error, a glue 404 via
-    // script.onerror, or onAbort) — report that actual error, not an assumption.
-    // A diagnostic only, non-fatal:
     if (typeof SharedArrayBuffer === "undefined" || !self.crossOriginIsolated) {
-      console.warn(
-        "[office-wasm] crossOriginIsolated=" + String(self.crossOriginIsolated) +
-          ", SharedArrayBuffer=" + typeof SharedArrayBuffer +
-          " — attempting load anyway; the glue will surface the real error if it can't run."
+      reject(
+        new Error(
+          "office WASM requires a cross-origin isolated workspace tab " +
+            "(crossOriginIsolated=" + String(self.crossOriginIsolated) +
+            ", SharedArrayBuffer=" + typeof SharedArrayBuffer + ")."
+        )
       )
+      return
     }
 
     // THE root office-load failure (captured live, top-level COI tab): the UNO
@@ -120,7 +161,9 @@ function ensureRuntime() {
     if (typeof self.importScripts !== "function") {
       self.importScripts = function (...urls) {
         for (const u of urls) {
-          const url = /^(https?:|blob:|\/)/.test(u) ? u : OFFICE_BASE + u
+          const url = /^(https?:|blob:)/.test(u)
+            ? u
+            : withAssetVersion(u.startsWith("/") ? u : OFFICE_BASE + u, assetVersion)
           tlog("importScripts(polyfill) GET", url)
           const xhr = new XMLHttpRequest()
           xhr.open("GET", url, false)
@@ -137,9 +180,9 @@ function ensureRuntime() {
     // Emscripten reads this PRE-EXISTING global for config. The auto-running glue
     // (`var Module = typeof Module != "undefined" ? Module : {}`) picks it up.
     const Module = {
-      locateFile: (path) => OFFICE_BASE + path,
+      locateFile: (path) => officeAssetUrl(path, assetVersion),
       // pthread workers re-load the SAME script; point them at the static glue.
-      mainScriptUrlOrBlob: GLUE_URL,
+      mainScriptUrlOrBlob: glueUrl,
       // CRITICAL — RUN the auto `main()` (noInitialRun:false).
       //
       // This is the headless LibreOffice-Technology->WASM *LOK editing* build
@@ -251,6 +294,7 @@ function ensureRuntime() {
     const finish = () => {
       if (settled) return
       settled = true
+      runtimeModule = Module
       window.__officeWasmModule = Module
       tlog("bootstrap ready; document API available (loadFromBytes callable)")
       resolve(Module)
@@ -358,12 +402,12 @@ function ensureRuntime() {
     }, 120000)
 
     const script = document.createElement("script")
-    script.src = GLUE_URL
+    script.src = glueUrl
     script.async = true
     script.onload = () => tlog("glue script loaded (soffice.js)")
     script.onerror = () => {
-      tlog("glue script FAILED to load", GLUE_URL)
-      fail(new Error("failed to load " + GLUE_URL))
+      tlog("glue script FAILED to load", glueUrl)
+      fail(new Error("failed to load " + glueUrl))
     }
     document.head.appendChild(script)
   })
@@ -400,12 +444,16 @@ function resolveApi(Module) {
       setPart: direct("setPart"),
       getPartPageRectangles: direct("getPartPageRectangles"),
       hitTest: direct("hitTest"),
+      postMouseEvent: direct("postMouseEvent"),
+      doubleClick: direct("doubleClick"),
       setTextSelection: direct("setTextSelection"),
       getTextSelection: direct("getTextSelection"),
       postKeyEvent: direct("postKeyEvent"),
       postUnoCommand: direct("postUnoCommand"),
       postWindowExtTextInputEvent: direct("postWindowExtTextInputEvent"),
       getCursor: direct("getCursor"),
+      isTextEditActive: direct("isTextEditActive"),
+      getInteractionState: direct("getInteractionState"),
       closeDocument: direct("closeDocument"),
       // O5b agent-edit verbs (LokEditBindings embind free-functions): the IR
       // read, the structured edit, and the property set the office `doc.*`
@@ -444,11 +492,10 @@ const WasmOfficeEditor = {
   mounted() {
     this.api = null
     this.handle = null // document handle (embind-class shape) or null
+    this.loaded = false
     this.parts = [] // [{ width, height }] page/slide geometry, page-local px
     // Per-page document-twip rectangles {x,y,w,h} from getPartPageRectangles(),
-    // index 0 == page 1. Used to map page-local px <-> absolute document twips so
-    // setTextSelection (which takes document twips) can be driven from a mouse
-    // drag whose coords are page-local px.
+    // index 0 == page 1. Writer uses these for per-page geometry and painting.
     this.pageRects = []
     // LOK document type (0=Writer/TEXT, 1=Calc, 2=Impress, 3=Draw), read from
     // getPartSizesJson during load. Drives the per-type page geometry + tile
@@ -456,11 +503,14 @@ const WasmOfficeEditor = {
     this.docType = -1
     this.rendered = new Map() // pageIndex -> true
     this.visible = new Set()
+    this.renderQueue = new Map()
+    this.renderQueueTimer = null
     this.scale = window.devicePixelRatio || 1
     // Deferred caret-settle bookkeeping (fixes the one-click-stale embind
     // hitTest — see placeCaret/settleCaretAfterHit).
     this._caretSettle = null
     this._caretSettleSeq = 0
+    this._lastDoubleActivation = null
 
     // ─── Interactive-edit state (mirrors wasm_hwp_editor.js) ────────────────
     // LOK owns the real text cursor + selection internally; we only TRACK the
@@ -469,15 +519,20 @@ const WasmOfficeEditor = {
     this.caret = null
     this.caretBlinkOn = true
     // Live drag-select gesture (set only while the primary button is held).
-    //   dragSelect = { page, startX, startY, moved }  (px, page-local)
+    //   dragSelect = { page, startX, startY, moved, selectionStarted }  (px, page-local)
     this.dragSelect = null
     // True while an active LOK selection exists (so typing/keys know to let LOK
     // replace it and we know to repaint).
     this.hasActiveSelection = false
+    this.nativeTextEditReady = false
+    this.nativeInteractionState = null
+    this.elementPickerEnabled = false
     // True while the OS IME is composing (Korean). While composing, keydown and
     // the plain input path must NOT also post keys — the composition* path owns
     // the keystrokes (else Hangul double-inserts).
     this.composing = false
+    this.skipNextCompositionInput = null
+    this._compositionCommittedText = ""
 
     this.pageStack = this.el.querySelector("[data-role='office-wasm-pages']")
     this.statusEl = this.el.querySelector("[data-role='office-wasm-status']")
@@ -485,11 +540,13 @@ const WasmOfficeEditor = {
 
     this.documentId = this.el.dataset.documentId
     this.format = this.el.dataset.localDocumentFormat || "docx"
+    this.officeAssetVersion = this.el.dataset.officeAssetVersion || ""
 
-    this.setStatus("Loading office engine… (large WASM, first load is slow)")
+    const bytesUrl = this.el.dataset.bytesUrl
+    this.setInitialStatus(bytesUrl)
 
     // Pre-warm + load on mount. The host element carries the bytes URL; the
-    // server also pushes `office_wasm_load` (re-open / revision change).
+    // server also pushes `office_wasm_load` on re-open.
     this.handleEvent("office_wasm_load", (payload) => this.loadDocument(payload))
 
     // Agent edit/read/find/set/save routed from the server because THIS office
@@ -502,8 +559,8 @@ const WasmOfficeEditor = {
     // engine-agnostic, so the only office-specific part is THIS handler mapping
     // verbs onto getElements/uno_apply/uno_set/saveToBytes.
     this.handleEvent("doc.apply_edit", (payload) => this.handleAgentOp(payload))
+    this.handleEvent("local_document.save.request", (payload) => this.saveLocalDocument(payload))
 
-    const bytesUrl = this.el.dataset.bytesUrl
     if (bytesUrl) this.loadDocument({ url: bytesUrl })
 
     this.onResize = () => this.renderVisiblePages()
@@ -516,9 +573,10 @@ const WasmOfficeEditor = {
           const idx = Number(e.target.dataset.pageIndex)
           if (e.isIntersecting) {
             this.visible.add(idx)
-            this.renderPage(idx)
+            this.requestRenderPage(idx)
           } else {
             this.visible.delete(idx)
+            this.releasePageCanvas(idx)
           }
         }
       },
@@ -532,12 +590,15 @@ const WasmOfficeEditor = {
     this.onMouseDown = event => this.onCanvasMouseDown(event)
     this.onMouseMove = event => this.onCanvasMouseMove(event)
     this.onMouseUp = event => this.onCanvasMouseUp(event)
+    this.onDoubleClick = event => this.onCanvasDoubleClick(event)
     this.el.addEventListener("mousedown", this.onMouseDown)
+    this.el.addEventListener("dblclick", this.onDoubleClick)
     document.addEventListener("mousemove", this.onMouseMove)
     document.addEventListener("mouseup", this.onMouseUp)
 
     // Keyboard + Korean IME — bound to the hidden IME proxy (the OS-focused
-    // editable element). Plain keys -> postKeyEvent; composition -> ExtTextInput.
+    // editable element). Plain keys and composition both use the real LOK key
+    // path; composition replaces provisional text on each update.
     this.bindEditing()
 
     // Blinking caret (overlay redraw only — never re-rasterizes the page tile).
@@ -547,42 +608,46 @@ const WasmOfficeEditor = {
     }, 530)
 
     window.__officeWasmEditor = this
+    this.unbindElementPicker = bindElementPickerTarget(this)
   },
 
   destroyed() {
     if (this.io) this.io.disconnect()
     if (this.blink) clearInterval(this.blink)
     if (this._caretSettle) { clearTimeout(this._caretSettle); this._caretSettle = null }
+    if (this.renderQueueTimer) { clearTimeout(this.renderQueueTimer); this.renderQueueTimer = null }
+    if (this.renderQueue) this.renderQueue.clear()
     window.removeEventListener("resize", this.onResize)
     this.el.removeEventListener("mousedown", this.onMouseDown)
+    this.el.removeEventListener("dblclick", this.onDoubleClick)
     document.removeEventListener("mousemove", this.onMouseMove)
     document.removeEventListener("mouseup", this.onMouseUp)
+    if (this.unbindElementPicker) this.unbindElementPicker()
     this.unbindEditing()
-    this.freeHandle()
+    // Keep the loaded Office document attached to the module-level runtime cache.
+    // LiveView remounts this hook while switching/reopening tabs; closing here
+    // would force the next mount to fetch and import the same document again.
     if (window.__officeWasmEditor === this) window.__officeWasmEditor = null
+  },
+
+  setInitialStatus(bytesUrl) {
+    if (!bytesUrl) {
+      this.setStatus("")
+    } else if (cachedDocumentMatches(bytesUrl, this.officeAssetVersion, this.format)) {
+      this.setStatus("")
+    } else if (runtimeReadyFor(this.officeAssetVersion)) {
+      this.setStatus("Opening document…")
+    } else {
+      this.setStatus("Loading office engine… (large WASM, first load is slow)")
+    }
   },
 
   setStatus(text) {
     if (this.statusEl) this.statusEl.textContent = text || ""
   },
 
-  freeHandle() {
-    // embind-class shape: the handle is a real C++ object -> delete().
-    if (this.handle && typeof this.handle.delete === "function") {
-      try {
-        this.handle.delete()
-      } catch (_) {}
-    } else if (this.handle && this.api && this.api.closeDocument) {
-      // module-functions shape: the single process-global doc is closed via the
-      // closeDocument() export (LokEditBindings.cxx) before loading the next.
-      try {
-        this.api.closeDocument()
-      } catch (_) {}
-    }
-    this.handle = null
-  },
-
-  async loadDocument({ url }) {
+  async loadDocument({ url, asset_version }) {
+    this.officeAssetVersion = asset_version || this.el.dataset.officeAssetVersion || this.officeAssetVersion || ""
     if (this.loadedUrl === url && this.parts.length) return
     // Serialize loads: the hook fires loadDocument both on mount AND on the
     // server's `office_wasm_load` push, which can race two concurrent
@@ -595,20 +660,24 @@ const WasmOfficeEditor = {
       if (this.loadedUrl === url && this.parts.length) return
     }
     this._loadingUrl = url
+    this.loaded = false
     this._loadInFlight = (async () => {
     try {
-      const Module = await ensureRuntime()
+      const Module = await ensureRuntime(this.officeAssetVersion)
       if (!this.api) {
         this.api = resolveApi(Module)
         console.log("[office-wasm] API shape:", this.api.shape, this.api)
       }
+      if (this.attachCachedDocument(url)) return
+
       this.setStatus("Fetching document…")
       const response = await fetch(url, { credentials: "same-origin" })
       if (!response.ok) throw new Error(`document bytes HTTP ${response.status}`)
       const bytes = new Uint8Array(await response.arrayBuffer())
 
       this.setStatus("Opening document…")
-      this.freeHandle()
+      closeCachedOfficeDocument()
+      this.handle = null
       await this.openWithBytes(Module, bytes)
       this.loadedUrl = url
 
@@ -619,9 +688,13 @@ const WasmOfficeEditor = {
       this.parts = this.queryParts()
       this.caret = null
       this.hasActiveSelection = false
+      this.nativeTextEditReady = false
+      this.nativeInteractionState = null
       this.composing = false
       console.log("[office-wasm] parts/geometry:", this.parts, "pageRects:", this.pageRects)
       this.setStatus("")
+      this.loaded = true
+      this.rememberActiveDocument(url)
       // A clean load clears any prior one-shot reload guard for this document.
       try { sessionStorage.removeItem("office-wasm-retry:" + url) } catch (_) {}
       this.buildPageStack()
@@ -641,6 +714,25 @@ const WasmOfficeEditor = {
       // if the load still fails after a clean reload, surface the error so the user
       // isn't stuck in a reload cycle.
       const msg = (error && error.message) || String(error)
+      this.loaded = false
+      if (/cross-origin isolated/.test(msg)) {
+        const retryKey = "office-wasm-coi-retry:" + location.pathname + location.search
+        let alreadyRetried = false
+        try { alreadyRetried = !!sessionStorage.getItem(retryKey) } catch (_) {}
+
+        if (window.top === window && !alreadyRetried) {
+          try { sessionStorage.setItem(retryKey, "1") } catch (_) {}
+          this.setStatus("Reloading workspace to enable Office engine…")
+          setTimeout(() => location.reload(), 100)
+          return
+        }
+
+        this.setStatus(
+          "Office WASM cannot load in this browser context: " + msg +
+            " Open the workspace in a top-level tab and reload."
+        )
+        return
+      }
       const poisoned = /previously failed|importScripts|postMessage|abort\(|unreachable/i.test(msg + "\n" + dump)
       const retryKey = "office-wasm-retry:" + url
       let alreadyRetried = false
@@ -663,6 +755,39 @@ const WasmOfficeEditor = {
     } finally {
       this._loadInFlight = null
       this._loadingUrl = null
+    }
+  },
+
+  attachCachedDocument(url) {
+    if (!cachedDocumentMatches(url, this.officeAssetVersion, this.format)) return false
+    this.api = activeOfficeDocument.api || this.api
+    this.handle = activeOfficeDocument.handle || null
+    this.loadedUrl = activeOfficeDocument.url
+    this.docType = activeOfficeDocument.docType
+    this.pageRects = activeOfficeDocument.pageRects.map((rect) => ({ ...rect }))
+    this.parts = activeOfficeDocument.parts.map((part) => ({ ...part }))
+    this.caret = null
+    this.hasActiveSelection = false
+    this.nativeTextEditReady = false
+    this.nativeInteractionState = null
+    this.composing = false
+    this.loaded = true
+    this.setStatus("")
+    this.buildPageStack()
+    this.renderVisiblePages()
+    return true
+  },
+
+  rememberActiveDocument(url) {
+    activeOfficeDocument = {
+      url,
+      assetVersion: this.officeAssetVersion,
+      format: this.format,
+      api: this.api,
+      handle: this.handle,
+      docType: this.docType,
+      pageRects: this.pageRects.map((rect) => ({ ...rect })),
+      parts: this.parts.map((part) => ({ ...part }))
     }
   },
 
@@ -879,13 +1004,13 @@ const WasmOfficeEditor = {
 
       const canvas = document.createElement("canvas")
       canvas.dataset.role = "office-wasm-canvas"
-      canvas.width = Math.round(w * this.scale)
-      canvas.height = Math.round(h * this.scale)
-      canvas.style.cssText = "display:block;width:100%;height:100%"
+      canvas.width = 1
+      canvas.height = 1
+      canvas.style.cssText = "display:block;width:100%;height:100%;background:#fff"
       const ctx = canvas.getContext("2d")
       if (ctx) {
         ctx.fillStyle = "#ffffff"
-        ctx.fillRect(0, 0, canvas.width, canvas.height)
+        ctx.fillRect(0, 0, 1, 1)
       }
 
       // Caret/selection overlay (same backing-store size as the render canvas).
@@ -894,8 +1019,8 @@ const WasmOfficeEditor = {
       // (into the page canvas), so the overlay only carries the caret.
       const overlay = document.createElement("canvas")
       overlay.dataset.role = "office-wasm-caret-overlay"
-      overlay.width = canvas.width
-      overlay.height = canvas.height
+      overlay.width = 1
+      overlay.height = 1
       overlay.style.cssText =
         "position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none"
 
@@ -913,9 +1038,56 @@ const WasmOfficeEditor = {
     )
   },
 
-  renderVisiblePages() {
-    for (const idx of this.visible) this.renderPage(idx)
-    if (this.visible.size === 0 && this.parts.length > 0) this.renderPage(0)
+  renderVisiblePages({ force = false } = {}) {
+    for (const idx of this.visible) this.requestRenderPage(idx, { force })
+    if (this.visible.size === 0 && this.parts.length > 0) this.requestRenderPage(0, { force })
+  },
+
+  requestRenderPage(index, { force = false } = {}) {
+    if (!this.api) return
+    if (!force && this.rendered.has(index)) return
+    const queuedForce = this.renderQueue.get(index) || false
+    this.renderQueue.set(index, queuedForce || force)
+    if (this.renderQueueTimer) return
+    this.renderQueueTimer = setTimeout(() => this.drainRenderQueue(), 0)
+  },
+
+  drainRenderQueue() {
+    this.renderQueueTimer = null
+    if (!this.api || !this.renderQueue.size) return
+
+    const first = this.renderQueue.entries().next().value
+    if (!first) return
+    const [index, force] = first
+    this.renderQueue.delete(index)
+    if (force || this.visible.has(index) || (this.visible.size === 0 && index === 0)) {
+      this.renderPage(index, { force })
+    }
+
+    if (this.renderQueue.size) {
+      this.renderQueueTimer = setTimeout(() => this.drainRenderQueue(), 0)
+    }
+  },
+
+  releasePageCanvas(index) {
+    const section = this.pageSection(index)
+    if (!section) return
+    const canvas = section.querySelector("[data-role='office-wasm-canvas']")
+    const overlay = section.querySelector("[data-role='office-wasm-caret-overlay']")
+    if (canvas && (canvas.width !== 1 || canvas.height !== 1)) {
+      canvas.width = 1
+      canvas.height = 1
+      const ctx = canvas.getContext("2d")
+      if (ctx) {
+        ctx.fillStyle = "#ffffff"
+        ctx.fillRect(0, 0, 1, 1)
+      }
+    }
+    if (overlay && (overlay.width !== 1 || overlay.height !== 1)) {
+      overlay.width = 1
+      overlay.height = 1
+    }
+    this.rendered.delete(index)
   },
 
   // Paint a page/slide via the engine's paintTile into the page <canvas>.
@@ -925,16 +1097,22 @@ const WasmOfficeEditor = {
   // platform BGRA tile mode), painting the document twip rectangle
   // (tileX,tileY,tileW,tileH) into canvasW x canvasH device px. We blit the
   // returned bytes straight into the page <canvas> via ImageData.
-  renderPage(index) {
+  renderPage(index, { force = false } = {}) {
     if (!this.api) return
+    if (!force && this.rendered.has(index)) return
     const section = this.pageSection(index)
     if (!section) return
     const canvas = section.querySelector("[data-role='office-wasm-canvas']")
     if (!canvas) return
 
     const part = this.parts[index] || this.parts[0]
-    const pxW = canvas.width
-    const pxH = canvas.height
+    const logical = this.pageLogicalSize(index, canvas)
+    const pxW = Math.max(1, Math.round(logical.width * this.scale))
+    const pxH = Math.max(1, Math.round(logical.height * this.scale))
+    if (canvas.width !== pxW || canvas.height !== pxH) {
+      canvas.width = pxW
+      canvas.height = pxH
+    }
 
     try {
       // The tile rectangle is in ABSOLUTE document twips. Two cases (see
@@ -999,12 +1177,11 @@ const WasmOfficeEditor = {
   // and read back the cursor rect, rather than maintaining a paragraph/offset
   // model:
   //
-  //   click            -> hitTest(page1based, xPx, yPx)        (place caret)
-  //   drag             -> setTextSelection(START|END, xTwip,yTwip) + repaint
+  //   click/drag       -> postMouseEvent(down/move/up, page1based, xPx, yPx)
   //   typing (ASCII)   -> postKeyEvent(KEYINPUT, charCode, 0) + KEYUP
   //   Backspace/Enter/… -> postKeyEvent with the awt keyCode
-  //   Korean IME       -> postWindowExtTextInputEvent(0, TEXTINPUT, preedit)
-  //                       then …(0, TEXTINPUT_END, "") on commit
+  //   Korean IME       -> compositionupdate replaces provisional text with
+  //                       postKeyEvent/backspace so the real tile changes live
   //
   // After every input we re-paint ONLY the caret's page tile (and any other
   // visible page, for reflow) and refresh the caret rect from getCursor(), so
@@ -1019,10 +1196,15 @@ const WasmOfficeEditor = {
   // LibreOfficeKitExtTextInputType
   LOK_EXT_TEXTINPUT: 0,
   LOK_EXT_TEXTINPUT_END: 2,
-  // LibreOfficeKitSetTextSelectionType
-  LOK_SETTEXTSELECTION_START: 0,
-  LOK_SETTEXTSELECTION_END: 1,
-  LOK_SETTEXTSELECTION_RESET: 2,
+  // LibreOfficeKitMouseEventType
+  LOK_MOUSEEVENT_MOUSEBUTTONDOWN: 0,
+  LOK_MOUSEEVENT_MOUSEBUTTONUP: 1,
+  LOK_MOUSEEVENT_MOUSEMOVE: 2,
+  // vcl mouse/key modifier bits.
+  LOK_MOUSE_LEFT: 1,
+  LOK_KEY_SHIFT: 0x1000,
+  LOK_KEY_MOD1: 0x2000,
+  LOK_KEY_MOD2: 0x4000,
 
   // awt::Key codes (offapi/com/sun/star/awt/Key.idl == vcl KEY_*). postKeyEvent's
   // `keyCode` arg is exactly these; `charCode` is the Unicode code point (and the
@@ -1065,15 +1247,99 @@ const WasmOfficeEditor = {
     }
   },
 
-  // Map a page-local px point on page `pageIndex0` (0-based) to ABSOLUTE document
-  // twips, the coordinate space setTextSelection expects. 1 px @96dpi == 15 twip
-  // (TWIPS_PER_PX in LokEditBindings.cxx); the page's twip origin comes from its
-  // page rect.
-  pageLocalPxToDocTwip(pageIndex0, xPx, yPx) {
-    const r = this.pageRects[pageIndex0]
-    const ox = r ? r.x : 0
-    const oy = r ? r.y : 0
-    return { x: Math.round(ox + xPx * 15), y: Math.round(oy + yPx * 15) }
+  presentationLikeDoc() {
+    return this.docType === 2 || this.docType === 3
+  },
+
+  nativeDoubleClickAvailable() {
+    return (this.api.shape === "embind-class" && this.handle && typeof this.handle.doubleClick === "function") ||
+      typeof this.api.doubleClick === "function"
+  },
+
+  lokModifierMask(event) {
+    let mask = 0
+    if (event && event.shiftKey) mask |= this.LOK_KEY_SHIFT
+    if (event && (event.ctrlKey || event.metaKey)) mask |= this.LOK_KEY_MOD1
+    if (event && event.altKey) mask |= this.LOK_KEY_MOD2
+    return mask
+  },
+
+  postNativeMouseEvent(type, loc, count = 1, buttons = this.LOK_MOUSE_LEFT, modifier = 0) {
+    this.callApi("postMouseEvent", type, loc.pageIndex + 1, loc.x, loc.y, count, buttons, modifier)
+  },
+
+  nativeCursorTargetReady() {
+    if (this.caret) return true
+    try {
+      const res = this.callApi("getCursor")
+      if (res && res.ok) {
+        this.caret = { page: res.page, x: res.x, y: res.y, height: res.height }
+        window.__officeWasmCaret = this.caret
+        return true
+      }
+    } catch (_) {}
+    return false
+  },
+
+  readNativeInteractionState() {
+    if (!this.api || !this.api.getInteractionState) return null
+    try {
+      const raw = this.callApi("getInteractionState")
+      const state = typeof raw === "string" ? JSON.parse(raw) : raw
+      this.nativeInteractionState = state || null
+      return this.nativeInteractionState
+    } catch (error) {
+      console.error("[office-wasm] getInteractionState failed", error)
+      return this.nativeInteractionState
+    }
+  },
+
+  updateNativeTextEditReady() {
+    if (!this.presentationLikeDoc()) {
+      this.nativeTextEditReady = true
+      return true
+    }
+    const state = this.readNativeInteractionState()
+    const nativeTextEdit =
+      state &&
+      (state.textEditActive === true ||
+        state.textEditActive === 1 ||
+        state.textEditActive === "1")
+    const edit = state && state.editingInSelection
+    const enabled =
+      nativeTextEdit ||
+      (!!edit &&
+        (edit.enabled === true || edit.enabled === 1 || edit.enabled === "1"))
+    this.nativeTextEditReady = enabled
+    return enabled
+  },
+
+  presentationTextTargetReady() {
+    if (!this.presentationLikeDoc()) return true
+    const state = this.readNativeInteractionState()
+    const nativeTextEdit =
+      state &&
+      (state.textEditActive === true ||
+        state.textEditActive === 1 ||
+        state.textEditActive === "1")
+    const edit = state && state.editingInSelection
+    const table = state && state.tableSelection
+    const hasTableTarget =
+      !!state &&
+      (!!state.focusedCell ||
+        !!(table && table.rectangle) ||
+        !!(edit &&
+          (edit.enabled === true || edit.enabled === 1 || edit.enabled === "1")))
+    this.nativeTextEditReady = !!(hasTableTarget || (nativeTextEdit && this.nativeCursorTargetReady()))
+    return this.nativeTextEditReady
+  },
+
+  sameCaret(a, b) {
+    return !!a && !!b &&
+      a.page === b.page &&
+      Math.round(a.x) === Math.round(b.x) &&
+      Math.round(a.y) === Math.round(b.y) &&
+      Math.round(a.height || 0) === Math.round(b.height || 0)
   },
 
   // ─── Mouse: click -> caret, drag -> selection ──────────────────────────────
@@ -1083,18 +1349,51 @@ const WasmOfficeEditor = {
     const loc = this.eventToPageLocal(event)
     if (!loc) return
 
-    // Place the LOK caret at the press point and capture its rect.
-    this.placeCaret(loc.pageIndex, loc.x, loc.y)
-
-    // Start a LOK text selection at the press point (document twips). The drag
-    // extends the END; a plain click with no movement resets it on mouseup.
-    const t = this.pageLocalPxToDocTwip(loc.pageIndex, loc.x, loc.y)
-    try {
-      this.callApi("setTextSelection", this.LOK_SETTEXTSELECTION_START, t.x, t.y)
-    } catch (error) {
-      console.error("[office-wasm] setTextSelection(START) failed", error)
+    if (this.elementPickerEnabled) {
+      event.preventDefault()
+      event.stopPropagation()
+      const pick = this.officePickFromPoint(loc)
+      if (pick) {
+        appendPickedElementToComposer(pick)
+        this.paintPickedPoint(loc)
+      }
+      return
     }
-    this.dragSelect = { page: loc.pageIndex, startX: loc.x, startY: loc.y, moved: false }
+
+    // Let the dedicated dblclick handler send LibreOffice the count=2 event.
+    // Treating the second press as another plain caret placement collapses the
+    // Impress table-cell selection that desktop LibreOffice creates on double
+    // click.
+    if (event.detail > 1) {
+      this.activateDoubleClick(loc)
+      if (event.cancelable) event.preventDefault()
+      if (this.imeProxy) this.imeProxy.focus({ preventScroll: true })
+      return
+    }
+
+    const modifier = this.lokModifierMask(event)
+    try {
+      this.postNativeMouseEvent(
+        this.LOK_MOUSEEVENT_MOUSEBUTTONDOWN,
+        loc,
+        1,
+        this.LOK_MOUSE_LEFT,
+        modifier
+      )
+    } catch (error) {
+      console.error("[office-wasm] postMouseEvent(DOWN) failed", error)
+      return
+    }
+
+    this.dragSelect = {
+      page: loc.pageIndex,
+      startX: loc.x,
+      startY: loc.y,
+      lastLoc: loc,
+      moved: false,
+      selectionStarted: false,
+      modifier
+    }
     this.clearSelectionState()
 
     // Keep the OS IME composition target focused + anchored at the caret so the
@@ -1120,33 +1419,140 @@ const WasmOfficeEditor = {
     if (Math.abs(loc.x - ds.startX) > 1 || Math.abs(loc.y - ds.startY) > 1 || loc.pageIndex !== ds.page) {
       ds.moved = true
     }
-    const t = this.pageLocalPxToDocTwip(loc.pageIndex, loc.x, loc.y)
+    ds.lastLoc = loc
+    if (!ds.moved) return
     try {
-      this.callApi("setTextSelection", this.LOK_SETTEXTSELECTION_END, t.x, t.y)
+      this.postNativeMouseEvent(
+        this.LOK_MOUSEEVENT_MOUSEMOVE,
+        loc,
+        1,
+        this.LOK_MOUSE_LEFT,
+        ds.modifier
+      )
+      ds.selectionStarted = true
     } catch (error) {
-      console.error("[office-wasm] setTextSelection(END) failed", error)
+      console.error("[office-wasm] postMouseEvent(MOVE) failed", error)
     }
-    this.hasActiveSelection = ds.moved
+    this.hasActiveSelection = true
     // LOK paints the selection highlight INTO the tile, so re-paint the affected
     // page(s) to reveal it, then refresh + redraw the caret on top.
-    if (ds.moved) {
-      this.renderCaretWindow()
-      this.refreshCaret()
-    }
+    this.renderPage(ds.page, { force: true })
+    if (loc.pageIndex !== ds.page) this.renderPage(loc.pageIndex, { force: true })
+    this.refreshCaret()
     this.anchorProxy()
     if (event.cancelable) event.preventDefault()
   },
 
-  onCanvasMouseUp(_event) {
+  onCanvasMouseUp(event) {
     if (!this.dragSelect) return
     const ds = this.dragSelect
     this.dragSelect = null
-    if (!ds.moved) {
-      // Plain click — collapse any LOK selection back to a caret.
+    const loc = this.eventToPageLocal(event, ds.page) || ds.lastLoc
+    if (loc) {
       try {
-        this.callApi("setTextSelection", this.LOK_SETTEXTSELECTION_RESET, 0, 0)
-      } catch (_) {}
+        this.postNativeMouseEvent(
+          this.LOK_MOUSEEVENT_MOUSEBUTTONUP,
+          loc,
+          1,
+          this.LOK_MOUSE_LEFT,
+          ds.modifier
+        )
+      } catch (error) {
+        console.error("[office-wasm] postMouseEvent(UP) failed", error)
+      }
+    }
+    if (!ds.moved) {
       this.hasActiveSelection = false
+      this.renderPage(ds.page, { force: true })
+      this.settleCaretAfterHit(null)
+    } else {
+      this.hasActiveSelection = true
+      this.renderPage(ds.page, { force: true })
+      if (loc && loc.pageIndex !== ds.page) this.renderPage(loc.pageIndex, { force: true })
+      this.settleAfterMouseSelection(ds.page)
+    }
+    if (this.imeProxy) {
+      this.imeProxy.focus({ preventScroll: true })
+      this.anchorProxy()
+    }
+    if (event.cancelable) event.preventDefault()
+  },
+
+  onCanvasDoubleClick(event) {
+    if (!this.api || !this.parts.length) return
+    const loc = this.eventToPageLocal(event)
+    if (!loc) return
+
+    if (this.recentDoubleActivation(loc)) {
+      if (event.cancelable) event.preventDefault()
+      return
+    }
+
+    this.activateDoubleClick(loc)
+    if (event.cancelable) event.preventDefault()
+  },
+
+  recentDoubleActivation(loc) {
+    const last = this._lastDoubleActivation
+    return !!last &&
+      performance.now() - last.t < 350 &&
+      last.pageIndex === loc.pageIndex &&
+      Math.abs(last.x - loc.x) < 2 &&
+      Math.abs(last.y - loc.y) < 2
+  },
+
+  activateDoubleClick(loc) {
+    this._lastDoubleActivation = {
+      t: performance.now(),
+      pageIndex: loc.pageIndex,
+      x: loc.x,
+      y: loc.y
+    }
+
+    this.dragSelect = null
+    if (this._caretSettle) { clearTimeout(this._caretSettle); this._caretSettle = null }
+
+    // Impress/Draw needs native edit mode before keyboard input works. Send the
+    // real native double-click, then wait until Libre reports a table/caret target.
+    if (this.presentationLikeDoc()) {
+      this.nativeTextEditReady = false
+      this.nativeInteractionState = null
+      this.caret = null
+      this.clearAllCaretOverlays()
+
+      try {
+        if (this.nativeDoubleClickAvailable()) this.callApi("doubleClick", loc.pageIndex + 1, loc.x, loc.y)
+        else this.placeCaret(loc.pageIndex, loc.x, loc.y)
+        this.hasActiveSelection = true
+        this.renderPage(loc.pageIndex, { force: true })
+        this.settleCaretAfterHit(null)
+      } catch (error) {
+        console.error("[office-wasm] doubleClick failed", error)
+      }
+
+      if (this.imeProxy) {
+        this.imeProxy.focus({ preventScroll: true })
+        this.anchorProxy()
+      }
+      return
+    }
+
+    ++this._caretSettleSeq
+
+    try {
+      if (this.nativeDoubleClickAvailable()) this.callApi("doubleClick", loc.pageIndex + 1, loc.x, loc.y)
+      else this.placeCaret(loc.pageIndex, loc.x, loc.y)
+      this.hasActiveSelection = true
+      this.renderPage(loc.pageIndex, { force: true })
+      this.refreshCaret()
+      this.settleAfterMouseSelection(loc.pageIndex)
+    } catch (error) {
+      console.error("[office-wasm] doubleClick failed", error)
+    }
+
+    if (this.imeProxy) {
+      this.imeProxy.focus({ preventScroll: true })
+      this.anchorProxy()
     }
   },
 
@@ -1169,84 +1575,175 @@ const WasmOfficeEditor = {
 
     const rect = canvas.getBoundingClientRect()
     if (!rect.width || !rect.height) return null
-    // CSS px -> backing px ratio, then / scale to get page-local px (matches the
-    // HWP arm's coordinate derivation).
-    const backingRatio = canvas.width / rect.width
+    const logical = this.pageLogicalSize(pageIndex, canvas)
     const clientX = Math.min(Math.max(event.clientX, rect.left), rect.right)
     const clientY = Math.min(Math.max(event.clientY, rect.top), rect.bottom)
-    const x = ((clientX - rect.left) * backingRatio) / this.scale
-    const y = ((clientY - rect.top) * backingRatio) / this.scale
+    const x = ((clientX - rect.left) / rect.width) * logical.width
+    const y = ((clientY - rect.top) / rect.height) * logical.height
     return { pageIndex, x, y }
   },
 
-  // Place the LOK caret via hitTest (page is 1-based) and adopt the returned
-  // page-local rect. hitTest returns {ok,page,x,y,height}.
-  //
-  // THE #154 "caret detached from the click / lands one click behind" root cause
-  // is here: the embind hitTest posts a LOK mouse down/up then reads back the
-  // caret rect SYNCHRONOUSLY — but LOK reports the new caret via an ASYNCHRONOUS
-  // LOK_CALLBACK_INVALIDATE_VISIBLE_CURSOR that has NOT fired yet, so hitTest
-  // returns the cursor rect from BEFORE this click (verified: every hitTest is
-  // exactly one click stale; the correct rect lands in getCursor ~1 frame later).
-  // We can't change the embind here, so we adopt the hitTest result immediately
-  // (responsive) AND schedule a short settle that re-reads getCursor() once the
-  // callback has landed, adopting the correct, freshly-updated caret. This makes
-  // the caret track the click precisely with a JS-only fix.
+  pageLogicalSize(pageIndex0, canvas = null) {
+    const part = this.parts[pageIndex0] || this.parts[0] || {}
+    let width = Number(part.width)
+    let height = Number(part.height)
+
+    if (!(width > 0) && canvas) width = canvas.width / (this.scale || 1)
+    if (!(height > 0) && canvas) height = canvas.height / (this.scale || 1)
+
+    return {
+      width: Math.max(1, width || 794),
+      height: Math.max(1, height || 1123)
+    }
+  },
+
+  // Place the LOK caret via hitTest (page is 1-based). hitTest posts the native
+  // mouse events; for presentation/table editing the browser waits for LOK's
+  // native edit-state callbacks before drawing a caret or accepting typing.
   placeCaret(pageIndex0, xPx, yPx) {
     let immediate = null
+    if (this.presentationLikeDoc()) {
+      this.nativeTextEditReady = false
+      this.nativeInteractionState = null
+      this.caret = null
+      this.clearAllCaretOverlays()
+    }
+
     try {
       const res = this.callApi("hitTest", pageIndex0 + 1, xPx, yPx)
       if (res && res.ok) {
         immediate = { page: res.page, x: res.x, y: res.y, height: res.height }
-        this.caret = immediate
-      } else {
-        // hitTest didn't resolve a caret (e.g. empty area) — keep the click point
-        // as a best-effort caret so the overlay still shows where the user clicked.
-        this.caret = { page: pageIndex0 + 1, x: xPx, y: yPx, height: 16 }
+        if (!this.presentationLikeDoc()) this.caret = immediate
       }
     } catch (error) {
       console.error("[office-wasm] hitTest failed", error)
-      this.caret = { page: pageIndex0 + 1, x: xPx, y: yPx, height: 16 }
     }
-    this.caretBlinkOn = true
-    this.drawCaret()
-    window.__officeWasmCaret = this.caret
-    // Settle onto the async-updated cursor (fixes the one-click-stale hitTest).
+    if (!this.presentationLikeDoc() && this.caret) {
+      this.caretBlinkOn = true
+      this.drawCaret()
+      window.__officeWasmCaret = this.caret
+    }
     this.settleCaretAfterHit(immediate)
   },
 
-  // After a hitTest, the real caret for THIS click arrives via the async cursor
-  // callback ~1 frame later. Poll getCursor() a few times; the moment it reports
-  // a rect that DIFFERS from the stale hitTest result (or any ok rect when the
-  // hitTest didn't resolve one), adopt it as the true caret + re-anchor the IME
-  // proxy. Bounded + cancels a prior pending settle so rapid clicks don't fight.
+  // After a hit, the real caret can arrive over a few cursor callbacks. Poll
+  // getCursor() until the rect is stable instead of adopting the first changed
+  // rect, which can still be one character behind the final caret.
   settleCaretAfterHit(immediate) {
+    if (this._caretSettle) { clearTimeout(this._caretSettle); this._caretSettle = null }
+    const startedFor = ++this._caretSettleSeq
+    const requireNativeEditState = this.presentationLikeDoc()
+    let tries = 0
+    let stable = 0
+    let sawFresh = false
+    let last = null
+    const adopt = (fresh) => {
+      this.caret = fresh
+      window.__officeWasmCaret = this.caret
+      this.caretBlinkOn = true
+      if (requireNativeEditState) this.renderPage(fresh.page - 1, { force: true })
+      this.drawCaret()
+      this.anchorProxy()
+    }
+    const tick = () => {
+      this._caretSettle = null
+      // A newer click superseded this settle — stop.
+      if (startedFor !== this._caretSettleSeq) return
+      // A live drag owns the caret/selection; don't fight it. A held plain click
+      // can still settle, otherwise long-press clicks stay on the stale rect.
+      if (this.dragSelect && this.dragSelect.moved) return
+      const nativeReady = !requireNativeEditState || this.updateNativeTextEditReady()
+      let res = null
+      try { res = this.callApi("getCursor") } catch (_) {}
+      if (res && res.ok && nativeReady) {
+        const fresh = { page: res.page, x: res.x, y: res.y, height: res.height }
+        const movedFromStart = !this.sameCaret(fresh, immediate)
+        if (requireNativeEditState || movedFromStart || sawFresh || tries >= 5) {
+          adopt(fresh)
+          sawFresh = true
+        }
+        stable = this.sameCaret(fresh, last) && sawFresh ? stable + 1 : 0
+        last = fresh
+        if ((sawFresh && stable >= 2) || tries >= 12) {
+          if (!sawFresh && !requireNativeEditState) adopt(fresh)
+          return
+        }
+      } else if (requireNativeEditState && tries >= 13) {
+        this.nativeTextEditReady = false
+        this.caret = null
+        this.clearAllCaretOverlays()
+        window.__officeWasmCaret = null
+        return
+      }
+      if (++tries < 14) this._caretSettle = setTimeout(tick, 40)
+    }
+    this._caretSettle = setTimeout(tick, 40)
+  },
+
+  // Key/IME edits also move the LOK cursor asynchronously. Multi-char input can
+  // report several cursor positions (after char 1, then char N), so keep polling
+  // until the cursor is stable instead of stopping at the first changed rect.
+  settleCaretAfterInput(previous, repaintContent = false) {
+    if (this._caretSettle) { clearTimeout(this._caretSettle); this._caretSettle = null }
+    const startedFor = ++this._caretSettleSeq
+    const requireNativeEditState = this.presentationLikeDoc()
+    const repaintOnAdopt = repaintContent || requireNativeEditState
+    let tries = 0
+    let stable = 0
+    let sawMove = false
+    let last = null
+    const adopt = (fresh) => {
+      this.caret = fresh
+      window.__officeWasmCaret = this.caret
+      this.caretBlinkOn = true
+      if (repaintOnAdopt) {
+        this.renderPage(fresh.page - 1, { force: true })
+      }
+      this.drawCaret()
+      this.anchorProxy()
+    }
+    const tick = () => {
+      this._caretSettle = null
+      if (startedFor !== this._caretSettleSeq) return
+      if (this.dragSelect && this.dragSelect.moved) return
+      const nativeReady = !requireNativeEditState || this.updateNativeTextEditReady()
+      let res = null
+      try { res = this.callApi("getCursor") } catch (_) {}
+      if (res && res.ok && nativeReady) {
+        const fresh = { page: res.page, x: res.x, y: res.y, height: res.height }
+        const movedFromStart = !this.sameCaret(fresh, previous)
+        if (requireNativeEditState || movedFromStart || sawMove || tries >= 5) {
+          adopt(fresh)
+          sawMove = true
+        }
+        stable = this.sameCaret(fresh, last) && sawMove ? stable + 1 : 0
+        last = fresh
+        if ((sawMove && stable >= 2) || tries >= 18) {
+          if (!sawMove && !requireNativeEditState) adopt(fresh)
+          return
+        }
+      } else if (requireNativeEditState && tries >= 19) {
+        this.nativeTextEditReady = false
+        return
+      }
+      if (++tries < 20) this._caretSettle = setTimeout(tick, 40)
+    }
+    this._caretSettle = setTimeout(tick, 40)
+  },
+
+  settleAfterMouseSelection(pageIndex0) {
     if (this._caretSettle) { clearTimeout(this._caretSettle); this._caretSettle = null }
     const startedFor = ++this._caretSettleSeq
     let tries = 0
     const tick = () => {
       this._caretSettle = null
-      // A newer click superseded this settle — stop.
       if (startedFor !== this._caretSettleSeq) return
-      // A live drag owns the caret/selection; don't fight it.
-      if (this.dragSelect) return
-      let res = null
-      try { res = this.callApi("getCursor") } catch (_) {}
-      if (res && res.ok) {
-        const fresh = { page: res.page, x: res.x, y: res.y, height: res.height }
-        const changed = !immediate ||
-          Math.round(fresh.x) !== Math.round(immediate.x) ||
-          Math.round(fresh.y) !== Math.round(immediate.y) ||
-          fresh.page !== immediate.page
-        if (changed) {
-          this.caret = fresh
-          window.__officeWasmCaret = this.caret
-          this.caretBlinkOn = true
-          this.drawCaret()
-          this.anchorProxy()
-          return // settled
-        }
-      }
+      this.renderPage(pageIndex0, { force: true })
+      this.refreshCaret()
+      try {
+        const selected = this.callApi("getTextSelection", "text/plain;charset=utf-8")
+        this.hasActiveSelection = this.hasActiveSelection || !!selected
+      } catch (_) {}
       if (++tries < 6) this._caretSettle = setTimeout(tick, 40)
     }
     this._caretSettle = setTimeout(tick, 40)
@@ -1255,10 +1752,20 @@ const WasmOfficeEditor = {
   // Refresh the caret rect from getCursor() (after a key/IME edit moved it).
   refreshCaret() {
     try {
+      if (this.presentationLikeDoc() && !this.updateNativeTextEditReady()) {
+        this.caret = null
+        this.clearAllCaretOverlays()
+        window.__officeWasmCaret = null
+        return
+      }
       const res = this.callApi("getCursor")
       if (res && res.ok) {
         this.caret = { page: res.page, x: res.x, y: res.y, height: res.height }
         window.__officeWasmCaret = this.caret
+      } else if (this.presentationLikeDoc()) {
+        this.caret = null
+        this.clearAllCaretOverlays()
+        window.__officeWasmCaret = null
       }
     } catch (error) {
       console.error("[office-wasm] getCursor failed", error)
@@ -1291,14 +1798,16 @@ const WasmOfficeEditor = {
     const c = this.caret
     if (!c) return
     this.clearAllCaretOverlays()
-    if (!this.caretBlinkOn) return
     const overlay = this.caretOverlay(c.page - 1)
     if (!overlay) return
     const ctx = overlay.getContext("2d")
     if (!ctx) return
-    const s = this.scale
+    const logical = this.pageLogicalSize(c.page - 1)
+    const sx = overlay.width / logical.width
+    const sy = overlay.height / logical.height
+    if (!this.caretBlinkOn) return
     ctx.fillStyle = "#1d4ed8"
-    ctx.fillRect(c.x * s, c.y * s, 1.5 * s, Math.max(8, c.height || 16) * s)
+    ctx.fillRect(c.x * sx, c.y * sy, 1.5 * sx, Math.max(8, c.height || 16) * sy)
   },
 
   // Position the hidden IME proxy textarea over the caret so the OS candidate
@@ -1312,12 +1821,14 @@ const WasmOfficeEditor = {
     if (!canvas) return
     const cr = canvas.getBoundingClientRect()
     const hostRect = this.el.getBoundingClientRect()
-    const cssPerPage = cr.width / (canvas.width / this.scale)
-    const left = cr.left - hostRect.left + this.el.scrollLeft + c.x * cssPerPage
-    const top = cr.top - hostRect.top + this.el.scrollTop + c.y * cssPerPage
+    const logical = this.pageLogicalSize(c.page - 1, canvas)
+    const cssX = cr.width / logical.width
+    const cssY = cr.height / logical.height
+    const left = cr.left - hostRect.left + this.el.scrollLeft + c.x * cssX
+    const top = cr.top - hostRect.top + this.el.scrollTop + c.y * cssY
     this.imeProxy.style.left = `${Math.round(left)}px`
     this.imeProxy.style.top = `${Math.round(top)}px`
-    this.imeProxy.style.height = `${Math.max(12, Math.round((c.height || 16) * cssPerPage))}px`
+    this.imeProxy.style.height = `${Math.max(12, Math.round((c.height || 16) * cssY))}px`
   },
 
   clearSelectionState() {
@@ -1328,8 +1839,17 @@ const WasmOfficeEditor = {
   // just-applied edit / selection shows immediately.
   renderCaretWindow() {
     const idx = this.caret ? this.caret.page - 1 : null
-    if (typeof idx === "number") this.renderPage(idx)
-    for (const v of this.visible) if (v !== idx) this.renderPage(v)
+    if (typeof idx === "number") this.renderPage(idx, { force: true })
+    for (const v of this.visible) if (v !== idx) this.renderPage(v, { force: true })
+  },
+
+  renderAfterInput() {
+    if (this.presentationLikeDoc() && this.presentationTextTargetReady()) {
+      const idx = this.caret ? this.caret.page - 1 : null
+      if (typeof idx === "number") this.renderPage(idx, { force: true })
+      return
+    }
+    this.renderCaretWindow()
   },
 
   // ─── Keyboard + IME wiring (the IME proxy is the OS-focused element) ────────
@@ -1363,19 +1883,37 @@ const WasmOfficeEditor = {
   // path (we must skip them here, else Hangul double-inserts). Editing shortcuts
   // (Cmd/Ctrl) pass through to the browser/UNO.
   handleKeyDown(event) {
+    if (this.saveShortcut(event)) {
+      event.preventDefault()
+      event.stopPropagation()
+      this.saveLocalDocument({})
+      return
+    }
     if (!this.api || !this.parts.length) return
     if (event.isComposing || this.composing) return // IME owns the keystroke
+    if (this.koreanImeKey(event)) return
     if (event.metaKey || event.ctrlKey || event.altKey) return // shortcuts pass through
 
     const k = event.key
+    if (k === "Tab") {
+      event.preventDefault()
+      event.stopPropagation()
+      if (this.imeProxy) this.imeProxy.focus({ preventScroll: true })
+      this.anchorProxy()
+      return
+    }
+
     const special = this.specialKeyCode(k)
     if (special != null) {
       event.preventDefault()
-      this.postKey(special.charCode, special.keyCode)
+      const previous = this.caret
+      const posted = this.postKey(special.charCode, special.keyCode)
       // Caret-moving keys (arrows/home/end) don't change content -> just refresh
       // the caret; content keys repaint the page first.
-      if (special.repaint) this.renderCaretWindow()
+      if (special.repaint) this.renderAfterInput()
       this.refreshCaret()
+      this.settleCaretAfterInput(previous, special.repaint)
+      if (special.repaint && posted) this.markViewerMutated()
       return
     }
 
@@ -1383,10 +1921,13 @@ const WasmOfficeEditor = {
     // ("Shift", "Tab"→handled above, "Dead", etc.) are not text.
     if (k && k.length === 1) {
       event.preventDefault()
+      const previous = this.caret
       const cp = k.codePointAt(0)
-      this.postKey(cp, 0)
-      this.renderCaretWindow()
+      const posted = this.postKey(cp, 0)
+      this.renderAfterInput()
       this.refreshCaret()
+      this.settleCaretAfterInput(previous, true)
+      if (posted) this.markViewerMutated()
     }
   },
 
@@ -1399,7 +1940,6 @@ const WasmOfficeEditor = {
       case "Backspace": return { charCode: 8, keyCode: K.BACKSPACE, repaint: true }
       case "Delete": return { charCode: 46, keyCode: K.DELETE, repaint: true }
       case "Enter": return { charCode: 13, keyCode: K.RETURN, repaint: true }
-      case "Tab": return { charCode: 9, keyCode: K.TAB, repaint: true }
       case "ArrowLeft": return { charCode: 0, keyCode: K.LEFT, repaint: false }
       case "ArrowRight": return { charCode: 0, keyCode: K.RIGHT, repaint: false }
       case "ArrowUp": return { charCode: 0, keyCode: K.UP, repaint: false }
@@ -1412,17 +1952,38 @@ const WasmOfficeEditor = {
     }
   },
 
+  koreanImeKey(event) {
+    const key = event.key || ""
+    return event.keyCode === 229 ||
+      key === "Process" ||
+      key === "Unidentified" ||
+      /^[\u3130-\u318F\uAC00-\uD7AF]$/u.test(key)
+  },
+
   // Post a full key press (KEYINPUT then KEYUP), as the LOK/online clients do.
-  postKey(charCode, keyCode) {
+  postKey(charCode, keyCode, clearProxy = true) {
+    if (this.presentationLikeDoc() && !this.presentationTextTargetReady()) {
+      if (this.imeProxy) this.imeProxy.value = ""
+      return false
+    }
     try {
       this.callApi("postKeyEvent", this.LOK_KEYEVENT_KEYINPUT, charCode, keyCode)
       this.callApi("postKeyEvent", this.LOK_KEYEVENT_KEYUP, charCode, keyCode)
       this.hasActiveSelection = false
+      return true
     } catch (error) {
       console.error("[office-wasm] postKeyEvent failed", error)
+      return false
+    } finally {
+      // Always drain the proxy so it never accumulates state.
+      if (clearProxy && this.imeProxy) this.imeProxy.value = ""
     }
-    // Always drain the proxy so it never accumulates state.
-    if (this.imeProxy) this.imeProxy.value = ""
+  },
+
+  markViewerMutated() {
+    this._elementsCache = null
+    if (!this.documentId) return
+    this.pushEvent("local_document.viewer_mutated", { document_id: this.documentId })
   },
 
   // Plain (non-composing) text input — fires for some IMEs / paste / dictation
@@ -1431,58 +1992,128 @@ const WasmOfficeEditor = {
   handleInput(event) {
     if (!this.api) return
     if (event.isComposing || this.composing) return
+    if (this.swallowTrailingCompositionInput(event)) {
+      if (this.imeProxy) this.imeProxy.value = ""
+      return
+    }
     const type = event.inputType || ""
     if (type.startsWith("insert")) {
       const data = event.data != null ? event.data : this.imeProxy.value
       if (data) {
-        for (const ch of data) this.postKey(ch.codePointAt(0), 0)
-        this.renderCaretWindow()
+        const previous = this.caret
+        let posted = false
+        for (const ch of data) posted = this.postKey(ch.codePointAt(0), 0) || posted
+        this.renderAfterInput()
         this.refreshCaret()
+        this.settleCaretAfterInput(previous, true)
+        if (posted) this.markViewerMutated()
       }
     }
     if (this.imeProxy) this.imeProxy.value = ""
   },
 
-  // Korean IME — compositionstart marks composing; the in-document preedit is
-  // driven by postWindowExtTextInputEvent on each update so Hangul composes and
-  // shows live at the caret (not a separate overlay).
+  // Korean IME — compositionstart marks composing. The composition text is
+  // written into the actual LibreOffice document on each update, replacing the
+  // prior provisional text, so the page tile itself changes immediately.
   handleCompositionStart(_event) {
     if (!this.api) return
     this.composing = true
+    this.skipNextCompositionInput = null
+    this._compositionCommittedText = ""
   },
 
-  // compositionupdate — push the current preedit string to LOK as a single
-  // ExtTextInput; LOK replaces the live preedit run each time. Re-paint + refresh
-  // so the composing Hangul shows at the caret immediately.
+  // compositionupdate — update the real document model immediately. We avoid a
+  // browser-side fake overlay: visible glyphs must come from paintTile().
   handleCompositionUpdate(event) {
     if (!this.api) return
-    const str = event.data || ""
-    try {
-      this.callApi("postWindowExtTextInputEvent", 0, this.LOK_EXT_TEXTINPUT, str)
-    } catch (error) {
-      console.error("[office-wasm] postWindowExtTextInputEvent(update) failed", error)
+    if (this.presentationLikeDoc()) {
+      if (!this.presentationTextTargetReady()) {
+        this.anchorProxy()
+        return
+      }
+      this.replaceCommittedComposition(event.data || (this.imeProxy && this.imeProxy.value) || "")
+      return
     }
-    this.renderCaretWindow()
-    this.refreshCaret()
+    this.replaceCommittedComposition(event.data || (this.imeProxy && this.imeProxy.value) || "")
   },
 
-  // compositionend — commit. Push the final string once more (some IMEs only send
-  // the resolved text here) then END the composition so LOK turns the preedit
-  // into committed text.
-  handleCompositionEnd(event) {
-    if (!this.api) { this.composing = false; return }
-    const str = event.data || ""
-    try {
-      if (str) this.callApi("postWindowExtTextInputEvent", 0, this.LOK_EXT_TEXTINPUT, str)
-      this.callApi("postWindowExtTextInputEvent", 0, this.LOK_EXT_TEXTINPUT_END, "")
-    } catch (error) {
-      console.error("[office-wasm] postWindowExtTextInputEvent(end) failed", error)
+  replaceCommittedComposition(text) {
+    const next = String(text || "")
+    const prev = this._compositionCommittedText || ""
+    if (next === prev) return false
+    const previousCaret = this.caret
+    let posted = false
+
+    for (const _ch of [...prev]) {
+      posted = this.postKey(8, this.AWT_KEY.BACKSPACE, false) || posted
     }
+    for (const ch of [...next]) {
+      posted = this.postKey(ch.codePointAt(0), 0, false) || posted
+    }
+
+    this._compositionCommittedText = next
+    this.renderAfterInput()
+    this.refreshCaret()
+    this.settleCaretAfterInput(previousCaret, true)
+    return posted
+  },
+
+  // compositionend — make one last replacement with the resolved string. If the
+  // update event already wrote the same string this is a no-op, preventing a
+  // trailing duplicate Hangul syllable.
+  handleCompositionEnd(event) {
+    if (!this.api) {
+      this.composing = false
+      return
+    }
+    if (this.presentationLikeDoc()) {
+      const str = event.data || (this.imeProxy && this.imeProxy.value) || ""
+      const ready = this.presentationTextTargetReady()
+      this.composing = false
+      this.hasActiveSelection = false
+      this.armTrailingCompositionInputGuard(str)
+      if (this.imeProxy) this.imeProxy.value = ""
+      if (!ready) return
+
+      const posted = this.replaceCommittedComposition(str)
+      if (posted) {
+        this.markViewerMutated()
+      }
+      this._compositionCommittedText = ""
+      return
+    }
+    const str = event.data || (this.imeProxy && this.imeProxy.value) || this._compositionCommittedText || ""
+    const posted = this.replaceCommittedComposition(str)
     this.composing = false
     this.hasActiveSelection = false
+    this.armTrailingCompositionInputGuard(str)
     if (this.imeProxy) this.imeProxy.value = ""
-    this.renderCaretWindow()
-    this.refreshCaret()
+    if (posted || str) this.markViewerMutated()
+    this._compositionCommittedText = ""
+  },
+
+  armTrailingCompositionInputGuard(text) {
+    const value = String(text || "")
+    this.skipNextCompositionInput = value ? { value, at: performance.now() } : null
+  },
+
+  swallowTrailingCompositionInput(event) {
+    const pending = this.skipNextCompositionInput
+    if (!pending) return false
+
+    const type = event.inputType || ""
+    const data = String(event.data != null ? event.data : (this.imeProxy && this.imeProxy.value) || "")
+    const age = performance.now() - pending.at
+    const compositionInput = type === "insertCompositionText" || type === "insertReplacementText"
+    const sameImmediateText = data === pending.value && age >= 0 && age < 500
+
+    if (compositionInput || sameImmediateText) {
+      this.skipNextCompositionInput = null
+      return true
+    }
+
+    this.skipNextCompositionInput = null
+    return false
   },
 
   // ══════════════════════════════════════════════════════════════════════════
@@ -1495,13 +2126,14 @@ const WasmOfficeEditor = {
   // addresses text positionally ({section,paragraph,offset} refs) via per-verb
   // WASM accessors. The office arm instead drives the build's IR + UNO verbs:
   //
-  //   doc.find / doc.read / doc.get  -> getElements()  (IR JSON; filter/window)
+  //   doc.find / doc.read / doc.get  -> getElements()  (IR JSON; filter/anchor)
   //   doc.edit (insert/replace/delete, single + ops:[…]) -> uno_apply(opJson)
   //   doc.set  (ref+props, single + sets:[…])            -> uno_set(ref, propsJson)
   //   doc.save                                           -> saveToBytes(format)
   //
   // Office refs are STRINGS the IR emits: "p<idx>" (paragraph), "tbl[<Name>]",
-  // "tbl[<Name>]/cell[<B2>]", "page[<Slide>]/shape[<N>]". So office does NOT use
+  // "tbl[<Name>]/cell[<B2>]", "page[<Slide>]/shape[<N>]",
+  // "page[<Slide>]/shape[<N>]/cell[<B2>]". So office does NOT use
   // the HWP parseRef ({section,paragraph,offset}); the verbs take the ref string
   // (and JSON args) straight through.
   // ══════════════════════════════════════════════════════════════════════════
@@ -1595,6 +2227,101 @@ const WasmOfficeEditor = {
     return norm
   },
 
+  officePickFromPoint(loc) {
+    const node = this.officeElementAtPoint(loc)
+    if (!node) return null
+
+    return {
+      document: this.el.dataset.documentPath || "",
+      backend: "libre",
+      format: this.format || "",
+      type: node.type || "unknown",
+      ref: node.ref || "",
+      text: node.text || "",
+      ir: {
+        page: loc.pageIndex + 1,
+        point: { x: loc.x, y: loc.y },
+        node: node.raw || node
+      }
+    }
+  },
+
+  officeElementAtPoint(loc) {
+    let elements = []
+    try { elements = this.officeElements() } catch (_) { elements = [] }
+    if (!elements.length) return null
+
+    const page = loc.pageIndex + 1
+    const pageElements = elements.filter(el => this.officeElementPage(el) === page)
+    const candidates = pageElements.length ? pageElements : elements
+
+    return this.officeElementContainingPoint(candidates, loc) ||
+      candidates.find(el => el.type !== "page") ||
+      candidates[0]
+  },
+
+  officeElementContainingPoint(elements, loc) {
+    let best = null
+    let bestArea = Infinity
+
+    for (const el of elements) {
+      const box = this.officeElementBox(el)
+      if (!box) continue
+      const x2 = box.x + box.width
+      const y2 = box.y + box.height
+      if (loc.x < box.x || loc.x > x2 || loc.y < box.y || loc.y > y2) continue
+      const area = Math.max(1, box.width) * Math.max(1, box.height)
+      if (area < bestArea) {
+        best = el
+        bestArea = area
+      }
+    }
+
+    return best
+  },
+
+  officeElementPage(el) {
+    const raw = el && el.raw ? el.raw : el
+    const page = raw && (raw.page ?? raw.pageIndex ?? raw.slide ?? raw.part)
+    if (Number.isFinite(Number(page))) return Number(page)
+
+    const ref = String((raw && raw.ref) || (el && el.ref) || "")
+    const match = ref.match(/^page\[(?:page)?(\d+)\]/i)
+    return match ? Number(match[1]) : null
+  },
+
+  officeElementBox(el) {
+    const raw = el && el.raw ? el.raw : el
+    const box = raw && (raw.bbox || raw.bounds || raw.rect || raw.geometry)
+    const source = box || raw
+    if (!source || typeof source !== "object") return null
+
+    const x = Number(source.x ?? source.left)
+    const y = Number(source.y ?? source.top)
+    const width = Number(source.width ?? source.w)
+    const height = Number(source.height ?? source.h)
+
+    if (![x, y, width, height].every(Number.isFinite)) return null
+    return { x, y, width, height }
+  },
+
+  paintPickedPoint(loc) {
+    const overlay = this.caretOverlay(loc.pageIndex)
+    if (!overlay) return
+    const ctx = overlay.getContext("2d")
+    if (!ctx) return
+    const logical = this.pageLogicalSize(loc.pageIndex)
+    const sx = overlay.width / logical.width
+    const sy = overlay.height / logical.height
+    const x = loc.x * sx
+    const y = loc.y * sy
+    ctx.save()
+    ctx.strokeStyle = "rgba(29, 78, 216, 0.9)"
+    ctx.lineWidth = Math.max(2, 1.5 * this.scale)
+    ctx.strokeRect(x - 8, y - 8, 16, 16)
+    ctx.restore()
+  },
+
   // Normalize one IR element to the find/read match shape. Tolerant of field
   // aliases so a small IR schema drift in the parallel wasm build doesn't break
   // the bridge.
@@ -1607,9 +2334,14 @@ const WasmOfficeEditor = {
     const type = el.type != null ? String(el.type)
       : el.kind != null ? String(el.kind) : this.refType(ref)
     const out = { ref, text, type }
+    Object.defineProperty(out, "raw", { value: el, enumerable: false })
     if (el.context != null) out.context = String(el.context)
     if (el.row != null) out.row = el.row
     if (el.col != null) out.col = el.col
+    if (el.page != null) out.page = el.page
+    if (el.pageIndex != null) out.pageIndex = el.pageIndex
+    if (el.slide != null) out.slide = el.slide
+    if (el.part != null) out.part = el.part
     return out
   },
 
@@ -1635,7 +2367,14 @@ const WasmOfficeEditor = {
   // Mirrors the HWP arm: literal substring search by default; `all`/`regex`/`type`
   // flips to discovery mode (enumerate every element, filter by `type`, and treat
   // `pattern` as a regex). Returns { matches: [{ref,text,type,…}] }.
-  officeFind({ pattern, case_sensitive, all, regex, type }) {
+  officeFind({ pattern, patterns, case_sensitive, all, regex, type, limit }) {
+    if (Array.isArray(patterns)) {
+      return {
+        results: patterns.map((p) =>
+          this.officeFind({ pattern: p, case_sensitive, all, regex, type, limit })
+        )
+      }
+    }
     const elements = this.officeElements()
     const cs = !!case_sensitive
 
@@ -1658,7 +2397,16 @@ const WasmOfficeEditor = {
         return hay.includes(needle)
       })
     }
-    return { pattern: pat, type: type || null, matches: matches.map((el) => ({ ...el })) }
+    return {
+      pattern: pat,
+      type: type || null,
+      matches: this.limitOfficeMatches(matches.map((el) => {
+        const match = { ...el }
+        const fillableKind = this.fillableKind(match)
+        if (fillableKind) match.fillable_kind = fillableKind
+        return match
+      }), limit)
+    }
   },
 
   // The server's element-type taxonomy, mapped onto office IR types. Cell-state
@@ -1667,6 +2415,7 @@ const WasmOfficeEditor = {
     if (!type) return elements
     switch (type) {
       case "empty": return elements.filter((el) => this.blankText(el))
+      case "fillable": return elements.filter((el) => this.fillableElement(el))
       case "cell": return elements.filter((el) => el.type === "cell")
       case "empty_cell": return elements.filter((el) => el.type === "cell" && this.blankText(el))
       case "filled_cell": return elements.filter((el) => el.type === "cell" && !this.blankText(el))
@@ -1675,61 +2424,330 @@ const WasmOfficeEditor = {
     }
   },
 
-  // ─── doc.read -> windowed getElements ──────────────────────────────────────
-  // Incremental: ≤30 elements/call + a next_at cursor (mirrors the HWP arm and
-  // the server's read cap). Each entry carries its `ref` so the agent can edit it.
+  fillableElement(el) {
+    return !!this.fillableKind(el)
+  },
+
+  placeholderKind(value) {
+    const text = String(value || "").trim()
+    if (!text || text.startsWith("※")) return null
+    if (text.includes("____")) return "underscore"
+    if (text.includes("[]") || /^[□☐]\s*/u.test(text)) return "checkbox"
+    if (/[-‐‑‒–—―－─]{4,}.*\(이하/u.test(text)) return "signature_line"
+    if (/\(\s{2,}\)/u.test(text)) return "paren_blank"
+    if (/[:：]\s{2,}[회년월일원%]/u.test(text)) return "inline_gap"
+    if (/[년월일]\s{2,}/u.test(text)) return "date_gap"
+    if (text.endsWith(":") && text.length <= 80) return "trailing_label"
+    return null
+  },
+
+  fillableKind(el) {
+    const text = String((el && el.text) || "").trim()
+    const type = (el && el.type) || "unknown"
+    const hasContext = !!(el && el.context && String(el.context).trim())
+    if (type === "cell" && text === "" && hasContext) return "empty_cell"
+    if (type === "field" || type === "form") return type
+    if (type === "paragraph" || type === "cell") return this.placeholderKind(text)
+    return null
+  },
+
+  limitOfficeMatches(matches, limit) {
+    const n = Number(limit || 0)
+    return n > 0 ? matches.slice(0, Math.min(2000, n)) : matches
+  },
+
+  // ─── doc.read -> ref neighborhood ──────────────────────────────────────────
+  // Clarify a single anchor ref from doc.find. No paging/full-document read.
   officeRead({ opts }) {
     const o = opts || {}
-    const at = Math.max(0, Number(o.at || 0))
-    const size = Math.min(30, Math.max(1, Number(o.size || 30)))
+    if (!o.ref) return { error: "doc.read requires ref from doc.find" }
+    const ref = String(o.ref || "")
+    const nearby = this.normalizeOfficeNearby(o.nearby)
     const elements = this.officeElements()
-    const total = elements.length
-    const win = elements.slice(at, at + size)
-    const nextAt = at + win.length < total ? at + win.length : null
-    const paragraphs = win.map((el) => {
-      const p = { text: el.text, ref: el.ref, table_cell: el.type === "cell" }
-      if (el.type) p.type = el.type
-      if (el.context) p.context = el.context
-      return p
-    })
+    const candidates = this.officeReadRefCandidates(ref)
+    const hit = this.findOfficeReadMatch(elements, candidates)
+    if (!hit) {
+      const table = this.officeCompactTableRead(candidates, nearby)
+      return table && !table.error ? { ref, ...table } : { ref, error: "ref not found" }
+    }
+    const idx = hit.idx
+    const resolvedRef = hit.ref
+    const start = Math.max(0, idx - nearby.before)
+    const win = elements.slice(start, idx + nearby.after + 1).map((el) => ({ ...el }))
+    const target = { ...elements[idx] }
+    const out = {
+      ref,
+      target,
+      elements: win,
+      text: win.map((el) => el.text || "").join("\n")
+    }
+    if (resolvedRef !== ref) out.resolved_ref = resolvedRef
+    if (target.type === "cell" || this.officeTableKey(resolvedRef)) {
+      Object.assign(out, this.officeTableNearby(elements, target, nearby))
+    }
+    return out
+  },
+
+  findOfficeReadMatch(elements, refs) {
+    for (const ref of refs) {
+      const idx = elements.findIndex((el) => el.ref === ref)
+      if (idx >= 0) return { ref, idx }
+    }
+    return null
+  },
+
+  officeReadRefCandidates(ref) {
+    const s = String(ref || "")
+    const refs = [s]
+    const run = /^(.*\/p\d+)\/r\d+$/.exec(s)
+    if (run) refs.push(run[1])
+    return Array.from(new Set(refs.filter(Boolean)))
+  },
+
+  normalizeOfficeNearby(input) {
+    const n = input && typeof input === "object" ? input : {}
+    const clamp = (value, fallback) => {
+      const x = Number(value)
+      return Number.isFinite(x) ? Math.max(0, Math.min(10, Math.floor(x))) : fallback
+    }
     return {
-      text: win.map((el) => (el.type === "cell" ? `[cell] ${el.text}` : el.text)).join("\n"),
-      at,
-      size: win.length,
-      paragraphs,
-      total,
-      next_at: nextAt
+      before: clamp(n.before, 2),
+      after: clamp(n.after, 2),
+      row: n.row !== false,
+      column: n.column === true,
+      headers: n.headers !== false
     }
   },
 
+  officeCompactTableRead(ref, nearby) {
+    const refs = Array.isArray(ref) ? ref.map((r) => String(r || "")) : [String(ref || "")]
+    const refString = refs[0] || ""
+    const key = refs.map((r) => this.officeTableKey(r)).find(Boolean)
+    if (!key) return { ref: refString, error: "ref is not a table/cell ref" }
+    const cells = this.officeElements()
+      .filter((el) => el.type === "cell" && this.officeTableKey(el.ref) === key)
+      .map((el) => ({ ...el, writable: this.officeWritableCell(el) }))
+    if (!cells.length) return { ref: refString, error: "no cells for table ref" }
+    return this.officeCompactTablePayload(refString, key, cells, null, nearby)
+  },
+
+  officeTableNearby(elements, target, nearby) {
+    const key = this.officeTableKey(target.ref)
+    const cells = elements.filter((el) => el.type === "cell" && this.officeTableKey(el.ref) === key)
+    return cells.length ? this.officeCompactTablePayload(target.ref, key, cells, target, nearby) : {}
+  },
+
+  officeCompactTablePayload(ref, key, cells, target, nearby) {
+    const sorted = cells.slice().sort((a, b) => ((a.row || 0) - (b.row || 0)) || ((a.col || 0) - (b.col || 0)))
+    const targetRow = target && Number.isInteger(target.row) ? target.row : null
+    const targetCol = target && Number.isInteger(target.col) ? target.col : null
+    const out = {
+      table: {
+        key,
+        anchor: { key },
+        row_count: new Set(sorted.map((c) => c.row).filter((v) => Number.isInteger(v))).size,
+        col_count: new Set(sorted.map((c) => c.col).filter((v) => Number.isInteger(v))).size
+      }
+    }
+    if (nearby.headers) {
+      out.table_headers = sorted
+        .filter((c) => c.row === 1)
+        .map((c) => ({ col: c.col, text: c.text || "" }))
+      out.row_labels = sorted
+        .filter((c) => (c.col || 0) === 1 && (c.row || 0) > 1)
+        .filter((c) => String(c.text || "").trim() || c.row === targetRow)
+        .map((c) => ({ row: c.row, text: c.text || "" }))
+    }
+    if (nearby.row && targetRow !== null) {
+      out.row = sorted.filter((c) => c.row === targetRow).map((c) => this.officeCompactTableCell(c, ref))
+    }
+    if (nearby.column && targetCol !== null) {
+      out.column = sorted.filter((c) => c.col === targetCol).map((c) => this.officeCompactTableCell(c, ref))
+    }
+    return out
+  },
+
+  officeCompactTableCell(cell, targetRef) {
+    const out = {
+      row: cell.row,
+      col: cell.col,
+      text: cell.text || "",
+      type: cell.type || "cell"
+    }
+    if (cell.context) out.context = cell.context
+    const writable = this.officeWritableCell(cell)
+    if (writable) out.writable = true
+    if (writable || cell.ref === targetRef) out.ref = cell.ref
+    return out
+  },
+
+  officeWritableCell(cell) {
+    return cell.type === "cell" && String(cell.text || "").trim() === "" &&
+      (!!(cell.context && String(cell.context).trim()) ||
+        (Number.isInteger(cell.row) && Number.isInteger(cell.col) && cell.row > 0 && cell.col > 0))
+  },
+
+  officeTableKey(ref) {
+    const s = String(ref || "")
+    const m = /^(tbl\[[^\]]+\])(?:\/cell\[.*\])?$/.exec(s)
+    if (m) return m[1]
+    const shape = /^(page\[[^\]]+\]\/shape\[[^\]]+\])(?:\/cell\[.*\])?$/.exec(s)
+    return shape ? shape[1] : null
+  },
+
   // ─── doc.get -> inspect one (or many) IR elements ──────────────────────────
-  // Best-effort reflective read off the IR: the element's type + current text.
-  // (The office IR doesn't expose a settable-property vocabulary the way the HWP
-  // engine does, so `settable` is omitted; the agent sets via doc.set's known
-  // UNO property names.)
-  officeGet({ ref, refs }) {
-    const byRef = new Map(this.officeElements().map((el) => [el.ref, el]))
+  // Best-effort reflective read off the LIVE browser IR. Mirrors the server
+  // Office arm's `doc.get`: type/kind, current values, settable UNO property
+  // names, children, and the raw Libre IR node for agents that need structure.
+  officeGet({ ref, refs, props }) {
+    const elements = this.officeElements()
     const one = (r) => {
-      const el = byRef.get(String(r))
+      const el = this.officeElementForGet(elements, String(r))
       if (!el) return { ref: String(r), error: "unresolved ref" }
-      return { ref: el.ref, type: el.type, values: { text: el.text }, properties: { text: el.text }, children: [] }
+      const kind = this.officeKindForType(el.type)
+      const values = this.officeValuesForElement(el, props)
+      return {
+        ref: el.ref,
+        type: el.type,
+        kind,
+        interfaces: this.officeInterfacesForKind(kind),
+        values,
+        properties: values,
+        settable: this.officeSettableForKind(kind),
+        children: this.officeChildrenFor(el.ref),
+        ir: this.officeRawForElement(el)
+      }
     }
     if (Array.isArray(refs)) return { results: refs.map(one) }
     return one(ref)
   },
 
+  officeElementForGet(elements, ref) {
+    const matches = elements.filter((el) => el.ref === ref)
+    if (!matches.length) return null
+    if (matches.length === 1) return matches[0]
+
+    const first = { ...matches[0] }
+    first.text = this.joinOfficeText(matches)
+    Object.defineProperty(first, "raw", {
+      value: {
+        ref: first.ref,
+        type: first.type,
+        text: first.text,
+        nodes: matches.map((el) => this.officeRawForElement(el))
+      },
+      enumerable: false
+    })
+    return first
+  },
+
+  officeValuesForElement(el, props) {
+    const raw = (el && el.raw) || el || {}
+    const rawProps = raw.props && typeof raw.props === "object" ? raw.props
+      : raw.properties && typeof raw.properties === "object" ? raw.properties
+        : {}
+    const values = { ...rawProps, text: el.text || "" }
+    if (el.context != null) values.context = el.context
+    if (el.row != null) values.row = el.row
+    if (el.col != null) values.col = el.col
+    if (el.page != null) values.page = el.page
+    if (el.pageIndex != null) values.pageIndex = el.pageIndex
+    if (el.slide != null) values.slide = el.slide
+    if (el.part != null) values.part = el.part
+
+    if (!Array.isArray(props) || props.length === 0) return values
+    const wanted = new Set(props.map((p) => String(p)))
+    return Object.fromEntries(Object.entries(values).filter(([k]) => wanted.has(k)))
+  },
+
+  officeKindForType(type) {
+    switch (String(type || "")) {
+      case "run": return "run"
+      case "paragraph": return "paragraph"
+      case "cell": return "cell"
+      case "shape":
+      case "text_frame": return "shape"
+      case "table": return "table"
+      case "page":
+      case "slide": return "page"
+      default: return String(type || "unknown")
+    }
+  },
+
+  officeInterfacesForKind(kind) {
+    switch (kind) {
+      case "run": return ["TextRange", "CharProperties"]
+      case "paragraph": return ["Paragraph", "CharProperties"]
+      case "cell": return ["Cell", "Container", "CharProperties"]
+      case "shape": return ["Shape", "Positioned", "CharProperties"]
+      case "table": return ["Table", "Container"]
+      case "page": return ["Page", "Container"]
+      default: return []
+    }
+  },
+
+  officeSettableForKind(kind) {
+    const charProps = [
+      "CharWeight",
+      "CharPosture",
+      "CharColor",
+      "CharHeight",
+      "CharUnderline",
+      "CharStrikeout",
+      "CharFontName",
+      "CharBackColor"
+    ]
+    switch (kind) {
+      case "run":
+        return charProps
+      case "paragraph":
+        return [
+          "ParaAdjust",
+          "ParaLineSpacing",
+          "ParaLeftMargin",
+          "ParaRightMargin",
+          "ParaFirstLineIndent",
+          "ParaTopMargin",
+          "ParaBottomMargin",
+          "ParaStyleName",
+          ...charProps
+        ]
+      case "cell":
+        return ["BackColor", "CellBackColor", "VertOrient", ...charProps]
+      case "shape":
+        return ["FillColor", "LineColor", "RotateAngle", "Width", "Height", ...charProps]
+      default:
+        return []
+    }
+  },
+
+  officeChildrenFor(ref) {
+    const prefix = String(ref || "") + "/"
+    return Array.from(new Set(this.officeElements()
+      .filter((el) => el.ref !== ref && el.ref.startsWith(prefix))
+      .map((el) => el.ref)))
+  },
+
+  officeRawForElement(el) {
+    const raw = (el && el.raw) || el
+    try {
+      return JSON.parse(JSON.stringify(raw))
+    } catch (_) {
+      return { ref: el.ref, type: el.type, text: el.text || "" }
+    }
+  },
+
   // ─── doc.edit -> uno_apply(opJson) ─────────────────────────────────────────
   // Single op. uno_apply takes the op as a JSON string (the SAME op the server
   // normalised: {op, ref, text|query|replacement|count, …}). Settle the edit,
-  // invalidate the IR cache, re-render, and report a bumped revision.
-  async officeApplyEdit({ op, base_revision }) {
-    const baseRev = typeof base_revision === "number" ? base_revision : 0
+  // invalidate the IR cache, and re-render.
+  async officeApplyEdit({ op }) {
     const r = await this.officeApplyOneOp(op)
     if (r.error) return { error: r.error }
-    return this.finishAgentEdit(baseRev, r.extra || {})
+    return this.finishAgentEdit(r.extra || {})
   },
 
-  // Apply ONE edit op via uno_apply. NEVER renders / bumps the revision — the
+  // Apply ONE edit op via uno_apply. NEVER renders — the
   // caller does that once (so a batch applies N ops and finishes once). uno_apply
   // may return a JSON status string ({ok}/{error}) or throw; treat a thrown error
   // OR an {error:…} payload as a per-op failure.
@@ -1790,7 +2808,7 @@ const WasmOfficeEditor = {
   // which is the only ref `set_text` resolves against (verified).
   rewriteUnsupportedEditOp(op) {
     const verb = op.op
-    if (verb !== "replace_text" && verb !== "delete_range" && verb !== "delete_paragraph") {
+    if (verb !== "replace_text" && verb !== "delete_range" && verb !== "delete_paragraph" && verb !== "set_cell") {
       return null // insert_text / set_text / delete etc. are native — pass through
     }
 
@@ -1802,7 +2820,15 @@ const WasmOfficeEditor = {
       return { error: String((error && error.message) || error) }
     }
     const setTargetRef = (ref) => this.setTextRefFor(String(ref))
-    const byRef = new Map(elements.map((el) => [el.ref, el]))
+    const elementForRef = (ref) => this.officeElementForEdit(elements, String(ref))
+
+    if (verb === "set_cell") {
+      if (op.ref == null) return { error: "set_cell requires a 'ref'" }
+      const targetRef = setTargetRef(op.ref)
+      const el = elementForRef(targetRef) || elementForRef(op.ref)
+      if (!el) return { error: `unresolved ref: ${op.ref}` }
+      return { op: { op: "set_text", ref: targetRef, text: String(op.text == null ? "" : op.text) } }
+    }
 
     if (verb === "delete_range" || verb === "delete_paragraph") {
       // Neither verb exists in the binary; a whole-element delete (the only
@@ -1810,7 +2836,7 @@ const WasmOfficeEditor = {
       // the target's text so the agent then sees an empty paragraph/shape.
       if (op.ref == null) return { error: `${verb} requires a 'ref'` }
       const targetRef = setTargetRef(op.ref)
-      const el = byRef.get(targetRef) || byRef.get(String(op.ref))
+      const el = elementForRef(targetRef) || elementForRef(op.ref)
       if (!el) return { error: `unresolved ref: ${op.ref}` }
       return { op: { op: "set_text", ref: targetRef, text: "" } }
     }
@@ -1820,14 +2846,14 @@ const WasmOfficeEditor = {
     // schema still allows it — replace in the FIRST text-bearing element that
     // contains the query (mirrors a doc-wide first-match replace).
     const query = op.query
-    const replacement = op.replacement != null ? String(op.replacement) : ""
+    const replacement = this.singleParagraphText(op.replacement)
     if (typeof query !== "string" || query === "") {
       return { error: "replace_text requires a non-empty string 'query'" }
     }
 
     if (op.ref != null) {
       const targetRef = setTargetRef(op.ref)
-      const el = byRef.get(targetRef) || byRef.get(String(op.ref))
+      const el = elementForRef(targetRef) || elementForRef(op.ref)
       if (!el) return { error: `unresolved ref: ${op.ref}` }
       if (!el.text.includes(query)) {
         return { error: `query not found in ${op.ref}: ${JSON.stringify(query)}` }
@@ -1842,14 +2868,43 @@ const WasmOfficeEditor = {
       (el) => this.isSetTextTarget(el.ref) && el.text.includes(query)
     )
     if (!target) return { error: `query not found in document: ${JSON.stringify(query)}` }
-    const { text: next, count } = this.replaceAllCounted(target.text, query, replacement)
-    return { op: { op: "set_text", ref: target.ref, text: next }, replaced: count }
+    const targetRef = setTargetRef(target.ref)
+    const el = elementForRef(targetRef) || target
+    const { text: next, count } = this.replaceAllCounted(el.text, query, replacement)
+    return { op: { op: "set_text", ref: targetRef, text: next }, replaced: count }
+  },
+
+  officeElementForEdit(elements, ref) {
+    const targetRef = this.setTextRefFor(ref)
+    const matches = elements.filter(
+      (el) => this.setTextRefFor(el.ref) === targetRef && this.isSetTextTarget(el.ref)
+    )
+    if (!matches.length) return null
+    const first = { ...matches[0], ref: targetRef }
+    first.text = this.joinOfficeText(matches)
+    return first
+  },
+
+  joinOfficeText(elements) {
+    const parts = []
+    for (const el of elements) {
+      const text = String((el && el.text) || "")
+      if (!text) continue
+      if (parts[parts.length - 1] === text) continue
+      if (parts.join("\n").includes(text)) continue
+      parts.push(text)
+    }
+    return parts.join("\n")
   },
 
   // The ref `set_text` resolves against: a run ref `…/r<n>` collapses to its
   // owning paragraph/shape; everything else passes through.
   setTextRefFor(ref) {
     return ref.replace(/\/r\d+$/, "")
+  },
+
+  singleParagraphText(value) {
+    return String(value == null ? "" : value).replace(/\r\n|\r|\n/g, " ").replace(/[ \t]{2,}/g, " ").trim()
   },
 
   // True for refs `set_text` accepts as whole-text targets: a top-level paragraph
@@ -1889,11 +2944,10 @@ const WasmOfficeEditor = {
     return extra
   },
 
-  // Batch doc.edit (ops:[…]). Apply every op via uno_apply with ONE re-render +
-  // revision bump at the end. Best-effort: a bad op does NOT abort the rest; the
+  // Batch doc.edit (ops:[…]). Apply every op via uno_apply with ONE re-render
+  // at the end. Best-effort: a bad op does NOT abort the rest; the
   // result carries a per-op `results` array, mirroring the HWP batch shape.
-  async officeApplyEditBatch({ ops, base_revision }) {
-    const baseRev = typeof base_revision === "number" ? base_revision : 0
+  async officeApplyEditBatch({ ops }) {
     const list = Array.isArray(ops) ? ops : []
     if (list.length === 0) return { error: "edit batch requires a non-empty 'ops' array" }
     const results = []
@@ -1915,19 +2969,18 @@ const WasmOfficeEditor = {
         results.push({ ref: refStr, error: (r && r.error) || "unknown_error" })
       }
     }
-    const finished = this.finishAgentEdit(baseRev, {})
-    return { ok: true, result: { ok: true, revision: finished.result.revision, applied, failed, results } }
+    this.finishAgentEdit({})
+    return { ok: true, result: { ok: true, applied, failed, results } }
   },
 
   // ─── doc.set -> uno_set(ref, propsJson) ────────────────────────────────────
   // Single set. CHAR properties must address the PARAGRAPH ref `p<idx>` (verified:
   // a run ref like "p0/r0" returns {"error":"unresolved ref"}), so we coerce a
   // run ref down to its paragraph for the uno_set call.
-  async officeApplySet({ ref, props, base_revision }) {
-    const baseRev = typeof base_revision === "number" ? base_revision : 0
+  async officeApplySet({ ref, props }) {
     const r = await this.officeApplySetOne(ref, props)
     if (r.error) return { error: r.error }
-    return this.finishAgentEdit(baseRev, {})
+    return this.finishAgentEdit({})
   },
 
   async officeApplySetOne(ref, props) {
@@ -2031,8 +3084,7 @@ const WasmOfficeEditor = {
   },
 
   // Batch doc.set (sets:[{ref,props}, …]). Apply every set with ONE finish.
-  async officeApplySetBatch({ sets, base_revision }) {
-    const baseRev = typeof base_revision === "number" ? base_revision : 0
+  async officeApplySetBatch({ sets }) {
     const list = Array.isArray(sets) ? sets : []
     if (list.length === 0) return { error: "set batch requires a non-empty 'sets' array" }
     const results = []
@@ -2054,8 +3106,8 @@ const WasmOfficeEditor = {
         results.push({ ref: refStr, error: (r && r.error) || "unknown_error" })
       }
     }
-    const finished = this.finishAgentEdit(baseRev, {})
-    return { ok: true, result: { ok: true, revision: finished.result.revision, applied, failed, results } }
+    this.finishAgentEdit({})
+    return { ok: true, result: { ok: true, applied, failed, results } }
   },
 
   // ─── doc.save -> saveToBytes(format) ───────────────────────────────────────
@@ -2076,17 +3128,44 @@ const WasmOfficeEditor = {
     return { format: this.format || "docx", bytes_base64: this.bytesToBase64(u8), bytes: u8.length }
   },
 
+  async saveLocalDocument(payload = {}) {
+    const requestId = payload.request_id || `local-save:${Date.now()}`
+    const documentId = payload.document_id || this.documentId
+    try {
+      if (this._loadInFlight) await this._loadInFlight
+      if (this._agentInFlight) await this._agentInFlight.catch(() => {})
+      if (!this.api || !this.handle || !documentId) throw new Error("document_not_loaded")
+      const saved = await this.officeSave()
+      this.pushEvent("local_document.viewer_save", {
+        request_id: requestId,
+        document_id: documentId,
+        ...saved
+      })
+    } catch (error) {
+      console.error("[office-wasm] save failed", error)
+      this.pushEvent("local_document.viewer_save", {
+        request_id: requestId,
+        document_id: documentId,
+        error: String((error && error.message) || error)
+      })
+    }
+  },
+
+  saveShortcut(event) {
+    return (event.metaKey || event.ctrlKey) && (event.key === "s" || event.key === "S")
+  },
+
   // ─── shared edit-finish + helpers ──────────────────────────────────────────
 
   // Post-edit step (mirrors the HWP finishAgentEdit): the IR changed so the
   // cached element list is stale; re-render the visible pages so the edit shows
-  // in the viewer, and report a monotonically bumped revision.
-  finishAgentEdit(baseRev, extra) {
+  // in the viewer.
+  finishAgentEdit(extra) {
     this._elementsCache = null
     this.rendered.clear()
     this.renderVisiblePages()
     if (this.caret) this.refreshCaret()
-    return { ok: true, result: { ok: true, revision: baseRev + 1, ...extra } }
+    return { ok: true, result: { ok: true, ...extra } }
   },
 
   // uno_apply/uno_set may return a JSON status string, a plain object, or

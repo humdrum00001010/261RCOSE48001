@@ -20,7 +20,6 @@ defmodule EcritsWeb.Live.Studio.Components.Canvas.LocalHwpPages do
   attr :document_id, :string, required: true
   attr :bytes_url, :string, default: nil
   attr :local_document_format, :string, required: true
-  attr :local_document_revision, :integer, required: true
 
   def render(assigns) do
     ~H"""
@@ -37,7 +36,6 @@ defmodule EcritsWeb.Live.Studio.Components.Canvas.LocalHwpPages do
       data-contract-type-key={@spec.key}
       data-local-document-id={@document_id}
       data-local-document-format={@local_document_format}
-      data-local-document-revision={@local_document_revision}
       data-bytes-url={@bytes_url}
     >
       <%!-- The OS IME needs an editable element to compose into (Korean editing,

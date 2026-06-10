@@ -792,10 +792,10 @@ body[data-chat-rail-dragging="true"] {
 
 .mount-screen {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: center;
   min-height: calc(100vh - 60px);
-  padding: clamp(2.5rem, 8vh, 6rem) 1.25rem 2rem;
+  padding: 2rem 1.25rem;
 }
 
 .mount-panel {
@@ -860,6 +860,8 @@ body[data-chat-rail-dragging="true"] {
 
 /* === Body =============================================================== */
 .mount-panel__body {
+  display: grid;
+  gap: 1.35rem;
   padding: 1.5rem 1.5rem 1.25rem;
 }
 
@@ -881,8 +883,8 @@ body[data-chat-rail-dragging="true"] {
 .mount-actions {
   display: flex;
   flex-direction: column;
-  gap: 0.85rem;
-  margin-top: 1.35rem;
+  gap: 1rem;
+  margin: 0;
 }
 
 /* Primary affordance — native folder picker. */
@@ -935,10 +937,11 @@ body[data-chat-rail-dragging="true"] {
 }
 
 .mount-field {
-  display: flex;
-  align-items: stretch;
-  height: 2.5rem;
-  padding-left: 0.65rem;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  min-height: 2.75rem;
+  padding: 0.25rem 0.25rem 0.25rem 0.75rem;
   border: 1px solid color-mix(in oklab, var(--cs-ink) 16%, transparent);
   border-radius: var(--cs-radius-sm);
   background: color-mix(in oklab, var(--cs-ink) 2%, var(--cs-surface));
@@ -954,6 +957,7 @@ body[data-chat-rail-dragging="true"] {
 .mount-field__chevron {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   font-family: var(--font-mono);
   font-size: 1rem;
   line-height: 1;
@@ -984,10 +988,12 @@ body[data-chat-rail-dragging="true"] {
 .mount-field__submit {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 0.3rem;
   flex: none;
+  min-height: 2.15rem;
   padding: 0 0.85rem;
-  margin: 0.3rem 0.3rem 0.3rem 0.3rem;
+  margin: 0;
   border-radius: calc(var(--cs-radius-sm) - 2px);
   background: color-mix(in oklab, var(--cs-ink) 8%, transparent);
   color: color-mix(in oklab, var(--cs-ink) 78%, transparent);

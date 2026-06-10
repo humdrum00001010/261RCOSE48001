@@ -19,7 +19,7 @@ defmodule EcritsWeb.Plugs.CrossOriginIsolationPlugTest do
     conn = run("/assets/office/soffice.wasm")
 
     assert get_resp_header(conn, "cross-origin-opener-policy") == ["same-origin"]
-    assert get_resp_header(conn, "cross-origin-embedder-policy") == ["credentialless"]
+    assert get_resp_header(conn, "cross-origin-embedder-policy") == ["require-corp"]
     # The matched glue/wasm/data set must never be served stale-mixed, so the
     # before_send overrides Plug.Static's `public` with `no-cache`.
     assert get_resp_header(conn, "cache-control") == ["no-cache"]

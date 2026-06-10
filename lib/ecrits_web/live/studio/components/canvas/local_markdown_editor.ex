@@ -31,7 +31,6 @@ defmodule EcritsWeb.Live.Studio.Components.Canvas.LocalMarkdownEditor do
   attr :id, :string, required: true
   attr :document_id, :string, required: true
   attr :local_document_format, :string, required: true
-  attr :local_document_revision, :integer, required: true
   attr :source, :string, default: ""
   attr :preview_html, :any, default: ""
 
@@ -46,7 +45,6 @@ defmodule EcritsWeb.Live.Studio.Components.Canvas.LocalMarkdownEditor do
       data-view="preview"
       data-local-document-id={@document_id}
       data-local-document-format={@local_document_format}
-      data-local-document-revision={@local_document_revision}
     >
       <%!-- Header with the single PREVIEW <-> SOURCE toggle. The button flips
             which pane is visible (client-side; no server round-trip) and swaps
@@ -62,8 +60,12 @@ defmodule EcritsWeb.Live.Studio.Components.Canvas.LocalMarkdownEditor do
           phx-click={toggle_markdown_view(@id)}
           class="rounded px-2 py-0.5 text-[11px] font-medium uppercase tracking-wide text-base-content/70 hover:bg-base-300/60 hover:text-base-content"
         >
-          <span data-toggle-label="preview" title="Edit source"><.icon name="hero-code-bracket" class="size-4 align-middle" /></span>
-          <span data-toggle-label="source" class="hidden" title="Show preview"><.icon name="hero-eye" class="size-4 align-middle" /></span>
+          <span data-toggle-label="preview" title="Edit source">
+            <.icon name="hero-code-bracket" class="size-4 align-middle" />
+          </span>
+          <span data-toggle-label="source" class="hidden" title="Show preview">
+            <.icon name="hero-eye" class="size-4 align-middle" />
+          </span>
         </button>
       </header>
 
@@ -91,7 +93,9 @@ defmodule EcritsWeb.Live.Studio.Components.Canvas.LocalMarkdownEditor do
         id={"#{@id}-preview"}
         data-role="markdown-editor-preview"
         class="chat-markdown min-h-0 flex-1 overflow-auto p-6 text-[15px] leading-[1.7]"
-      >{@preview_html}</div>
+      >
+        {@preview_html}
+      </div>
     </div>
     """
   end

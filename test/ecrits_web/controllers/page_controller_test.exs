@@ -8,14 +8,14 @@ defmodule EcritsWeb.LocalRootTest do
       {:ok, lv, _html} = live(conn, ~p"/")
 
       assert has_element?(lv, "#local-mount-root")
-      assert has_element?(lv, "#local-mount-picker")
+      assert has_element?(lv, "#local-mount-picker-surface[data-role='mount-picker-surface']")
 
       assert has_element?(
                lv,
                "#local-native-directory-picker[data-role='native-directory-picker']"
              )
 
-      assert has_element?(lv, "#local-mount-choose[type='button']", "Choose folder")
+      assert has_element?(lv, "#local-mount-choose[type='button']", "Open folder")
       assert has_element?(lv, "#local-native-directory-picker #local-path-form[method='get']")
 
       assert has_element?(
@@ -25,11 +25,10 @@ defmodule EcritsWeb.LocalRootTest do
 
       assert has_element?(
                lv,
-               "#local-path-submit[type='submit'][aria-label='Open path'][title='Open path'] .hero-arrow-turn-down-left"
+               "#local-path-submit[type='submit'][aria-label='Open path'][title='Open this path']"
              )
 
-      refute has_element?(lv, "#local-path-submit", "Open")
-      refute has_element?(lv, "footer")
+      assert has_element?(lv, "#local-path-submit", "Open")
       refute has_element?(lv, "#local-manual-path-picker")
       refute has_element?(lv, "#local-provider-picker[data-role='provider-picker']")
       refute has_element?(lv, "#local-agent-provider-picker")
@@ -46,14 +45,14 @@ defmodule EcritsWeb.LocalRootTest do
         |> live(~p"/")
 
       assert has_element?(lv, "#local-mount-root")
-      assert has_element?(lv, "#local-mount-picker")
+      assert has_element?(lv, "#local-mount-picker-surface[data-role='mount-picker-surface']")
 
       assert has_element?(
                lv,
                "#local-native-directory-picker[data-role='native-directory-picker']"
              )
 
-      assert has_element?(lv, "#local-mount-choose[type='button']", "Choose folder")
+      assert has_element?(lv, "#local-mount-choose[type='button']", "Open folder")
       assert has_element?(lv, "#local-native-directory-picker #local-path-form[method='get']")
 
       assert has_element?(
@@ -63,11 +62,10 @@ defmodule EcritsWeb.LocalRootTest do
 
       assert has_element?(
                lv,
-               "#local-path-submit[type='submit'][aria-label='Open path'][title='Open path'] .hero-arrow-turn-down-left"
+               "#local-path-submit[type='submit'][aria-label='Open path'][title='Open this path']"
              )
 
-      refute has_element?(lv, "#local-path-submit", "Open")
-      refute has_element?(lv, "footer")
+      assert has_element?(lv, "#local-path-submit", "Open")
       refute has_element?(lv, "#local-manual-path-picker")
       refute has_element?(lv, "#local-provider-picker[data-role='provider-picker']")
       refute has_element?(lv, "#local-agent-provider-picker")
@@ -84,7 +82,7 @@ defmodule EcritsWeb.LocalRootTest do
       render_click(lv, "mount_workspace", %{"path" => ""})
 
       assert has_element?(lv, "#local-mount-error")
-      assert has_element?(lv, "#local-mount-picker")
+      assert has_element?(lv, "#local-mount-picker-surface")
     end
   end
 end

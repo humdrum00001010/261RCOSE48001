@@ -28,6 +28,7 @@
 // `HwpDocument` class. esbuild bundles `rhwp.js` into app.js; the 5MB
 // `rhwp_bg.wasm` is served as a static file under `/assets/rhwp/`.
 import init, { HwpDocument } from "../vendor/rhwp/rhwp.js"
+import { appendPickedElementToComposer, bindElementPickerTarget } from "./document_element_picker.js"
 
 const WASM_URL = "/assets/rhwp/rhwp_bg.wasm"
 
@@ -80,9 +81,13 @@ const WasmHwpEditor = {
     // Korean IME provisional composition region currently live in the document.
     //   composing = { start, length }  (in the caret's paragraph/cell)
     this.composing = null
+    this.skipNextCompositionInput = null
     this.snapshotTimer = null
     this.snapshotSeq = 0
     this.caretBlinkOn = true
+    this.elementPickerEnabled = false
+    this.agentOpQueue = []
+    this.agentOpProcessing = false
 
     this.imeProxy = this.el.querySelector("[data-role='local-hwp-ime-proxy']")
     this.pageStack = this.el.querySelector("[data-role='local-hwp-pages']")
@@ -94,15 +99,16 @@ const WasmHwpEditor = {
     // instantiation cost on the critical path.
     ensureWasm().catch(error => console.error("[wasm-hwp] init failed", error))
 
-    // Server pushes this when an HWP/HWPX document opens (re-open / revision
-    // change): fetch its raw bytes and hand them to the WASM engine.
+    // Server pushes this when an HWP/HWPX document opens: fetch its raw bytes
+    // and hand them to the WASM engine.
     this.handleEvent("hwp_wasm_load", payload => this.loadDocument(payload))
 
     // Agent edit/read/find routed from the server because THIS document is
     // `:browser`-backed in the Doc Pool (the WASM model here is its authority).
     // Apply against the same WASM doc the user is viewing, re-render, and reply
-    // with the result + new revision so the agent's doc.* tool returns it.
+    // with the result so the agent's doc.* tool returns it.
     this.handleEvent("doc.apply_edit", payload => this.handleAgentOp(payload))
+    this.handleEvent("local_document.save.request", payload => this.saveLocalDocument(payload))
 
     // On a fresh mount the server's `hwp_wasm_load` push may have raced ahead of
     // this hook registering its `handleEvent` above. The host element also
@@ -123,7 +129,9 @@ const WasmHwpEditor = {
     this.onMouseDown = event => this.onCanvasMouseDown(event)
     this.onMouseMove = event => this.onCanvasMouseMove(event)
     this.onMouseUp = event => this.onCanvasMouseUp(event)
+    this.onDoubleClick = event => this.onCanvasDoubleClick(event)
     this.el.addEventListener("mousedown", this.onMouseDown)
+    this.el.addEventListener("dblclick", this.onDoubleClick)
     document.addEventListener("mousemove", this.onMouseMove)
     document.addEventListener("mouseup", this.onMouseUp)
 
@@ -152,6 +160,7 @@ const WasmHwpEditor = {
       },
       { root: this.el, rootMargin: "1200px 0px", threshold: 0 }
     )
+    this.unbindElementPicker = bindElementPickerTarget(this)
   },
 
   destroyed() {
@@ -160,8 +169,10 @@ const WasmHwpEditor = {
     if (this.snapshotTimer) clearTimeout(this.snapshotTimer)
     window.removeEventListener("resize", this.onResize)
     this.el.removeEventListener("mousedown", this.onMouseDown)
+    this.el.removeEventListener("dblclick", this.onDoubleClick)
     document.removeEventListener("mousemove", this.onMouseMove)
     document.removeEventListener("mouseup", this.onMouseUp)
+    if (this.unbindElementPicker) this.unbindElementPicker()
     this.unbindEditing()
     if (this.doc) {
       try { this.doc.free() } catch (_) {}
@@ -318,6 +329,15 @@ const WasmHwpEditor = {
     const { hit, pageIndex } = hitInfo
     window.__rhwpLastHit = hit
 
+    if (this.elementPickerEnabled) {
+      event.preventDefault()
+      event.stopPropagation()
+      const pick = this.hwpPickFromHit(hit, pageIndex)
+      appendPickedElementToComposer(pick)
+      this.paintPickedPoint(hit, pageIndex)
+      return
+    }
+
     // Place the caret at the press point (this is also the selection anchor).
     this.setCaretFromHit(hit, pageIndex)
 
@@ -401,6 +421,25 @@ const WasmHwpEditor = {
     }
     // A moved drag already established `this.selection` during mousemove; nothing
     // more to do — the highlight stays until the next press.
+  },
+
+  onCanvasDoubleClick(event) {
+    if (!this.doc) return
+    const hitInfo = this.hitTestEvent(event)
+    if (!hitInfo) return
+    const { hit, pageIndex } = hitInfo
+    event.preventDefault()
+    event.stopPropagation()
+
+    this.dragSelect = null
+    this.clearSelection()
+    this.renderSelection()
+    this.setCaretFromHit(hit, pageIndex)
+
+    if (this.imeProxy) {
+      this.imeProxy.focus({ preventScroll: true })
+      this.anchorProxy()
+    }
   },
 
   // Map a pointer event to { hit, pageIndex } via the engine's hitTest. When the
@@ -622,6 +661,108 @@ const WasmHwpEditor = {
     this.anchorProxy()
   },
 
+  hwpPickFromHit(hit, pageIndex) {
+    const ref = this.hwpRefFromHit(hit)
+    const element = this.findHwpElement(ref)
+
+    return {
+      document: this.el.dataset.documentPath || "",
+      backend: "hwp",
+      format: this.format || "hwp",
+      type: ref.cell ? "cell" : "paragraph",
+      ref: JSON.stringify(ref),
+      text: element ? element.text || "" : this.hwpTextForRef(ref),
+      ir: {
+        page: pageIndex + 1,
+        ref,
+        hit,
+        element
+      }
+    }
+  },
+
+  hwpRefFromHit(hit) {
+    const cell =
+      hit.parentParaIndex !== undefined
+        ? {
+            parentParaIndex: hit.parentParaIndex,
+            controlIndex: hit.controlIndex ?? 0,
+            cellIndex: hit.cellIndex ?? 0,
+            cellParaIndex: hit.cellParaIndex ?? 0,
+            cellPath: hit.cellPath || null
+          }
+        : null
+
+    const paragraph = cell
+      ? cell.parentParaIndex
+      : hit.paragraphIndex !== undefined ? hit.paragraphIndex : 0
+
+    const ref = {
+      section: hit.sectionIndex !== undefined ? hit.sectionIndex : 0,
+      paragraph,
+      offset: hit.charOffset !== undefined ? hit.charOffset : 0
+    }
+
+    if (cell) ref.cell = cell
+    return ref
+  },
+
+  findHwpElement(ref) {
+    try {
+      return this.collectElements().find(el => this.sameHwpElementRef(el.ref, ref)) || null
+    } catch (_) {
+      return null
+    }
+  },
+
+  sameHwpElementRef(a, b) {
+    if (!a || !b) return false
+    if (Number(a.section ?? 0) !== Number(b.section ?? 0)) return false
+    if (Number(a.paragraph ?? 0) !== Number(b.paragraph ?? 0)) return false
+    if (!!a.cell !== !!b.cell) return false
+    if (!a.cell) return true
+
+    return Number(a.cell.parentParaIndex ?? a.paragraph) === Number(b.cell.parentParaIndex ?? b.paragraph) &&
+      Number(a.cell.controlIndex ?? 0) === Number(b.cell.controlIndex ?? 0) &&
+      Number(a.cell.cellIndex ?? 0) === Number(b.cell.cellIndex ?? 0)
+  },
+
+  hwpTextForRef(ref) {
+    try {
+      if (ref.cell) {
+        const c = ref.cell
+        const para = c.cellParaIndex ?? 0
+        const len = this.doc.getCellParagraphLength(ref.section, c.parentParaIndex, c.controlIndex, c.cellIndex, para)
+        return this.doc.getTextInCell(ref.section, c.parentParaIndex, c.controlIndex, c.cellIndex, para, 0, len) || ""
+      }
+
+      const len = this.paragraphLength(ref.section, ref.paragraph)
+      return this.doc.getTextRange(ref.section, ref.paragraph, 0, len) || ""
+    } catch (_) {
+      return ""
+    }
+  },
+
+  paintPickedPoint(hit, pageIndex) {
+    const rect = hit.cursorRect ||
+      (hit.x !== undefined ? { pageIndex, x: hit.x, y: hit.y, height: hit.height || 16 } : null)
+    if (!rect) return
+    const rectPageIndex = rect.pageIndex !== undefined ? rect.pageIndex : pageIndex
+    const overlay = this.pageOverlay(rectPageIndex)
+    if (!overlay) return
+    const ctx = overlay.getContext("2d")
+    if (!ctx) return
+    const s = this.scale
+    const x = Math.max(0, rect.x * s - 3)
+    const y = Math.max(0, rect.y * s - 3)
+    const h = Math.max(14, rect.height || 16) * s
+    ctx.save()
+    ctx.strokeStyle = "rgba(29, 78, 216, 0.9)"
+    ctx.lineWidth = Math.max(2, 1.5 * s)
+    ctx.strokeRect(x, y, Math.max(8, 8 * s), h + 6)
+    ctx.restore()
+  },
+
   // Refresh `cursorRect` from the engine for the current caret position. Used
   // after edits whose result JSON gives us the new offset but not coordinates.
   refreshCursorRect() {
@@ -766,11 +907,23 @@ const WasmHwpEditor = {
   // handled by the composition* path and must be skipped here.
   handleInput(event) {
     if (!this.doc || !this.caret) return
-    if (event.isComposing) return
 
     const type = event.inputType || ""
+    const compositionInput = type === "insertCompositionText" || type === "insertReplacementText"
+    if (this.composing) {
+      if (compositionInput || event.isComposing) {
+        this.replaceComposing(this.currentCompositionText(event))
+      }
+      return
+    }
+    if (event.isComposing) return
+    if (this.swallowTrailingCompositionInput(event)) {
+      this.imeProxy.value = ""
+      return
+    }
+
     if (type === "insertText" || type === "insertFromPaste" ||
-        type === "insertCompositionText" || type === "insertReplacementText") {
+        compositionInput) {
       const data = event.data != null ? event.data : this.imeProxy.value
       // Typing over a selection replaces it: delete the range, then insert.
       if (data) {
@@ -787,6 +940,7 @@ const WasmHwpEditor = {
     if (!this.doc || !this.caret) return
     // Composing over a selection replaces it first.
     if (this.hasSelection()) this.deleteSelection()
+    this.skipNextCompositionInput = null
     this.composing = { start: this.caret.offset, length: 0 }
   },
 
@@ -795,8 +949,7 @@ const WasmHwpEditor = {
   // provisional run and insert the new one, then re-render + reposition caret.
   handleCompositionUpdate(event) {
     if (!this.doc || !this.caret || !this.composing) return
-    const str = event.data || ""
-    this.replaceComposing(str)
+    this.replaceComposing(this.currentCompositionText(event))
   },
 
   // compositionend — commit. The final string is already in the document from
@@ -805,14 +958,35 @@ const WasmHwpEditor = {
   handleCompositionEnd(event) {
     if (!this.doc || !this.caret) return
     if (this.composing) {
-      const str = event.data || ""
+      const str = this.currentCompositionText(event)
       // Ensure the committed string matches the final composition (some IMEs
       // send a final compositionend with the resolved text).
       this.replaceComposing(str)
       this.composing = null
+      this.armTrailingCompositionInputGuard(str)
     }
     this.imeProxy.value = ""
     this.scheduleSnapshot()
+  },
+
+  currentCompositionText(event) {
+    const data = event && event.data != null ? String(event.data) : ""
+    const value = this.imeProxy ? String(this.imeProxy.value || "") : ""
+    const normalize = (text) => {
+      try { return text.normalize("NFC") } catch (_) { return text }
+    }
+    const dataText = normalize(data)
+    const valueText = normalize(value)
+    if (!dataText) return valueText
+    if (!valueText) return dataText
+    if (dataText === valueText) return dataText
+
+    const jamoOnly = (text) => /^[\u3130-\u318F]+$/u.test(text)
+    const hasHangulSyllable = (text) => /[\uAC00-\uD7AF]/u.test(text)
+    if (hasHangulSyllable(valueText) && jamoOnly(dataText)) return valueText
+    if (hasHangulSyllable(dataText) && jamoOnly(valueText)) return dataText
+
+    return [...valueText].length >= [...dataText].length ? valueText : dataText
   },
 
   // Delete the current provisional composing run (if any) then insert `str` as
@@ -829,13 +1003,32 @@ const WasmHwpEditor = {
     if (str.length > 0) {
       this.applyInsert(c.section, c.paragraph, start, str)
     }
-    this.composing.length = str.length
+    this.composing.length = [...str].length
     // Caret sits at the end of the provisional run.
-    c.offset = start + str.length
+    c.offset = start + this.composing.length
     this.refreshCursorRect()
     this.renderCaretPage()
     this.drawCaret(c)
     this.anchorProxy()
+  },
+
+  armTrailingCompositionInputGuard(text) {
+    const value = String(text || "")
+    this.skipNextCompositionInput = value ? { value, at: performance.now() } : null
+  },
+
+  swallowTrailingCompositionInput(event) {
+    const pending = this.skipNextCompositionInput
+    if (!pending) return false
+
+    const type = event.inputType || ""
+    const data = String(event.data != null ? event.data : (this.imeProxy && this.imeProxy.value) || "")
+    const age = performance.now() - pending.at
+    const compositionInput = type === "insertCompositionText" || type === "insertReplacementText"
+    const sameImmediateText = data === pending.value && age >= 0 && age < 500
+
+    this.skipNextCompositionInput = null
+    return compositionInput || sameImmediateText
   },
 
   // Insert plain text at the caret, route to cell when inside a table cell.
@@ -890,9 +1083,22 @@ const WasmHwpEditor = {
   // ─── Editing keys (keydown, non-composing) ───────────────────────────────
 
   handleKeyDown(event) {
+    if (this.saveShortcut(event)) {
+      event.preventDefault()
+      event.stopPropagation()
+      this.saveLocalDocument({})
+      return
+    }
     if (!this.doc || !this.caret) return
     if (event.isComposing) return // IME owns the keystroke
     if (event.metaKey || event.ctrlKey || event.altKey) return // shortcuts pass through
+    if (event.key === "Tab") {
+      event.preventDefault()
+      event.stopPropagation()
+      if (this.imeProxy) this.imeProxy.focus({ preventScroll: true })
+      this.anchorProxy()
+      return
+    }
 
     // A non-empty selection makes Backspace/Delete/Enter act on the whole range.
     if (this.hasSelection() &&
@@ -1140,8 +1346,34 @@ const WasmHwpEditor = {
   // Apply an agent-routed op to the authoritative WASM doc and reply with the
   // result. `verb` is read | find | edit. The reply is always sent (even on
   // error) so the blocked MCP caller never hangs to its timeout.
-  handleAgentOp({ request_id, verb, payload }) {
-    const reply = body => this.pushEvent("doc.browser_reply", { request_id, ...body })
+  handleAgentOp(request) {
+    this.agentOpQueue.push(request)
+    this.processAgentOpQueue()
+  },
+
+  processAgentOpQueue() {
+    if (this.agentOpProcessing) return
+
+    const request = this.agentOpQueue.shift()
+    if (!request) return
+
+    this.agentOpProcessing = true
+    const { request_id, verb, payload } = request
+    const replyNow = body => this.pushEvent("doc.browser_reply", { request_id, ...body })
+    const reply = (body, waitForPaint = false) => {
+      const send = () => {
+        replyNow(body)
+        this.agentOpProcessing = false
+        this.processAgentOpQueue()
+      }
+
+      if (waitForPaint) {
+        this.afterNextPaint(send)
+      } else {
+        setTimeout(send, 0)
+      }
+    }
+
     if (!this.doc) {
       reply({ error: "document_not_loaded" })
       return
@@ -1153,7 +1385,8 @@ const WasmHwpEditor = {
           reply(
             Array.isArray(payload && payload.ops)
               ? this.applyAgentEditBatch(payload)
-              : this.applyAgentEdit(payload)
+              : this.applyAgentEdit(payload),
+            true
           )
           break
         case "set":
@@ -1161,7 +1394,8 @@ const WasmHwpEditor = {
           reply(
             Array.isArray(payload && payload.sets)
               ? this.applyAgentSetBatch(payload)
-              : this.applyAgentSet(payload)
+              : this.applyAgentSet(payload),
+            true
           )
           break
         case "find":
@@ -1184,6 +1418,15 @@ const WasmHwpEditor = {
     }
   },
 
+  afterNextPaint(callback) {
+    if (typeof window.requestAnimationFrame !== "function" || document.visibilityState === "hidden") {
+      setTimeout(callback, 0)
+      return
+    }
+
+    window.requestAnimationFrame(() => setTimeout(callback, 0))
+  },
+
   // Structural edit verbs over the viewed WASM model: `replace_text`,
   // `insert_text`, `delete_range`. Each addresses text positionally via a `ref`
   // ({section, paragraph, offset} from doc.find) so the agent can target ONE
@@ -1191,11 +1434,10 @@ const WasmHwpEditor = {
   // a ref (global), but only replaces >1 match when `all:true` is set.
   //
   // Single-op entry point: apply the MUTATION (applyOneOp, no render) then run
-  // the shared finish (re-render + revision bump) ONCE. The mutation and the
+  // the shared finish (re-render/snapshot) ONCE. The mutation and the
   // finish are deliberately split so the BATCH path (applyAgentEditBatch) can
   // mutate many ops and finish a single time.
-  applyAgentEdit({ op, base_revision }) {
-    const baseRev = typeof base_revision === "number" ? base_revision : 0
+  applyAgentEdit({ op }) {
     // try/catch parity with applyAgentEditBatch: an op-level throw (e.g. a WASM
     // primitive error) must surface as a structured {error}, never a raw
     // uncaught exception to the agent.
@@ -1206,13 +1448,80 @@ const WasmHwpEditor = {
       return { error: String((error && error.message) || error) }
     }
     if (r.error) return { error: r.error }
-    return this.finishAgentEdit(baseRev, r.extra || {})
+    return this.finishAgentEdit(r.extra || {})
   },
 
   // Apply ONE structural edit op to the WASM model and return either
   // `{ ok: true, extra }` (the per-verb result fields the finish should echo) or
-  // `{ error }`. This function NEVER renders or bumps the revision — that is the
+  // `{ error }`. This function NEVER renders — that is the
   // caller's job via finishAgentEdit, so a batch can mutate N ops and finish once.
+  colorValueToBgr(value) {
+    if (Number.isInteger(value)) return value
+    if (typeof value !== "string") return null
+    const match = value.trim().match(/^#?([0-9a-fA-F]{6})$/)
+    if (!match) return null
+    const hex = match[1]
+    const r = parseInt(hex.slice(0, 2), 16)
+    const g = parseInt(hex.slice(2, 4), 16)
+    const b = parseInt(hex.slice(4, 6), 16)
+    return (b << 16) | (g << 8) | r
+  },
+
+  colorPropFromOp(op, keys) {
+    for (const key of keys) {
+      if (op && Object.prototype.hasOwnProperty.call(op, key)) {
+        const color = this.colorValueToBgr(op[key])
+        if (color != null) return color
+      }
+    }
+    return null
+  },
+
+  intPropFromOp(op, keys) {
+    for (const key of keys) {
+      if (op && Number.isInteger(op[key])) return op[key]
+    }
+    return null
+  },
+
+  shapeStylePropsFromOp(op) {
+    const props = {}
+    const fillColor = this.colorPropFromOp(op, [
+      "fillBgColor",
+      "fillColor",
+      "BackgroundColor",
+      "backgroundColor",
+      "fill_color",
+      "background_color"
+    ])
+    const fillType = op && (op.fillType != null ? op.fillType : op.fill_type)
+
+    if (fillColor != null) {
+      props.fillType = fillType != null ? String(fillType) : "solid"
+      props.fillBgColor = fillColor
+      props.fillPatType = -1
+    } else if (fillType != null) {
+      props.fillType = String(fillType)
+    }
+
+    for (const [target, keys] of [
+      ["fillPatColor", ["fillPatColor", "fill_pat_color"]],
+      ["fillPatType", ["fillPatType", "fill_pat_type"]],
+      ["fillAlpha", ["fillAlpha", "fill_alpha"]],
+      ["borderWidth", ["borderWidth", "border_width"]],
+      ["lineType", ["lineType", "line_type"]],
+      ["roundRate", ["roundRate", "round_rate"]],
+      ["rotationAngle", ["rotationAngle", "rotation_angle"]]
+    ]) {
+      const value = this.intPropFromOp(op, keys)
+      if (value != null) props[target] = value
+    }
+
+    const borderColor = this.colorPropFromOp(op, ["borderColor", "border_color", "lineColor", "line_color"])
+    if (borderColor != null) props.borderColor = borderColor
+    return props
+  },
+
   applyOneOp(op) {
     const verb = op && op.op
     const ref = this.parseRef(op && op.ref)
@@ -1226,10 +1535,7 @@ const WasmHwpEditor = {
       if (op.replacement == null) {
         return { error: "replace_text requires a 'replacement' field (the field is 'replacement', not 'text'/'new'; to delete text use delete_range)" }
       }
-      const replacement = String(op.replacement)
-      if (replacement.includes("\n")) {
-        return { error: "replace_text replacement must be a single paragraph (no newlines); use one op per paragraph or 'split'" }
-      }
+      const replacement = this.singleParagraphText(op.replacement)
 
       // cell-scoped: the ref addresses text inside a TABLE CELL. Read/replace via
       // the cell primitives (getTextInCell/deleteTextInCell/insertTextInCell) — the
@@ -1239,13 +1545,8 @@ const WasmHwpEditor = {
         const cl = ref.cell
         let cellText = ""
         try {
-          const len = this.doc.getCellParagraphLength(
-            ref.section, cl.parentParaIndex, cl.controlIndex, cl.cellIndex, cl.cellParaIndex
-          )
-          cellText =
-            this.doc.getTextInCell(
-              ref.section, cl.parentParaIndex, cl.controlIndex, cl.cellIndex, cl.cellParaIndex, 0, len
-            ) || ""
+          const len = this.cellParagraphLength(ref, cl, cl.cellParaIndex)
+          cellText = this.getTextInCellRef(ref, cl, cl.cellParaIndex, 0, len) || ""
         } catch (error) {
           return { error: `cell read failed: ${String((error && error.message) || error)}` }
         }
@@ -1254,12 +1555,8 @@ const WasmHwpEditor = {
           return { error: `replace_text: query not found in target cell (cell text: ${JSON.stringify(cellText.slice(0, 80))})` }
         }
         try {
-          this.doc.deleteTextInCell(
-            ref.section, cl.parentParaIndex, cl.controlIndex, cl.cellIndex, cl.cellParaIndex, idx, query.length
-          )
-          this.doc.insertTextInCell(
-            ref.section, cl.parentParaIndex, cl.controlIndex, cl.cellIndex, cl.cellParaIndex, idx, replacement
-          )
+          this.deleteTextInCellRef(ref, cl, cl.cellParaIndex, idx, query.length)
+          this.insertTextInCellRef(ref, cl, cl.cellParaIndex, idx, replacement)
         } catch (error) {
           return { error: `cell replace failed: ${String((error && error.message) || error)}` }
         }
@@ -1357,7 +1654,6 @@ const WasmHwpEditor = {
       if (!ref) return { error: "insert_text requires a ref {section,paragraph,offset} (from doc.find)" }
       const text = op.text != null ? String(op.text) : ""
       if (!text) return { error: "insert_text requires non-empty 'text'" }
-      if (text.includes("\n")) return { error: "insert_text 'text' must be a single paragraph (no newlines); use 'split' for new paragraphs" }
       const offset = Number.isInteger(ref.offset) ? ref.offset : 0
       // note (footnote/endnote) BODY sub-paragraph: route to insertTextInFootnote,
       // which the native engine handles for both footnotes and endnotes. The body
@@ -1367,7 +1663,7 @@ const WasmHwpEditor = {
       if (ref.note) {
         const nt = ref.note
         try {
-          this.doc.insertTextInFootnote(ref.section, ref.paragraph, nt.controlIndex, nt.subParaIndex, offset, text)
+          this.insertTextLinesInFootnote(ref, nt, offset, text)
         } catch (error) {
           return { error: `insertTextInFootnote failed: ${String((error && error.message) || error)}` }
         }
@@ -1377,9 +1673,7 @@ const WasmHwpEditor = {
       if (ref.cell) {
         const cl = ref.cell
         try {
-          this.doc.insertTextInCell(
-            ref.section, cl.parentParaIndex, cl.controlIndex, cl.cellIndex, cl.cellParaIndex, offset, text
-          )
+          this.insertTextLinesInCell(ref, cl, offset, text)
         } catch (error) {
           return { error: `insertTextInCell failed: ${String((error && error.message) || error)}` }
         }
@@ -1387,7 +1681,7 @@ const WasmHwpEditor = {
         return { ok: true, extra: { inserted: text.length } }
       }
       try {
-        this.doc.insertText(ref.section, ref.paragraph, offset, text)
+        this.insertTextLines(ref, offset, text)
       } catch (error) {
         return { error: `insertText failed: ${String((error && error.message) || error)}` }
       }
@@ -1406,7 +1700,7 @@ const WasmHwpEditor = {
         let len = 0
         try {
           if (cl) {
-            len = this.doc.getCellParagraphLength(ref.section, cl.parentParaIndex, cl.controlIndex, cl.cellIndex, cl.cellParaIndex)
+            len = this.cellParagraphLength(ref, cl, cl.cellParaIndex)
           } else if (nt) {
             len = this.noteParagraphText(ref.section, ref.paragraph, nt).length
           } else {
@@ -1420,9 +1714,7 @@ const WasmHwpEditor = {
       if (count <= 0) return { error: "delete_range: nothing to delete (count must be > 0)" }
       try {
         if (cl) {
-          this.doc.deleteTextInCell(
-            ref.section, cl.parentParaIndex, cl.controlIndex, cl.cellIndex, cl.cellParaIndex, offset, count
-          )
+          this.deleteTextInCellRef(ref, cl, cl.cellParaIndex, offset, count)
         } else if (nt) {
           this.doc.deleteTextInFootnote(ref.section, ref.paragraph, nt.controlIndex, nt.subParaIndex, offset, count)
         } else {
@@ -1450,35 +1742,30 @@ const WasmHwpEditor = {
       const text = op.text != null ? String(op.text) : ""
       const lines = text.split("\n")
       const { section } = ref
-      const { parentParaIndex: pp, controlIndex: ci, cellIndex: ce } = cl
       try {
         // 1) Collapse to one cell paragraph: merge cellPara 1 back into 0 until
         //    only the first remains. mergeParagraphInCell at a non-zero cellPara
         //    joins it into the previous one; we keep merging index 1 until the
         //    cell no longer has a second paragraph (the merge returns the prior
         //    paragraph index / errors when there is nothing to merge).
-        let guard = 0
-        while (guard++ < 4096) {
-          const raw = this.doc.getTextInCell(section, pp, ci, ce, 1, 0, 0)
-          // getTextInCell on a non-existent cellPara throws — when it does, only
-          // paragraph 0 is left.
-          if (raw == null) break
-          this.doc.mergeParagraphInCell(section, pp, ci, ce, 1)
+        const count = this.cellParagraphCount(ref, cl)
+        for (let cellPara = Math.min(count - 1, 4095); cellPara >= 1; cellPara--) {
+          this.mergeParagraphInCellRef(ref, cl, cellPara)
         }
       } catch (_) {
-        // No cellPara 1 (single-paragraph cell already) — nothing to collapse.
+        // No extra cell paragraphs (single-paragraph cell already) — nothing to collapse.
       }
       try {
         // 2) Clear cellPara 0 (keeps its ParaShape/CharShape) and set line 0.
-        const len0 = this.doc.getCellParagraphLength(section, pp, ci, ce, 0)
-        if (len0 > 0) this.doc.deleteTextInCell(section, pp, ci, ce, 0, 0, len0)
-        if (lines[0]) this.doc.insertTextInCell(section, pp, ci, ce, 0, 0, lines[0])
+        const len0 = this.cellParagraphLength(ref, cl, 0)
+        if (len0 > 0) this.deleteTextInCellRef(ref, cl, 0, 0, len0)
+        if (lines[0]) this.insertTextInCellRef(ref, cl, 0, 0, lines[0])
         // 3) Each further line: split at end of the current last paragraph
         //    (inherits format) then insert the line.
         for (let i = 1; i < lines.length; i++) {
-          const prevLen = this.doc.getCellParagraphLength(section, pp, ci, ce, i - 1)
-          this.doc.splitParagraphInCell(section, pp, ci, ce, i - 1, prevLen)
-          if (lines[i]) this.doc.insertTextInCell(section, pp, ci, ce, i, 0, lines[i])
+          const prevLen = this.cellParagraphLength(ref, cl, i - 1)
+          this.splitParagraphInCellRef(ref, cl, i - 1, prevLen)
+          if (lines[i]) this.insertTextInCellRef(ref, cl, i, 0, lines[i])
         }
       } catch (error) {
         return { error: `set_cell failed: ${String((error && error.message) || error)}` }
@@ -1486,8 +1773,8 @@ const WasmHwpEditor = {
       this.recordOp("AgentSetCell", { section, cell: cl, lines })
       // BUGFIX: obey the applyOneOp contract — return {ok, extra} and let the
       // CALLER (applyAgentEdit / applyAgentEditBatch) call finishAgentEdit. The
-      // old line called `finishAgentEdit(baseRev, …)` here, but `baseRev` is NOT
-      // in scope inside applyOneOp → "ReferenceError: baseRev is not defined" on
+      // old line called `finishAgentEdit(...)` here, which is NOT this helper's
+      // job and caused runtime failures on
       // every set_cell (single, and every set_cell op inside a batch).
       return { ok: true, extra: { cellParaCount: lines.length } }
     }
@@ -1541,6 +1828,7 @@ const WasmHwpEditor = {
       }
       const offset = Number.isInteger(ref.offset) ? ref.offset : 0
       const shapeType = op.shape_type != null ? String(op.shape_type) : "rectangle"
+      const shapeProps = this.shapeStylePropsFromOp(op)
       const shapeJson = JSON.stringify({
         sectionIdx: ref.section,
         paraIdx: ref.paragraph,
@@ -1550,15 +1838,23 @@ const WasmHwpEditor = {
         horzOffset: Number.isInteger(op.x) ? op.x : 0,
         vertOffset: Number.isInteger(op.y) ? op.y : 0,
         shapeType,
-        treatAsChar: true
+        treatAsChar: true,
+        ...shapeProps
       })
+      let created = null
       try {
-        this.doc.createShapeControl(shapeJson)
+        created = this.doc.createShapeControl(shapeJson)
+        if (Object.keys(shapeProps).length > 0 && created) {
+          const info = JSON.parse(created)
+          if (Number.isInteger(info.paraIdx) && Number.isInteger(info.controlIdx)) {
+            this.doc.setShapeProperties(ref.section, info.paraIdx, info.controlIdx, JSON.stringify(shapeProps))
+          }
+        }
       } catch (error) {
         return { error: `createShapeControl failed: ${String((error && error.message) || error)}` }
       }
-      this.recordOp("AgentInsertShape", { section: ref.section, para: ref.paragraph, offset, shapeType, width, height })
-      return { ok: true, extra: { shapeType } }
+      this.recordOp("AgentInsertShape", { section: ref.section, para: ref.paragraph, offset, shapeType, width, height, shapeProps })
+      return { ok: true, extra: { shapeType, shapeProps } }
     }
 
     // set_columns: the section's multi-column layout. `count` columns; column_type
@@ -1585,8 +1881,162 @@ const WasmHwpEditor = {
     return { error: `unsupported_op:${verb}` }
   },
 
+  singleParagraphText(value) {
+    return String(value == null ? "" : value).replace(/\r\n|\r|\n/g, " ").replace(/[ \t]{2,}/g, " ").trim()
+  },
+
+  splitTextLines(value) {
+    return String(value == null ? "" : value).split(/\r\n|\r|\n/)
+  },
+
+  normalizeCellPath(raw) {
+    const list = Array.isArray(raw) ? raw : null
+    if (!list || list.length === 0) return null
+
+    const path = []
+    for (const step of list) {
+      if (!step || typeof step !== "object") return null
+      const controlIndex = Number(step.controlIndex ?? step.control ?? step.ctrlIdx)
+      const cellIndex = Number(step.cellIndex ?? step.cell ?? step.cellIdx)
+      const cellParaIndex = Number(step.cellParaIndex ?? step.cellPara ?? step.cell_para)
+      if (!Number.isInteger(controlIndex) || !Number.isInteger(cellIndex) || !Number.isInteger(cellParaIndex)) {
+        return null
+      }
+      path.push({ controlIndex, cellIndex, cellParaIndex })
+    }
+    return path
+  },
+
+  cellPathForPara(ref, cellParaIndex) {
+    if (!ref || !Array.isArray(ref.cellPath) || ref.cellPath.length === 0) return null
+    const path = ref.cellPath.map((step) => ({
+      controlIndex: step.controlIndex,
+      cellIndex: step.cellIndex,
+      cellParaIndex: step.cellParaIndex
+    }))
+    if (Number.isInteger(cellParaIndex)) {
+      path[path.length - 1].cellParaIndex = cellParaIndex
+    }
+    return path
+  },
+
+  cellPathJson(ref, cellParaIndex) {
+    const path = this.cellPathForPara(ref, cellParaIndex)
+    return path ? JSON.stringify(path) : null
+  },
+
+  cellParagraphCount(ref, cell) {
+    const pathJson = this.cellPathJson(ref, 0)
+    if (pathJson && typeof this.doc.getCellParagraphCountByPath === "function") {
+      return this.doc.getCellParagraphCountByPath(ref.section, cell.parentParaIndex, pathJson)
+    }
+    return this.doc.getCellParagraphCount(ref.section, cell.parentParaIndex, cell.controlIndex, cell.cellIndex)
+  },
+
+  cellParagraphLength(ref, cell, cellParaIndex) {
+    const pathJson = this.cellPathJson(ref, cellParaIndex)
+    if (pathJson && typeof this.doc.getCellParagraphLengthByPath === "function") {
+      return this.doc.getCellParagraphLengthByPath(ref.section, cell.parentParaIndex, pathJson)
+    }
+    return this.doc.getCellParagraphLength(
+      ref.section, cell.parentParaIndex, cell.controlIndex, cell.cellIndex, cellParaIndex
+    )
+  },
+
+  getTextInCellRef(ref, cell, cellParaIndex, offset, count) {
+    const pathJson = this.cellPathJson(ref, cellParaIndex)
+    if (pathJson && typeof this.doc.getTextInCellByPath === "function") {
+      return this.doc.getTextInCellByPath(ref.section, cell.parentParaIndex, pathJson, offset, count)
+    }
+    return this.doc.getTextInCell(
+      ref.section, cell.parentParaIndex, cell.controlIndex, cell.cellIndex, cellParaIndex, offset, count
+    )
+  },
+
+  insertTextInCellRef(ref, cell, cellParaIndex, offset, text) {
+    const pathJson = this.cellPathJson(ref, cellParaIndex)
+    if (pathJson && typeof this.doc.insertTextInCellByPath === "function") {
+      return this.doc.insertTextInCellByPath(ref.section, cell.parentParaIndex, pathJson, offset, text)
+    }
+    return this.doc.insertTextInCell(
+      ref.section, cell.parentParaIndex, cell.controlIndex, cell.cellIndex, cellParaIndex, offset, text
+    )
+  },
+
+  deleteTextInCellRef(ref, cell, cellParaIndex, offset, count) {
+    const pathJson = this.cellPathJson(ref, cellParaIndex)
+    if (pathJson && typeof this.doc.deleteTextInCellByPath === "function") {
+      return this.doc.deleteTextInCellByPath(ref.section, cell.parentParaIndex, pathJson, offset, count)
+    }
+    return this.doc.deleteTextInCell(
+      ref.section, cell.parentParaIndex, cell.controlIndex, cell.cellIndex, cellParaIndex, offset, count
+    )
+  },
+
+  splitParagraphInCellRef(ref, cell, cellParaIndex, offset) {
+    const pathJson = this.cellPathJson(ref, cellParaIndex)
+    if (pathJson && typeof this.doc.splitParagraphInCellByPath === "function") {
+      return this.doc.splitParagraphInCellByPath(ref.section, cell.parentParaIndex, pathJson, offset)
+    }
+    return this.doc.splitParagraphInCell(
+      ref.section, cell.parentParaIndex, cell.controlIndex, cell.cellIndex, cellParaIndex, offset
+    )
+  },
+
+  mergeParagraphInCellRef(ref, cell, cellParaIndex) {
+    const pathJson = this.cellPathJson(ref, cellParaIndex)
+    if (pathJson && typeof this.doc.mergeParagraphInCellByPath === "function") {
+      return this.doc.mergeParagraphInCellByPath(ref.section, cell.parentParaIndex, pathJson)
+    }
+    return this.doc.mergeParagraphInCell(
+      ref.section, cell.parentParaIndex, cell.controlIndex, cell.cellIndex, cellParaIndex
+    )
+  },
+
+  insertTextLines(ref, offset, text) {
+    const lines = this.splitTextLines(text)
+    this.doc.insertText(ref.section, ref.paragraph, offset, lines[0] || "")
+    let para = ref.paragraph
+    let splitOffset = offset + (lines[0] || "").length
+    for (let i = 1; i < lines.length; i++) {
+      this.doc.splitParagraph(ref.section, para, splitOffset)
+      para += 1
+      const line = lines[i] || ""
+      this.doc.insertText(ref.section, para, 0, line)
+      splitOffset = line.length
+    }
+  },
+
+  insertTextLinesInCell(ref, cell, offset, text) {
+    const lines = this.splitTextLines(text)
+    let cellPara = cell.cellParaIndex
+    this.insertTextInCellRef(ref, cell, cellPara, offset, lines[0] || "")
+    let splitOffset = offset + (lines[0] || "").length
+    for (let i = 1; i < lines.length; i++) {
+      this.splitParagraphInCellRef(ref, cell, cellPara, splitOffset)
+      cellPara += 1
+      const line = lines[i] || ""
+      this.insertTextInCellRef(ref, cell, cellPara, 0, line)
+      splitOffset = line.length
+    }
+  },
+
+  insertTextLinesInFootnote(ref, note, offset, text) {
+    const lines = this.splitTextLines(text)
+    let subPara = note.subParaIndex
+    this.doc.insertTextInFootnote(ref.section, ref.paragraph, note.controlIndex, subPara, offset, lines[0] || "")
+    let splitOffset = offset + (lines[0] || "").length
+    for (let i = 1; i < lines.length; i++) {
+      this.doc.splitParagraphInFootnote(ref.section, ref.paragraph, note.controlIndex, subPara, splitOffset)
+      subPara += 1
+      const line = lines[i] || ""
+      this.doc.insertTextInFootnote(ref.section, ref.paragraph, note.controlIndex, subPara, 0, line)
+      splitOffset = line.length
+    }
+  },
+
   // Batch structural edit (doc_edit {ops:[...]}). Apply every op to the WASM
-  // model with ONE re-render/revision bump at the end (finishAgentEdit). This is
+  // model with ONE re-render/snapshot at the end (finishAgentEdit). This is
   // best-effort: each op is applied independently, a bad ref does NOT abort the
   // rest, and the result carries a per-op `results` array.
   //
@@ -1600,8 +2050,7 @@ const WasmHwpEditor = {
   // still valid. Cell-targeted ops (ref carries `.cell`) and pure in-place ops
   // address a fixed cell/offset and never move another op's target, so they are
   // order-independent and run first (in their given order).
-  applyAgentEditBatch({ ops, base_revision }) {
-    const baseRev = typeof base_revision === "number" ? base_revision : 0
+  applyAgentEditBatch({ ops }) {
     const list = Array.isArray(ops) ? ops : []
     if (list.length === 0) return { error: "edit batch requires a non-empty 'ops' array" }
 
@@ -1640,10 +2089,10 @@ const WasmHwpEditor = {
       }
     }
 
-    const finished = this.finishAgentEdit(baseRev, {})
+    this.finishAgentEdit({})
     return {
       ok: true,
-      result: { ok: true, revision: finished.result.revision, applied, failed, results }
+      result: { ok: true, applied, failed, results }
     }
   },
 
@@ -1680,15 +2129,14 @@ const WasmHwpEditor = {
   // engine reads the property KEYS (BackgroundColor/fillColor for a cell;
   // Bold/TextColor/FontSize for a char run). `ref` is doc.find's positional ref; a
   // cell ref carries {parentParaIndex,controlIndex,cellIndex,cellParaIndex}.
-  applyAgentSet({ ref, props, base_revision }) {
-    const baseRev = typeof base_revision === "number" ? base_revision : 0
+  applyAgentSet({ ref, props }) {
     const r = this.applySetOne(ref, props)
     if (r.error) return { error: r.error }
-    return this.finishAgentEdit(baseRev, {})
+    return this.finishAgentEdit({})
   },
 
   // Apply ONE property set to the WASM model and return `{ ok: true }` or
-  // `{ error }`. Mutate-only — no render / revision bump (the caller finishes
+  // `{ error }`. Mutate-only — no render (the caller finishes
   // once), so a batch of sets renders a single time.
   applySetOne(ref, props) {
     const parsed = this.parseRef(ref)
@@ -1739,12 +2187,11 @@ const WasmHwpEditor = {
   },
 
   // Batch property set (doc_set {sets:[{ref,props}, ...]}). Apply every set to
-  // the WASM model with ONE re-render/revision bump at the end. Best-effort: a
+  // the WASM model with ONE re-render/snapshot at the end. Best-effort: a
   // bad ref does NOT abort the rest; the result carries a per-set `results`
   // array. Sets address fixed cells/runs and never move another set's target, so
   // order is irrelevant (applied in the given order).
-  applyAgentSetBatch({ sets, base_revision }) {
-    const baseRev = typeof base_revision === "number" ? base_revision : 0
+  applyAgentSetBatch({ sets }) {
     const list = Array.isArray(sets) ? sets : []
     if (list.length === 0) return { error: "set batch requires a non-empty 'sets' array" }
 
@@ -1769,10 +2216,10 @@ const WasmHwpEditor = {
       }
     }
 
-    const finished = this.finishAgentEdit(baseRev, {})
+    this.finishAgentEdit({})
     return {
       ok: true,
-      result: { ok: true, revision: finished.result.revision, applied, failed, results }
+      result: { ok: true, applied, failed, results }
     }
   },
 
@@ -1782,7 +2229,26 @@ const WasmHwpEditor = {
     if (ref == null) return null
     let r = ref
     if (typeof ref === "string") {
-      try { r = JSON.parse(ref) } catch (_) { return null }
+      try { r = JSON.parse(ref) } catch (_) {
+        const text = ref.trim()
+        let match = /^hwp:s(\d+)\/p(\d+)(?:@(\d+))?$/.exec(text)
+        if (match) {
+          return {
+            section: Number(match[1]),
+            paragraph: Number(match[2]),
+            offset: Number(match[3] || 0)
+          }
+        }
+        match = /^hwp:s(\d+)\/p(\d+)\/c(\d+)\+\d+$/.exec(text)
+        if (match) {
+          return {
+            section: Number(match[1]),
+            paragraph: Number(match[2]),
+            offset: Number(match[3])
+          }
+        }
+        return null
+      }
     }
     if (typeof r !== "object") return null
     const section = Number(r.section ?? r.sectionIndex ?? 0)
@@ -1790,6 +2256,22 @@ const WasmHwpEditor = {
     if (!Number.isInteger(paragraph)) return null
     const offset = Number(r.offset ?? r.charOffset ?? 0)
     const out = { section: Number.isInteger(section) ? section : 0, paragraph, offset: Number.isInteger(offset) ? offset : 0 }
+    const cellPath = this.normalizeCellPath(r.cellPath ?? r.cell_path)
+    if (cellPath) {
+      const last = cellPath[cellPath.length - 1]
+      // `cellPath` is the authoritative address for nested tables. Keep a
+      // cell-shaped summary so existing cell branches route here, then the
+      // low-level helpers switch to rhwp's `*ByPath` calls.
+      out.cellPath = cellPath
+      out.cell = {
+        parentParaIndex: paragraph,
+        controlIndex: cellPath[0].controlIndex,
+        cellIndex: last.cellIndex,
+        cellParaIndex: last.cellParaIndex,
+        cellPath
+      }
+      return out
+    }
     // Table-cell address (from doc.find's cellContext). Accept both the bridge
     // shape ({parentParaIndex,controlIndex,cellIndex,cellParaIndex}) and the raw
     // rhwp shape ({parentPara,ctrlIdx,cellIdx,cellPara}).
@@ -1821,13 +2303,13 @@ const WasmHwpEditor = {
 
   // Shared post-edit step: re-render the visible window (an edit can reflow any
   // page), redraw the caret, and persist the edited bytes so it survives reload.
-  finishAgentEdit(baseRev, extra) {
+  finishAgentEdit(extra) {
     this._elementsCache = null // the document changed; the cached element list is stale
     this.rendered.clear()
     this.renderVisiblePages()
     if (this.caret) this.drawCaret(this.caret)
     this.scheduleSnapshot()
-    return { ok: true, result: { ok: true, revision: baseRev + 1, ...extra } }
+    return { ok: true, result: { ok: true, ...extra } }
   },
 
   // Best-effort match count from replaceAll's JSON return (shape varies across
@@ -1852,8 +2334,15 @@ const WasmHwpEditor = {
   // element — body paragraphs AND table cells (empty ones included, which the
   // literal searchAllText can never surface) — and filter by `pattern` as a
   // regex. This is what lets the agent see the blank boxes in a form template.
-  applyAgentFind({ pattern, case_sensitive, all, regex, type }) {
-    if (all || regex || type) return this.applyAgentFindAll(pattern, !!case_sensitive, type)
+  applyAgentFind({ pattern, patterns, case_sensitive, all, regex, type, limit }) {
+    if (Array.isArray(patterns)) {
+      return {
+        results: patterns.map((p) =>
+          this.applyAgentFind({ pattern: p, case_sensitive, all, regex, type, limit })
+        )
+      }
+    }
+    if (all || regex || type) return this.applyAgentFindAll(pattern, !!case_sensitive, type, limit)
     const matches = []
     try {
       const raw = this.doc.searchAllText(String(pattern || ""), !!case_sensitive, true)
@@ -1886,13 +2375,13 @@ const WasmHwpEditor = {
     } catch (error) {
       console.error("[wasm-hwp] searchAllText failed", error)
     }
-    return { pattern, matches }
+    return { pattern, matches: this.limitAgentMatches(matches, limit) }
   },
 
   // Discovery search: enumerate every element (collectElements) and keep those
   // whose text matches `pattern` as a regex. An empty/missing pattern becomes
   // [\s\S]* so {all:true} lists the WHOLE structure, including empty cells.
-  applyAgentFindAll(pattern, caseSensitive, type) {
+  applyAgentFindAll(pattern, caseSensitive, type, limit) {
     const src = pattern == null || pattern === "" ? "[\\s\\S]*" : String(pattern)
     let re
     try {
@@ -1905,6 +2394,7 @@ const WasmHwpEditor = {
     // whole structure.
     const t = String(type || "").toLowerCase()
     const typeOk = (el) => {
+      if (!t) return true
       const isCell = !!(el.ref && el.ref.cell)
       const isEmpty = !el.text || el.text.trim() === ""
       // A REAL form field self-describes: it has a column header and/or a row
@@ -1912,11 +2402,12 @@ const WasmHwpEditor = {
       // NO context is structural/merged noise (a spacer/merged span), not a field
       // to fill — exclude it from `empty_cell` so the agent only gets genuine
       // blanks. `cell`/`all` still include it.
-      const isFormField = !!el.context
+      const isFormField = !!(el.context && String(el.context).trim())
       // Engine enumeration tags every node with its IR kind; the positional-probe
       // fallback has none, so derive cell/paragraph from the ref.
       const kind = el.type || (isCell ? "cell" : "paragraph")
       switch (t) {
+        case "fillable": return !!this.fillableKind(el)
         case "cell": return isCell
         case "empty_cell": case "blank_cell": return isCell && isEmpty && isFormField
         case "filled_cell": return isCell && !isEmpty
@@ -1926,7 +2417,7 @@ const WasmHwpEditor = {
         default: return kind === t
       }
     }
-    const MATCH_CAP = 2000
+    const MATCH_CAP = Math.min(2000, Math.max(1, Number(limit || 2000)))
     const matches = []
     let truncated = false
     for (const el of this.collectElements()) {
@@ -1940,12 +2431,47 @@ const WasmHwpEditor = {
         if (el.context) m.context = el.context
         if (el.row != null) m.row = el.row
         if (el.col != null) m.col = el.col
+        const fillableKind = this.fillableKind(el)
+        if (fillableKind) m.fillable_kind = fillableKind
         matches.push(m)
       }
     }
     const out = { pattern, matches }
     if (truncated) out.truncated = true
     return out
+  },
+
+  isPlaceholderText(text) {
+    return !!this.placeholderKind(text)
+  },
+
+  placeholderKind(text) {
+    const s = String(text || "").trim()
+    if (!s || s.startsWith("※")) return null
+    if (s.includes("____")) return "underscore"
+    if (s.includes("[]") || /^[□☐]\s*/u.test(s)) return "checkbox"
+    if (/[-‐‑‒–—―－─]{4,}.*\(이하/u.test(s)) return "signature_line"
+    if (/\(\s{2,}\)/u.test(s)) return "paren_blank"
+    if (/[:：]\s{2,}[회년월일원%]/u.test(s)) return "inline_gap"
+    if (/[년월일]\s{2,}/u.test(s)) return "date_gap"
+    if (s.endsWith(":") && s.length <= 80) return "trailing_label"
+    return null
+  },
+
+  fillableKind(el) {
+    const isCell = !!(el && el.ref && el.ref.cell)
+    const text = String((el && el.text) || "").trim()
+    const kind = (el && el.type) || (isCell ? "cell" : "paragraph")
+    const hasContext = !!(el && el.context && String(el.context).trim())
+    if (kind === "cell" && text === "" && hasContext) return "empty_cell"
+    if (kind === "field" || kind === "form") return kind
+    if (kind === "paragraph" || kind === "cell") return this.placeholderKind(text)
+    return null
+  },
+
+  limitAgentMatches(matches, limit) {
+    const n = Number(limit || 0)
+    return n > 0 ? matches.slice(0, Math.min(2000, n)) : matches
   },
 
   // Enumerate EVERY addressable element of the viewed model -> [{ref, text}]:
@@ -2096,36 +2622,229 @@ const WasmHwpEditor = {
     return out
   },
 
-  // Page through the document text from the viewed model. Mirrors the server
-  // doc.read shape ({text, at, size, total, next_at}) so the agent pages the
-  // same way regardless of backing.
+  // Clarify a single anchor ref from doc.find. No paging/full-document read.
   applyAgentRead({ opts }) {
     const o = opts || {}
-    const at = Math.max(0, Number(o.at || 0))
-    const size = Math.min(30, Math.max(1, Number(o.size || 30)))
-    // Read the FULL element list (body paragraphs AND table cells, empty cells
-    // included) — collectParagraphs() walks only body paragraphs, so TABLES were
-    // invisible in doc.read and the agent skipped them entirely. Each element
-    // carries its `ref` so the agent can fill a cell straight from the read,
-    // and a `table_cell` flag + `[cell]` text prefix so blanks are obvious.
+    if (!o.ref) return { error: "doc.read requires ref from doc.find" }
+    return this.applyAgentReadNearby(o)
+  },
+
+  applyAgentReadNearby(o) {
+    const ref = String(o.ref || "")
+    const nearby = this.normalizeAgentNearby(o.nearby)
     const elements = this.collectElements()
-    const total = elements.length
-    const window = elements.slice(at, at + size)
-    const nextAt = at + window.length < total ? at + window.length : null
-    const paragraphs = window.map((el) => {
-      const o = { text: el.text, ref: JSON.stringify(el.ref), table_cell: !!(el.ref && el.ref.cell) }
-      if (el.type) o.type = el.type
-      if (el.context) o.context = el.context
-      return o
-    })
-    return {
-      text: window.map((el) => (el.ref && el.ref.cell ? `[cell] ${el.text}` : el.text)).join("\n"),
-      at,
-      size: window.length,
-      paragraphs,
-      total,
-      next_at: nextAt
+    const matches = elements.map((el) => this.agentElementMatch(el))
+    const candidates = this.agentReadRefCandidates(ref)
+    const hit = this.findAgentReadMatch(matches, candidates)
+    if (!hit) {
+      const table = this.compactAgentTableRead(candidates, nearby)
+      return table && !table.error ? { ref, ...table } : { ref, error: "ref not found" }
     }
+
+    const idx = hit.idx
+    const resolvedRef = hit.ref
+    const start = Math.max(0, idx - nearby.before)
+    const window = matches.slice(start, idx + nearby.after + 1)
+    const target = matches[idx]
+    const out = {
+      ref,
+      target,
+      elements: window,
+      text: window.map((m) => m.text || "").join("\n")
+    }
+    if (resolvedRef !== ref) out.resolved_ref = resolvedRef
+
+    if (target.type === "cell" || this.tableKeyFromRefString(resolvedRef)) {
+      Object.assign(out, this.tableNearby(matches, target, nearby))
+    }
+    return out
+  },
+
+  findAgentReadMatch(matches, refs) {
+    for (const ref of refs) {
+      const idx = matches.findIndex((m) => m.ref === ref)
+      if (idx >= 0) return { ref, idx }
+    }
+    return null
+  },
+
+  agentReadRefCandidates(ref) {
+    const refs = [String(ref || "")]
+    let obj = null
+    try { obj = JSON.parse(String(ref || "")) } catch (_) { obj = null }
+
+    if (obj && typeof obj === "object") {
+      if (obj.cell && typeof obj.cell === "object") {
+        const sec = Number(obj.section ?? obj.sectionIndex ?? 0)
+        const parentPara = Number(obj.cell.parentParaIndex ?? obj.cell.parentPara ?? obj.paragraph)
+        const control = Number(obj.cell.controlIndex ?? obj.cell.ctrlIdx)
+        const cell = Number(obj.cell.cellIndex ?? obj.cell.cellIdx)
+        const cellPara = Number(obj.cell.cellParaIndex ?? obj.cell.cellPara ?? 0)
+        if ([sec, parentPara, control, cell, cellPara].every(Number.isInteger)) {
+          refs.push(JSON.stringify({
+            section: sec,
+            paragraph: parentPara,
+            offset: 0,
+            cell: { parentParaIndex: parentPara, controlIndex: control, cellIndex: cell, cellParaIndex: cellPara }
+          }))
+          refs.push(JSON.stringify({ section: sec, paragraph: parentPara, control }))
+        }
+      } else if (obj.paragraph != null || obj.paragraphIndex != null) {
+        const sec = Number(obj.section ?? obj.sectionIndex ?? 0)
+        const para = Number(obj.paragraph ?? obj.paragraphIndex)
+        if (Number.isInteger(sec) && Number.isInteger(para)) {
+          refs.push(JSON.stringify({ section: sec, paragraph: para, offset: 0 }))
+          refs.push(`hwp:s${sec}/p${para}`)
+        }
+      }
+    }
+
+    const s = String(ref || "")
+    let m = /^hwp:s(\d+)\/p(\d+)\/tbl(\d+)\/cell(\d+)\/cp(\d+)\/c\d+\+\d+$/.exec(s)
+    if (m) {
+      const sec = Number(m[1])
+      const para = Number(m[2])
+      const control = Number(m[3])
+      const cell = Number(m[4])
+      const cellPara = Number(m[5])
+      refs.push(JSON.stringify({
+        section: sec,
+        paragraph: para,
+        offset: 0,
+        cell: { parentParaIndex: para, controlIndex: control, cellIndex: cell, cellParaIndex: cellPara }
+      }))
+    }
+
+    m = /^hwp:s(\d+)\/p(\d+)\/c\d+\+\d+$/.exec(s)
+    if (m) {
+      const sec = Number(m[1])
+      const para = Number(m[2])
+      refs.push(JSON.stringify({ section: sec, paragraph: para, offset: 0 }))
+      refs.push(`hwp:s${sec}/p${para}`)
+    }
+
+    return Array.from(new Set(refs.filter(Boolean)))
+  },
+
+  normalizeAgentNearby(input) {
+    const n = input && typeof input === "object" ? input : {}
+    const clamp = (value, fallback) => {
+      const x = Number(value)
+      return Number.isFinite(x) ? Math.max(0, Math.min(10, Math.floor(x))) : fallback
+    }
+    return {
+      before: clamp(n.before, 2),
+      after: clamp(n.after, 2),
+      row: n.row !== false,
+      column: n.column === true,
+      headers: n.headers !== false
+    }
+  },
+
+  agentElementMatch(el) {
+    const m = {
+      ref: JSON.stringify(el.ref),
+      text: el.text || "",
+      type: el.type || ((el.ref && el.ref.cell) ? "cell" : "paragraph")
+    }
+    if (el.context) m.context = el.context
+    if (el.row != null) m.row = el.row
+    if (el.col != null) m.col = el.col
+    return m
+  },
+
+  compactAgentTableRead(ref, nearby) {
+    const refs = Array.isArray(ref) ? ref.map((r) => String(r || "")) : [String(ref || "")]
+    const refString = refs[0] || ""
+    const matches = this.collectElements().map((el) => this.agentElementMatch(el))
+    const key = refs.map((r) => this.tableKeyFromRefString(r)).find(Boolean) || (() => {
+      const hit = matches.find((m) => refs.includes(m.ref))
+      return hit ? this.tableKeyFromRefString(hit.ref) : null
+    })()
+    if (!key) return { ref: refString, error: "ref is not a table/cell ref" }
+    const cells = matches.filter((m) => m.type === "cell" && this.tableKeyFromRefString(m.ref) === key)
+    if (!cells.length) return { ref: refString, error: "no cells for table ref" }
+    return this.compactTablePayload(refString, key, cells, null, nearby)
+  },
+
+  tableNearby(matches, target, nearby) {
+    const key = this.tableKeyFromRefString(target.ref)
+    const cells = matches.filter((m) => m.type === "cell" && this.tableKeyFromRefString(m.ref) === key)
+    return cells.length ? this.compactTablePayload(target.ref, key, cells, target, nearby) : {}
+  },
+
+  compactTablePayload(ref, key, cells, target, nearby) {
+    const sorted = cells.slice().sort((a, b) => ((a.row || 0) - (b.row || 0)) || ((a.col || 0) - (b.col || 0)))
+    const targetRow = target && Number.isInteger(target.row) ? target.row : null
+    const targetCol = target && Number.isInteger(target.col) ? target.col : null
+    const out = {
+      table: {
+        key,
+        anchor: this.tableAnchor(key),
+        row_count: new Set(sorted.map((c) => c.row).filter((v) => Number.isInteger(v))).size,
+        col_count: new Set(sorted.map((c) => c.col).filter((v) => Number.isInteger(v))).size
+      }
+    }
+    if (nearby.headers) {
+      out.table_headers = sorted
+        .filter((c) => c.row === 0)
+        .map((c) => ({ col: c.col, text: c.text || "" }))
+      out.row_labels = sorted
+        .filter((c) => (c.col || 0) === 0 && (c.row || 0) > 0)
+        .filter((c) => String(c.text || "").trim() || c.row === targetRow)
+        .map((c) => ({ row: c.row, text: c.text || "" }))
+    }
+    if (nearby.row && targetRow !== null) {
+      out.row = sorted.filter((c) => c.row === targetRow).map((c) => this.compactTableCell(c, ref))
+    }
+    if (nearby.column && targetCol !== null) {
+      out.column = sorted.filter((c) => c.col === targetCol).map((c) => this.compactTableCell(c, ref))
+    }
+    return out
+  },
+
+  compactTableCell(cell, targetRef) {
+    const out = {
+      row: cell.row,
+      col: cell.col,
+      text: cell.text || "",
+      type: cell.type || "cell"
+    }
+    if (cell.context) out.context = cell.context
+    const writable = this.writableCell(cell)
+    if (writable) out.writable = true
+    if (writable || cell.ref === targetRef) out.ref = cell.ref
+    return out
+  },
+
+  tableAnchor(key) {
+    const m = /^hwp:s(\d+):p(\d+):c(\d+)$/.exec(String(key || ""))
+    return m ? { section: Number(m[1]), paragraph: Number(m[2]), control: Number(m[3]) } : { key }
+  },
+
+  writableCell(cell) {
+    return cell.type === "cell" && String(cell.text || "").trim() === "" &&
+      (!!(cell.context && String(cell.context).trim()) ||
+        (Number.isInteger(cell.row) && Number.isInteger(cell.col) && cell.row > 0 && cell.col > 0))
+  },
+
+  tableKeyFromRefString(ref) {
+    let obj = null
+    try { obj = JSON.parse(String(ref || "")) } catch (_) { obj = null }
+    if (obj && typeof obj === "object") {
+      if (obj.cell && typeof obj.cell === "object") {
+        const sec = Number(obj.section ?? obj.sectionIndex ?? 0)
+        const para = Number(obj.cell.parentParaIndex ?? obj.cell.parentPara ?? obj.paragraph)
+        const control = Number(obj.cell.controlIndex ?? obj.cell.ctrlIdx ?? 0)
+        if (Number.isInteger(para) && Number.isInteger(control)) return `hwp:s${Number.isInteger(sec) ? sec : 0}:p${para}:c${control}`
+      }
+      const control = Number(obj.control ?? obj.controlIndex)
+      const para = Number(obj.paragraph ?? obj.paragraphIndex)
+      const sec = Number(obj.section ?? obj.sectionIndex ?? 0)
+      if (Number.isInteger(control) && Number.isInteger(para)) return `hwp:s${Number.isInteger(sec) ? sec : 0}:p${para}:c${control}`
+    }
+    const m = /^hwp:s(\d+)\/p(\d+)\/tbl(\d+)/.exec(String(ref || ""))
+    return m ? `hwp:s${m[1]}:p${m[2]}:c${m[3]}` : null
   },
 
   // Flatten body paragraph text across sections via the WASM accessors.
@@ -2189,6 +2908,37 @@ const WasmHwpEditor = {
   exportForSave() {
     const bytes = this.format === "hwpx" ? this.doc.exportHwpx() : this.doc.exportHwp()
     return { format: this.format, bytes_base64: this.bytesToBase64(bytes), bytes: bytes.length }
+  },
+
+  saveLocalDocument(payload = {}) {
+    const requestId = payload.request_id || `local-save:${++this.snapshotSeq}`
+    const documentId = payload.document_id || this.documentId
+    if (!this.doc || !documentId) {
+      this.pushEvent("local_document.viewer_save", {
+        request_id: requestId,
+        document_id: documentId,
+        error: "document_not_loaded"
+      })
+      return
+    }
+    try {
+      this.pushEvent("local_document.viewer_save", {
+        request_id: requestId,
+        document_id: documentId,
+        ...this.exportForSave()
+      })
+    } catch (error) {
+      console.error("[wasm-hwp] save failed", error)
+      this.pushEvent("local_document.viewer_save", {
+        request_id: requestId,
+        document_id: documentId,
+        error: String((error && error.message) || error)
+      })
+    }
+  },
+
+  saveShortcut(event) {
+    return (event.metaKey || event.ctrlKey) && (event.key === "s" || event.key === "S")
   },
 
   pushSnapshot() {
