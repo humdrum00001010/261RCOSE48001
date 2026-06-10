@@ -52,7 +52,7 @@ defmodule Ecrits.Local.AcpAgent.SessionQueueTest do
 
     # A second send while turn 1 is in flight ENQUEUES (status :queued) — turn 1
     # is NOT cancelled.
-    {:ok, %{id: _turn2, status: :queued}} = Session.send_turn(pid, nil, "second")
+    {:ok, %{id: turn2, status: :queued}} = Session.send_turn(pid, nil, "second")
     assert_receive {:local_agent_event, %{type: :turn_queued, pending: 1}}, 2_000
     refute_received {:local_agent_event, %{type: :turn_cancelled}}
 
@@ -60,9 +60,44 @@ defmodule Ecrits.Local.AcpAgent.SessionQueueTest do
     send(task1, :go)
     assert_receive {:local_agent_event, %{type: :turn_completed, turn_id: ^turn1}}, 2_000
     assert_receive {:local_agent_adapter_waiting, task2}, 2_000
-    assert_receive {:local_agent_event, %{type: :turn_started}}, 2_000
+    assert_receive {:local_agent_event, %{type: :turn_started, turn_id: ^turn2}}, 2_000
 
     send(task2, :go)
+  end
+
+  test "a queued follow-up drains as an addendum, not a standalone newcomer prompt" do
+    {_id, pid} = start_blocking_session(%{extra_opts: [report_prompts: true, echo_opts: true]})
+
+    {:ok, %{id: turn1, status: :running}} =
+      Session.send_turn(pid, nil, "try fill all fields on this document")
+
+    assert_receive {:fake_acp_prompt, _session_id1, prompt1}, 2_000
+    assert prompt1 =~ "try fill all fields on this document"
+    assert_receive {:local_agent_adapter_waiting, task1}, 2_000
+
+    {:ok, %{id: turn2, status: :queued}} =
+      Session.send_turn(pid, nil, "with reasonable defaults")
+
+    assert_receive {:local_agent_event, %{type: :turn_queued, turn_id: ^turn2}}, 2_000
+
+    send(task1, :go)
+    assert_receive {:local_agent_event, %{type: :turn_completed, turn_id: ^turn1}}, 2_000
+    assert_receive {:fake_acp_prompt, _session_id2, prompt2}, 2_000
+
+    assert prompt2 =~ "Continue previous task."
+    assert prompt2 =~ "Previous: try fill all fields on this document"
+    assert prompt2 =~ "Addendum: with reasonable defaults"
+
+    assert_receive {:local_agent_event, %{type: :turn_started, turn_id: ^turn2}}, 2_000
+    assert_receive {:local_agent_adapter_waiting, task2}, 2_000
+    send(task2, :go)
+
+    assert_receive {:local_agent_event, %{type: :turn_completed, turn_id: ^turn2}}, 2_000
+
+    assert [
+             %{user: "try fill all fields on this document"},
+             %{user: "with reasonable defaults"}
+           ] = Session.transcript(pid)
   end
 
   test "re-Enter flushes the queue head NOW (cancel current + run head)" do

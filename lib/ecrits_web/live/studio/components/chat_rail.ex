@@ -567,7 +567,9 @@ defmodule EcritsWeb.Live.Studio.Components.ChatRail do
 
   def markdown_body(assigns) do
     ~H"""
-    <div data-role="chat-md-body" class="chat-markdown min-w-0 max-w-full">{render_markdown(@body)}</div>
+    <div data-role="chat-md-body" class="chat-markdown min-w-0 max-w-full">
+      {render_markdown(@body)}
+    </div>
     """
   end
 
@@ -965,12 +967,16 @@ defmodule EcritsWeb.Live.Studio.Components.ChatRail do
     do: Map.new(map, fn {key, value} -> {to_string(key), value} end)
 
   defp operation_details(operation) do
+    tool_name = operation_value(operation, "name") || operation_title(operation)
+
     details =
       operation_value(operation, "details") || operation_value(operation, "output") ||
         case operation_value(operation, "error") do
           nil -> operation
           error -> %{"error" => error}
         end
+
+    details = Ecrits.Doc.ToolPayloadSanitizer.sanitize_tool_payload(tool_name, details)
 
     case Jason.encode(details, pretty: true) do
       {:ok, encoded} -> encoded

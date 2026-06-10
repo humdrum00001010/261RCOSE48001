@@ -129,9 +129,9 @@ defmodule Ecrits.Local.AcpAgent.Session do
   @doc """
   Lightweight, display-only transcript of completed turns for repaint after a
   browser refresh. The conversation itself stays provider-owned (codex resumes it
-  via `provider_session_id`); this is only the prior `user`/`agent` text bubbles
-  so the chat pane is not blank on re-attach. A list (oldest first) of
-  `%{turn_id, user, agent}` where each text field may be `nil`/empty.
+  via `provider_session_id`); this is only the visible prior chat rows so the
+  chat pane is not blank on re-attach. A list (oldest first) of
+  `%{turn_id, user, agent, items}` where `items` preserves user/tool/agent rows.
   """
   def transcript(pid) when is_pid(pid), do: GenServer.call(pid, :transcript)
 
@@ -193,12 +193,14 @@ defmodule Ecrits.Local.AcpAgent.Session do
        # mid-turn send ENQUEUES instead of cancelling the running turn; the head
        # drains automatically when the running turn reaches a terminal state. A
        # re-Enter (`flush_queue/2`) on a queued message cancels the current turn
-       # and runs the head immediately. Each entry: %{turn_id, input}.
+       # and runs the head immediately. Each entry:
+       # %{turn_id, input, previous_input}. `previous_input` lets a mid-turn
+       # follow-up run as an addendum instead of a standalone newcomer prompt.
        queue: [],
        # Display-only transcript of COMPLETED turns (oldest first), so a browser
        # refresh can repaint the prior bubbles. codex `thread/resume` restores the
        # agent's memory but does NOT re-stream past messages, so without this the
-       # re-attached pane is blank. Each entry: %{turn_id, user, agent}.
+       # re-attached pane is blank. Each entry: %{turn_id, user, agent, items}.
        transcript: [],
        # Codex (unlike the `pi` adapter) never emits a session/thread title over
        # ACP, so a fresh conversation would stay "New Chat" forever. We derive a
@@ -261,6 +263,7 @@ defmodule Ecrits.Local.AcpAgent.Session do
     # follow them on the live session so the next turn's doc.* tools operate on
     # what the user is now viewing.
     {document_id, new_opts} = Keyword.pop(new_opts, :document_id, state.document_id)
+
     {pool_document_id, adapter_opts} =
       Keyword.pop(new_opts, :pool_document_id, state.pool_document_id)
 
@@ -448,7 +451,9 @@ defmodule Ecrits.Local.AcpAgent.Session do
   # no-op when no turn is in flight is impossible here: callers clear `current`
   # to nil before draining, so the head always launches into an idle session.
   defp drain_queue(%{current: nil, queue: [next | rest]} = state) do
-    {_turn_id, state} = launch_turn(next.input, %{state | queue: rest})
+    {_turn_id, state} =
+      launch_turn(queued_provider_input(next), %{state | queue: rest}, next.turn_id, next.input)
+
     state
   end
 
@@ -465,7 +470,12 @@ defmodule Ecrits.Local.AcpAgent.Session do
     # A turn is already in flight — ENQUEUE rather than cancel (Phase 5 FIFO
     # queue). The pending message drains when the running turn reaches a terminal
     # state. A re-Enter on a queued message flushes it (see `:flush_queue`).
-    queued = %{turn_id: Ecto.UUID.generate(), input: input}
+    queued = %{
+      turn_id: Ecto.UUID.generate(),
+      input: input,
+      previous_input: queue_previous_input(state)
+    }
+
     state = %{state | queue: state.queue ++ [queued]}
 
     state =
@@ -481,8 +491,8 @@ defmodule Ecrits.Local.AcpAgent.Session do
 
   # Spawn the per-turn streaming task and record it as the current turn. Shared by
   # a fresh send and by draining the FIFO queue on a turn terminal.
-  defp launch_turn(input, state) do
-    turn_id = Ecto.UUID.generate()
+  defp launch_turn(input, state, turn_id \\ Ecto.UUID.generate(), display_input \\ nil) do
+    display_input = display_input || input
     parent = self()
 
     task =
@@ -499,14 +509,44 @@ defmodule Ecrits.Local.AcpAgent.Session do
           task_ref: task.ref,
           task_pid: task.pid,
           text: "",
-          input: input
+          pending_text: "",
+          text_segment: 0,
+          items: [],
+          input: display_input,
+          provider_input: input
         }
     }
 
-    state = emit(state, %{type: :turn_started, turn_id: turn_id, input: input})
-    state = maybe_emit_thread_title(state, input)
+    state = emit(state, %{type: :turn_started, turn_id: turn_id, input: display_input})
+    state = maybe_emit_thread_title(state, display_input)
 
     {turn_id, state}
+  end
+
+  defp queue_previous_input(%{queue: queue, current: current}) do
+    case List.last(queue) do
+      %{input: input} -> input
+      _ -> current.input
+    end
+  end
+
+  defp queued_provider_input(%{input: input, previous_input: previous_input}) do
+    previous = previous_input |> Prompt.display_text() |> String.trim()
+    addendum = input |> Prompt.display_text() |> String.trim()
+
+    if previous == "" or addendum == "" do
+      input
+    else
+      continuation_text(previous, addendum, input)
+    end
+  end
+
+  defp continuation_text(previous, addendum, input) when is_binary(input) do
+    "Continue previous task.\nPrevious: #{previous}\nAddendum: #{addendum}"
+  end
+
+  defp continuation_text(previous, addendum, input) when is_list(input) do
+    [%{type: :text, text: continuation_text(previous, addendum, "")} | input]
   end
 
   # ── turn streaming (in a Task) ─────────────────────────────────────
@@ -545,7 +585,10 @@ defmodule Ecrits.Local.AcpAgent.Session do
 
   defp handle_turn_event(state, turn_id, %{type: :text_delta, delta: delta})
        when is_binary(delta) do
-    current = %{state.current | text: (state.current.text || "") <> delta}
+    current =
+      state.current
+      |> Map.update(:text, delta, &((&1 || "") <> delta))
+      |> Map.update(:pending_text, delta, &((&1 || "") <> delta))
 
     state
     |> Map.put(:current, current)
@@ -558,6 +601,16 @@ defmodule Ecrits.Local.AcpAgent.Session do
   end
 
   defp handle_turn_event(state, turn_id, %{type: :tool_call_started} = event) do
+    current =
+      state.current
+      |> flush_pending_text_item()
+      |> put_tool_item(
+        event.tool_call_id,
+        event.name,
+        :running,
+        tool_payload(event.name, Map.get(event, :arguments, %{}))
+      )
+
     emit(state, %{
       type: :tool_call_started,
       turn_id: turn_id,
@@ -565,9 +618,19 @@ defmodule Ecrits.Local.AcpAgent.Session do
       name: event.name,
       arguments: Map.get(event, :arguments, %{})
     })
+    |> Map.put(:current, current)
   end
 
   defp handle_turn_event(state, turn_id, %{type: :tool_call_completed} = event) do
+    current =
+      put_tool_item(
+        state.current,
+        event.tool_call_id,
+        event.name,
+        :completed,
+        tool_payload(event.name, Map.get(event, :result, %{}))
+      )
+
     emit(state, %{
       type: :tool_call_completed,
       turn_id: turn_id,
@@ -575,9 +638,19 @@ defmodule Ecrits.Local.AcpAgent.Session do
       name: event.name,
       result: Map.get(event, :result, %{})
     })
+    |> Map.put(:current, current)
   end
 
   defp handle_turn_event(state, turn_id, %{type: :tool_call_failed} = event) do
+    current =
+      put_tool_item(
+        state.current,
+        event.tool_call_id,
+        event.name,
+        :failed,
+        Map.get(event, :reason, "")
+      )
+
     emit(state, %{
       type: :tool_call_failed,
       turn_id: turn_id,
@@ -585,6 +658,7 @@ defmodule Ecrits.Local.AcpAgent.Session do
       name: event.name,
       reason: Map.get(event, :reason, "")
     })
+    |> Map.put(:current, current)
   end
 
   defp handle_turn_event(state, _turn_id, _event), do: state
@@ -600,12 +674,90 @@ defmodule Ecrits.Local.AcpAgent.Session do
     user = Prompt.display_text(current[:input])
     agent = current[:text]
 
-    if blank?(user) and blank?(agent) do
+    items = transcript_items(current, user, agent)
+
+    if blank?(user) and blank?(agent) and items == [] do
       state
     else
-      entry = %{turn_id: current.turn_id, user: user, agent: agent}
+      entry = %{turn_id: current.turn_id, user: user, agent: agent, items: items}
       %{state | transcript: [entry | state.transcript]}
     end
+  end
+
+  defp transcript_items(current, user, agent) do
+    current = flush_pending_text_item(current)
+    items = Map.get(current, :items, [])
+
+    pending =
+      if items == [] do
+        agent
+      else
+        ""
+      end
+
+    []
+    |> maybe_append_user_item(user)
+    |> Kernel.++(items)
+    |> maybe_append_agent_item(pending, 0)
+  end
+
+  defp maybe_append_user_item(items, user) do
+    if blank?(user), do: items, else: items ++ [%{role: :user, body: user}]
+  end
+
+  defp flush_pending_text_item(current) when is_map(current) do
+    pending = Map.get(current, :pending_text, "")
+
+    if blank?(pending) do
+      current
+    else
+      segment = Map.get(current, :text_segment, 0)
+      items = maybe_append_agent_item(Map.get(current, :items, []), pending, segment)
+
+      current
+      |> Map.put(:items, items)
+      |> Map.put(:pending_text, "")
+      |> Map.put(:text_segment, segment + 1)
+    end
+  end
+
+  defp maybe_append_agent_item(items, text, segment) do
+    if blank?(text) do
+      items
+    else
+      items ++ [%{role: :agent, body: text, status: :sent, segment: segment}]
+    end
+  end
+
+  defp put_tool_item(current, tool_call_id, name, status, body) when is_map(current) do
+    tool_call_id =
+      tool_call_id || "tool-" <> Integer.to_string(System.unique_integer([:positive]))
+
+    item = %{
+      role: :tool,
+      tool_call_id: tool_call_id,
+      name: name || "tool",
+      status: status,
+      body: body || ""
+    }
+
+    items = Map.get(current, :items, [])
+
+    items =
+      if Enum.any?(items, &(Map.get(&1, :tool_call_id) == tool_call_id)) do
+        Enum.map(items, fn
+          %{tool_call_id: ^tool_call_id} -> item
+          other -> other
+        end)
+      else
+        items ++ [item]
+      end
+
+    Map.put(current, :items, items)
+  end
+
+  defp tool_payload(name, payload) do
+    Ecrits.Doc.ToolPayloadSanitizer.encode_tool_payload(name, payload)
   end
 
   defp blank?(nil), do: true

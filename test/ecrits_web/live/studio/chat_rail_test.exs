@@ -44,7 +44,7 @@ defmodule EcritsWeb.Live.Studio.Components.ChatRailTest do
         session["studio_state"] ||
           %State{
             mode: :briefing,
-            last_seen_revision: 0,
+            last_seen_version: 0,
             agent_run_id: nil
           }
 
@@ -133,7 +133,7 @@ defmodule EcritsWeb.Live.Studio.Components.ChatRailTest do
     }
 
   defp default_state,
-    do: %State{mode: :briefing, last_seen_revision: 0, agent_run_id: nil}
+    do: %State{mode: :briefing, last_seen_version: 0, agent_run_id: nil}
 
   defp empty_stream do
     # `render_component/2` accepts any enumerable in place of a stream; LV
@@ -293,7 +293,7 @@ defmodule EcritsWeb.Live.Studio.Components.ChatRailTest do
     end
 
     test "no-document mode omits the ChatRail welcome dialog and keeps the composer" do
-      no_doc_state = %State{mode: :no_document, last_seen_revision: 0, agent_run_id: nil}
+      no_doc_state = %State{mode: :no_document, last_seen_version: 0, agent_run_id: nil}
 
       html =
         render_component(ChatRail,
@@ -329,7 +329,7 @@ defmodule EcritsWeb.Live.Studio.Components.ChatRailTest do
     test "no-document mode stays free of ChatRail welcome when chat messages exist", %{
       conn: conn
     } do
-      no_doc_state = %State{mode: :no_document, last_seen_revision: 0, agent_run_id: nil}
+      no_doc_state = %State{mode: :no_document, last_seen_version: 0, agent_run_id: nil}
 
       {:ok, lv, html} =
         live_isolated(conn, WrapperLive,
@@ -1133,7 +1133,7 @@ defmodule EcritsWeb.Live.Studio.Components.ChatRailTest do
           operation: %{
             id: "tool-hover-1",
             name: "doc.get",
-            output: %{"revision" => 7}
+            output: %{"status" => "ok"}
           },
           transient?: false
         }
@@ -1186,7 +1186,7 @@ defmodule EcritsWeb.Live.Studio.Components.ChatRailTest do
       [details_hidden] = LazyHTML.attribute(details, "hidden")
       assert details_hidden == "" or details_hidden == "hidden"
       assert html =~ ~s(data-role="tool-trace-details")
-      assert html =~ "revision"
+      assert html =~ "status"
       assert html =~ "doc.get"
 
       assert has_element?(

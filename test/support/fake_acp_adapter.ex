@@ -67,6 +67,7 @@ defmodule EcritsWeb.FakeAcpAdapter do
     # notifications match the session the caller is listening on.
     session_id = params["sessionId"] || state.session_id
     prompt = extract_prompt_text(params["prompt"])
+    report_prompt(state, session_id, prompt)
 
     cmd_fn = fn ->
       maybe_block(opts)
@@ -74,7 +75,8 @@ defmodule EcritsWeb.FakeAcpAdapter do
       messages =
         case Keyword.get(opts, :fail_with) do
           nil ->
-            script_messages(opts, session_id, prompt) ++ [prompt_result(id, session_id, opts, prompt)]
+            script_messages(opts, session_id, prompt) ++
+              [prompt_result(id, session_id, opts, prompt)]
 
           reason ->
             # Surface as an ACP prompt error so the turn fails the same way a real
@@ -177,7 +179,9 @@ defmodule EcritsWeb.FakeAcpAdapter do
       "status" => "failed",
       "toolCallId" => event[:id],
       "toolName" => event[:name],
-      "content" => [%{"type" => "content", "content" => %{"type" => "text", "text" => event[:reason] || ""}}]
+      "content" => [
+        %{"type" => "content", "content" => %{"type" => "text", "text" => event[:reason] || ""}}
+      ]
     })
   end
 
@@ -243,6 +247,19 @@ defmodule EcritsWeb.FakeAcpAdapter do
     if Keyword.get(opts, :report_session_lifecycle) do
       case Keyword.get(opts, :test_pid) do
         pid when is_pid(pid) -> send(pid, {:fake_acp_session, method, session_id})
+        _ -> :ok
+      end
+    end
+
+    :ok
+  end
+
+  defp report_prompt(state, session_id, prompt) do
+    opts = state.opts
+
+    if Keyword.get(opts, :report_prompts) do
+      case Keyword.get(opts, :test_pid) do
+        pid when is_pid(pid) -> send(pid, {:fake_acp_prompt, session_id, prompt})
         _ -> :ok
       end
     end

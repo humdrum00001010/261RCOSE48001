@@ -35,7 +35,7 @@ defmodule EcritsWeb.Live.Studio.Components.GrillRailTest do
   defp studio_state(opts \\ []) do
     %State{
       mode: :reviewing,
-      last_seen_revision: 12,
+      last_seen_version: 12,
       agent_run_id: Keyword.get(opts, :agent_run_id, "run-abc")
     }
   end

@@ -116,7 +116,10 @@ defmodule Ecrits.Local.AcpAgent.PromptTest do
     end
 
     test "file block maps to a resource_link" do
-      input = [%{type: :file, uri: "file:///tmp/x.pdf", name: "x.pdf", mime_type: "application/pdf"}]
+      input = [
+        %{type: :file, uri: "file:///tmp/x.pdf", name: "x.pdf", mime_type: "application/pdf"}
+      ]
+
       assert [_preamble, link] = Prompt.to_acp_content(input, @preamble)
       assert link["type"] == "resource_link"
       assert link["uri"] == "file:///tmp/x.pdf"

@@ -706,8 +706,12 @@ defmodule Ecrits.Workspace.Session do
   # Reusing it before it clears would re-attach to the dying process.
   defp await_agent_dead(agent_id, attempts \\ 50) do
     cond do
-      is_nil(AcpAgent.whereis(agent_id)) -> :ok
-      attempts <= 0 -> :ok
+      is_nil(AcpAgent.whereis(agent_id)) ->
+        :ok
+
+      attempts <= 0 ->
+        :ok
+
       true ->
         Process.sleep(10)
         await_agent_dead(agent_id, attempts - 1)
