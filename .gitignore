@@ -78,3 +78,6 @@ npm-debug.log
 # Phoenix / app runtime logs — local-only, never commit.
 /log/
 *.log
+
+# Git worktrees live inside the repo; never track their contents.
+/.worktrees/
