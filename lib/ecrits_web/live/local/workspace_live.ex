@@ -3716,7 +3716,7 @@ defmodule EcritsWeb.Local.WorkspaceLive do
   # bubble) are rendered later, when the queued turn actually drains (its
   # `turn_started` event arrives with `local_agent_turn_id` nil).
   defp enqueue_local_agent_turn(socket, message) do
-    case WorkspaceSession.send_turn(ws(socket), message) do
+    case WorkspaceSession.send_turn(ws(socket), message, current_turn_opts(socket)) do
       {:ok, %{id: queued_id}} ->
         {:noreply,
          socket
@@ -3743,8 +3743,18 @@ defmodule EcritsWeb.Local.WorkspaceLive do
     end
   end
 
+  # The composer's CURRENT options ride on every send: the turn runs with
+  # exactly what the UI shows at send time, instead of trusting that an earlier
+  # access/model toggle's update_options round-trip already landed on the agent
+  # (the access-switch desync: a write turn sent right after flipping to Full
+  # workspace was still auto-rejected under the old approval policy).
+  defp current_turn_opts(socket) do
+    workspace_path = workspace_root_path(socket.assigns.workspace || %{})
+    [adapter_opts: local_agent_provider_adapter_opts(socket, workspace_path)]
+  end
+
   defp send_local_agent_turn(socket, message) do
-    case WorkspaceSession.send_turn(ws(socket), message) do
+    case WorkspaceSession.send_turn(ws(socket), message, current_turn_opts(socket)) do
       {:ok, %{id: turn_id}} ->
         {:noreply,
          socket

@@ -273,12 +273,18 @@ defmodule Ecrits.Local.AcpAgent.Session do
      %{state | adapter_opts: merged, document_id: document_id, pool_document_id: pool_document_id}}
   end
 
-  def handle_call({:send_turn, ctx, raw_input, _opts}, _from, state) do
+  def handle_call({:send_turn, ctx, raw_input, opts}, _from, state) do
     cond do
       not authorized?(ctx, state) ->
         {:reply, {:error, :forbidden}, state}
 
       true ->
+        # Turn-scoped options: the composer attaches its CURRENT access/model
+        # options to every send, so the turn runs with what the UI showed at
+        # send time — no dependence on a separate update_options round-trip
+        # having landed first (the access-switch desync).
+        state = merge_turn_adapter_opts(state, Keyword.get(opts, :adapter_opts))
+
         # Normalize the input at the boundary (Phase 5 multi-modal seam): a bare
         # string stays a bare string (the byte-for-byte-unchanged legacy path), a
         # block list is validated. A malformed multi-modal send fails fast here.
@@ -288,6 +294,12 @@ defmodule Ecrits.Local.AcpAgent.Session do
         end
     end
   end
+
+  defp merge_turn_adapter_opts(state, adapter_opts) when is_list(adapter_opts) and adapter_opts != [] do
+    %{state | adapter_opts: Keyword.merge(state.adapter_opts, adapter_opts)}
+  end
+
+  defp merge_turn_adapter_opts(state, _adapter_opts), do: state
 
   def handle_call({:cancel, ctx, turn_id}, _from, state) do
     cond do

@@ -475,6 +475,14 @@ defmodule Ecrits.Local.AcpAgent.AcpStream do
   defp codex_approval_policy(:on_write), do: "on-request"
   defp codex_approval_policy(:always), do: "on-request"
   defp codex_approval_policy(:on_failure), do: "on-failure"
+  # The access controls store these as snake_case STRINGS ("on_write"); codex
+  # only accepts the kebab-case vocabulary — an unknown value silently falls
+  # back to the user's own ~/.codex default policy, which is how a "read-only"
+  # rail session could end up running under whatever the CLI default was.
+  defp codex_approval_policy("on_write"), do: "on-request"
+  defp codex_approval_policy("on_request"), do: "on-request"
+  defp codex_approval_policy("always"), do: "on-request"
+  defp codex_approval_policy("on_failure"), do: "on-failure"
   defp codex_approval_policy(other) when is_binary(other), do: other
   defp codex_approval_policy(_other), do: nil
 

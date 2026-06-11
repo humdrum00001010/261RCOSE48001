@@ -221,13 +221,19 @@ defmodule Ecrits.Workspace.Session do
   (sugar — the common case) OR a list of multi-modal **content blocks**
   (`%{type: :text | :image | :audio | :file | :doc_ref, …}`, Phase 5). The
   foreground agent normalizes + maps it onto the ACP prompt content shape.
+
+  `opts` may carry `adapter_opts:` — the composer's CURRENT per-turn options
+  (access/approval, reasoning, model), merged into the agent before the turn
+  starts so the turn runs with what the UI showed at send time.
   """
-  @spec send_turn(ws(), String.t() | [map()]) :: {:ok, map()} | {:error, term()}
-  def send_turn(%{agent_id: agent_id}, input) when is_binary(agent_id) do
-    AcpAgent.send_turn(nil, agent_id, input)
+  @spec send_turn(ws(), String.t() | [map()], keyword()) :: {:ok, map()} | {:error, term()}
+  def send_turn(ws, input, opts \\ [])
+
+  def send_turn(%{agent_id: agent_id}, input, opts) when is_binary(agent_id) do
+    AcpAgent.send_turn(nil, agent_id, input, opts)
   end
 
-  def send_turn(_ws, _input), do: {:error, :no_agent}
+  def send_turn(_ws, _input, _opts), do: {:error, :no_agent}
 
   @doc """
   Re-Enter on a queued message: flush the foreground agent's FIFO queue head NOW
