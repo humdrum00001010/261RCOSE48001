@@ -26,6 +26,20 @@ defmodule Ecrits.Doc.ToolsTest do
 
   defp ctx(pool), do: %{pool: pool}
 
+  # Absolute scratch path for docs a test SAVES — a bare relative path would
+  # resolve against CWD and litter the repo root (c.hwp & friends). The file,
+  # if written, is removed when the test exits.
+  defp tmp_doc_path(name) do
+    path =
+      Path.join(
+        System.tmp_dir!(),
+        "ecrits_tools_test_#{System.unique_integer([:positive])}_#{name}"
+      )
+
+    ExUnit.Callbacks.on_exit(fn -> File.rm(path) end)
+    path
+  end
+
   describe "tool catalog" do
     test "exposes the common doc.* surface with schemas and risk levels" do
       names = Tools.tools() |> Enum.map(&(&1["namespace"] <> "." <> &1["name"]))
@@ -421,9 +435,13 @@ defmodule Ecrits.Doc.ToolsTest do
 
   describe "write capabilities" do
     setup %{pool: pool} do
+      # Absolute tmp path: "doc.save writes bytes" persists this doc, and a
+      # bare relative path would land the artifact in the repo root CWD.
+      path = tmp_doc_path("c.hwp")
+
       {:ok, %{"document" => doc_id}} =
         Tools.call(ctx(pool), "doc.open", %{
-          "path" => "c.hwp",
+          "path" => path,
           "open_opts" => [__text__: "제1조 본문"]
         })
 
@@ -447,16 +465,18 @@ defmodule Ecrits.Doc.ToolsTest do
     end
 
     test "doc.save accepts an open document path", %{pool: pool} do
+      path = tmp_doc_path("save-by-path.hwp")
+
       {:ok, %{"document" => doc_id}} =
         Tools.call(ctx(pool), "doc.open", %{
-          "path" => "save-by-path.hwp",
+          "path" => path,
           "open_opts" => [__text__: "저장 경로"]
         })
 
-      assert {:ok, %{id: ^doc_id}} = Pool.info_by_path(pool, "save-by-path.hwp")
+      assert {:ok, %{id: ^doc_id}} = Pool.info_by_path(pool, path)
 
       assert {:ok, %{"ok" => true}} =
-               Tools.call(ctx(pool), "doc.save", %{"document" => "save-by-path.hwp"})
+               Tools.call(ctx(pool), "doc.save", %{"document" => path})
     end
 
     test "doc.save resolves workspace-relative document paths", %{pool: pool} do
@@ -484,7 +504,7 @@ defmodule Ecrits.Doc.ToolsTest do
     test "doc.save ignores legacy validate and returns ok only", %{pool: pool} do
       {:ok, %{"document" => doc_id}} =
         Tools.call(ctx(pool), "doc.open", %{
-          "path" => "validate_inline_blank.hwp",
+          "path" => tmp_doc_path("validate_inline_blank.hwp"),
           "open_opts" => [
             __text__: "거. 이행거절을 위한 기성금 등의 미지급 횟수 :    회 미지급"
           ]
