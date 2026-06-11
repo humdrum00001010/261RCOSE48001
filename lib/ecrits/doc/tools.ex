@@ -366,8 +366,11 @@ defmodule Ecrits.Doc.Tools do
           "\"end\". insert_paragraph {ref, text, style?} appends a new paragraph (style: a Writer " <>
           "paragraph style, e.g. \"Heading 1\", \"Text Body\"); insert_table {ref, rows, cols, name} " <>
           "adds a real table whose cells you then fill with replace_text/set_cell on " <>
-          "tbl[<name>]/cell[A1] refs; insert_picture {ref, src, w?, h?} embeds an inline image " <>
-          "(w/h in 1/100 mm, defaults to natural size); insert_footnote {ref, text} adds a numbered " <>
+          "tbl[<name>]/cell[A1] refs; insert_picture {ref, src, w?, h?, name?} embeds an inline " <>
+          "image (w/h in 1/100 mm — give ONE and the other scales to the image's aspect; defaults " <>
+          "to natural size; name it and its ref is img[<name>], else doc.find lists it as type " <>
+          "\"picture\" with an auto name — set_geometry {ref:\"img[..]\", w?, h?} resizes, " <>
+          "delete_node {ref:\"img[..]\"} removes); insert_footnote {ref, text} adds a numbered " <>
           "footnote; set_columns {count, from, to} lays the from..to paragraph range out in N " <>
           "columns — footnoted paragraphs must stay OUTSIDE that range (the engine refuses " <>
           "otherwise). doc.render {page:\"1\"} works on docx too (PDF-backed) — render and CHECK your work.",

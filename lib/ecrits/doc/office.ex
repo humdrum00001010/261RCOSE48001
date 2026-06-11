@@ -551,7 +551,7 @@ defmodule Ecrits.Doc.Office do
     if is_binary(src) and src != "" do
       {:ok,
        %{op: "insert_picture", ref: op[:ref] || "end", src: to_file_url(src)}
-       |> Map.merge(Map.take(op, [:w, :h]))
+       |> Map.merge(Map.take(op, [:w, :h, :name]))
        |> Map.put_new(:w, op[:width])
        |> Map.put_new(:h, op[:height])
        |> Enum.reject(fn {_k, v} -> is_nil(v) end)
