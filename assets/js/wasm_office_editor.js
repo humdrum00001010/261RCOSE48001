@@ -444,6 +444,9 @@ function resolveApi(Module) {
       setPart: direct("setPart"),
       getPartPageRectangles: direct("getPartPageRectangles"),
       hitTest: direct("hitTest"),
+      // Click -> MODEL REF resolution (element picker). Present from the
+      // 2026-06 wasm build on; officePickAtPoint degrades gracefully without it.
+      hitRef: direct("hitRef"),
       postMouseEvent: direct("postMouseEvent"),
       doubleClick: direct("doubleClick"),
       setTextSelection: direct("setTextSelection"),
@@ -1352,11 +1355,10 @@ const WasmOfficeEditor = {
     if (this.elementPickerEnabled) {
       event.preventDefault()
       event.stopPropagation()
-      const pick = this.officePickFromPoint(loc)
-      if (pick) {
-        appendPickedElementToComposer(pick)
-        this.paintPickedPoint(loc)
-      }
+      const pick = this.officePickAtPoint(loc)
+      // bindElementPickerTarget's picks listener repaints the highlights
+      // (including removal when the same element is toggled off).
+      if (pick) appendPickedElementToComposer(pick)
       return
     }
 
@@ -1798,6 +1800,9 @@ const WasmOfficeEditor = {
     const c = this.caret
     if (!c) return
     this.clearAllCaretOverlays()
+    // The caret blink clears EVERY overlay — restore the element-picker
+    // highlights before the caret so picks survive the blink cycle.
+    this.paintAllAdornments()
     const overlay = this.caretOverlay(c.page - 1)
     if (!overlay) return
     const ctx = overlay.getContext("2d")
@@ -1808,6 +1813,123 @@ const WasmOfficeEditor = {
     if (!this.caretBlinkOn) return
     ctx.fillStyle = "#1d4ed8"
     ctx.fillRect(c.x * sx, c.y * sy, 1.5 * sx, Math.max(8, c.height || 16) * sy)
+  },
+
+  // ─── Element picker (docx/pptx in the browser) ────────────────────────────
+
+  // Resolve the clicked element via the wasm `hitRef` export: a real LOK click
+  // (caret/selection placement) followed by UNO view-state resolution to the
+  // SAME ref grammar the doc.* tools address (p<idx>, tbl[..]/cell[..],
+  // img[..], page[..]/shape[..]). getElements() carries no layout geometry, so
+  // hitRef is the only reliable pixel->ref mapping; on an older wasm build
+  // (no export) picking is disabled instead of guessing a wrong element.
+  officePickAtPoint(loc) {
+    const fn = this.api && this.api.hitRef
+    if (typeof fn !== "function") {
+      console.warn(
+        "[office-wasm] element picking needs the hitRef export — rebuild soffice.wasm"
+      )
+      return null
+    }
+
+    let hit
+    try {
+      hit = fn(loc.pageIndex + 1, loc.x, loc.y)
+    } catch (error) {
+      console.error("[office-wasm] hitRef failed", error)
+      return null
+    }
+    if (!hit || !hit.ok || !hit.ref) return null
+
+    // Highlight rects (page-local px): shape bounds when the engine has them,
+    // else a caret-line marker at the click's resolved caret.
+    const rects = []
+    if (hit.bounds && Number.isFinite(Number(hit.bounds.width))) {
+      rects.push({
+        pageIndex: loc.pageIndex,
+        x: Number(hit.bounds.x),
+        y: Number(hit.bounds.y),
+        width: Number(hit.bounds.width),
+        height: Number(hit.bounds.height)
+      })
+    } else if (hit.caret && Number.isFinite(Number(hit.caret.x))) {
+      const h = Number(hit.caret.height) || 14
+      const page = Number.isFinite(Number(hit.caret.page))
+        ? Number(hit.caret.page) - 1
+        : loc.pageIndex
+      rects.push({
+        pageIndex: page,
+        x: Number(hit.caret.x) - 2,
+        y: Number(hit.caret.y),
+        width: Math.max(90, h * 6),
+        height: h
+      })
+    }
+
+    return {
+      document: this.el.dataset.documentPath || "",
+      backend: "libre",
+      format: this.format || "",
+      type: hit.type || "unknown",
+      ref: hit.ref,
+      text: hit.text || "",
+      rects,
+      ir: {
+        page: loc.pageIndex + 1,
+        point: { x: loc.x, y: loc.y },
+        hit: { ref: hit.ref, type: hit.type }
+      }
+    }
+  },
+
+  currentDocumentPicks() {
+    const picker = window.EcritsDocumentElementPicker
+    const picks = (picker && picker.picks) || []
+    const docPath = this.el.dataset.documentPath || ""
+    return picks.filter(p => p.document === docPath)
+  },
+
+  // bindElementPickerTarget calls this on every pick change: repaint the
+  // overlays so highlights appear/disappear with the picks.
+  paintPickedHighlights() {
+    if (this.caret) {
+      this.drawCaret() // clears all overlays, repaints adornments + caret
+      return
+    }
+    this.clearAllCaretOverlays()
+    this.paintAllAdornments()
+  },
+
+  paintAllAdornments() {
+    const pages = new Set()
+    for (const pick of this.currentDocumentPicks()) {
+      for (const rect of pick.rects || []) pages.add(rect.pageIndex ?? 0)
+    }
+    for (const page of pages) this.paintAdornmentsOnPage(page)
+  },
+
+  paintAdornmentsOnPage(pageIndex) {
+    const overlay = this.caretOverlay(pageIndex)
+    if (!overlay) return
+    const ctx = overlay.getContext("2d")
+    if (!ctx) return
+    const logical = this.pageLogicalSize(pageIndex)
+    if (!logical || !logical.width || !logical.height) return
+    const sx = overlay.width / logical.width
+    const sy = overlay.height / logical.height
+
+    for (const pick of this.currentDocumentPicks()) {
+      for (const rect of pick.rects || []) {
+        if ((rect.pageIndex ?? 0) !== pageIndex) continue
+        ctx.save()
+        ctx.fillStyle = "rgba(99, 102, 241, 0.16)"
+        ctx.strokeStyle = "rgba(79, 70, 229, 0.95)"
+        ctx.lineWidth = Math.max(2, 1.5 * (this.scale || 1))
+        ctx.fillRect(rect.x * sx, rect.y * sy, rect.width * sx, rect.height * sy)
+        ctx.strokeRect(rect.x * sx, rect.y * sy, rect.width * sx, rect.height * sy)
+        ctx.restore()
+      }
+    }
   },
 
   // Position the hidden IME proxy textarea over the caret so the OS candidate
@@ -2227,100 +2349,11 @@ const WasmOfficeEditor = {
     return norm
   },
 
-  officePickFromPoint(loc) {
-    const node = this.officeElementAtPoint(loc)
-    if (!node) return null
 
-    return {
-      document: this.el.dataset.documentPath || "",
-      backend: "libre",
-      format: this.format || "",
-      type: node.type || "unknown",
-      ref: node.ref || "",
-      text: node.text || "",
-      ir: {
-        page: loc.pageIndex + 1,
-        point: { x: loc.x, y: loc.y },
-        node: node.raw || node
-      }
-    }
-  },
 
-  officeElementAtPoint(loc) {
-    let elements = []
-    try { elements = this.officeElements() } catch (_) { elements = [] }
-    if (!elements.length) return null
 
-    const page = loc.pageIndex + 1
-    const pageElements = elements.filter(el => this.officeElementPage(el) === page)
-    const candidates = pageElements.length ? pageElements : elements
 
-    return this.officeElementContainingPoint(candidates, loc) ||
-      candidates.find(el => el.type !== "page") ||
-      candidates[0]
-  },
 
-  officeElementContainingPoint(elements, loc) {
-    let best = null
-    let bestArea = Infinity
-
-    for (const el of elements) {
-      const box = this.officeElementBox(el)
-      if (!box) continue
-      const x2 = box.x + box.width
-      const y2 = box.y + box.height
-      if (loc.x < box.x || loc.x > x2 || loc.y < box.y || loc.y > y2) continue
-      const area = Math.max(1, box.width) * Math.max(1, box.height)
-      if (area < bestArea) {
-        best = el
-        bestArea = area
-      }
-    }
-
-    return best
-  },
-
-  officeElementPage(el) {
-    const raw = el && el.raw ? el.raw : el
-    const page = raw && (raw.page ?? raw.pageIndex ?? raw.slide ?? raw.part)
-    if (Number.isFinite(Number(page))) return Number(page)
-
-    const ref = String((raw && raw.ref) || (el && el.ref) || "")
-    const match = ref.match(/^page\[(?:page)?(\d+)\]/i)
-    return match ? Number(match[1]) : null
-  },
-
-  officeElementBox(el) {
-    const raw = el && el.raw ? el.raw : el
-    const box = raw && (raw.bbox || raw.bounds || raw.rect || raw.geometry)
-    const source = box || raw
-    if (!source || typeof source !== "object") return null
-
-    const x = Number(source.x ?? source.left)
-    const y = Number(source.y ?? source.top)
-    const width = Number(source.width ?? source.w)
-    const height = Number(source.height ?? source.h)
-
-    if (![x, y, width, height].every(Number.isFinite)) return null
-    return { x, y, width, height }
-  },
-
-  paintPickedPoint(loc) {
-    const overlay = this.caretOverlay(loc.pageIndex)
-    if (!overlay) return
-    const ctx = overlay.getContext("2d")
-    if (!ctx) return
-    const logical = this.pageLogicalSize(loc.pageIndex)
-    const sx = overlay.width / logical.width
-    const sy = overlay.height / logical.height
-    const x = loc.x * sx
-    const y = loc.y * sy
-    ctx.save()
-    ctx.strokeStyle = "rgba(29, 78, 216, 0.9)"
-    ctx.lineWidth = Math.max(2, 1.5 * this.scale)
-    ctx.strokeRect(x - 8, y - 8, 16, 16)
-    ctx.restore()
-  },
 
   // Normalize one IR element to the find/read match shape. Tolerant of field
   // aliases so a small IR schema drift in the parallel wasm build doesn't break
