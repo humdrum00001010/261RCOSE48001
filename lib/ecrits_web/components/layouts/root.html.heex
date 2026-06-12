@@ -12,6 +12,12 @@
       {assigns[:page_title]}
     </.live_title>
     <link phx-track-static rel="stylesheet" href={~p"/assets/css/app.css"} />
+    <%!-- Observex runtime (markdown preview math/TikZ islands). Must come
+          before app.js: both are `defer`, so they execute in document order
+          and the ObservexPreview hook finds window.Observex ready. Assets are
+          installed by `mix assets.observex` (see assets.setup alias). --%>
+    <script defer phx-track-static type="text/javascript" src={~p"/observex/observex.js"}>
+    </script>
     <script defer phx-track-static type="text/javascript" src={~p"/assets/js/app.js"}>
     </script>
     <script>

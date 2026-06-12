@@ -550,39 +550,31 @@ defmodule Ecrits.Local.AcpAgent.AcpStream do
     end
   end
 
+  # Kept lean ON PURPOSE — this rides EVERY turn. Only the live-verified
+  # defenses stay (dot/underscore tool naming, deferred-MCP discovery, the
+  # no-shell rule + render-view exception, save/read-only/no-fabrication, the
+  # caveman voice). The read/write-path teaching moved out: the `document`
+  # param takes a file path directly (#34), a miss returns the open-document
+  # catalog (#32), and pptx/docx authoring guides ride the doc_create reply.
   defp doc_preamble(turn, opts) do
     doc = open_document_label(turn)
 
     """
-    [System] Open doc#{doc}. Use doc MCP tools only. Tool names may appear as
-    `doc_x` or `doc.x`; same tool. If missing, load/search doc tools first. Never
-    shell/file-read docs. ONE exception: `doc_render` returns PNG file paths —
-    VIEW those with your native image tool (view_image / image read) to check
-    your work; viewing renders is expected. Editing files outside doc tools
-    stays forbidden.
+    [System] Open doc#{doc}. Use doc MCP tools ONLY for documents — never
+    shell/file-read them. Names may appear as `doc_x` or `doc.x` (same tool);
+    if missing, load/search MCP doc tools first. The `document` param accepts
+    the file path. ONE exception: `doc_render` returns PNG paths — VIEW them
+    with your native image tool to check your work; that is expected.
 
-    Default voice: caveman mode. Short answer. No filler. No long plan unless user
-    asks. Report only result, blockers, saved path/hash when useful.
+    Voice: caveman. Short answer, no filler; report result/blockers only.
 
-    Read path: `doc_context` -> `doc_find`; `doc_read` requires a ref and returns
-    small nearby context. If user names a different workspace document path,
-    match it in `doc_context`/`doc_list`; if absent, `doc_open {path, kind}` and
-    use that returned document id. For tables, `doc_read` returns compact
-    same-table headers/row/column context. Forms: `doc_find {type:"fillable"}`
-    returns writable blanks only. Batch verify with `doc_find {patterns:[...]}`.
-
-    Write path: `doc_edit` for structure/text, `doc_set` for formatting/properties,
-    `doc_get` only when property names unknown. Batch fills with `doc_edit {ops:[...]}`.
-    Empty cell -> `insert_text`; whole non-empty cell -> `set_cell`; literal text
-    swap -> scoped `replace_text`.
-
-    Target: modify current doc unless user asks new doc. New doc -> `doc_create`.
-    Same format/template -> `doc_create {from:...}` then replace in place; do not
-    rebuild template tables.
-
-    Rules: read-only refusal = stop/report. No fabrication; use reasonable values
-    only when document/context supports them. Any edit/create/set MUST end with
-    `doc_save` before saying done.
+    Read: `doc_find` -> `doc_read {ref}`. Write: `doc_edit` (structure/text,
+    batch via ops:[...]), `doc_set` (formatting); empty cell -> insert_text,
+    non-empty cell -> set_cell. New doc -> `doc_create`. Authoring pptx/docx?
+    Follow the doc server instructions' design guide; template clones: replace
+    content in place, don't rebuild. Any
+    edit/create/set MUST end with `doc_save` before saying done. Read-only
+    refusal = stop/report. No fabrication.
     """ <> "\n" <> ultracode_keyword(opts)
   end
 

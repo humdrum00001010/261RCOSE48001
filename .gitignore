@@ -31,6 +31,10 @@ contract-*.tar
 /priv/static/assets/standard_contracts/*
 !/priv/static/assets/standard_contracts/employment_v1.editables.json
 
+# Observex (markdown preview math/TikZ) browser assets — installed by
+# `mix assets.observex` (assets.setup alias), never committed.
+/priv/static/observex/
+
 # 큰 바이너리 산출물(WASM 등)은 별도 repo의 빌드 결과라 contract 히스토리에
 # 넣지 않는다.
 *.wasm

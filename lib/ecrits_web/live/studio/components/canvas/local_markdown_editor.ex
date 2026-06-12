@@ -87,11 +87,14 @@ defmodule EcritsWeb.Live.Studio.Components.Canvas.LocalMarkdownEditor do
         class="hidden min-h-0 flex-1 resize-none border-0 bg-base-100 p-4 font-mono text-[13px] leading-relaxed text-base-content outline-none focus:outline-none"
       ></textarea>
 
-      <%!-- Preview pane: live MDEx render of the current source. Styled with the
-            shared .chat-markdown CSS (full-width here). Visible by default. --%>
+      <%!-- Preview pane: live Observex render of the current source (GFM +
+            math/TikZ tex-islands). Styled with the shared .chat-markdown CSS
+            (full-width here). Visible by default. The ObservexPreview hook
+            re-renders the islands (MathJax/TikZJax) after every diff. --%>
       <div
         id={"#{@id}-preview"}
         data-role="markdown-editor-preview"
+        phx-hook="ObservexPreview"
         class="chat-markdown min-h-0 flex-1 overflow-auto p-6 text-[15px] leading-[1.7]"
       >
         {@preview_html}

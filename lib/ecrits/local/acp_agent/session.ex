@@ -289,7 +289,7 @@ defmodule Ecrits.Local.AcpAgent.Session do
         # string stays a bare string (the byte-for-byte-unchanged legacy path), a
         # block list is validated. A malformed multi-modal send fails fast here.
         case Prompt.normalize(raw_input) do
-          {:ok, input} -> start_turn(input, ensure_queue(state))
+          {:ok, input} -> start_turn(input, turn_extras(opts), ensure_queue(state))
           {:error, reason} -> {:reply, {:error, {:invalid_input, reason}}, state}
         end
     end
@@ -300,6 +300,14 @@ defmodule Ecrits.Local.AcpAgent.Session do
   end
 
   defp merge_turn_adapter_opts(state, _adapter_opts), do: state
+
+  # Caller-provided display seam: `:display` is what the transcript bubble shows
+  # (the typed text) when it differs from the provider input (e.g. the LiveView
+  # appends the picked-element JSON block for the agent only); `:picks` are the
+  # structured picked-element chips that ride along on the user transcript row.
+  defp turn_extras(opts) do
+    %{display: Keyword.get(opts, :display), picks: Keyword.get(opts, :picks) || []}
+  end
 
   def handle_call({:cancel, ctx, turn_id}, _from, state) do
     cond do
@@ -464,7 +472,13 @@ defmodule Ecrits.Local.AcpAgent.Session do
   # to nil before draining, so the head always launches into an idle session.
   defp drain_queue(%{current: nil, queue: [next | rest]} = state) do
     {_turn_id, state} =
-      launch_turn(queued_provider_input(next), %{state | queue: rest}, next.turn_id, next.input)
+      launch_turn(
+        queued_provider_input(next),
+        %{state | queue: rest},
+        next.turn_id,
+        Map.get(next, :display) || next.input,
+        Map.get(next, :picks, [])
+      )
 
     state
   end
@@ -478,13 +492,15 @@ defmodule Ecrits.Local.AcpAgent.Session do
   # so the first send into an upgraded process never crashes on a missing key.
   defp ensure_queue(state), do: Map.put_new(state, :queue, [])
 
-  defp start_turn(input, %{current: current} = state) when current != nil do
+  defp start_turn(input, extras, %{current: current} = state) when current != nil do
     # A turn is already in flight — ENQUEUE rather than cancel (Phase 5 FIFO
     # queue). The pending message drains when the running turn reaches a terminal
     # state. A re-Enter on a queued message flushes it (see `:flush_queue`).
     queued = %{
       turn_id: Ecto.UUID.generate(),
       input: input,
+      display: extras.display,
+      picks: extras.picks,
       previous_input: queue_previous_input(state)
     }
 
@@ -496,14 +512,16 @@ defmodule Ecrits.Local.AcpAgent.Session do
     {:reply, {:ok, %{id: queued.turn_id, session_id: state.id, status: :queued}}, state}
   end
 
-  defp start_turn(input, state) do
-    {turn_id, state} = launch_turn(input, state)
+  defp start_turn(input, extras, state) do
+    {turn_id, state} =
+      launch_turn(input, state, Ecto.UUID.generate(), extras.display, extras.picks)
+
     {:reply, {:ok, %{id: turn_id, session_id: state.id, status: :running}}, state}
   end
 
   # Spawn the per-turn streaming task and record it as the current turn. Shared by
   # a fresh send and by draining the FIFO queue on a turn terminal.
-  defp launch_turn(input, state, turn_id \\ Ecto.UUID.generate(), display_input \\ nil) do
+  defp launch_turn(input, state, turn_id, display_input, picks) do
     display_input = display_input || input
     parent = self()
 
@@ -525,7 +543,8 @@ defmodule Ecrits.Local.AcpAgent.Session do
           text_segment: 0,
           items: [],
           input: display_input,
-          provider_input: input
+          provider_input: input,
+          picks: picks
         }
     }
 
@@ -699,6 +718,8 @@ defmodule Ecrits.Local.AcpAgent.Session do
   defp transcript_items(current, user, agent) do
     current = flush_pending_text_item(current)
     items = Map.get(current, :items, [])
+    # Map.get: a session hot-reloaded mid-turn may hold a pre-picks current map.
+    picks = Map.get(current, :picks, [])
 
     pending =
       if items == [] do
@@ -708,13 +729,20 @@ defmodule Ecrits.Local.AcpAgent.Session do
       end
 
     []
-    |> maybe_append_user_item(user)
+    |> maybe_append_user_item(user, picks)
     |> Kernel.++(items)
     |> maybe_append_agent_item(pending, 0)
   end
 
-  defp maybe_append_user_item(items, user) do
-    if blank?(user), do: items, else: items ++ [%{role: :user, body: user}]
+  # A picks-only send has a blank typed text but must still keep its user row —
+  # the chips ARE the message.
+  defp maybe_append_user_item(items, user, picks) do
+    cond do
+      not blank?(user) and picks != [] -> items ++ [%{role: :user, body: user, picks: picks}]
+      not blank?(user) -> items ++ [%{role: :user, body: user}]
+      picks != [] -> items ++ [%{role: :user, body: "", picks: picks}]
+      true -> items
+    end
   end
 
   defp flush_pending_text_item(current) when is_map(current) do

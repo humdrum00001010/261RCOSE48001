@@ -51,7 +51,8 @@ defmodule Ecrits.Doc.ToolsTest do
 
       # The consolidated surface is eleven tools (ten + doc.render, the visual
       # feedback loop); the former doc.inspect and doc.apply_style are folded
-      # into doc.get / doc.set.
+      # into doc.get / doc.set. The authoring guide is NOT a tool — it is the
+      # MCP server's `instructions` (one global copy per session).
       assert "doc.read_table" not in names
       assert "doc.inspect" not in names
       assert "doc.apply_style" not in names
@@ -61,6 +62,21 @@ defmodule Ecrits.Doc.ToolsTest do
         assert is_map(tool["inputSchema"])
         assert tool["risk"] in ["read", "write"]
       end
+    end
+
+    test "the authoring guide is the server instructions — one global copy, any entry point" do
+      # Sessions that never touch doc.create (open an existing deck, or a path
+      # auto-open) still get the design lessons: they ride the MCP initialize
+      # `instructions`, once per session.
+      instructions = Tools.instructions()
+      assert instructions =~ "28000x15750"
+      assert instructions =~ "FillColor"
+      assert instructions =~ "insert_paragraph"
+
+      {:ok, state} = Ecrits.Doc.MCPServer.init([])
+
+      assert {:ok, %{instructions: ^instructions}, _state} =
+               Ecrits.Doc.MCPServer.handle_initialize(%{}, state)
     end
 
     test "read tools are read risk, write tools are write risk" do
@@ -305,6 +321,148 @@ defmodule Ecrits.Doc.ToolsTest do
 
       assert match["text"] =~ "미지급 횟수"
       assert match["fillable_kind"] == "inline_gap"
+    end
+  end
+
+  describe "document arg aliases — tools accept what picks/agents provide (#32)" do
+    setup %{pool: pool} do
+      {:ok, %{"document" => doc_id}} =
+        Tools.call(ctx(pool), "doc.open", %{
+          "path" => "drafts/service_contract.hwp",
+          "open_opts" => [__text__: "제1조 (목적)\n제2조 (계약기간)"]
+        })
+
+      {:ok, doc_id: doc_id}
+    end
+
+    test "doc.read resolves relative-path / basename / active aliases", %{
+      pool: pool,
+      doc_id: doc_id
+    } do
+      for doc_alias <- ["drafts/service_contract.hwp", "service_contract.hwp", "active"] do
+        ctx = ctx(pool) |> Map.put(:active_doc, doc_id)
+
+        assert {:ok, %{"text" => text}} =
+                 Tools.call(ctx, "doc.read", %{
+                   "document" => doc_alias,
+                   "ref" => "hwp:s0/p0/c0+3"
+                 }),
+               "alias #{inspect(doc_alias)} should resolve to #{doc_id}"
+
+        assert text =~ "제1조"
+      end
+    end
+
+    test "doc.find resolves the basename alias", %{pool: pool} do
+      assert {:ok, %{"matches" => [m | _]}} =
+               Tools.call(ctx(pool), "doc.find", %{
+                 "document" => "service_contract.hwp",
+                 "pattern" => "제1조"
+               })
+
+      assert is_binary(m["ref"])
+    end
+
+    test "an unknown document fails with the open-document catalog (one-step self-correction)",
+         %{pool: pool, doc_id: doc_id} do
+      assert {:error,
+              %{"error" => "document_not_found", "open_documents" => docs, "document" => bogus}} =
+               Tools.call(ctx(pool), "doc.read", %{
+                 "document" => "local-stale-viewer-id",
+                 "ref" => "hwp:s0/p0/c0+0"
+               })
+
+      assert bogus == "local-stale-viewer-id"
+      assert Enum.any?(docs, &(&1["document"] == doc_id))
+      assert Enum.any?(docs, &(&1["path"] =~ "service_contract.hwp"))
+    end
+  end
+
+  describe "path-first document arg — a path works open, closed, or never opened (#34)" do
+    setup do
+      root =
+        Path.join(System.tmp_dir!(), "ws_pathfirst_#{System.unique_integer([:positive])}")
+
+      File.mkdir_p!(Path.join(root, "drafts"))
+      File.write!(Path.join(root, "drafts/retainer.hwp"), "fake-hwp-bytes")
+      on_exit(fn -> File.rm_rf!(root) end)
+
+      {:ok, root: root}
+    end
+
+    test "a workspace-relative path auto-opens a NEVER-opened document", %{
+      pool: pool,
+      root: root
+    } do
+      ctx = ctx(pool) |> Map.put(:session_path, root)
+
+      assert {:ok, %{"text" => text}} =
+               Tools.call(ctx, "doc.read", %{
+                 "document" => "drafts/retainer.hwp",
+                 "ref" => "hwp:s0/p0/c0+0"
+               })
+
+      assert is_binary(text)
+
+      # It is now pooled (subsequent calls hit the same live model).
+      assert {:ok, %{"documents" => docs}} = Tools.call(ctx, "doc.list", %{})
+      assert Enum.any?(docs, &(&1["path"] =~ "drafts/retainer.hwp"))
+    end
+
+    test "a CLOSED document reopens by its path (same id again)", %{pool: pool, root: root} do
+      ctx = ctx(pool) |> Map.put(:session_path, root)
+      abs = Path.join(root, "drafts/retainer.hwp")
+
+      {:ok, %{"document" => doc_id}} =
+        Tools.call(ctx, "doc.open", %{"path" => abs, "open_opts" => [__text__: "제1조 (목적)"]})
+
+      :ok = Pool.close(pool, doc_id)
+
+      assert {:ok, %{"matches" => _}} =
+               Tools.call(ctx, "doc.find", %{
+                 "document" => "drafts/retainer.hwp",
+                 "pattern" => "제"
+               })
+
+      # Deterministic (path, kind) id: the reopened doc carries the SAME id.
+      assert {:ok, %{"documents" => docs}} = Tools.call(ctx, "doc.list", %{})
+      assert Enum.any?(docs, &(&1["document"] == doc_id))
+    end
+
+    test "a stale id after close fails with the catalog — the path IS the stable handle", %{
+      pool: pool,
+      root: root
+    } do
+      ctx = ctx(pool) |> Map.put(:session_path, root)
+      abs = Path.join(root, "drafts/retainer.hwp")
+
+      {:ok, %{"document" => doc_id}} = Tools.call(ctx, "doc.open", %{"path" => abs})
+      :ok = Pool.close(pool, doc_id)
+
+      assert {:error, %{"error" => "document_not_found"}} =
+               Tools.call(ctx, "doc.read", %{"document" => doc_id, "ref" => "hwp:s0/p0/c0+0"})
+    end
+
+    test "a path outside the workspace root is refused, not auto-opened", %{
+      pool: pool,
+      root: root
+    } do
+      ctx = ctx(pool) |> Map.put(:session_path, root)
+
+      outside = Path.join(System.tmp_dir!(), "outside_#{System.unique_integer([:positive])}.hwp")
+      File.write!(outside, "x")
+      on_exit(fn -> File.rm(outside) end)
+
+      assert {:error, %{"error" => "document_not_found"}} =
+               Tools.call(ctx, "doc.read", %{"document" => outside, "ref" => "hwp:s0/p0/c0+0"})
+    end
+
+    test "a non-document file extension is not auto-opened", %{pool: pool, root: root} do
+      ctx = ctx(pool) |> Map.put(:session_path, root)
+      File.write!(Path.join(root, "notes.txt"), "plain text")
+
+      assert {:error, %{"error" => "document_not_found"}} =
+               Tools.call(ctx, "doc.read", %{"document" => "notes.txt", "ref" => "hwp:s0/p0/c0+0"})
     end
   end
 
@@ -752,7 +910,10 @@ defmodule Ecrits.Doc.ToolsTest do
     end
 
     test "unknown document", %{pool: pool} do
-      assert {:error, %{"error" => "not_found"}} =
+      # #32: the miss is structured — it names the unknown id and carries the
+      # open-document catalog so the agent self-corrects without doc_context.
+      assert {:error,
+              %{"error" => "document_not_found", "document" => "ghost", "open_documents" => []}} =
                Tools.call(ctx(pool), "doc.read", %{"document" => "ghost", "ref" => "ghost-ref"})
     end
 

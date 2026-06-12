@@ -169,7 +169,18 @@ const WasmHwpEditor = {
   destroyed() {
     if (this.io) this.io.disconnect()
     if (this.blink) clearInterval(this.blink)
-    if (this.snapshotTimer) clearTimeout(this.snapshotTimer)
+    // Flush-before-detach: a doc switch destroys this hook (the editor element
+    // id is per-document), and authority falls back to the server NIF twin.
+    // A pending debounced snapshot here means the twin (and the snapshot
+    // store) would MISS the latest edits — exports done after this point can
+    // silently clobber them (observed: agent footnote edits lost to a tab
+    // switch). Export+push the final checkpoint NOW, while the wasm doc is
+    // still alive; the server accepts checkpoints for non-active documents.
+    if (this.snapshotTimer) {
+      clearTimeout(this.snapshotTimer)
+      this.snapshotTimer = null
+      try { this.pushSnapshot() } catch (_) { /* socket gone — nothing to flush to */ }
+    }
     if (this.pickerHoverRaf) cancelAnimationFrame(this.pickerHoverRaf)
     window.removeEventListener("resize", this.onResize)
     this.el.removeEventListener("mousedown", this.onMouseDown)
@@ -198,6 +209,13 @@ const WasmHwpEditor = {
       const bytes = new Uint8Array(await response.arrayBuffer())
 
       if (this.doc) {
+        // In-place document switch: flush the OLD doc's pending snapshot
+        // before discarding its model (same flush-before-detach as destroyed()).
+        if (this.snapshotTimer) {
+          clearTimeout(this.snapshotTimer)
+          this.snapshotTimer = null
+          try { this.pushSnapshot() } catch (_) {}
+        }
         try { this.doc.free() } catch (_) {}
         this.doc = null
       }
@@ -2107,21 +2125,59 @@ const WasmHwpEditor = {
     }
 
     // insert_footnote / insert_endnote: a footnote/endnote anchor at the body
-    // ref (number auto-assigned). Calls the EXISTING wasm insertFootnote/insertEndnote.
+    // ref (number auto-assigned) PLUS the note's body text. The wasm
+    // insertFootnote/insertEndnote only creates the anchor + a placeholder
+    // inner paragraph ("  " — the auto-number marker sits between the two
+    // spaces), so the op's `text` needs a SECOND call: insertTextInFootnote at
+    // fn-para 0, char offset 2 — the same two-step the ehwp server arm does
+    // (populate_note_text). Dropping that step silently loses the text while
+    // still reporting ok (the doc.edit contract is {ref, text}).
     if (verb === "insert_footnote" || verb === "insert_endnote") {
       if (!ref) return { error: `${verb} requires a ref {section,paragraph,offset} (from doc.find)` }
       const offset = Number.isInteger(ref.offset) ? ref.offset : 0
+      const text = op.text != null ? String(op.text) : ""
+      const cell = ref.cell && Number.isInteger(ref.cell.parentParaIndex) ? ref.cell : null
+      let noteInfo = {}
       try {
-        if (verb === "insert_footnote") {
-          this.doc.insertFootnote(ref.section, ref.paragraph, offset)
+        if (verb === "insert_footnote" && cell && typeof this.doc.insertFootnoteInCell === "function") {
+          // Cell ref → anchor INSIDE the table cell paragraph; the one-shot
+          // native call also fills the note text. (Endnotes have no in-cell
+          // engine variant — they render at the section end anyway.)
+          const res = this.doc.insertFootnoteInCell(
+            ref.section,
+            cell.parentParaIndex,
+            cell.controlIndex,
+            cell.cellIndex,
+            Number.isInteger(cell.cellParaIndex) ? cell.cellParaIndex : 0,
+            offset,
+            text
+          )
+          try { noteInfo = JSON.parse(res || "{}") } catch { noteInfo = {} }
         } else {
-          this.doc.insertEndnote(ref.section, ref.paragraph, offset)
+          const res = verb === "insert_footnote"
+            ? this.doc.insertFootnote(ref.section, ref.paragraph, offset)
+            : this.doc.insertEndnote(ref.section, ref.paragraph, offset)
+          try { noteInfo = JSON.parse(res || "{}") } catch { noteInfo = {} }
+          if (text) {
+            if (!Number.isInteger(noteInfo.controlIdx)) {
+              return { error: `${verb}: engine did not report controlIdx — anchor created but text NOT inserted` }
+            }
+            // insertTextInFootnote serves endnotes too (same native call on the
+            // server arm); paraIdx comes from the engine reply because the engine
+            // may re-anchor (e.g. a cell ref lands on the host body paragraph).
+            const notePara = Number.isInteger(noteInfo.paraIdx) ? noteInfo.paraIdx : ref.paragraph
+            this.doc.insertTextInFootnote(ref.section, notePara, noteInfo.controlIdx, 0, 2, text)
+          }
         }
       } catch (error) {
         return { error: `${verb} failed: ${String((error && error.message) || error)}` }
       }
-      this.recordOp(verb === "insert_footnote" ? "AgentInsertFootnote" : "AgentInsertEndnote", { section: ref.section, para: ref.paragraph, offset })
-      return { ok: true, extra: {} }
+      this.recordOp(verb === "insert_footnote" ? "AgentInsertFootnote" : "AgentInsertEndnote", { section: ref.section, para: ref.paragraph, offset, text, cell })
+      // Echo the engine evidence so the agent can self-verify: the note number,
+      // its anchor address (paraIdx/controlIdx — also the handle for a later
+      // delete_node), and the text that actually went in.
+      const number = noteInfo.footnoteNumber != null ? noteInfo.footnoteNumber : noteInfo.endnoteNumber
+      return { ok: true, extra: { text, number, paraIdx: noteInfo.paraIdx, controlIdx: noteInfo.controlIdx } }
     }
 
     // insert_shape: a drawing shape (rectangle/ellipse/line/textbox) at the body
@@ -2186,7 +2242,352 @@ const WasmHwpEditor = {
       return { ok: true, extra: { count } }
     }
 
+    // ─── Structural & table ops (parity with the ehwp NIF EditOp dispatch) ───
+    // The HWP NIF (deps/ehwp .../lib.rs apply_edit_op) handles these; the rhwp
+    // wasm exports the same methods (insertTableRow, splitTableCellInto, …) — the
+    // ONLY reason a viewed doc rejected them was the missing `if` cases here (the
+    // live "add 10 empty rows" failure). Each verb below maps 1:1 to a wasm method;
+    // the NIF dispatch is the reference for arg shapes. Table row/col/merge/split
+    // address the table via a CELL ref (ref.cell carries parentParaIndex +
+    // controlIndex); row/col come from the op or are derived from the picked cell.
+
+    if (verb === "insert_paragraph") {
+      if (!ref) return { error: "insert_paragraph requires a ref {section,paragraph}" }
+      try {
+        this.doc.insertParagraph(ref.section, ref.paragraph)
+      } catch (error) {
+        return { error: `insertParagraph failed: ${String((error && error.message) || error)}` }
+      }
+      this.recordOp("AgentInsertParagraph", { section: ref.section, para: ref.paragraph })
+      return { ok: true, extra: {} }
+    }
+
+    if (verb === "delete_paragraph") {
+      if (!ref) return { error: "delete_paragraph requires a ref {section,paragraph}" }
+      try {
+        this.doc.deleteParagraph(ref.section, ref.paragraph)
+      } catch (error) {
+        return { error: `deleteParagraph failed: ${String((error && error.message) || error)}` }
+      }
+      this.recordOp("AgentDeleteParagraph", { section: ref.section, para: ref.paragraph })
+      return { ok: true, extra: {} }
+    }
+
+    // split: break a paragraph at the ref's char offset. Routes to the cell
+    // primitive when the ref addresses a table cell (so a cell paragraph splits in
+    // place), else the body splitParagraph.
+    if (verb === "split") {
+      if (!ref) return { error: "split requires a ref {section,paragraph,offset}" }
+      const offset = Number.isInteger(ref.offset) ? ref.offset : 0
+      try {
+        if (ref.cell) {
+          this.splitParagraphInCellRef(ref, ref.cell, ref.cell.cellParaIndex, offset)
+        } else {
+          this.doc.splitParagraph(ref.section, ref.paragraph, offset)
+        }
+      } catch (error) {
+        return { error: `splitParagraph failed: ${String((error && error.message) || error)}` }
+      }
+      this.recordOp("AgentSplit", { section: ref.section, para: ref.paragraph, cell: ref.cell || null, offset })
+      return { ok: true, extra: {} }
+    }
+
+    // merge: join the ref's paragraph into the previous one (cell-aware).
+    if (verb === "merge") {
+      if (!ref) return { error: "merge requires a ref {section,paragraph}" }
+      try {
+        if (ref.cell) {
+          this.mergeParagraphInCellRef(ref, ref.cell, ref.cell.cellParaIndex)
+        } else {
+          this.doc.mergeParagraph(ref.section, ref.paragraph)
+        }
+      } catch (error) {
+        return { error: `mergeParagraph failed: ${String((error && error.message) || error)}` }
+      }
+      this.recordOp("AgentMerge", { section: ref.section, para: ref.paragraph, cell: ref.cell || null })
+      return { ok: true, extra: {} }
+    }
+
+    // insert_table: create a NEW R×C table at the body ref. treat_as_char (inline)
+    // or explicit col_widths route to createTableEx; otherwise the plain
+    // createTable. Mirrors the NIF InsertTable branch.
+    if (verb === "insert_table") {
+      if (!ref) return { error: "insert_table requires a ref {section,paragraph,offset}" }
+      const rows = Number.isInteger(op.rows) ? op.rows : null
+      const cols = Number.isInteger(op.cols) ? op.cols : null
+      if (rows == null || cols == null || rows <= 0 || cols <= 0) {
+        return { error: "insert_table requires integer 'rows' > 0 and 'cols' > 0" }
+      }
+      const offset = Number.isInteger(ref.offset) ? ref.offset : 0
+      const treatAsChar = op.treat_as_char === true
+      const colWidths = Array.isArray(op.col_widths) ? op.col_widths.filter(Number.isInteger) : null
+      try {
+        if (treatAsChar || (colWidths && colWidths.length)) {
+          const optionsJson = JSON.stringify({
+            sectionIdx: ref.section,
+            paraIdx: ref.paragraph,
+            charOffset: offset,
+            rowCount: rows,
+            colCount: cols,
+            treatAsChar,
+            ...(colWidths && colWidths.length ? { colWidths } : {})
+          })
+          this.doc.createTableEx(optionsJson)
+        } else {
+          this.doc.createTable(ref.section, ref.paragraph, offset, rows, cols)
+        }
+      } catch (error) {
+        return { error: `createTable failed: ${String((error && error.message) || error)}` }
+      }
+      this.recordOp("AgentInsertTable", { section: ref.section, para: ref.paragraph, offset, rows, cols, treatAsChar })
+      return { ok: true, extra: { rows, cols } }
+    }
+
+    // Table structure ops: insert/delete row+column, merge cells, split a cell.
+    // All take the table address from a CELL ref (parentParaIndex = the paragraph
+    // holding the table control; controlIndex = the table). row/col default to the
+    // picked cell's own row/col (read via getCellInfo) so the agent can say
+    // "insert a row below THIS cell" without separately supplying the index.
+    if (verb === "insert_table_row" || verb === "delete_table_row" ||
+        verb === "insert_table_column" || verb === "delete_table_column" ||
+        verb === "merge_cells" || verb === "split_cell") {
+      const target = this.resolveTableTarget(ref)
+      if (!target) {
+        return { error: `${verb} requires a table CELL ref (doc.find a cell in the table; its ref.cell carries the table control)` }
+      }
+      const { section, paragraph, control } = target
+      // Echo the table's dimensions AFTER the op in every result, so the agent
+      // can SEE the structural effect ("asked for 10, rows_after says 2") and
+      // self-correct instead of trusting a bare {ok:true}. (Live failure
+      // 2026-06-12: "10 rows added" claimed, 1 actually inserted.)
+      const dimsAfter = () => {
+        try {
+          const d = JSON.parse(this.doc.getTableDimensions(section, paragraph, control))
+          return { rows_after: d.rowCount, cols_after: d.colCount }
+        } catch (_) {
+          return {}
+        }
+      }
+      try {
+        if (verb === "insert_table_row") {
+          const row = Number.isInteger(op.row) ? op.row : this.cellRowCol(target).row
+          if (!Number.isInteger(row)) return { error: "insert_table_row needs a 'row' index (or a cell ref to derive it)" }
+          const below = op.below === true
+          // `count` inserts N rows in one op ("add 10 rows below this cell").
+          // The wasm primitive inserts ONE row per call, so loop — silently
+          // ignoring count is exactly how "10 added" became 1 in the live run.
+          const count = Number.isInteger(op.count) && op.count > 0 ? Math.min(op.count, 200) : 1
+          for (let i = 0; i < count; i++) {
+            this.doc.insertTableRow(section, paragraph, control, row, below)
+          }
+          this.recordOp("AgentInsertTableRow", { section, paragraph, control, row, below, count })
+          return { ok: true, extra: { row, below, inserted: count, ...dimsAfter() } }
+        }
+        if (verb === "delete_table_row") {
+          const row = Number.isInteger(op.row) ? op.row : this.cellRowCol(target).row
+          if (!Number.isInteger(row)) return { error: "delete_table_row needs a 'row' index (or a cell ref to derive it)" }
+          this.doc.deleteTableRow(section, paragraph, control, row)
+          this.recordOp("AgentDeleteTableRow", { section, paragraph, control, row })
+          return { ok: true, extra: { row, ...dimsAfter() } }
+        }
+        if (verb === "insert_table_column") {
+          const col = Number.isInteger(op.col) ? op.col : this.cellRowCol(target).col
+          if (!Number.isInteger(col)) return { error: "insert_table_column needs a 'col' index (or a cell ref to derive it)" }
+          const right = op.right === true
+          const count = Number.isInteger(op.count) && op.count > 0 ? Math.min(op.count, 64) : 1
+          for (let i = 0; i < count; i++) {
+            this.doc.insertTableColumn(section, paragraph, control, col, right)
+          }
+          this.recordOp("AgentInsertTableColumn", { section, paragraph, control, col, right, count })
+          return { ok: true, extra: { col, right, inserted: count, ...dimsAfter() } }
+        }
+        if (verb === "delete_table_column") {
+          const col = Number.isInteger(op.col) ? op.col : this.cellRowCol(target).col
+          if (!Number.isInteger(col)) return { error: "delete_table_column needs a 'col' index (or a cell ref to derive it)" }
+          this.doc.deleteTableColumn(section, paragraph, control, col)
+          this.recordOp("AgentDeleteTableColumn", { section, paragraph, control, col })
+          return { ok: true, extra: { col, ...dimsAfter() } }
+        }
+        if (verb === "merge_cells") {
+          const sr = Number.isInteger(op.start_row) ? op.start_row : null
+          const sc = Number.isInteger(op.start_col) ? op.start_col : null
+          const er = Number.isInteger(op.end_row) ? op.end_row : null
+          const ec = Number.isInteger(op.end_col) ? op.end_col : null
+          if ([sr, sc, er, ec].some((v) => v == null)) {
+            return { error: "merge_cells requires integer start_row/start_col/end_row/end_col" }
+          }
+          this.doc.mergeTableCells(section, paragraph, control, sr, sc, er, ec)
+          this.recordOp("AgentMergeCells", { section, paragraph, control, sr, sc, er, ec })
+          return { ok: true, extra: { start_row: sr, start_col: sc, end_row: er, end_col: ec } }
+        }
+        // split_cell: split one cell into an n_rows × m_cols grid. Mirrors the NIF
+        // SplitCell → split_table_cell_into_native(.., equal_row_height=true, merge_first=false).
+        const cellRC = this.cellRowCol(target)
+        const row = Number.isInteger(op.row) ? op.row : cellRC.row
+        const col = Number.isInteger(op.col) ? op.col : cellRC.col
+        if (!Number.isInteger(row) || !Number.isInteger(col)) {
+          return { error: "split_cell needs 'row' and 'col' (or a cell ref to derive them)" }
+        }
+        const nRows = Number.isInteger(op.rows) ? op.rows : 1
+        const mCols = Number.isInteger(op.cols) ? op.cols : 1
+        if (nRows <= 0 || mCols <= 0 || (nRows === 1 && mCols === 1)) {
+          return { error: "split_cell needs 'rows'/'cols' (the target sub-grid, e.g. rows:2 to split a cell into 2)" }
+        }
+        this.doc.splitTableCellInto(section, paragraph, control, row, col, nRows, mCols, true, false)
+        this.recordOp("AgentSplitCell", { section, paragraph, control, row, col, nRows, mCols })
+        return { ok: true, extra: { row, col, rows: nRows, cols: mCols } }
+      } catch (error) {
+        return { error: `${verb} failed: ${String((error && error.message) || error)}` }
+      }
+    }
+
+    // delete_node: remove a control (table / picture / shape / equation / note).
+    // A table cell ref deletes the whole table; a raw control ref (picture/shape/…)
+    // deletes that control. Mirrors the NIF delete_any_control: try each remover in
+    // order — every native validates the control's variant up front and errors
+    // BEFORE mutating, so a wrong-kind call is a no-op and we fall through.
+    if (verb === "delete_node") {
+      const target = this.resolveTableTarget(ref)
+      let section, paragraph, control
+      if (target) {
+        ;({ section, paragraph, control } = target)
+      } else {
+        control = this.rawControlIndex(op && op.ref)
+        section = ref ? ref.section : 0
+        paragraph = ref ? ref.paragraph : null
+      }
+      if (!Number.isInteger(control) || !Number.isInteger(paragraph)) {
+        return { error: "delete_node requires a ref to a control (a table cell ref, or an element ref carrying a control index)" }
+      }
+      // Order mirrors the NIF: table → picture → shape → equation → footnote
+      // (deleteFootnote also removes endnotes; the wasm has no separate endnote remover).
+      const removers = [
+        ["table", (s, p, c) => this.doc.deleteTableControl(s, p, c)],
+        ["picture", (s, p, c) => this.doc.deletePictureControl(s, p, c)],
+        ["shape", (s, p, c) => this.doc.deleteShapeControl(s, p, c)],
+        ["equation", (s, p, c) => this.doc.deleteEquationControl(s, p, c)],
+        ["note", (s, p, c) => this.doc.deleteFootnote(s, p, c)]
+      ]
+      let removed = null
+      let lastErr = null
+      for (const [kind, fn] of removers) {
+        try {
+          fn(section, paragraph, control)
+          removed = kind
+          break
+        } catch (error) {
+          lastErr = error
+        }
+      }
+      if (!removed) {
+        return { error: `delete_node failed: control ${control} at p${paragraph} is not a deletable node (${String((lastErr && lastErr.message) || lastErr)})` }
+      }
+      this.recordOp("AgentDeleteNode", { section, paragraph, control, removed })
+      return { ok: true, extra: { removed } }
+    }
+
+    // insert_picture: embed an image at the body/cell ref. The browser arm cannot
+    // read the server filesystem, so it needs the image BYTES delivered inline as
+    // base64 — the server producer (tools.ex browser_picture_producer) reads `src`
+    // and attaches image_base64 + extension + natural pixel dims before the op gets
+    // here. width/height are HWPUNIT (the placed size).
+    if (verb === "insert_picture") {
+      if (!ref) return { error: "insert_picture requires a ref {section,paragraph,offset}" }
+      const b64 = op.image_base64 || op.imageBase64
+      if (!b64) {
+        return { error: "insert_picture on a viewed doc needs inline image bytes ('image_base64'); the server producer must attach them from 'src'" }
+      }
+      const width = Number.isInteger(op.width) ? op.width : null
+      const height = Number.isInteger(op.height) ? op.height : null
+      if (width == null || height == null) {
+        return { error: "insert_picture requires integer 'width' and 'height' (HWPUNIT)" }
+      }
+      const offset = Number.isInteger(ref.offset) ? ref.offset : 0
+      const extension = op.extension != null ? String(op.extension) : "png"
+      const naturalW = Number.isInteger(op.natural_width_px) ? op.natural_width_px : 0
+      const naturalH = Number.isInteger(op.natural_height_px) ? op.natural_height_px : 0
+      const description = op.description != null ? String(op.description) : ""
+      let bytes
+      try {
+        bytes = this.base64ToBytes(b64)
+      } catch (error) {
+        return { error: `insert_picture: invalid base64 image data (${String((error && error.message) || error)})` }
+      }
+      const cellPathJson = ref.cell && ref.cell.cellPath ? JSON.stringify(ref.cell.cellPath) : ""
+      try {
+        this.doc.insertPicture(ref.section, ref.paragraph, offset, cellPathJson, bytes, width, height, naturalW, naturalH, extension, description)
+      } catch (error) {
+        return { error: `insertPicture failed: ${String((error && error.message) || error)}` }
+      }
+      this.recordOp("AgentInsertPicture", { section: ref.section, para: ref.paragraph, offset, width, height, extension })
+      return { ok: true, extra: { width, height, extension } }
+    }
+
     return { error: `unsupported_op:${verb}` }
+  },
+
+  // Resolve a table edit target from a ref. Table row/col/merge/split ops need the
+  // paragraph that HOLDS the table control + the control index; a cell ref carries
+  // both (parentParaIndex + controlIndex). Returns null if the ref is not a cell.
+  resolveTableTarget(ref) {
+    if (
+      ref &&
+      ref.cell &&
+      Number.isInteger(ref.cell.parentParaIndex) &&
+      Number.isInteger(ref.cell.controlIndex)
+    ) {
+      return {
+        section: ref.section,
+        paragraph: ref.cell.parentParaIndex,
+        control: ref.cell.controlIndex,
+        cellIndex: ref.cell.cellIndex
+      }
+    }
+    return null
+  },
+
+  // (row, col) of the picked cell, read from the engine (getCellInfo returns
+  // {row,col,rowSpan,colSpan}). Lets "insert a row below THIS cell" work without
+  // the agent separately computing the row index.
+  cellRowCol(target) {
+    try {
+      const info = JSON.parse(
+        this.doc.getCellInfo(target.section, target.paragraph, target.control, target.cellIndex) || "{}"
+      )
+      return {
+        row: Number.isInteger(info.row) ? info.row : null,
+        col: Number.isInteger(info.col) ? info.col : null
+      }
+    } catch (_) {
+      return { row: null, col: null }
+    }
+  },
+
+  // Extract a bare control index from a raw ref (object or {control}/{controlIndex}).
+  // parseRef only keeps a control when it pairs with a note sub-paragraph; a
+  // picture/shape control ref carries `control` alone, which delete_node needs.
+  rawControlIndex(rawRef) {
+    let r = rawRef
+    if (typeof r === "string") {
+      try {
+        r = JSON.parse(r)
+      } catch (_) {
+        return null
+      }
+    }
+    if (r && typeof r === "object") {
+      const c = Number(r.control ?? r.controlIndex)
+      if (Number.isInteger(c)) return c
+    }
+    return null
+  },
+
+  // base64 → Uint8Array (the inverse of bytesToBase64), for inline image bytes.
+  base64ToBytes(b64) {
+    const binary = atob(String(b64 || ""))
+    const bytes = new Uint8Array(binary.length)
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
+    return bytes
   },
 
   singleParagraphText(value) {

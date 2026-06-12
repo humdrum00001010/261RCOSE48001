@@ -149,6 +149,26 @@ defmodule Ecrits.Doc.Pool do
   def close(pool \\ @default_name, document_id),
     do: GenServer.call(pool, {:close, document_id})
 
+  @doc """
+  Refresh the SERVER twin of the doc at `path` from authoritative `bytes` (a
+  browser-viewer checkpoint). While a doc is viewed, the browser WASM model is
+  the authority and this pool's editor is only a shadow opened from disk —
+  without this sync every viewer detach (tab switch / navigate) leaves a stale
+  NIF copy that a later server-routed export would write over the browser's
+  edits. No-op when no server twin is open for `path`.
+  """
+  @spec refresh_by_path(GenServer.server(), String.t(), binary()) :: :ok | {:error, term()}
+  def refresh_by_path(pool \\ @default_name, path, bytes)
+      when is_binary(path) and is_binary(bytes) do
+    case info_by_path(pool, path) do
+      {:ok, %{id: document_id}} ->
+        with_doc(pool, document_id, &Editor.reload_from_bytes(&1, bytes))
+
+      _ ->
+        :ok
+    end
+  end
+
   # --- server --------------------------------------------------------------
 
   @impl true

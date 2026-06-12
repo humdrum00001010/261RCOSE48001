@@ -64,11 +64,18 @@ defmodule Ecrits.Doc.MCPServerAgentContextTest do
 
     # The MCP call carries the agent id (as the plug would splice it); each agent
     # sees only ITS bound doc, never the global active.
-    assert {:ok, %{structuredContent: %{"active_document" => ^a}}, _} =
+    assert {:ok, %{content: [content1]} = response1, _} =
              call_tool("doc.context", %{"_agent_id" => id1})
 
-    assert {:ok, %{structuredContent: %{"active_document" => ^b}}, _} =
-             call_tool("doc.context", %{"_agent_id" => id2})
+    assert %{"active_document" => ^a} = Jason.decode!(content1.text)
+
+    # Token economy: the result rides ONCE (the content text block) — no
+    # `structuredContent` duplicate for the CLI agent to round-trip into the
+    # model context.
+    refute Map.has_key?(response1, :structuredContent)
+
+    assert {:ok, %{content: [content2]}, _} = call_tool("doc.context", %{"_agent_id" => id2})
+    assert %{"active_document" => ^b} = Jason.decode!(content2.text)
   end
 
   test "an absent _agent_id keeps the legacy pool-only context (back-compat)" do
@@ -78,9 +85,9 @@ defmodule Ecrits.Doc.MCPServerAgentContextTest do
     # A bare (agent-less) context has no active doc — the global active is gone —
     # but the open doc is still listed in `documents`, so the legacy mount keeps
     # working without a per-agent context.
-    assert {:ok, %{structuredContent: %{"active_document" => nil, "documents" => docs}}, _} =
-             call_tool("doc.context", %{})
+    assert {:ok, %{content: [content]}, _} = call_tool("doc.context", %{})
 
+    assert %{"active_document" => nil, "documents" => docs} = Jason.decode!(content.text)
     assert Enum.any?(docs, &(&1["document"] == doc))
   end
 

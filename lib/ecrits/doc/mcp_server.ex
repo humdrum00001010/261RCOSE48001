@@ -38,7 +38,11 @@ defmodule Ecrits.Doc.MCPServer do
      %{
        protocolVersion: "2025-06-18",
        serverInfo: %{name: @server_name, version: @server_version},
-       capabilities: capabilities()
+       capabilities: capabilities(),
+       # The ONE global copy of the pptx/docx authoring lessons (token diet:
+       # clients inject server instructions once per session, not per turn,
+       # and they apply from ANY entry point — create, open, or path auto-open).
+       instructions: Tools.instructions()
      }, state}
   end
 
@@ -92,8 +96,13 @@ defmodule Ecrits.Doc.MCPServer do
       # content array (base64 included) through the ACP text channel, feeding
       # the model raw base64 instead of pixels. Renders now return FILE PATHS
       # the agent views with its native image tool.
+      #
+      # The same lesson killed `structuredContent`: it duplicated the exact
+      # JSON already in the content text block, and the CLI agents echo the
+      # WHOLE result envelope into the model context — every doc.* result was
+      # paid for twice. One serialized copy is the contract.
       {:ok, result} ->
-        {:ok, %{content: [json_content(result)], structuredContent: result}, state}
+        {:ok, %{content: [json_content(result)]}, state}
 
       {:error, %{} = structured} ->
         # Tool-level error the agent should act on (conflict, capability gap):

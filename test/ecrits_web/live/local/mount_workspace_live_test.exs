@@ -974,6 +974,49 @@ defmodule EcritsWeb.Local.MountWorkspaceLiveTest do
            )
   end
 
+  test "header picker + fullscreen buttons show in every tier that shows the editor (md+)", %{
+    conn: conn
+  } do
+    {:ok, lv, _html} =
+      live(
+        conn,
+        ~p"/workspace?#{[path: LocalWorkspaceAdapterStub.valid_path(), document: "template.hwp"]}"
+      )
+
+    html = render(lv)
+
+    # The md–lg middle tier renders the editor two-pane, so the header actions
+    # must appear from md up — `lg:inline-flex` leaves the visible editor with
+    # no picker/fullscreen buttons between md and lg.
+    picker_class = header_action_class(html, "#local-document-element-picker")
+    assert picker_class =~ "md:inline-flex"
+    refute picker_class =~ "lg:inline-flex"
+
+    fullscreen_class = header_action_class(html, "#local-rhwp-fullscreen")
+    assert fullscreen_class =~ "md:inline-flex"
+    refute fullscreen_class =~ "lg:inline-flex"
+
+    # Fullscreen at the md tier must also span the chat-rail grid column, or
+    # hiding the rail leaves a dead 340px column.
+    fullscreen_click =
+      html
+      |> LazyHTML.from_fragment()
+      |> LazyHTML.query("#local-rhwp-fullscreen")
+      |> LazyHTML.attribute("phx-click")
+      |> List.first()
+
+    assert fullscreen_click =~ "md:col-span-2"
+    assert fullscreen_click =~ "lg:col-span-3"
+  end
+
+  defp header_action_class(html, selector) do
+    html
+    |> LazyHTML.from_fragment()
+    |> LazyHTML.query(selector)
+    |> LazyHTML.attribute("class")
+    |> List.first()
+  end
+
   test "local employment standard HWP exposes editable specs to the editor", %{conn: conn} do
     {:ok, lv, _html} =
       live(
@@ -1289,6 +1332,121 @@ defmodule EcritsWeb.Local.MountWorkspaceLiveTest do
         nil -> :ok
       end
     end)
+  end
+
+  test "picked elements ride as structured chips: composed prompt + wrapped rail chips + refresh repaint",
+       %{conn: conn} do
+    use_test_agent_adapter!(
+      adapter_opts: [
+        script: [{:text_delta, "done"}],
+        report_prompts: true,
+        test_pid: self()
+      ]
+    )
+
+    {:ok, lv, _html} =
+      live(
+        conn,
+        ~p"/workspace?#{[path: LocalWorkspaceAdapterStub.valid_path(), document: "drafts/service.hwpx", provider: "codex"]}"
+      )
+
+    on_exit(fn -> stop_workspace_session(LocalWorkspaceAdapterStub.valid_path()) end)
+
+    session_id = subscribe_agent(lv)
+
+    # The picker JS owns this container's children (chips); LiveView renders it
+    # once and never morphs the JS-built chips away.
+    assert has_element?(lv, "#local-agent-picks[phx-update='ignore'][data-role='composer-picks']")
+
+    picks = [
+      %{
+        "document" => "drafts/service.hwpx",
+        "type" => "cell",
+        "ref" => "hwp:body/sec/0/tbl/0/cell/0",
+        "text" => "급여 및 수당"
+      },
+      %{
+        "document" => "drafts/service.hwpx",
+        "type" => "para",
+        "ref" => "hwp:body/sec/0/para/3",
+        "text" => "계약 기간"
+      },
+      # An empty element (no snippet): the chip stays compact — icon + type
+      # only, never the document filename blown up into the label.
+      %{
+        "document" => "drafts/service.hwpx",
+        "type" => "paragraph",
+        "ref" => "hwp:body/sec/0/para/9",
+        "text" => ""
+      }
+    ]
+
+    # The ChatInput hook pushes {message, picks}; picks never ride inside the
+    # textarea value anymore.
+    render_hook(lv, "send_local_agent", %{"message" => "여기 고쳐줘", "picks" => picks})
+
+    # The agent-visible prompt keeps the exact legacy block format (typed text
+    # followed by the "Selected document elements" JSON block).
+    assert_receive {:fake_acp_prompt, _sid, prompt}, 1_000
+    assert prompt =~ "여기 고쳐줘"
+    assert prompt =~ "Selected document elements (3):"
+    assert prompt =~ ~s("ref": "hwp:body/sec/0/tbl/0/cell/0")
+
+    # #32/#34 (path-first): the pick's `document` path IS the tools' document
+    # handle — no separate id is stamped, and the turn tells the agent to skip
+    # doc_context/doc_find discovery and pass the path directly.
+    refute prompt =~ "document_id"
+    assert prompt =~ "Skip doc_context/doc_find discovery"
+    assert prompt =~ "`document` value (the file path)"
+
+    assert_receive {:local_agent_event, %{type: :turn_completed, session_id: ^session_id}},
+                   1_000
+
+    sync_liveview(lv)
+
+    # The rail user bubble shows the typed text plus a WRAPPED chip row — never
+    # the raw JSON block.
+    assert has_element?(
+             lv,
+             ~s([data-message-role="user"] [data-role="picked-element-chips"].flex-wrap)
+           )
+
+    assert has_element?(lv, ~s([data-role="picked-element-chip"]), "급여 및 수당")
+    assert has_element?(lv, ~s([data-role="picked-element-chip"]), "계약 기간")
+    assert has_element?(lv, ~s([data-message-role="user"]), "여기 고쳐줘")
+    refute render(lv) =~ "Selected document elements"
+
+    # The empty-element chip shows the type alone — no filename fallback.
+    assert has_element?(lv, ~s([data-role="picked-element-chip"]), "paragraph")
+
+    refute lv
+           |> render()
+           |> LazyHTML.from_fragment()
+           |> LazyHTML.query(~s([data-role="picked-element-chip"]))
+           |> LazyHTML.text()
+           |> String.contains?("service.hwpx")
+
+    # A picks-only send (empty text) still starts a turn — it is NOT the empty
+    # re-Enter queue-flush gesture.
+    render_hook(lv, "send_local_agent", %{"message" => "", "picks" => [hd(picks)]})
+    assert_receive {:fake_acp_prompt, _sid, prompt2}, 1_000
+    assert prompt2 =~ "Selected document elements (1):"
+
+    assert_receive {:local_agent_event, %{type: :turn_completed, session_id: ^session_id}},
+                   1_000
+
+    sync_liveview(lv)
+
+    # Refresh: chips repaint from the durable transcript, not the raw JSON.
+    {:ok, lv2, _html2} =
+      live(
+        conn,
+        ~p"/workspace?#{[path: LocalWorkspaceAdapterStub.valid_path(), provider: "codex"]}"
+      )
+
+    sync_liveview(lv2)
+    assert has_element?(lv2, ~s([data-role="picked-element-chip"]), "급여 및 수당")
+    refute render(lv2) =~ "Selected document elements"
   end
 
   test "a browser refresh repaints local agent tool-call history", %{conn: conn} do
@@ -2447,9 +2605,16 @@ defmodule EcritsWeb.Local.MountWorkspaceLiveTest do
   defp stop_workspace_session(path) do
     case Ecrits.Workspace.Session.whereis(path) do
       pid when is_pid(pid) ->
-        case Ecrits.Workspace.Session.foreground_agent(%{path: path}) do
-          %{pid: agent_pid} when is_pid(agent_pid) -> stop_pid(agent_pid)
-          _ -> :ok
+        # The Session can die between whereis and this call when another
+        # on_exit (track_agent_session) tears the agent down first — a dead
+        # Session is exactly the desired end state, not a failure.
+        try do
+          case Ecrits.Workspace.Session.foreground_agent(%{path: path}) do
+            %{pid: agent_pid} when is_pid(agent_pid) -> stop_pid(agent_pid)
+            _ -> :ok
+          end
+        catch
+          :exit, _ -> :ok
         end
 
         stop_pid(pid)

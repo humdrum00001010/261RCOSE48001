@@ -135,7 +135,7 @@ defmodule EcritsWeb.Live.Studio.Components.EditorSurface do
                   id="local-document-element-picker"
                   type="button"
                   phx-click={JS.dispatch("ecrits:document-element-picker.toggle", to: "body")}
-                  class="hidden h-8 w-8 shrink-0 items-center justify-center rounded-md text-base-content/60 transition-colors hover:bg-base-200 hover:text-base-content data-[active=true]:bg-base-200 data-[active=true]:text-base-content lg:inline-flex"
+                  class="hidden h-8 w-8 shrink-0 items-center justify-center rounded-md text-base-content/60 transition-colors hover:bg-base-200 hover:text-base-content data-[active=true]:bg-base-200 data-[active=true]:text-base-content md:inline-flex"
                   aria-label="Pick document element"
                   aria-controls="local-editor-shell local-agent-input"
                   aria-pressed="false"
@@ -150,7 +150,7 @@ defmodule EcritsWeb.Live.Studio.Components.EditorSurface do
                   id="local-rhwp-fullscreen"
                   type="button"
                   phx-click={toggle_local_fullscreen()}
-                  class="hidden h-8 w-8 shrink-0 items-center justify-center rounded-md text-base-content/60 transition-colors hover:bg-base-200 hover:text-base-content lg:inline-flex"
+                  class="hidden h-8 w-8 shrink-0 items-center justify-center rounded-md text-base-content/60 transition-colors hover:bg-base-200 hover:text-base-content md:inline-flex"
                   aria-label="Toggle fullscreen"
                   aria-controls="local-editor-shell local-file-tree-panel local-agent-sidebar"
                   aria-pressed="false"
@@ -238,7 +238,7 @@ defmodule EcritsWeb.Live.Studio.Components.EditorSurface do
     js
     |> JS.toggle_class("hidden", to: "#local-file-tree-panel")
     |> JS.toggle_class("hidden", to: "#local-agent-sidebar")
-    |> JS.toggle_class("lg:col-span-3", to: "#local-editor-shell")
+    |> JS.toggle_class("md:col-span-2 lg:col-span-3", to: "#local-editor-shell")
     |> JS.toggle_attribute({"aria-pressed", "true", "false"})
     |> JS.toggle(to: "#local-rhwp-fullscreen [data-role='enter-fullscreen']")
     |> JS.toggle(to: "#local-rhwp-fullscreen [data-role='exit-fullscreen']")

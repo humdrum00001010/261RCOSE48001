@@ -22,6 +22,7 @@ import topbar from "topbar"
 import {WasmHwpEditor} from "./wasm_hwp_editor.js"
 import {WasmOfficeEditor} from "./wasm_office_editor.js"
 import {MarkdownEditor} from "./markdown_editor.js"
+import {ObservexPreview} from "./observex_preview.js"
 
 const csrfToken = document.querySelector("meta[name='csrf-token']").getAttribute("content")
 
@@ -530,7 +531,7 @@ const LocalChatRailResizer = {
 const liveSocket = new LiveSocket("/live", Socket, {
   longPollFallbackMs: 2500,
   params: {_csrf_token: csrfToken},
-  hooks: {...colocatedHooks, DirectR2Upload, WasmHwpEditor, WasmOfficeEditor, MarkdownEditor, LocalChatRailResizer},
+  hooks: {...colocatedHooks, DirectR2Upload, WasmHwpEditor, WasmOfficeEditor, MarkdownEditor, ObservexPreview, LocalChatRailResizer},
 })
 
 // Show progress bar on live navigation and form submits

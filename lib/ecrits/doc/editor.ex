@@ -72,6 +72,29 @@ defmodule Ecrits.Doc.Editor do
   def save(editor, opts \\ []), do: GenServer.call(editor, {:save, opts})
 
   @doc """
+  Export the in-memory document to bytes WITHOUT touching disk. `format`
+  defaults to the document's own (from its path extension). Backends without
+  `export_bytes/2` return `{:error, {:not_supported, _}}`.
+  """
+  @spec export_bytes(t(), atom() | nil) :: {:ok, binary()} | {:error, term()}
+  def export_bytes(editor, format \\ nil), do: GenServer.call(editor, {:export_bytes, format})
+
+  @doc """
+  Replace the in-memory model with one parsed from `bytes`.
+
+  This is the server-twin SYNC for browser-authority documents: while a human
+  viewer holds the doc, its browser WASM model is the authority and this
+  editor is only a shadow. Browser checkpoints push their exported bytes here
+  so the shadow never lags — without it, a viewer detach (tab switch) leaves a
+  stale NIF copy that a later server-routed save would write over the
+  browser's edits. The reload marks the editor clean (it now mirrors the
+  authority exactly); on parse failure the old model is kept.
+  """
+  @spec reload_from_bytes(t(), binary()) :: :ok | {:error, term()}
+  def reload_from_bytes(editor, bytes) when is_binary(bytes),
+    do: GenServer.call(editor, {:reload_from_bytes, bytes})
+
+  @doc """
   Rasterize one slide/page to a PNG at `path` (read-only; Office/Impress docs).
   Backends without `render_page/4` return `{:error, {:not_supported, _}}`.
   """
@@ -226,6 +249,28 @@ defmodule Ecrits.Doc.Editor do
     end
   end
 
+  def handle_call({:export_bytes, format}, _from, st) do
+    if function_exported?(st.backend, :export_bytes, 2) do
+      {:reply, st.backend.export_bytes(st.handle, format || format_of(st)), st}
+    else
+      {:reply, {:error, {:not_supported, "backend #{inspect(st.backend)} has no export_bytes/2"}},
+       st}
+    end
+  end
+
+  def handle_call({:reload_from_bytes, bytes}, _from, st) when is_binary(bytes) do
+    # Open the NEW model first and only then close the old handle, so a parse
+    # failure keeps the current (still-valid) model instead of losing the doc.
+    case st.backend.open(bytes, []) do
+      {:ok, new_handle} ->
+        st.backend.close(st.handle)
+        {:reply, :ok, mark_clean(%{st | handle: new_handle})}
+
+      {:error, _} = error ->
+        {:reply, error, st}
+    end
+  end
+
   def handle_call({:set, ref, props}, _from, st) do
     write(st, %{kind: :set, ref: ref, props: props}, fn ->
       st.backend.set(st.handle, ref, props)
@@ -291,6 +336,15 @@ defmodule Ecrits.Doc.Editor do
   defp dirty_state?(st), do: Map.get(st, :dirty?, false)
 
   defp mark_clean(st), do: Map.put(st, :dirty?, false)
+
+  # The document's own export format, derived from its save-target extension
+  # (.hwpx -> :hwpx, everything else .hwp). Office backends don't reach this
+  # (they have no export_bytes/2).
+  defp format_of(%{path: path}) when is_binary(path) do
+    if String.ends_with?(String.downcase(path), ".hwpx"), do: :hwpx, else: :hwp
+  end
+
+  defp format_of(_st), do: :hwp
 
   defp save_via(st, opts) do
     if function_exported?(st.backend, :save, 2) do

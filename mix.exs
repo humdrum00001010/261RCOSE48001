@@ -89,6 +89,11 @@ defmodule Ecrits.MixProject do
       # compiles.
       {:libreofficex, git: "git@code.cloudxyz.org:IlYoung/libreofficex.git", branch: "main"},
       {:orchex, git: "git@code.cloudxyz.org:IlYoung/Orchex.git", branch: "main"},
+      # Markdown + TeX/TikZ composite renderer backing the .md document preview
+      # (`EcritsWeb.Markdown.to_preview_html/1`). `Observex.render_body/1` emits
+      # <tex-island> markup; the browser runtime installed by `mix assets.observex`
+      # (served at /observex/) renders the islands with MathJax/TikZJax client-side.
+      {:observex, git: "git@code.cloudxyz.org:IlYoung/observex.git", branch: "main"},
       # ecrits extra deps.
       {:openai_ex, "~> 0.9"},
       {:dotenvy, "~> 1.0"},
@@ -112,7 +117,8 @@ defmodule Ecrits.MixProject do
       "assets.setup": [
         "tailwind.install --if-missing",
         "esbuild.install --if-missing",
-        "cmd npm ci --prefix assets"
+        "cmd npm ci --prefix assets",
+        "assets.observex"
       ],
       # The rhwp_core WASM binary (`assets/vendor/rhwp/rhwp_bg.wasm`) is a vendored
       # build artifact (produced by `wasm-pack build --target web --out-dir

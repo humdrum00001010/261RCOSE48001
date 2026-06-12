@@ -635,6 +635,15 @@ defmodule Ecrits.Doc.Rhwp do
     end
   end
 
+  # Export the in-memory model to bytes, no disk write. The Editor's twin-sync
+  # surface (`Editor.export_bytes/2`) uses this so a dirty SERVER copy can hand
+  # its bytes to a newly-attaching browser viewer (`RhwpAdapter` reverse-sync).
+  def export_bytes(%{ehwp: ehwp_handle}, format) when format in [:hwp, :hwpx] do
+    Ehwp.export(ehwp_handle, format)
+  end
+
+  def export_bytes(_handle, format), do: {:error, {:bad_format, format}}
+
   @impl true
   # IR-direct: export the (incrementally re-serialized) bytes via the ehwp NIF and
   # write them to disk. `format`/`path` come from the Tools layer (which knows the
@@ -881,6 +890,43 @@ defmodule Ecrits.Doc.Rhwp do
   end
 
   defp resolve_picture_src(op), do: {:ok, op}
+
+  @doc """
+  Producer for the BROWSER arm's inline `insert_picture`. The viewer's WASM model
+  cannot read the server filesystem, so — like the headless `resolve_picture_src`,
+  but emitting `image_base64` instead of the NIF `:bins` slice — this reads `src`,
+  base64-encodes the bytes, derives `extension`, and sniffs the natural pixel dims
+  so the browser handler (`wasm_hwp_editor.applyOneOp` insert_picture) can decode
+  and call `insertPicture`.
+
+  Only fires for the INLINE form (`src` present, no `page`); the pptx slide form
+  (`page` set) is left untouched for the office arm. Non-picture / no-`src` ops
+  pass through. Pure (no NIF), so it is safe to call on the shared browser path.
+  """
+  @spec picture_op_for_browser(map()) :: {:ok, map()} | {:error, map()}
+  def picture_op_for_browser(%{op: "insert_picture", src: src} = op)
+      when is_binary(src) and src != "" do
+    if Map.has_key?(op, :page) do
+      {:ok, op}
+    else
+      with {:ok, bytes} <- read_picture_file(src) do
+        ext = src |> Path.extname() |> String.trim_leading(".") |> String.downcase()
+        {nw, nh} = image_pixel_dims(bytes, ext)
+
+        op =
+          op
+          |> Map.delete(:src)
+          |> Map.put(:image_base64, Base.encode64(bytes))
+          |> Map.put(:extension, present_string(op[:extension]) || ext)
+          |> Map.put(:natural_width_px, op[:natural_width_px] || nw)
+          |> Map.put(:natural_height_px, op[:natural_height_px] || nh)
+
+        {:ok, op}
+      end
+    end
+  end
+
+  def picture_op_for_browser(op), do: {:ok, op}
 
   defp read_picture_file(src) do
     case File.read(src) do

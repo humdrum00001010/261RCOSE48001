@@ -2,10 +2,9 @@ const EVENT_TOGGLE = "ecrits:document-element-picker.toggle"
 const EVENT_STATE = "ecrits:document-element-picker.state"
 const EVENT_PICKS = "ecrits:document-element-picker.picks"
 const BUTTON_SELECTOR = "[data-role='document-element-picker-toggle']"
-const COMPOSER_SELECTOR = "#local-agent-input"
-const BLOCK_HEADER = "Selected document elements"
-// Matches the whole previously-injected block so it can be replaced in place.
-const BLOCK_RE = /Selected document elements \(\d+\):\n```json\n[\s\S]*?\n```\n?/
+// The chips strip above the composer textarea. LiveView renders the (empty)
+// container with phx-update="ignore"; this module owns its children.
+const PICKS_CONTAINER_SELECTOR = "#local-agent-picks"
 
 const state = {
   enabled: false,
@@ -23,10 +22,11 @@ function setEnabled(enabled) {
     button.dataset.active = String(state.enabled)
   }
 
-  // Deactivating the picker KEEPS the picks: the selection block stays in the
-  // composer (and highlighted in the document) so the user can keep typing
-  // around it. Picks are consumed when the message is sent (submit listener
-  // below), or removed individually by re-entering picker mode and re-clicking.
+  // Deactivating the picker KEEPS the picks: the chips stay above the composer
+  // (and highlighted in the document) so the user can keep typing. Picks are
+  // consumed when the message is sent (the ChatInput hook pushes them as
+  // structured data and calls clearPicks), or removed via a chip's × button.
+  renderComposerChips()
   document.dispatchEvent(new CustomEvent(EVENT_STATE, { detail: { enabled: state.enabled } }))
 }
 
@@ -52,7 +52,7 @@ function normalizePick(pick) {
 }
 
 function picksChanged() {
-  syncComposer()
+  renderComposerChips()
   document.dispatchEvent(new CustomEvent(EVENT_PICKS, { detail: { picks: state.picks } }))
 }
 
@@ -112,35 +112,79 @@ export function bindElementPickerTarget(target) {
   }
 }
 
-// Keep ONE compact block in the composer describing every current pick (the
-// agent reads document/type/ref/text; rects/ir stay editor-side). Replaces the
-// previous block in place so repeated picks don't pile up duplicate JSON.
-function syncComposer() {
-  const input = document.querySelector(COMPOSER_SELECTOR)
-  if (!input) return
+// The compact pick shape the ChatInput hook pushes to the server (the agent
+// reads document/type/ref/text; rects/ir stay editor-side).
+export function compactPicks() {
+  return state.picks.map(p => ({
+    document: p.document,
+    type: p.type,
+    ref: p.ref,
+    text: (p.text || "").slice(0, 200),
+  }))
+}
 
-  const value = input.value || ""
-  const stripped = value.replace(BLOCK_RE, "")
+// One small removable chip per pick, in a strip above the composer textarea.
+// Children-only ownership: LiveView still patches the container's ATTRIBUTES
+// (phx-update="ignore" only protects children), so every class lives on the
+// JS-built row — an empty container stays zero-height.
+function renderComposerChips() {
+  const box = document.querySelector(PICKS_CONTAINER_SELECTOR)
+  if (!box) return
 
-  let next = stripped
-  if (state.picks.length > 0) {
-    const compact = state.picks.map(p => ({
-      document: p.document,
-      type: p.type,
-      ref: p.ref,
-      text: (p.text || "").slice(0, 200),
-    }))
-    const block =
-      `${BLOCK_HEADER} (${state.picks.length}):\n` +
-      "```json\n" + JSON.stringify(compact, null, 2) + "\n```\n"
-    const sep = stripped && !stripped.endsWith("\n") ? "\n\n" : ""
-    next = `${stripped}${sep}${block}`
+  box.textContent = ""
+  if (state.picks.length === 0) return
+
+  const row = document.createElement("div")
+  row.dataset.role = "composer-picks-row"
+  row.className = "flex flex-wrap gap-1 px-2 pt-1.5"
+
+  for (const pick of state.picks) {
+    const chip = document.createElement("span")
+    chip.dataset.role = "composer-pick-chip"
+    chip.title = pick.ref
+    chip.className =
+      "inline-flex max-w-full min-w-0 items-center gap-1 rounded border border-base-300 " +
+      "bg-base-200/70 px-1.5 py-0.5 text-[11px] leading-4 text-base-content/80"
+
+    const icon = document.createElement("span")
+    icon.setAttribute("aria-hidden", "true")
+    icon.className = "hero-cursor-arrow-rays size-3 shrink-0 text-base-content/45"
+
+    const type = document.createElement("span")
+    type.className = "shrink-0 font-medium text-base-content/55"
+    type.textContent = pick.type
+
+    const snippet = chipLabel(pick)
+
+    const remove = document.createElement("button")
+    remove.type = "button"
+    remove.dataset.role = "composer-pick-remove"
+    remove.dataset.pickKey = pickKey(pick)
+    remove.setAttribute("aria-label", "Remove selected element")
+    remove.className =
+      "inline-flex size-3.5 shrink-0 items-center justify-center rounded text-base-content/45 " +
+      "transition-colors hover:bg-base-300 hover:text-base-content"
+    remove.textContent = "×"
+
+    chip.append(icon, type)
+    if (snippet !== "") {
+      const label = document.createElement("span")
+      label.className = "min-w-0 truncate"
+      label.textContent = snippet
+      chip.appendChild(label)
+    }
+    chip.appendChild(remove)
+    row.appendChild(chip)
   }
 
-  if (next !== value) {
-    input.value = next
-    input.dispatchEvent(new Event("input", { bubbles: true }))
-  }
+  box.appendChild(row)
+}
+
+// Snippet only: an empty element (blank paragraph, image, ...) keeps the chip
+// compact — icon + type, ref on hover — instead of a filename that names the
+// document, not the pick.
+function chipLabel(pick) {
+  return (pick.text || "").trim()
 }
 
 // Back-compat single-pick entry (now routes through the multi-select state).
@@ -160,16 +204,17 @@ document.addEventListener("keydown", event => {
   }
 })
 
-// Sending the chat message consumes the picks: the block is part of the
-// submitted composer value, so the references just went to the agent. Clear on
-// the next tick — LiveView serializes the form synchronously during the submit
-// dispatch, and stripping the block before that would drop it from the send.
-// (The composer's double-submit guard stops propagation for dropped submits,
-// so a blocked submit never reaches this listener.)
-document.addEventListener("submit", event => {
-  if (!event.target.closest?.('[data-role="chat-form"]')) return
-  if (state.picks.length === 0) return
-  setTimeout(() => clearPicks(), 0)
+// A chip's × button removes that pick (works in or out of picker mode).
+document.addEventListener("click", event => {
+  const button = event.target.closest?.('[data-role="composer-pick-remove"]')
+  if (!button) return
+  event.preventDefault()
+
+  const key = button.dataset.pickKey
+  const index = state.picks.findIndex(p => pickKey(p) === key)
+  if (index < 0) return
+  state.picks.splice(index, 1)
+  picksChanged()
 })
 
 window.EcritsDocumentElementPicker = {
@@ -182,4 +227,5 @@ window.EcritsDocumentElementPicker = {
   setEnabled,
   toggle,
   clearPicks,
+  compactPicks,
 }

@@ -569,6 +569,63 @@ defmodule Ecrits.Doc.Office do
     {:ok, op |> Map.take([:op, :count, :from, :to, :name]) |> scalar_op_fields()}
   end
 
+  # Paragraph structure (Writer): delete a whole paragraph node / split at a
+  # char offset / merge into the previous paragraph. The cpp walks the body
+  # enumeration so a delete/merge can never silently span a table.
+  defp to_uno_op(%{op: "delete_paragraph", ref: ref}) when is_binary(ref) do
+    {:ok, %{"op" => "delete_paragraph", "ref" => ref}}
+  end
+
+  defp to_uno_op(%{op: "split", ref: ref} = op) when is_binary(ref) do
+    {:ok, op |> Map.take([:op, :ref, :at]) |> scalar_op_fields()}
+  end
+
+  defp to_uno_op(%{op: "merge", ref: ref}) when is_binary(ref) do
+    {:ok, %{"op" => "merge", "ref" => ref}}
+  end
+
+  # Table structure: row/col insert+delete on Writer tables (tbl[<name>] /
+  # tbl[<name>]/cell[<A1>]) AND Impress table shapes; merge_cells/split_cell on
+  # Writer tables (the cpp refuses Impress merge/split precisely). A /cell[..]
+  # ref defaults row/col to that cell's position.
+  defp to_uno_op(%{op: verb} = op)
+       when verb in ~w(insert_table_row delete_table_row insert_table_column delete_table_column) do
+    case op[:ref] do
+      ref when is_binary(ref) and ref != "" ->
+        {:ok,
+         op |> Map.take([:op, :ref, :row, :col, :count, :below, :right]) |> scalar_op_fields()}
+
+      _ ->
+        {:error,
+         {:invalid_op,
+          "office #{verb} needs a table ref: tbl[<name>] (then row/col), " <>
+            "tbl[<name>]/cell[<A1>] (row/col derived), or an Impress table shape ref"}}
+    end
+  end
+
+  defp to_uno_op(%{op: "merge_cells", ref: ref} = op) when is_binary(ref) do
+    {:ok,
+     op
+     |> Map.take([:op, :ref, :start_row, :start_col, :end_row, :end_col])
+     |> scalar_op_fields()}
+  end
+
+  defp to_uno_op(%{op: "split_cell", ref: ref} = op) when is_binary(ref) do
+    {:ok, op |> Map.take([:op, :ref, :row, :col, :rows, :cols]) |> scalar_op_fields()}
+  end
+
+  # Writer notes/equation: insert_endnote mirrors insert_footnote (collects at
+  # the document end); insert_equation embeds a Math object whose `script` is
+  # StarMath markup (the agent's HWP equation markup is close enough for the
+  # common operators; complex HWP-specific syntax may need rephrasing).
+  defp to_uno_op(%{op: "insert_endnote"} = op) do
+    {:ok, op |> Map.take([:op, :ref, :text]) |> scalar_op_fields()}
+  end
+
+  defp to_uno_op(%{op: "insert_equation"} = op) do
+    {:ok, op |> Map.take([:op, :ref, :script]) |> Map.put_new(:ref, "end") |> scalar_op_fields()}
+  end
+
   defp to_uno_op(%{op: verb}),
     do: {:error, {:not_supported, "office edit verb \"#{verb}\" is not supported by the UNO arm"}}
 

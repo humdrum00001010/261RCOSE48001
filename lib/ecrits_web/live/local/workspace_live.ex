@@ -492,7 +492,7 @@ defmodule EcritsWeb.Local.WorkspaceLive do
       socket =
         socket
         |> assign(:local_markdown_source, source)
-        |> assign(:local_markdown_preview_html, EcritsWeb.Markdown.to_safe_html(source))
+        |> assign(:local_markdown_preview_html, EcritsWeb.Markdown.to_preview_html(source))
 
       socket =
         if params["dirty"] do
@@ -625,13 +625,15 @@ defmodule EcritsWeb.Local.WorkspaceLive do
 
   # The composer is a native form (phx-submit) so `agent[message]` is the nested
   # param shape; the colocated `.ChatInput` hook also pushEvents the same handler
-  # with a flat `%{"message" => ...}` on Enter/click, so accept both.
+  # with a flat `%{"message" => ...}` on Enter/click, so accept both. Picked
+  # document elements ride ONLY on the hook path (`"picks"`), as structured
+  # data — never as text inside the textarea value.
   def handle_event("send_local_agent", %{"agent" => %{"message" => message}}, socket) do
-    handle_send(socket, message)
+    handle_send(socket, message, [])
   end
 
-  def handle_event("send_local_agent", %{"message" => message}, socket) do
-    handle_send(socket, message)
+  def handle_event("send_local_agent", %{"message" => message} = params, socket) do
+    handle_send(socket, message, sanitize_picks(params["picks"]))
   end
 
   def handle_event("cancel_local_agent", _params, socket) do
@@ -1249,6 +1251,30 @@ defmodule EcritsWeb.Local.WorkspaceLive do
                         data-role="chat-message-body"
                         class="min-w-0 w-full border border-base-content/10 bg-base-300/50 px-3 py-1.5 text-[13px] leading-snug whitespace-normal break-words text-base-content/95 shadow-[inset_0_1px_3px_rgba(0,0,0,0.10)]"
                       >
+                        <% picks = agent_item_picks(item) %>
+                        <div
+                          :if={picks != []}
+                          data-role="picked-element-chips"
+                          class="mb-1 flex w-full min-w-0 flex-wrap gap-1"
+                        >
+                          <span
+                            :for={pick <- picks}
+                            data-role="picked-element-chip"
+                            title={pick["ref"]}
+                            class="inline-flex max-w-full min-w-0 items-center gap-1 rounded border border-base-content/15 bg-base-100/80 px-1.5 py-0.5 text-[11px] leading-4 text-base-content/75"
+                          >
+                            <.icon
+                              name="hero-cursor-arrow-rays"
+                              class="size-3 shrink-0 text-base-content/45"
+                            />
+                            <span class="shrink-0 font-medium text-base-content/55">
+                              {pick["type"]}
+                            </span>
+                            <span :if={pick_chip_label(pick) != ""} class="min-w-0 truncate">
+                              {pick_chip_label(pick)}
+                            </span>
+                          </span>
+                        </div>
                         <ChatRail.markdown_body
                           body={agent_item_body(item)}
                           paragraph_role="chat-md-paragraph"
@@ -1318,6 +1344,11 @@ defmodule EcritsWeb.Local.WorkspaceLive do
                      form (`local-agent-provider-options`) so they never submit a
                      chat turn. --%>
                 <div class="rounded border border-base-300 bg-base-100 transition-colors focus-within:border-base-content/40">
+                  <%!-- Picked-element chips: the document_element_picker JS owns
+                       this container's children (phx-update="ignore"), rendering
+                       one removable chip per pick. Picks ride the ChatInput
+                       pushEvent as structured data — never the textarea text. --%>
+                  <div id="local-agent-picks" phx-update="ignore" data-role="composer-picks"></div>
                   <.form
                     for={@local_agent_form}
                     id="local-agent-form"
@@ -1660,14 +1691,18 @@ defmodule EcritsWeb.Local.WorkspaceLive do
                     const el = input()
                     if (!el) return
                     const value = el.value
-                    if (!value || !value.trim()) {
+                    const picker = window.EcritsDocumentElementPicker
+                    const picks = picker ? picker.compactPicks() : []
+                    if ((!value || !value.trim()) && picks.length === 0) {
                       // Empty Enter: still notify the server so a re-Enter can
                       // FLUSH the head of the FIFO queue (Phase 5).
                       this.pushEvent("send_local_agent", { message: "" })
                       return
                     }
-                    this.pushEvent("send_local_agent", { message: value })
+                    this.pushEvent("send_local_agent", { message: value, picks })
                     el.value = ""
+                    // Sending consumes the picks (chips + document highlights).
+                    if (picker) picker.clearPicks()
                     this.resizeInput()
                     // Keep focus on the input so the keyboard never hides mid-thread.
                     el.focus({ preventScroll: true })
@@ -2841,18 +2876,26 @@ defmodule EcritsWeb.Local.WorkspaceLive do
     document_id = params["document_id"] || active_document_id(socket)
     request_id = params["request_id"] || params["requestId"]
 
-    with :ok <- verify_active_document(socket, document_id),
+    with :ok <- verify_snapshot_document(action, socket, document_id),
          {:ok, response} <- local_rhwp_persist(action, document_id, params) do
       _ = ack_local_rhwp_snapshot_committed(request_id, document_id, response)
 
       socket =
-        socket
-        |> assign(:active_document, document_summary(response))
-        |> assign(:local_document_status, action_status(action))
-        |> assign(:local_document_snapshot, response.snapshot)
-        |> assign(:local_document_error, nil)
-        |> maybe_clear_dirty_on_save(action, document_id)
-        |> maybe_render_active_local_hwp_pages(document_id)
+        if document_id == active_document_id(socket) do
+          socket
+          |> assign(:active_document, document_summary(response))
+          |> assign(:local_document_status, action_status(action))
+          |> assign(:local_document_snapshot, response.snapshot)
+          |> assign(:local_document_error, nil)
+          |> maybe_clear_dirty_on_save(action, document_id)
+          |> maybe_render_active_local_hwp_pages(document_id)
+        else
+          # Flush-before-detach checkpoint for a doc that is no longer the
+          # active tab: persist it (that is the whole point — the edits must
+          # not be lost to the tab switch) but don't touch the active-doc UI
+          # assigns, which belong to the NEW tab.
+          maybe_clear_dirty_on_save(socket, action, document_id)
+        end
 
       {:reply,
        %{
@@ -2868,6 +2911,19 @@ defmodule EcritsWeb.Local.WorkspaceLive do
         {:reply, %{error: error}, assign(socket, :local_document_error, error)}
     end
   end
+
+  # A checkpoint is accepted for ANY workspace document (the flush-before-detach
+  # checkpoint arrives right AFTER the viewer switched tabs, so gating it on the
+  # active doc silently dropped the final edits — observed as agent edits lost
+  # to a tab switch). The document's existence is still verified downstream by
+  # `RhwpAdapter.checkpoint` (`Document.document/1`). A SAVE keeps the strict
+  # active-doc gate: it is a user-initiated canonical write for the visible tab.
+  defp verify_snapshot_document(:checkpoint, _socket, document_id)
+       when is_binary(document_id),
+       do: :ok
+
+  defp verify_snapshot_document(_action, socket, document_id),
+    do: verify_active_document(socket, document_id)
 
   defp local_rhwp_persist(:checkpoint, document_id, params),
     do: RhwpAdapter.checkpoint(document_id, params)
@@ -3134,7 +3190,7 @@ defmodule EcritsWeb.Local.WorkspaceLive do
 
     socket
     |> assign(:local_markdown_source, source)
-    |> assign(:local_markdown_preview_html, EcritsWeb.Markdown.to_safe_html(source))
+    |> assign(:local_markdown_preview_html, EcritsWeb.Markdown.to_preview_html(source))
   end
 
   # HWP/HWPX now render entirely in the browser via rhwp_core WASM. The server
@@ -3732,17 +3788,18 @@ defmodule EcritsWeb.Local.WorkspaceLive do
   defp ws(%{assigns: %{workspace_session: %{} = ws}}), do: ws
   defp ws(_socket), do: nil
 
-  defp handle_send(socket, message) do
+  defp handle_send(socket, message, picks) do
     message = String.trim(message || "")
 
     cond do
       # Re-Enter gesture (Phase 5 FIFO queue): an empty Enter while a message is
       # queued FLUSHES the head — cancel the in-flight turn and run the next
       # queued message NOW instead of waiting for the running turn to finish.
-      message == "" and socket.assigns.local_agent_pending > 0 ->
+      # A picks-only send is NOT this gesture: the chips are the message.
+      message == "" and picks == [] and socket.assigns.local_agent_pending > 0 ->
         flush_local_agent_queue(socket)
 
-      message == "" ->
+      message == "" and picks == [] ->
         {:noreply, assign(socket, :local_agent_form, local_agent_form())}
 
       is_nil(socket.assigns.local_agent_session_id) ->
@@ -3752,11 +3809,60 @@ defmodule EcritsWeb.Local.WorkspaceLive do
       # behind the running turn rather than cancelling it (Phase 5). It drains in
       # order when the running turn finishes.
       socket.assigns.local_agent_status == :running or socket.assigns.local_agent_pending > 0 ->
-        enqueue_local_agent_turn(socket, message)
+        enqueue_local_agent_turn(socket, message, picks)
 
       true ->
-        send_local_agent_turn(socket, message)
+        send_local_agent_turn(socket, message, picks)
     end
+  end
+
+  # Boundary sanitizer for client-supplied picks: allowlisted string fields,
+  # bounded lengths, bounded count. A pick with neither a ref nor text carries
+  # nothing the agent (or the chip) could use, so it is dropped.
+  @max_picks 32
+  defp sanitize_picks(picks) when is_list(picks) do
+    picks
+    |> Enum.filter(&is_map/1)
+    |> Enum.take(@max_picks)
+    |> Enum.map(fn pick ->
+      %{
+        "document" => pick_field(pick, "document", 500),
+        "type" => pick_field(pick, "type", 50),
+        "ref" => pick_field(pick, "ref", 500),
+        "text" => pick_field(pick, "text", 200)
+      }
+    end)
+    |> Enum.reject(&(&1["ref"] == "" and &1["text"] == ""))
+  end
+
+  defp sanitize_picks(_picks), do: []
+
+  defp pick_field(pick, key, max) do
+    case Map.get(pick, key) do
+      value when is_binary(value) -> String.slice(value, 0, max)
+      _other -> ""
+    end
+  end
+
+  # The agent-visible prompt: typed text + the picked-element JSON block (the
+  # format the picker used to inject into the textarea), plus the #32 read-path
+  # override — the refs are already resolved, so the turn must not burn calls
+  # on doc_context/doc_find rediscovery. The pick's `document` (its workspace
+  # path) IS the tools' document handle: doc.* resolves paths directly,
+  # auto-opening from disk when needed (#34 path-first).
+  defp compose_picks_message(message, []), do: message
+
+  defp compose_picks_message(message, picks) do
+    block =
+      "Selected document elements (#{length(picks)}):\n```json\n" <>
+        Jason.encode!(picks, pretty: true) <>
+        "\n```\n" <>
+        "Picked refs are authoritative. Skip doc_context/doc_find discovery: " <>
+        "call doc_read/doc_edit/doc_set directly on these refs, passing each " <>
+        "pick's `document` value (the file path) as the tools' `document` param.\n"
+
+    sep = if message == "" or String.ends_with?(message, "\n"), do: "", else: "\n\n"
+    message <> sep <> block
   end
 
   # Enqueue a mid-turn send: record the user bubble immediately (so the user sees
@@ -3764,12 +3870,16 @@ defmodule EcritsWeb.Local.WorkspaceLive do
   # when the running turn terminates. The placeholders (reasoning / assistant
   # bubble) are rendered later, when the queued turn actually drains (its
   # `turn_started` event arrives with `local_agent_turn_id` nil).
-  defp enqueue_local_agent_turn(socket, message) do
-    case WorkspaceSession.send_turn(ws(socket), message, current_turn_opts(socket)) do
+  defp enqueue_local_agent_turn(socket, message, picks) do
+    case WorkspaceSession.send_turn(
+           ws(socket),
+           compose_picks_message(message, picks),
+           current_turn_opts(socket) ++ [display: message, picks: picks]
+         ) do
       {:ok, %{id: queued_id}} ->
         {:noreply,
          socket
-         |> stream_insert(:local_agent_items, agent_user_item(queued_id, message))
+         |> stream_insert(:local_agent_items, agent_user_item(queued_id, message, picks))
          |> assign(:local_agent_pending, socket.assigns.local_agent_pending + 1)
          |> assign(:local_agent_error, nil)
          |> assign(:local_agent_form, local_agent_form())}
@@ -3802,12 +3912,16 @@ defmodule EcritsWeb.Local.WorkspaceLive do
     [adapter_opts: local_agent_provider_adapter_opts(socket, workspace_path)]
   end
 
-  defp send_local_agent_turn(socket, message) do
-    case WorkspaceSession.send_turn(ws(socket), message, current_turn_opts(socket)) do
+  defp send_local_agent_turn(socket, message, picks) do
+    case WorkspaceSession.send_turn(
+           ws(socket),
+           compose_picks_message(message, picks),
+           current_turn_opts(socket) ++ [display: message, picks: picks]
+         ) do
       {:ok, %{id: turn_id}} ->
         {:noreply,
          socket
-         |> stream_insert(:local_agent_items, agent_user_item(turn_id, message))
+         |> stream_insert(:local_agent_items, agent_user_item(turn_id, message, picks))
          |> stream_insert(:local_agent_items, agent_reasoning_item(turn_id, "", :pending))
          |> stream_insert(:local_agent_items, agent_assistant_item(turn_id, "", :running, 0))
          |> assign(:local_agent_turn_id, turn_id)
@@ -4118,12 +4232,20 @@ defmodule EcritsWeb.Local.WorkspaceLive do
 
     case item_field(item, :role) |> to_string() do
       "user" ->
-        case item_field(item, :body) do
-          body when is_binary(body) and body != "" ->
-            stream_insert(socket, :local_agent_items, agent_user_item(turn_id, body))
+        body =
+          case item_field(item, :body) do
+            body when is_binary(body) -> body
+            _other -> ""
+          end
 
-          _empty ->
-            socket
+        # The session stores already-sanitized picks; re-sanitizing keeps the
+        # repaint robust against an older session's foreign item shapes.
+        picks = sanitize_picks(item_field(item, :picks))
+
+        if body != "" or picks != [] do
+          stream_insert(socket, :local_agent_items, agent_user_item(turn_id, body, picks))
+        else
+          socket
         end
 
       "agent" ->
@@ -4362,8 +4484,14 @@ defmodule EcritsWeb.Local.WorkspaceLive do
 
   # ── inline chat: stream item builders ──────────────────────────────
 
-  defp agent_user_item(turn_id, body) do
-    %{dom_id: "local-agent-user-#{turn_id}", role: :user, status: :sent, body: body}
+  defp agent_user_item(turn_id, body, picks \\ []) do
+    %{
+      dom_id: "local-agent-user-#{turn_id}",
+      role: :user,
+      status: :sent,
+      body: body,
+      picks: picks
+    }
   end
 
   defp agent_assistant_item(turn_id, body, status, segment \\ 0) do
@@ -4446,6 +4574,16 @@ defmodule EcritsWeb.Local.WorkspaceLive do
 
   defp agent_item_body(%{body: body}) when is_binary(body), do: body
   defp agent_item_body(_item), do: ""
+
+  defp agent_item_picks(%{picks: picks}) when is_list(picks), do: picks
+  defp agent_item_picks(_item), do: []
+
+  # Chip label: the picked snippet only. An empty element (blank paragraph,
+  # image, ...) keeps the chip compact — icon + type, ref on hover — instead of
+  # blowing the label up with a filename that names the document, not the pick.
+  defp pick_chip_label(pick) do
+    pick["text"] |> to_string() |> String.trim()
+  end
 
   # PNG paths a doc.render tool call produced, scraped from the chip body (the
   # tool output JSON arrives escape-wrapped inside the ACP rawOutput, so a

@@ -1,15 +1,29 @@
 defmodule Ecrits.Local.Document.RhwpAdapter do
   @moduledoc """
   Adapter between rhwp's snapshot payload shape and local document sessions.
+
+  This is also the SYNC SEAM between the two arms that can hold the same HWP
+  file (design §6.2 "browser is the authority for a viewed doc"):
+
+    * browser -> server: `checkpoint/2`/`save/2` push the viewer's exported
+      bytes into the agent pool's server twin (`Ecrits.Doc.Pool.refresh_by_path/3`),
+      so a viewer detach (tab switch) never strands the agent tools on a stale
+      NIF copy.
+    * server -> browser: `open/3`/`load/1` serve a DIRTY server twin's bytes
+      (unsaved agent edits made while no viewer was attached) instead of the
+      canonical file, so a newly attached viewer doesn't render — and later
+      checkpoint over — a model that silently lacks those edits.
   """
 
+  alias Ecrits.Doc.Editor
+  alias Ecrits.Doc.Pool
   alias Ecrits.Local.Document
 
   @spec open(String.t(), String.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def open(workspace_root, relative_path, opts \\ []) do
     with {:ok, %Document{} = document} <- Document.open(workspace_root, relative_path, opts),
          {:ok, bytes} <- Document.read(document) do
-      {:ok, load_response(document, bytes)}
+      {:ok, load_response(document, authoritative_bytes(document, bytes))}
     end
   end
 
@@ -17,7 +31,7 @@ defmodule Ecrits.Local.Document.RhwpAdapter do
   def load(document_id) when is_binary(document_id) do
     with {:ok, %Document{} = document} <- Document.document(document_id),
          {:ok, bytes} <- Document.read(document) do
-      {:ok, load_response(document, bytes)}
+      {:ok, load_response(document, authoritative_bytes(document, bytes))}
     end
   end
 
@@ -27,6 +41,7 @@ defmodule Ecrits.Local.Document.RhwpAdapter do
          :ok <- verify_format(document, params),
          {:ok, bytes} <- decode_bytes(params),
          {:ok, saved_document, snapshot} <- Document.checkpoint(document, bytes, attrs(params)) do
+      :ok = sync_server_twin(document, bytes)
       {:ok, save_response(saved_document, snapshot)}
     end
   end
@@ -37,6 +52,7 @@ defmodule Ecrits.Local.Document.RhwpAdapter do
          :ok <- verify_format(document, params),
          {:ok, bytes} <- decode_bytes(params),
          {:ok, saved_document, snapshot} <- Document.save(document, bytes, attrs(params)) do
+      :ok = sync_server_twin(document, bytes)
       {:ok, save_response(saved_document, snapshot)}
     end
   end
@@ -113,4 +129,41 @@ defmodule Ecrits.Local.Document.RhwpAdapter do
   defp param(params, key) when is_map(params) and is_atom(key) do
     Map.get(params, key) || Map.get(params, Atom.to_string(key))
   end
+
+  # browser -> server: feed the viewer's checkpoint bytes to the agent pool's
+  # server twin. Best-effort by design — no twin open (the common case when no
+  # agent has touched the doc) is a no-op, and a refresh failure must never
+  # fail the checkpoint itself (the snapshot store write already succeeded).
+  defp sync_server_twin(%Document{path: path}, bytes) when is_binary(path) do
+    _ = Pool.refresh_by_path(path, bytes)
+    :ok
+  end
+
+  defp sync_server_twin(_document, _bytes), do: :ok
+
+  # server -> browser: when the agent pool holds a DIRTY twin (unsaved doc.edit
+  # ops applied while no viewer was attached), its exported bytes — not the
+  # canonical file — are what the viewer must render. Falls back to the disk
+  # bytes whenever there is no twin, it is clean, or it cannot export.
+  defp authoritative_bytes(%Document{path: path} = document, disk_bytes)
+       when is_binary(path) do
+    with {:ok, %{id: id}} <- Pool.info_by_path(path),
+         {:ok, twin_bytes} when is_binary(twin_bytes) <-
+           Pool.with_doc(id, fn editor ->
+             if Editor.dirty?(editor) do
+               Editor.export_bytes(editor, format_atom(document.format))
+             else
+               {:error, :clean}
+             end
+           end) do
+      twin_bytes
+    else
+      _ -> disk_bytes
+    end
+  end
+
+  defp authoritative_bytes(_document, disk_bytes), do: disk_bytes
+
+  defp format_atom("hwpx"), do: :hwpx
+  defp format_atom(_format), do: :hwp
 end

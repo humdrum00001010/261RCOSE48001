@@ -118,15 +118,12 @@ defmodule Ecrits.Doc.Tools do
       "namespace" => @namespace,
       "name" => "create",
       "description" =>
-        "Create doc at `path`. Optional `from` clones an existing/open document and preserves format. " <>
-          "For a NEW PowerPoint, kind:\"pptx\" with NO deck creates a blank presentation you then DESIGN " <>
-          "yourself, slide by slide and shape by shape, with doc.edit insert_slide / insert_shape " <>
-          "(full control of layout, geometry, color, fonts — preferred for a polished custom deck). " <>
-          "Alternatively pass `deck` %{title, subtitle, slides:[...]} for a quick fixed-template deck. " <>
-          "For a NEW Word document, kind:\"docx\" creates a blank text document you author with " <>
-          "doc.edit insert_paragraph (style: e.g. \"Heading 1\") / insert_table (cells then editable " <>
-          "as tbl[<name>]/cell[A1]) / insert_picture {ref, src} / insert_footnote / set_columns " <>
-          "{count, from, to}. Save with doc.save.",
+        "Create a document at `path` (kind from extension). Optional `from` clones an " <>
+          "existing file or open doc (byte-copy — inherits ALL template formatting; " <>
+          "then replace content in place, don't rebuild its tables). Blank pptx/docx: " <>
+          "design it yourself per this server's instructions (the design guide). " <>
+          "Quick fixed-template pptx: pass `deck` {title, subtitle, slides:[...]}. " <>
+          "Save with doc.save.",
       "risk" => "write",
       "inputSchema" => %{
         "type" => "object",
@@ -331,49 +328,24 @@ defmodule Ecrits.Doc.Tools do
       "namespace" => @namespace,
       "name" => "edit",
       "description" =>
-        "Apply ONE structural edit (`op`), discriminated by op.op. " <>
-          "Pass `ops:[...]` to apply many edits in ONE call (e.g. fill every blank cell) — " <>
-          "far fewer round-trips. Best-effort: each op is applied independently and you get " <>
-          "a per-op result; one bad ref does not abort the others. " <>
-          "SLIDE AUTHORING (pptx): insert_slide {name} adds slide page[<name>]; " <>
-          "insert_shape {page, service, name, x, y, w, h, text?, ...} places a shape at " <>
-          "x/y sized w/h in 1/100 mm. The 16:9 slide canvas is 28000 wide x 15750 tall — " <>
-          "keep x+w <= 28000 and y+h <= 15750 or content is CLIPPED off the slide. " <>
-          "A blank doc.create starts " <>
-          "with one empty slide page[page1]: design it as your FIRST slide, then insert_slide " <>
-          "for the rest. `service` is any LibreOffice UNO shape service — " <>
-          "com.sun.star.drawing.RectangleShape, .EllipseShape, .TextShape (textbox), .LineShape. " <>
-          "ALL other keys are raw UNO properties applied verbatim: FillColor/LineColor/CharColor " <>
-          "accept int 0xRRGGBB or a CSS \"#RRGGBB\" string. ALWAYS set FillColor explicitly on " <>
-          "Rectangle/Ellipse shapes (the engine default fill is an ugly green); shapes get NO " <>
-          "outline unless you set LineColor/LineStyle. CharHeight (pt), " <>
-          "CharWeight (150=bold), CharPosture (2=italic), CharFontName, TextHorizontalAdjust... " <>
-          "TEXT WRAPS at the box width and auto-grows DOWNWARD over whatever is below — " <>
-          "plan box height ~= lines x CharHeight x 45 (1/100 mm) and leave vertical gaps; " <>
-          "roughly 4.5 x CharHeight of width fits ONE character, so a 28000-wide box at " <>
-          "CharHeight 20 holds ~46 chars per line. " <>
-          "insert_picture {page, name, src, x, y, w, h} EMBEDS an image file (png/jpg " <>
-          "from the workspace) on the slide — use real images for hero visuals/logos. " <>
-          "The new shape's ref is page[<page>]/shape[<name>]: " <>
-          "set_geometry {ref, x?, y?, w?, h?} moves/resizes it, doc.set restyles it, " <>
-          "delete_node {ref} removes a shape (or a whole slide with ref page[<name>]). " <>
-          "Design like a real deck: background rects, accent bars, big titles, aligned grids, " <>
-          "a consistent palette. IMPORTANT: batch ONE SLIDE per doc.edit call (its insert_slide " <>
-          "+ that slide's shapes, 8-12 ops) — never the whole deck in one giant call. " <>
-          "After EACH slide, call doc.render {page} to SEE it and fix overlaps/overflow " <>
-          "before moving on. " <>
-          "WORD AUTHORING (docx): ops anchor on a body paragraph ref (\"p3\" from doc.find) or " <>
-          "\"end\". insert_paragraph {ref, text, style?} appends a new paragraph (style: a Writer " <>
-          "paragraph style, e.g. \"Heading 1\", \"Text Body\"); insert_table {ref, rows, cols, name} " <>
-          "adds a real table whose cells you then fill with replace_text/set_cell on " <>
-          "tbl[<name>]/cell[A1] refs; insert_picture {ref, src, w?, h?, name?} embeds an inline " <>
-          "image (w/h in 1/100 mm — give ONE and the other scales to the image's aspect; defaults " <>
-          "to natural size; name it and its ref is img[<name>], else doc.find lists it as type " <>
-          "\"picture\" with an auto name — set_geometry {ref:\"img[..]\", w?, h?} resizes, " <>
-          "delete_node {ref:\"img[..]\"} removes); insert_footnote {ref, text} adds a numbered " <>
-          "footnote; set_columns {count, from, to} lays the from..to paragraph range out in N " <>
-          "columns — footnoted paragraphs must stay OUTSIDE that range (the engine refuses " <>
-          "otherwise). doc.render {page:\"1\"} works on docx too (PDF-backed) — render and CHECK your work.",
+        "Apply ONE structural edit (`op`) or many in one call (`ops:[...]` — " <>
+          "best-effort, per-op results; batch related edits). Op families: " <>
+          "text: insert_text/replace_text/set_cell/delete_range. " <>
+          "Paragraphs: insert_paragraph {ref, text, style?} / delete_paragraph / " <>
+          "split / merge — refs like \"p3\" from doc.find, or \"end\". " <>
+          "Tables: insert_table {ref, rows, cols}, insert_table_row/" <>
+          "insert_table_column {ref, below?/right?, count?} — count inserts N rows/cols " <>
+          "in ONE op (\"add 10 rows\" = count:10), delete_table_row/_column, " <>
+          "merge_cells {ref, start_row.., end_col}, split_cell — use a cell ref from " <>
+          "doc.find; row/col default to that cell's own position. Table-op replies " <>
+          "echo rows_after/cols_after — CHECK them against what you intended. " <>
+          "Objects: insert_picture {src}, insert_shape, set_geometry {ref, x?, y?, " <>
+          "w?, h?}, delete_node {ref}. Notes: insert_footnote/insert_endnote " <>
+          "{ref, text}, insert_equation {ref, script}. Slides (pptx): insert_slide " <>
+          "{name}; canvas 28000x15750 in 1/100 mm. Layout: set_columns {count, from, " <>
+          "to} — footnoted paragraphs must stay outside the range. " <>
+          "Authoring pptx/docx slides/sections? Follow this server's instructions " <>
+          "(the design guide); doc.render after each slide/section and LOOK at it.",
       "risk" => "write",
       "inputSchema" => %{
         "type" => "object",
@@ -570,17 +542,11 @@ defmodule Ecrits.Doc.Tools do
       "namespace" => @namespace,
       "name" => "render",
       "description" =>
-        "Render page(s)/slide(s) to PNG FILES and return their paths — VIEW the returned " <>
-          "file with your image tool (codex: view_image; claude: Read the path) to SEE the " <>
-          "actual result. ALWAYS render after designing each slide and CHECK STRICTLY, in order: " <>
-          "(1) does ANY text touch or overlap other text or cross a box edge? " <>
-          "(2) is any element cut off by the slide edge? (3) is contrast readable? " <>
-          "(4) are columns/cards aligned on a consistent grid? " <>
-          "If ANYTHING fails — even slightly — fix it (doc.edit set_geometry to move/resize, " <>
-          "doc.set to restyle, delete_node to remove) and RE-RENDER to confirm before the " <>
-          "next slide; overlapping text is never acceptable. " <>
-          "Pass `page` (slide name) for one slide; omit to render every slide (max 8). " <>
-          "Works for HWP too: pass the 1-based page NUMBER as `page` (\"1\", \"2\", ...).",
+        "Render page(s)/slide(s) to PNG FILES and return their paths — VIEW the " <>
+          "returned file with your image tool (codex: view_image; claude: Read the " <>
+          "path) to SEE the result; render-after-edit is the expected feedback loop. " <>
+          "`page` = slide name (office) or 1-based page number (HWP); omit to " <>
+          "render all (capped at 8).",
       "risk" => "read",
       "inputSchema" => %{
         "type" => "object",
@@ -805,6 +771,7 @@ defmodule Ecrits.Doc.Tools do
     # out. A bare pool-only context skips the check entirely.
     with :ok <- enforce_writable(ctx),
          {:ok, document} <- require_string(args, "document"),
+         {:ok, document} <- canonical_document(ctx, document),
          :ok <- enforce_ownership(ctx, document) do
       do_edit(ctx, args)
     else
@@ -832,7 +799,8 @@ defmodule Ecrits.Doc.Tools do
   end
 
   def call(ctx, "doc.render", args) do
-    with {:ok, document} <- require_string(args, "document") do
+    with {:ok, document} <- require_string(args, "document"),
+         {:ok, document} <- canonical_document(ctx, document) do
       case route(ctx, document) do
         {:server, editor} ->
           render_pages(editor, args)
@@ -841,9 +809,7 @@ defmodule Ecrits.Doc.Tools do
           # The browser WASM model is the authority for a viewed doc; the server
           # copy would render stale content. The authoring flow is headless.
           {:error,
-           error_json(
-             {:not_supported, "doc.render works on headless (server-backed) documents"}
-           )}
+           error_json({:not_supported, "doc.render works on headless (server-backed) documents"})}
 
         {:error, :not_found} ->
           {:error, error_json(:not_found)}
@@ -955,6 +921,14 @@ defmodule Ecrits.Doc.Tools do
   defp format_render_error(reason), do: inspect(reason)
 
   defp resolve_save_document(ctx, document) do
+    # Aliases (basename / relative path / "active") resolve first; the
+    # confine+info_by_path fallback keeps the legacy absolute-path form working.
+    document =
+      case canonical_document(ctx, document) do
+        {:ok, id} -> id
+        {:error, _reason} -> document
+      end
+
     case Pool.info(pool(ctx), document) do
       {:ok, info} ->
         {:ok, document, info}
@@ -1214,6 +1188,55 @@ defmodule Ecrits.Doc.Tools do
   # a file path) to a source path, byte-copy it to `path` (so the clone inherits
   # EVERY bit of the template's formatting), then open the copy as an editable doc
   # whose save target is `path`. The agent then REPLACES content cell-by-cell.
+  @doc """
+  The ONE global copy of the document-authoring lessons, served as the MCP
+  server's `instructions` (initialize result) — the client injects it once per
+  session, so it costs nothing per turn and reaches the agent regardless of how
+  the authoring session starts (doc.create, doc.open, or a path auto-open).
+  Every line was bought with a live failure (#15-#18: green default fill,
+  off-canvas clipping, text overlap, footnote-in-columns).
+  """
+  @spec instructions() :: String.t()
+  def instructions do
+    "Authoring guides (apply when inserting slides/shapes/paragraphs/tables):\n\n" <>
+      authoring_guide(:pptx) <> "\n\n" <> authoring_guide(:docx)
+  end
+
+  defp authoring_guide(:pptx) do
+    "PPTX guide. Blank deck starts with ONE empty slide page[page1]: design it " <>
+      "first, insert_slide {name} for the rest. insert_shape {page, service, name, " <>
+      "x, y, w, h, text?, ...} in 1/100 mm; canvas is 28000x15750 (16:9) — keep " <>
+      "x+w<=28000 and y+h<=15750 or content CLIPS. service: " <>
+      "com.sun.star.drawing.RectangleShape / .EllipseShape / .TextShape / .LineShape. " <>
+      "All other keys are raw UNO props: FillColor/LineColor/CharColor (int 0xRRGGBB " <>
+      "or \"#RRGGBB\"), CharHeight (pt), CharWeight (150=bold), CharPosture (2=italic), " <>
+      "CharFontName, TextHorizontalAdjust. ALWAYS set FillColor on Rectangle/Ellipse " <>
+      "(engine default fill is an ugly green); no outline unless LineColor/LineStyle. " <>
+      "Text wraps at box width and grows DOWN over content below: box height ~= " <>
+      "lines x CharHeight x 45; ~4.5 x CharHeight of width per char (28000-wide at " <>
+      "CharHeight 20 ~= 46 chars/line) — leave vertical gaps. insert_picture {page, " <>
+      "name, src, x, y, w, h} embeds real images (use them for hero visuals/logos). " <>
+      "New shape ref = page[<page>]/shape[<name>]: set_geometry moves/resizes, " <>
+      "doc.set restyles, delete_node removes (page[<name>] deletes a slide). " <>
+      "Design like a real deck: background rects, accent bars, big titles, aligned " <>
+      "grids, one palette. Batch ONE slide per doc.edit call (8-12 ops), then " <>
+      "doc.render {page} and LOOK: text overlap? edge clipping? contrast? grid " <>
+      "alignment? Fix and re-render before the next slide — overlap is never ok."
+  end
+
+  defp authoring_guide(:docx) do
+    "DOCX guide. Ops anchor on a body paragraph ref (\"p3\" from doc.find) or " <>
+      "\"end\". insert_paragraph {ref, text, style?} (Writer styles: \"Heading 1\", " <>
+      "\"Text Body\"); insert_table {ref, rows, cols, name} then fill " <>
+      "tbl[<name>]/cell[A1] refs via set_cell/replace_text; insert_picture {ref, src, " <>
+      "w?, h?, name?} inline image (1/100 mm; give ONE of w/h to keep aspect; ref " <>
+      "img[<name>]; set_geometry resizes, delete_node removes); insert_footnote " <>
+      "{ref, text}; set_columns {count, from, to} — footnoted paragraphs must stay " <>
+      "OUTSIDE the range (engine refuses). Structure: delete_paragraph/merge/split, " <>
+      "insert_endnote, insert_equation {ref, script} (StarMath). After each section " <>
+      "doc.render {page:\"1\"} (PDF-backed) and LOOK at the result before moving on."
+  end
+
   defp create_from(ctx, path, kind, from) do
     with {:ok, source} <- resolve_template_path(ctx, from),
          :ok <- copy_template(source, path) do
@@ -1983,12 +2006,107 @@ defmodule Ecrits.Doc.Tools do
   # editor even for browser-backed docs — the structure is identical on open).
   defp route_doc(ctx, args, opts) do
     with {:ok, document} <- require_string(args, "document") do
-      case route(ctx, document) do
-        {:browser, lv} -> Keyword.fetch!(opts, :browser).(lv)
-        {:server, editor} -> Keyword.fetch!(opts, :server).(editor)
-        {:error, :not_found} -> {:error, error_json(:not_found)}
+      case canonical_document(ctx, document) do
+        {:ok, document} ->
+          case route(ctx, document) do
+            {:browser, lv} ->
+              Keyword.fetch!(opts, :browser).(lv)
+
+            {:server, editor} ->
+              Keyword.fetch!(opts, :server).(editor)
+
+            {:error, :not_found} ->
+              {:error, error_json({:document_not_found, document, known_documents(ctx)})}
+          end
+
+        {:error, reason} ->
+          {:error, error_json(reason)}
       end
     end
+  end
+
+  # The `document` arg may arrive as something other than the canonical Pool id:
+  # the picks block's stamped id, a workspace-relative path, a bare basename, or
+  # "active". Resolve all of those here so EVERY doc tool accepts what an agent
+  # reasonably passes; on a miss, fail with the open-document catalog so the
+  # agent self-corrects in one step instead of a doc_context round-trip (#32 —
+  # observed live: "local-* id not accepted. Trying given document name." both
+  # failed before this resolver existed).
+  defp canonical_document(ctx, document) do
+    cond do
+      document in ["active", "current"] ->
+        case Map.get(ctx, :active_doc) do
+          id when is_binary(id) and id != "" -> {:ok, id}
+          _ -> {:error, {:document_not_found, document, known_documents(ctx)}}
+        end
+
+      known_document_id?(ctx, document) ->
+        {:ok, document}
+
+      true ->
+        with :error <- match_document_by_path(ctx, document),
+             :error <- open_document_from_disk(ctx, document) do
+          {:error, {:document_not_found, document, known_documents(ctx)}}
+        end
+    end
+  end
+
+  # #34 — the PATH is the stable document handle: open, closed, or never
+  # opened, the same path resolves. A document arg that is a real document
+  # file inside the workspace is opened on demand (ids are deterministic over
+  # (path, kind), so a closed doc reopens under its old id for free). Gated on
+  # a known document extension and the workspace confinement — a junk string
+  # or an outside path falls through to the catalog error instead.
+  defp open_document_from_disk(ctx, document) do
+    with {:ok, path} <- confine_path(ctx, document),
+         kind when not is_nil(kind) <- kind_from_path(path),
+         true <- File.regular?(path),
+         {:ok, id} <- Pool.open(pool(ctx), path, kind: kind) do
+      {:ok, id}
+    else
+      _ -> :error
+    end
+  end
+
+  defp known_document_id?(ctx, document) do
+    session_viewer(ctx, document) != nil or
+      match?({:ok, _}, Pool.info(pool(ctx), document))
+  end
+
+  # Match a path-ish alias against the pool entries: exact path, path suffix
+  # ("drafts/x.hwp"), or basename. Ambiguous basenames prefer the caller's
+  # active doc, then the first match.
+  defp match_document_by_path(ctx, document) do
+    normalized = String.trim_leading(document, "./")
+
+    matches =
+      Enum.filter(Pool.list(pool(ctx)), fn %{path: path} ->
+        path == document or
+          String.ends_with?(path, "/" <> normalized) or
+          Path.basename(path) == normalized
+      end)
+
+    case matches do
+      [] ->
+        :error
+
+      [%{id: id}] ->
+        {:ok, id}
+
+      many ->
+        active = Map.get(ctx, :active_doc)
+
+        case Enum.find(many, &(&1.id == active)) do
+          %{id: id} -> {:ok, id}
+          nil -> {:ok, hd(many).id}
+        end
+    end
+  end
+
+  defp known_documents(ctx) do
+    Enum.map(Pool.list(pool(ctx)), fn entry ->
+      %{"document" => entry.id, "path" => entry.path, "kind" => to_string(entry.kind)}
+    end)
   end
 
   # The wasm/NIF routing decision (design invariant 4). The per-workspace
@@ -2026,23 +2144,39 @@ defmodule Ecrits.Doc.Tools do
   end
 
   # Re-key the validated op back to JSON string keys (Op.normalize atomises it).
+  # An inline `insert_picture` is run through the picture producer first, which
+  # reads `src` and attaches the image bytes as `image_base64` (the browser can't
+  # read the server filesystem). Gated to the inline form, so the office slide
+  # form (`page` set) is left untouched.
   defp normalize_browser_op(op) do
-    case Ecrits.Doc.Op.normalize(op) do
-      {:ok, atom_op} -> {:ok, Map.new(atom_op, fn {k, v} -> {to_string(k), v} end)}
-      {:error, _reason} = error -> error
+    with {:ok, atom_op} <- Ecrits.Doc.Op.normalize(op),
+         {:ok, produced} <- Ecrits.Doc.Rhwp.picture_op_for_browser(atom_op) do
+      {:ok, Map.new(produced, fn {k, v} -> {to_string(k), v} end)}
     end
   end
 
   defp do_browser_write(lv, args, op) do
     case browser_call(lv, args, :edit, %{op: op}) do
       {:ok, %{} = applied} ->
-        {:ok,
-         %{"ok" => true}
-         |> maybe_put("replaced", Map.get(applied, "replaced") || Map.get(applied, :replaced))}
+        # Pass the editor's per-op EVIDENCE through (replaced, inserted,
+        # rows_after/cols_after, ...) — a bare {ok:true} is how an agent once
+        # claimed "10 rows added" when 1 was: with rows_after in the reply the
+        # model sees the structural effect and self-corrects.
+        {:ok, Map.merge(browser_write_evidence(applied), %{"ok" => true})}
 
       {:error, _reason} = error ->
         error
     end
+  end
+
+  # Scalar result fields from the browser editor's reply, minus plumbing keys.
+  @browser_reply_plumbing ~w(ok request_id ref document_id)
+  defp browser_write_evidence(%{} = applied) do
+    applied
+    |> Map.new(fn {k, v} -> {to_string(k), v} end)
+    |> Map.filter(fn {k, v} ->
+      k not in @browser_reply_plumbing and (is_number(v) or is_binary(v) or is_boolean(v))
+    end)
   end
 
   # Batch doc.edit for a browser-backed doc: normalise EACH op (per-op, like the
@@ -2131,19 +2265,25 @@ defmodule Ecrits.Doc.Tools do
   # the HWP browser hook does not expose `get`.
   defp get_with_editor_or_office_browser(ctx, args, browser_payload, server_fun) do
     with {:ok, document} <- require_string(args, "document") do
-      case route(ctx, document) do
-        {:browser, lv} ->
-          if office_document?(ctx, document) do
-            browser_get(lv, args, browser_payload)
-          else
-            with_server_editor(ctx, document, server_fun)
+      case canonical_document(ctx, document) do
+        {:ok, document} ->
+          case route(ctx, document) do
+            {:browser, lv} ->
+              if office_document?(ctx, document) do
+                browser_get(lv, args, browser_payload)
+              else
+                with_server_editor(ctx, document, server_fun)
+              end
+
+            {:server, editor} ->
+              server_fun.(editor)
+
+            {:error, :not_found} ->
+              {:error, error_json({:document_not_found, document, known_documents(ctx)})}
           end
 
-        {:server, editor} ->
-          server_fun.(editor)
-
-        {:error, :not_found} ->
-          {:error, error_json(:not_found)}
+        {:error, reason} ->
+          {:error, error_json(reason)}
       end
     end
   end
@@ -2447,6 +2587,17 @@ defmodule Ecrits.Doc.Tools do
       "message" => "path must stay within the workspace root: #{root}",
       "workspace_root" => root
     }
+
+  defp error_json({:document_not_found, document, open_documents}) do
+    %{
+      "error" => "document_not_found",
+      "document" => document,
+      "message" =>
+        "unknown document id/path. Use one of open_documents' `document` ids " <>
+          "(or its path/basename), or doc_open a new path.",
+      "open_documents" => open_documents
+    }
+  end
 
   defp error_json(reason) when is_atom(reason), do: %{"error" => to_string(reason)}
   defp error_json(reason), do: %{"error" => inspect(reason)}

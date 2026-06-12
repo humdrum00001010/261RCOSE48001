@@ -447,6 +447,10 @@ function resolveApi(Module) {
       // Click -> MODEL REF resolution (element picker). Present from the
       // 2026-06 wasm build on; officePickAtPoint degrades gracefully without it.
       hitRef: direct("hitRef"),
+      // hitRef + accurate per-line bounds + commit flag (commit=false restores
+      // the user's caret/selection — the hover probe). Newer builds only;
+      // officeResolveAt falls back to hitRef without it.
+      resolveRef: direct("resolveRef"),
       postMouseEvent: direct("postMouseEvent"),
       doubleClick: direct("doubleClick"),
       setTextSelection: direct("setTextSelection"),
@@ -619,6 +623,7 @@ const WasmOfficeEditor = {
     if (this.blink) clearInterval(this.blink)
     if (this._caretSettle) { clearTimeout(this._caretSettle); this._caretSettle = null }
     if (this.renderQueueTimer) { clearTimeout(this.renderQueueTimer); this.renderQueueTimer = null }
+    if (this.pickerHoverTimer) { clearTimeout(this.pickerHoverTimer); this.pickerHoverTimer = null }
     if (this.renderQueue) this.renderQueue.clear()
     window.removeEventListener("resize", this.onResize)
     this.el.removeEventListener("mousedown", this.onMouseDown)
@@ -1429,6 +1434,12 @@ const WasmOfficeEditor = {
   },
 
   onCanvasMouseMove(event) {
+    // Picker mode (no drag in flight): track the DOM-inspector hover preview
+    // instead of the drag-select path, matching the HWP arm.
+    if (this.elementPickerEnabled && !this.dragSelect) {
+      this.queuePickerHover(event)
+      return
+    }
     if (!this.dragSelect || !this.api) return
     if ((event.buttons & 1) === 0) {
       this.onCanvasMouseUp(event)
@@ -1845,7 +1856,16 @@ const WasmOfficeEditor = {
   // hitRef is the only reliable pixel->ref mapping; on an older wasm build
   // (no export) picking is disabled instead of guessing a wrong element.
   officePickAtPoint(loc) {
-    const fn = this.api && this.api.hitRef
+    return this.officeResolveAt(loc, true)
+  },
+
+  // commit=true: a click-pick (caret lands at the click, like a user click).
+  // commit=false: a hover probe — resolveRef restores the previous
+  // caret/selection so sweeping the pointer never steals the editing state.
+  officeResolveAt(loc, commit) {
+    const resolve = this.api && this.api.resolveRef
+    const legacy = this.api && this.api.hitRef
+    const fn = typeof resolve === "function" ? resolve : legacy
     if (typeof fn !== "function") {
       console.warn(
         "[office-wasm] element picking needs the hitRef export — rebuild soffice.wasm"
@@ -1855,17 +1875,34 @@ const WasmOfficeEditor = {
 
     let hit
     try {
-      hit = fn(loc.pageIndex + 1, loc.x, loc.y)
+      hit = typeof resolve === "function"
+        ? resolve(loc.pageIndex + 1, loc.x, loc.y, !!commit)
+        : fn(loc.pageIndex + 1, loc.x, loc.y)
     } catch (error) {
       console.error("[office-wasm] hitRef failed", error)
       return null
     }
     if (!hit || !hit.ok || !hit.ref) return null
 
-    // Highlight rects (page-local px): shape bounds when the engine has them,
-    // else a caret-line marker at the click's resolved caret.
+    // Highlight rects (page-local px), best first: per-line element rects from
+    // resolveRef (Writer cells/paragraphs — accurate), then shape bounds, then
+    // a caret-line marker as the last resort.
     const rects = []
-    if (hit.bounds && Number.isFinite(Number(hit.bounds.width))) {
+    const lineRects = hit.rects
+    if (lineRects && typeof lineRects.length === "number" && lineRects.length > 0) {
+      for (let i = 0; i < lineRects.length; i++) {
+        const r = lineRects[i]
+        if (!r || !Number.isFinite(Number(r.width))) continue
+        rects.push({
+          pageIndex: (Number(r.page) || 1) - 1,
+          x: Number(r.x),
+          y: Number(r.y),
+          width: Number(r.width),
+          height: Number(r.height)
+        })
+      }
+    }
+    if (!rects.length && hit.bounds && Number.isFinite(Number(hit.bounds.width))) {
       rects.push({
         pageIndex: loc.pageIndex,
         x: Number(hit.bounds.x),
@@ -1903,6 +1940,82 @@ const WasmOfficeEditor = {
     }
   },
 
+  // ─── Picker hover preview (DOM-inspector style) ───────────────────────────
+  // With the resolveRef export the probe restores the user's caret/selection
+  // itself, so hover can TRACK the pointer (throttled ~90 ms — each probe is a
+  // synchronous click+resolve+restore on the LO main thread; 60 Hz would be
+  // wasteful). The legacy hitRef fallback has no restore (a probe steals the
+  // caret like a click), so it keeps the conservative ~140 ms dwell gate.
+  queuePickerHover(event) {
+    this.pickerHoverEvent = event
+
+    // Off every page canvas: clear immediately rather than after the delay.
+    if (!this.eventToPageLocal(event)) {
+      if (this.pickerHoverTimer) clearTimeout(this.pickerHoverTimer)
+      this.pickerHoverTimer = null
+      this.setPickerHover(null)
+      return
+    }
+
+    const tracking = this.api && typeof this.api.resolveRef === "function"
+    if (tracking) {
+      // Throttle, leading-edge-ish: a probe is already due — let it sample the
+      // latest pickerHoverEvent when it fires.
+      if (this.pickerHoverTimer) return
+      const since = performance.now() - (this.pickerHoverAt || 0)
+      const wait = Math.max(0, 90 - since)
+      this.pickerHoverTimer = setTimeout(() => {
+        this.pickerHoverTimer = null
+        this.pickerHoverAt = performance.now()
+        this.updatePickerHover(this.pickerHoverEvent)
+      }, wait)
+      return
+    }
+
+    // Legacy dwell: re-arm on every move so the probe fires only on a pause.
+    if (this.pickerHoverTimer) clearTimeout(this.pickerHoverTimer)
+    this.pickerHoverTimer = setTimeout(() => {
+      this.pickerHoverTimer = null
+      this.updatePickerHover(this.pickerHoverEvent)
+    }, 140)
+  },
+
+  updatePickerHover(event) {
+    if (!this.elementPickerEnabled || !this.api || !event) {
+      this.setPickerHover(null)
+      return
+    }
+    const loc = this.eventToPageLocal(event)
+    if (!loc) {
+      this.setPickerHover(null)
+      return
+    }
+    const probe = this.officeResolveAt(loc, false)
+    if (!probe || !(probe.rects || []).length) {
+      this.setPickerHover(null)
+      return
+    }
+    if (this.pickerHover && this.pickerHover.key === probe.ref) return
+    this.setPickerHover({ key: probe.ref, rects: probe.rects })
+  },
+
+  setPickerHover(hover) {
+    if (!hover && !this.pickerHover) return
+    this.pickerHover = hover
+    this.paintPickedHighlights()
+  },
+
+  // bindElementPickerTarget calls this on mode flips: leaving picker mode must
+  // erase the hover preview and cancel a pending dwell probe.
+  onElementPickerState(enabled) {
+    if (enabled) return
+    if (this.pickerHoverTimer) {
+      clearTimeout(this.pickerHoverTimer)
+      this.pickerHoverTimer = null
+    }
+    this.setPickerHover(null)
+  },
+
   currentDocumentPicks() {
     const picker = window.EcritsDocumentElementPicker
     const picks = (picker && picker.picks) || []
@@ -1926,6 +2039,10 @@ const WasmOfficeEditor = {
     for (const pick of this.currentDocumentPicks()) {
       for (const rect of pick.rects || []) pages.add(rect.pageIndex ?? 0)
     }
+    const hover = this.elementPickerEnabled ? this.pickerHover : null
+    if (hover) {
+      for (const rect of hover.rects || []) pages.add(rect.pageIndex ?? 0)
+    }
     for (const page of pages) this.paintAdornmentsOnPage(page)
   },
 
@@ -1947,6 +2064,21 @@ const WasmOfficeEditor = {
         ctx.strokeStyle = "rgba(79, 70, 229, 0.95)"
         ctx.lineWidth = Math.max(2, 1.5 * (this.scale || 1))
         ctx.fillRect(rect.x * sx, rect.y * sy, rect.width * sx, rect.height * sy)
+        ctx.strokeRect(rect.x * sx, rect.y * sy, rect.width * sx, rect.height * sy)
+        ctx.restore()
+      }
+    }
+
+    // Hover preview: dashed outline (no fill), solid boxes stay for picks —
+    // same DOM-inspector split as the HWP arm.
+    const hover = this.elementPickerEnabled ? this.pickerHover : null
+    if (hover) {
+      for (const rect of hover.rects || []) {
+        if ((rect.pageIndex ?? 0) !== pageIndex) continue
+        ctx.save()
+        ctx.strokeStyle = "rgba(79, 70, 229, 0.9)"
+        ctx.lineWidth = Math.max(1.5, this.scale || 1)
+        ctx.setLineDash([5, 3])
         ctx.strokeRect(rect.x * sx, rect.y * sy, rect.width * sx, rect.height * sy)
         ctx.restore()
       }
@@ -2811,21 +2943,19 @@ const WasmOfficeEditor = {
     const verb = op && op.op
     if (!verb) return { error: "edit op requires an 'op' verb" }
 
-    // ── Deployed-binary op compatibility shim (ecrits #150) ───────────────────
-    // The deployed soffice.wasm `uno_apply` exposes a LIMITED verb set:
-    //   insert_text ✓   set_text ✓   delete ✓
-    //   replace_text — recognised but BROKEN: it deletes the matched text and
-    //                  reports {ok:true} but NEVER inserts the replacement, so the
-    //                  target paragraph/shape is left EMPTY (verified live on both
-    //                  docx p<idx> refs and pptx shape refs).
-    //   delete_range / delete_paragraph / insert_paragraph / set_cell / split /
-    //   insert_node / delete_node — "unknown op" (not in the build at all).
-    // Until the office WASM is relinked with a corrected LokEditBindings, compose
-    // the broken/missing text verbs from the WORKING `set_text` (full-paragraph
-    // set), which we verified produces exactly the intended text on both engines.
-    // This is the actual fix for the "agentic replace does nothing / empties the
-    // text" symptom — replace is by far the most common agent edit. A relink can
-    // later remove this shim with no behaviour change.
+    // ── Edit-op shim (ecrits #150, narrowed after the full-parity relink) ─────
+    // The deployed soffice.wasm `uno_apply` now carries the FULL server op set
+    // (LokEditBindings uno_apply_impl is a port of the NIF's uno_bridge dispatch):
+    // text ops, slide ops (insert_slide/insert_shape/set_geometry/delete_node),
+    // Writer structure (insert_paragraph/delete_paragraph/split/merge/insert_table/
+    // insert_footnote/insert_endnote/insert_equation/set_columns) and table
+    // structure (row/col insert+delete, merge_cells, split_cell). Only THREE verbs
+    // are still composed JS-side, because their faithful semantics need the IR:
+    //   replace_text — the binary's replace_text === set_text (whole-element set);
+    //                  the shim does a counted query->replacement substitution on
+    //                  the element's current text, which is the contract.
+    //   set_cell     — alias of set_text on a cell ref (kept for ref collapsing).
+    //   delete_range — the binary has no offset granularity; whole-element clear.
     const rewritten = this.rewriteUnsupportedEditOp(op)
     if (rewritten && rewritten.error) return { error: `${verb} failed: ${rewritten.error}` }
     const finalOp = rewritten && rewritten.op ? rewritten.op : op
@@ -2862,8 +2992,10 @@ const WasmOfficeEditor = {
   // which is the only ref `set_text` resolves against (verified).
   rewriteUnsupportedEditOp(op) {
     const verb = op.op
-    if (verb !== "replace_text" && verb !== "delete_range" && verb !== "delete_paragraph" && verb !== "set_cell") {
-      return null // insert_text / set_text / delete etc. are native — pass through
+    if (verb !== "replace_text" && verb !== "delete_range" && verb !== "set_cell") {
+      // Everything else (incl. delete_paragraph and the structural ops) is
+      // native in the relinked binary — pass through.
+      return null
     }
 
     // Resolve the target element(s) from the IR.
@@ -2884,8 +3016,8 @@ const WasmOfficeEditor = {
       return { op: { op: "set_text", ref: targetRef, text: String(op.text == null ? "" : op.text) } }
     }
 
-    if (verb === "delete_range" || verb === "delete_paragraph") {
-      // Neither verb exists in the binary; a whole-element delete (the only
+    if (verb === "delete_range") {
+      // The binary has no offset granularity; a whole-element delete (the only
       // granularity the IR ref gives us) is the closest faithful effect — empty
       // the target's text so the agent then sees an empty paragraph/shape.
       if (op.ref == null) return { error: `${verb} requires a 'ref'` }
