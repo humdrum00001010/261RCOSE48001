@@ -20,9 +20,14 @@ defmodule Ecrits.Doc.MCPToolPolicyTest do
     find_tool = Enum.find(tools, &(&1["name"] == "find"))
     edit_tool = Enum.find(tools, &(&1["name"] == "edit"))
 
-    assert open_doc_tool["description"] =~ "current workspace document once"
+    assert open_doc_tool["description"] =~ "workspace document once"
     assert open_doc_tool["description"] =~ "mounted ACP projection"
     assert open_doc_tool["description"] =~ "document id"
+    # Both path forms must be documented. The agent reads this description, not
+    # the policy source: allowing explicit paths in the gate changed nothing
+    # until the manual said so.
+    assert open_doc_tool["description"] =~ "`current`"
+    assert open_doc_tool["description"] =~ "workspace-relative path"
     refute open_doc_tool["description"] =~ "JSONL"
     refute open_doc_tool["description"] =~ "mounted_at"
 
@@ -136,7 +141,7 @@ defmodule Ecrits.Doc.MCPToolPolicyTest do
                  "attempted" => "vfs",
                  "reason" => "unrepresentable",
                  "detail" => "",
-                 "mounted_at" => "/workspace/.ecrits/document.hwp.jsonl"
+                 "mounted_at" => "/workspace/.ecrits/document.hwp.doclang.xml"
                }
              })
 
@@ -147,7 +152,7 @@ defmodule Ecrits.Doc.MCPToolPolicyTest do
                  "attempted" => "vfs",
                  "reason" => "write_failed",
                  "detail" => "rename returned Input/output error",
-                 "mounted_at" => "/workspace/.ecrits/document.hwp.jsonl"
+                 "mounted_at" => "/workspace/.ecrits/document.hwp.doclang.xml"
                }
              })
 
@@ -155,7 +160,7 @@ defmodule Ecrits.Doc.MCPToolPolicyTest do
       "attempted" => "vfs",
       "reason" => "unrepresentable",
       "detail" => "native-only placement",
-      "mounted_at" => "/workspace/.ecrits/document.hwp.jsonl"
+      "mounted_at" => "/workspace/.ecrits/document.hwp.doclang.xml"
     }
 
     for op <- [
@@ -177,7 +182,7 @@ defmodule Ecrits.Doc.MCPToolPolicyTest do
                  "attempted" => "vfs",
                  "reason" => "unrepresentable",
                  "detail" => "requested image placement",
-                 "mounted_at" => "/workspace/.ecrits/document.hwp.jsonl"
+                 "mounted_at" => "/workspace/.ecrits/document.hwp.doclang.xml"
                }
              })
 
@@ -197,7 +202,7 @@ defmodule Ecrits.Doc.MCPToolPolicyTest do
                  "attempted" => "vfs",
                  "reason" => "unrepresentable",
                  "detail" => "the user requested a stamp picture immediately before [[APPROVED]]",
-                 "mounted_at" => "/workspace/.ecrits/document.hwp.jsonl"
+                 "mounted_at" => "/workspace/.ecrits/document.hwp.doclang.xml"
                }
              })
 
@@ -248,7 +253,13 @@ defmodule Ecrits.Doc.MCPToolPolicyTest do
     assert {:error, %{"error" => "doc_open_required_first"}} =
              MCPToolPolicy.authorize_vfs_sequence("doc.context", %{}, sequence)
 
-    assert {:error, %{"error" => "current_document_open_required"}} =
+    # An explicit workspace-relative path is authorized. It used to be refused
+    # here, which deadlocked the agent whenever no editor tab was open: `current`
+    # fails with "no document is bound ... or pass the document's
+    # workspace-relative path explicitly", and this gate then rejected exactly
+    # that fallback. Confinement is not this gate's job —
+    # `resolve_vfs_document_candidate/2` confines to the workspace root.
+    assert :ok =
              MCPToolPolicy.authorize_vfs_sequence(
                "doc.open_doc",
                %{"path" => "contract.hwp"},
@@ -262,12 +273,19 @@ defmodule Ecrits.Doc.MCPToolPolicyTest do
                sequence
              )
 
+    # Only a missing or blank path is refused.
+    assert {:error, %{"error" => "current_document_open_required"}} =
+             MCPToolPolicy.authorize_vfs_sequence("doc.open_doc", %{"path" => "  "}, sequence)
+
+    assert {:error, %{"error" => "current_document_open_required"}} =
+             MCPToolPolicy.authorize_vfs_sequence("doc.open_doc", %{}, sequence)
+
     sequence =
       MCPToolPolicy.record_vfs_open(
         sequence,
         %{
           "document" => "d_contract",
-          "mounted_at" => "/workspace/.ecrits/contract.hwp.jsonl",
+          "mounted_at" => "/workspace/.ecrits/contract.hwp.doclang.xml",
           "mount_name" => "contract.hwp",
           "path" => "/workspace/contract.hwp"
         },
@@ -363,7 +381,7 @@ defmodule Ecrits.Doc.MCPToolPolicyTest do
         "attempted" => "vfs",
         "reason" => "unrepresentable",
         "detail" => "the user requested a product photo at [[PHOTO]]",
-        "mounted_at" => "/workspace/.ecrits/contract.hwp.jsonl"
+        "mounted_at" => "/workspace/.ecrits/contract.hwp.doclang.xml"
       }
     }
 
@@ -392,7 +410,7 @@ defmodule Ecrits.Doc.MCPToolPolicyTest do
       |> MCPToolPolicy.record_vfs_open(
         %{
           "document" => "d_contract",
-          "mounted_at" => "/workspace/.ecrits/contract.hwp.jsonl",
+          "mounted_at" => "/workspace/.ecrits/contract.hwp.doclang.xml",
           "mount_name" => "contract.hwp",
           "path" => "/workspace/contract.hwp"
         },
@@ -525,7 +543,7 @@ defmodule Ecrits.Doc.MCPToolPolicyTest do
 
     valid = %{
       "document" => "d_contract",
-      "mounted_at" => "/workspace/.ecrits/contract.hwp.jsonl",
+      "mounted_at" => "/workspace/.ecrits/contract.hwp.doclang.xml",
       "mount_name" => "contract.hwp",
       "path" => "/workspace/contract.hwp",
       "mount_error" => nil
@@ -604,7 +622,7 @@ defmodule Ecrits.Doc.MCPToolPolicyTest do
       "attempted" => "vfs",
       "reason" => "unrepresentable",
       "detail" => "requested picture at an exact existing marker",
-      "mounted_at" => "/workspace/.ecrits/contract.hwp.jsonl"
+      "mounted_at" => "/workspace/.ecrits/contract.hwp.doclang.xml"
     }
 
     for bad_ref <- [

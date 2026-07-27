@@ -77,8 +77,12 @@ defmodule Ecrits.PromptTest do
 
       refute prompt =~ "retry the same change once from that fresh state"
 
-      assert prompt =~
-               "Parse and write the complete wrapper as one JSON value; never reconstruct line commas"
+      # The mount serves DocLang XML since 2026-07-26, not the retired JSONL
+      # container. Pin the property that still matters: write the whole tree,
+      # and treat element order/nesting as the addressing.
+      assert prompt =~ "Parse and write the complete tree as one XML document"
+      assert prompt =~ "element order and nesting ARE the addressing"
+      refute prompt =~ "one JSON value"
 
       assert prompt =~ "Do not investigate or repair stale `previewText`"
 
@@ -102,7 +106,10 @@ defmodule Ecrits.PromptTest do
     if Ecrits.Fuse.DocMount.enabled?() do
       prompt = Prompt.acp_preamble(doc_vfs_mounted: true)
 
-      assert prompt =~ "`char` nodes are derived runs and must not be edited or audited"
+      assert prompt =~ "derived runs must not be edited or audited"
+      # `<custom>` carries the font/colour/named-style properties DocLang cannot
+      # express, so copying one transplants another element's formatting.
+      assert prompt =~ "Never invent or copy a `<custom>` block"
       assert prompt =~ "Any paragraph before the first `cell` is structural"
       assert prompt =~ "must remain byte-for-byte unchanged"
       assert prompt =~ "Blank means `text.strip()` is empty"
@@ -162,10 +169,15 @@ defmodule Ecrits.PromptTest do
 
     assert byte_size(open_doc) < 300
     assert byte_size(fallback) < 300
-    assert open_doc =~ "current workspace document once"
+    assert open_doc =~ "workspace document once"
     assert open_doc =~ "mounted ACP projection"
     assert open_doc =~ "document id"
     assert open_doc =~ "ACP file tools"
+    # Both path forms stay documented here. The agent reads this copy, not the
+    # policy source: authorizing explicit paths in the gate changed nothing
+    # until this sentence said they existed.
+    assert open_doc =~ "`current`"
+    assert open_doc =~ "workspace-relative path"
     assert fallback =~ "Fallback only"
     assert fallback =~ "requested picture"
     assert fallback =~ "supplied file unchanged"
