@@ -3,13 +3,16 @@ defmodule EcritsWeb.Live.Studio.Components.EditorSurfaceTest do
 
   import Phoenix.LiveViewTest
 
-  alias Ecrits.DocumentCanvasState
   alias Ecrits.EditorPreviewState
   alias Ecrits.EditorSurfaceState
   alias EcritsWeb.Live.Studio.Components.EditorSurface
-  alias EcritsWeb.Live.Studio.Components.Canvas.HwpPages
 
-  test "document tab close sends an explicit LiveView event" do
+  # The document tab strip was removed: each editor (rhwp-studio, LibreOffice
+  # WASM) shows its own document title inside its frame, so the host strip was a
+  # duplicate. `open_documents`/`active_document_id` REMAIN — they are the
+  # host-side open-document model that save routing, dirty marking and doc.*
+  # routing depend on; only the chrome is gone.
+  test "renders no host document tab chrome" do
     html =
       render_document(
         shell_id: "rhwp-shell",
@@ -21,75 +24,44 @@ defmodule EcritsWeb.Live.Studio.Components.EditorSurfaceTest do
         open_documents: [%{id: "07-hwp", name: "07_공문.hwp", path: "07_공문.hwp"}],
         active_document_id: "07-hwp",
         dirty_document_ids: MapSet.new(),
-        hwp_pages: [],
         hwp_page_count: 0
       )
 
-    close =
-      html
-      |> LazyHTML.from_fragment()
-      |> LazyHTML.query(~s([data-role="document-tab-close"]))
-      |> Enum.to_list()
-      |> List.first()
+    fragment = LazyHTML.from_fragment(html)
 
-    assert close
-    assert close |> LazyHTML.attribute("type") == ["button"]
-    assert close |> LazyHTML.attribute("href") == []
+    for selector <- [
+          "#studio-document-tabs",
+          ~s([data-role="document-tabs"]),
+          ~s([data-role="document-tab"]),
+          ~s([data-role="document-tab-switch"]),
+          ~s([data-role="document-tab-close"])
+        ] do
+      assert fragment |> LazyHTML.query(selector) |> Enum.to_list() == [],
+             "#{selector} should be gone with the tab strip"
+    end
 
-    assert close |> LazyHTML.attribute("phx-click") == ["workspace.document.close"]
-    assert close |> LazyHTML.attribute("phx-value-id") == ["07-hwp"]
-
-    tab =
-      html
-      |> LazyHTML.from_fragment()
-      |> LazyHTML.query(~s([data-role="document-tab-switch"]))
-      |> Enum.to_list()
-      |> List.first()
-
-    wrapper =
-      html
-      |> LazyHTML.from_fragment()
-      |> LazyHTML.query(~s([data-role="document-tab"]))
-      |> Enum.to_list()
-      |> List.first()
-
-    assert wrapper |> LazyHTML.attribute("role") == ["presentation"]
-    assert tab |> LazyHTML.attribute("role") == []
-    assert tab |> LazyHTML.attribute("aria-pressed") == ["true"]
-    assert tab |> LazyHTML.attribute("tabindex") == ["0"]
-
-    document_controls =
-      html
-      |> LazyHTML.from_fragment()
-      |> LazyHTML.query("#studio-document-tabs")
-      |> Enum.to_list()
-      |> List.first()
-
-    assert document_controls |> LazyHTML.attribute("role") == ["group"]
-
-    tabs_classes = document_controls |> LazyHTML.attribute("class") |> List.first()
-    wrapper_classes = wrapper |> LazyHTML.attribute("class") |> List.first()
-
-    assert tabs_classes =~ "overflow-x-auto"
-    assert tabs_classes =~ "overflow-y-hidden"
-    assert wrapper_classes =~ "shrink-0"
-    refute wrapper_classes =~ " shrink "
+    # The header itself stays — it still carries the save state and the picker.
+    assert fragment |> LazyHTML.query("#studio-document-header") |> Enum.to_list() != []
   end
 
-  test "quick toolbar exposes bold/italic/underline commands with shortcut hints for hwp" do
+  # The host quick toolbar drives the LibreOffice WASM canvas over the
+  # `ecrits:editor-command` DOM bus. It used to drive the HWP canvas too; HWP now
+  # renders inside the rhwp-studio iframe, which is a separate document that
+  # never hears that bus and ships its own toolbar — so this coverage moved to
+  # the office arm, and the HWP absence is pinned separately below.
+  test "quick toolbar exposes bold/italic/underline commands with shortcut hints for office" do
     html =
       render_document(
         shell_id: "rhwp-shell",
         toolbar_id: "rhwp-toolbar",
         frame_id: "rhwp-editor-frame",
-        document: %{id: "07-hwp", format: "hwp", relative_path: "07_공문.hwp"},
-        document_path: "07_공문.hwp",
-        document_spec: %{key: "hwp", name: "07_공문.hwp", template_hwp_path: "07_공문.hwp"},
-        canvas_id: "rhwp-07-hwp",
-        open_documents: [%{id: "07-hwp", name: "07_공문.hwp", path: "07_공문.hwp"}],
-        active_document_id: "07-hwp",
+        document: %{id: "07-docx", format: "docx", relative_path: "07_공문.docx"},
+        document_path: "07_공문.docx",
+        document_spec: %{key: "docx", name: "07_공문.docx"},
+        canvas_id: "rhwp-07-docx",
+        open_documents: [%{id: "07-docx", name: "07_공문.docx", path: "07_공문.docx"}],
+        active_document_id: "07-docx",
         dirty_document_ids: MapSet.new(),
-        hwp_pages: [],
         hwp_page_count: 0
       )
 
@@ -246,38 +218,18 @@ defmodule EcritsWeb.Live.Studio.Components.EditorSurfaceTest do
     end
   end
 
-  test "HWP page scroll host is keyboard focusable outside mirror previews" do
-    html =
-      render_component(&HwpPages.render/1,
-        id: "hwp-pages",
-        pages: [],
-        state:
-          DocumentCanvasState.new(%{
-            document_id: "sample-hwp",
-            document_path: "sample.hwp",
-            document_format: "hwp",
-            spec: %{
-              key: "hwp",
-              name: "sample.hwp",
-              template_hwp_path: "sample.hwp"
-            }
-          })
-      )
-
-    editor =
-      html
-      |> LazyHTML.from_fragment()
-      |> LazyHTML.query(~s([data-role="hwp-editor"]))
-      |> Enum.to_list()
-      |> List.first()
-
-    assert editor |> LazyHTML.attribute("tabindex") == ["0"]
-    assert editor |> LazyHTML.attribute("role") == ["region"]
-    assert editor |> LazyHTML.attribute("aria-label") == ["Document pages"]
-  end
-
-  test "HEEx owns the backend-neutral document search controls" do
-    html =
+  # HWP renders inside the rhwp-studio iframe, which brings its own toolbar and
+  # find bar. The host toolbar/search bar talk to their canvas over
+  # `document`-level CustomEvents that a cross-document iframe never receives,
+  # so both are absent rather than inert.
+  #
+  # The element picker is the exception, and it is NOT one of them: upstream's
+  # `host-events-v1` gives studio a server→host push (`rhwp-event{selection}`),
+  # so `Canvas.RhwpStudio` turns a click in the iframe into the same
+  # `ecrits:document-element-picker.pick-toggled` the office canvas dispatches.
+  # The toggle is therefore rendered for HWP again.
+  test "host editing chrome is absent for the studio-hosted HWP canvas" do
+    fragment =
       render_document(
         shell_id: "rhwp-shell",
         toolbar_id: "rhwp-toolbar",
@@ -286,10 +238,54 @@ defmodule EcritsWeb.Live.Studio.Components.EditorSurfaceTest do
         document_path: "07_공문.hwp",
         document_spec: %{key: "hwp", name: "07_공문.hwp", template_hwp_path: "07_공문.hwp"},
         canvas_id: "rhwp-07-hwp",
-        open_documents: [],
+        open_documents: [%{id: "07-hwp", name: "07_공문.hwp", path: "07_공문.hwp"}],
         active_document_id: "07-hwp",
         dirty_document_ids: MapSet.new(),
-        hwp_pages: [],
+        hwp_page_count: 0
+      )
+      |> LazyHTML.from_fragment()
+
+    refute fragment |> LazyHTML.query("#document-quick-toolbar") |> Enum.any?()
+    refute fragment |> LazyHTML.query("#document-search-bar") |> Enum.any?()
+
+    # Restored with host-events-v1 — HWP element picking is a live capability
+    # again, not a lost one.
+    assert fragment
+           |> LazyHTML.query(
+             "#document-element-picker[data-role='document-element-picker-toggle']"
+           )
+           |> Enum.count() == 1
+
+    # ⌘F must not try to open a bar that is not there.
+    assert fragment
+           |> LazyHTML.query("#rhwp-shell")
+           |> Enum.at(0)
+           |> LazyHTML.attribute("data-search-state")
+           |> List.first()
+           |> Jason.decode!()
+           |> Map.fetch!("enabled") == false
+
+    # The canvas itself is the studio iframe, and it is the only HWP canvas.
+    assert fragment |> LazyHTML.query(~s([data-component="canvas-rhwp-studio"])) |> Enum.count() ==
+             1
+
+    refute fragment |> LazyHTML.query(~s([data-component="canvas-hwp-pages"])) |> Enum.any?()
+    refute fragment |> LazyHTML.query(~s([data-role="hwp-editor"])) |> Enum.any?()
+  end
+
+  test "HEEx owns the backend-neutral document search controls" do
+    html =
+      render_document(
+        shell_id: "rhwp-shell",
+        toolbar_id: "rhwp-toolbar",
+        frame_id: "rhwp-editor-frame",
+        document: %{id: "07-docx", format: "docx", relative_path: "07_공문.docx"},
+        document_path: "07_공문.docx",
+        document_spec: %{key: "docx", name: "07_공문.docx"},
+        canvas_id: "rhwp-07-docx",
+        open_documents: [],
+        active_document_id: "07-docx",
+        dirty_document_ids: MapSet.new(),
         hwp_page_count: 0
       )
 
@@ -347,7 +343,6 @@ defmodule EcritsWeb.Live.Studio.Components.EditorSurfaceTest do
         open_documents: [%{id: "notes-md", name: "notes.md", path: "notes.md"}],
         active_document_id: "notes-md",
         dirty_document_ids: MapSet.new(),
-        hwp_pages: [],
         hwp_page_count: 0
       )
 
@@ -393,7 +388,7 @@ defmodule EcritsWeb.Live.Studio.Components.EditorSurfaceTest do
               document_id: "doc-1",
               document_path: "calc.xlsx",
               document_format: "xlsx",
-              bytes_url: "/document-bytes?document=doc-1",
+              bytes_url: "/document/bytes/doc-1",
               mirror?: true,
               preview_text: "Draft text",
               preview_delta_count: 2
@@ -434,10 +429,9 @@ defmodule EcritsWeb.Live.Studio.Components.EditorSurfaceTest do
       shell_id: Keyword.fetch!(attrs, :shell_id),
       toolbar_id: Keyword.fetch!(attrs, :toolbar_id),
       frame_id: Keyword.fetch!(attrs, :frame_id),
-      hwp_pages: Keyword.get(attrs, :hwp_pages, []),
       state:
         attrs
-        |> Keyword.drop([:shell_id, :toolbar_id, :frame_id, :hwp_pages])
+        |> Keyword.drop([:shell_id, :toolbar_id, :frame_id])
         |> Map.new()
         |> EditorSurfaceState.new()
     )

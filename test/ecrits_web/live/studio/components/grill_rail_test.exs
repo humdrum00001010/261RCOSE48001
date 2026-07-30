@@ -14,7 +14,6 @@ defmodule EcritsWeb.Live.Studio.Components.GrillRailTest do
 
   alias Ecrits.Context
   alias Ecrits.Studio.ChatRailState
-  alias Ecrits.Studio.State
   alias EcritsWeb.Live.Studio.Components.GrillRail
 
   # ---- Fixtures --------------------------------------------------------
@@ -34,7 +33,7 @@ defmodule EcritsWeb.Live.Studio.Components.GrillRailTest do
   defp viewer_scope, do: %Context{user: %{id: "u-viewer"}, perms: [:read]}
 
   defp studio_state(opts \\ []) do
-    %State{
+    %{
       mode: :reviewing,
       last_seen_version: 12,
       agent_run_id: Keyword.get(opts, :agent_run_id, "run-abc")

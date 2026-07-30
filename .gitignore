@@ -38,6 +38,17 @@ contract-*.tar
 # `mix assets.observex` (assets.setup alias), never committed.
 /priv/static/observex/
 
+# rhwp-studio browser bundle — built in the rhwp_core checkout (Vite/npm, which
+# this repo deliberately does not carry) and copied in by `mix assets.rhwp_studio`.
+# Same rule as the retired ehwp/libreofficex wasm: build output, never committed.
+/priv/static/rhwp-studio/
+
+# LibreOffice->WASM office engine — built in a core-wasm checkout (emsdk, which
+# this repo deliberately does not carry) and copied in by `mix assets.office_wasm`.
+# ~315 MB of build output; never committed, and normally not even copied (point
+# OFFICE_WASM_DIST at the build dir instead).
+/priv/static/office-wasm/
+
 # 큰 바이너리 산출물(WASM 등)은 별도 repo의 빌드 결과라 contract 히스토리에
 # 넣지 않는다.
 *.wasm

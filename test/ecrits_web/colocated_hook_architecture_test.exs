@@ -4,13 +4,12 @@ defmodule EcritsWeb.ColocatedHookArchitectureTest do
   @colocated_script ~r/<script\s+:type=\{Phoenix\.LiveView\.ColocatedHook\}.*?<\/script>/s
   @controller_field_assignment ~r/\bthis\.[A-Za-z_$][A-Za-z0-9_$]*\s*=(?!=)/
   @office_engine_adapter "lib/ecrits_web/live/studio/components/canvas/office_wasm.ex"
-  @hwp_engine_adapter "lib/ecrits_web/live/studio/components/canvas/hwp_pages.ex"
 
   test "colocated hooks do not own controller state in this fields" do
     violations =
       "lib/ecrits_web/**/*.ex"
       |> Path.wildcard()
-      |> Enum.reject(&(&1 in [@office_engine_adapter, @hwp_engine_adapter]))
+      |> Enum.reject(&(&1 == @office_engine_adapter))
       |> Enum.flat_map(fn path ->
         path
         |> File.read!()
@@ -25,98 +24,15 @@ defmodule EcritsWeb.ColocatedHookArchitectureTest do
            "colocated hooks must delegate state to embedded domain models; violations: #{inspect(violations)}"
   end
 
-  test "HwpPages keeps only ephemeral browser-engine state in its colocated adapter" do
-    source = File.read!(@hwp_engine_adapter)
-
-    assert source =~ ~s(name=".WasmHwpEditor")
-    assert source =~ "var WasmHwpEditor = {"
-    assert source =~ "hwp_colocated_entry_default as default"
-    assert source =~ "data-canvas-state={DocumentCanvasState.encode(@state)}"
-
-    refute source =~ ~r/import\s+.*wasm_hwp/
-    refute source =~ "[data-role='hwp-editor'][data-editor-mirror='false']"
-
-    refute source =~
-             ~r/data-(?:document-id|document-path|scroll-top|scroll-left|document-id|document-format|bytes-url|editor-mirror|preview-turn-id|preview-text|preview-delta-count|preview-highlights)=/
-
-    refute File.exists?("assets/js/wasm_hwp_editor.ts")
-    refute File.exists?("assets/js/wasm_hwp_keys.ts")
-    refute File.exists?("assets/js/wasm_ops.ts")
-  end
-
-  test "HWP edit preview renders the base page before framing saved highlights" do
-    source = File.read!(@hwp_engine_adapter)
-
-    assert source =~
-             ~r/for \(const page of pages\).*?this\.renderPage\(page\).*?this\.paintSavedEditHighlightsOnPage\(page\).*?this\.frameSavedEditHighlights\(rects\)/s
-
-    assert source =~
-             ~r/if \(!this\.rendered \|\| !this\.rendered\.get\(target\.pageIndex\)\) this\.renderPage\(target\.pageIndex\).*?previewBaseFrameReady = "true"/s
-
-    assert source =~
-             ~r/latestHighlightIndex.*?savedHighlightIndex.*?target.*?savedHighlightIndex === latestHighlightIndex/s
-  end
-
-  test "HWP edit preview paints pinned snapshot highlights without an authority round trip" do
-    source = File.read!(@hwp_engine_adapter)
-
-    assert source =~
-             ~r/handleLoadedPreviewHighlights.*?const pinnedSnapshot = this\.pinnedPreviewSnapshot\(\).*?syncPinnedPreviewPageFilter\(\).*?this\.renderSavedEditHighlights\(\)/s
-
-    assert source =~
-             ~r/pinnedPreviewSnapshot\(\).*?previewSnapshotPinned === true/s
-  end
-
-  test "HWP pinned snapshot previews ignore mutable authority events and refresh page filters" do
-    source = File.read!(@hwp_engine_adapter)
-
-    assert source =~
-             ~r/document\.preview\.revision_received.*?this\.mirror && !this\.pinnedPreviewSnapshot\(\).*?queuePreviewRevision/s
-
-    assert source =~
-             ~r/onPreviewAuthority.*?this\.mirror && !this\.pinnedPreviewSnapshot\(\).*?applyAuthoritativePreviewState/s
-
-    assert source =~
-             ~r/requestAuthoritativePreview.*?if \(!this\.mirror \|\| this\.pinnedPreviewSnapshot\(\)\) return false/s
-
-    assert source =~
-             ~r/syncPinnedPreviewPageFilter.*?previewPageIndexesForSavedHighlights.*?buildPageStack\(\).*?renderVisiblePages\(\)/s
-
-    assert source =~
-             ~r/handleLoadedPreviewHighlights.*?pinnedSnapshot.*?syncPinnedPreviewPageFilter\(\).*?renderSavedEditHighlights\(\)/s
-  end
-
-  test "HWP edit preview renders actual saved states without synthetic playback" do
-    source = File.read!(@hwp_engine_adapter)
-
-    refute source =~ "startVfsPreviewPlayback"
-    refute source =~ "applyVfsPreviewStep"
-    refute source =~ "previewPlaybackIndex"
-
-    assert source =~
-             ~r/this\.previewPageFilter = this\.previewPageIndexesForSavedHighlights\(\).*?this\.buildPageStack\(\).*?this\.renderVisiblePages\(\).*?handleLoadedPreviewHighlights/s
-  end
-
-  test "HWP applies each genuine preview revision as one direct semantic batch" do
-    source = File.read!(@hwp_engine_adapter)
-
-    refute source =~ "applyAgentEditBatchPaced"
-
-    assert source =~
-             ~r/document\.preview\.revision_received.*?queuePreviewRevision.*?applyAgentEditBatch\(\{ ops \}/s
-
-    assert source =~ ~r/previewRevisionKey.*?edit_id.*?revision/s
-  end
-
-  test "HWP insert_paragraph appends after its live anchor instead of prepending" do
-    source = File.read!(@hwp_engine_adapter)
-
-    assert source =~
-             ~r/var opInsertParagraph.*?insertedParagraph = appending \? idx : idx \+ 1.*?paragraphLength\(target\.section, idx\).*?insertTextLines\(\{ section: target\.section, paragraph: idx \}, offset, "\\n" \+ text\)/s
-
-    refute source =~
-             ~r/opInsertParagraph.*?insertTextLines\(\{ section: target\.section, paragraph: idx \}, 0, text \+ "\\n"\)/s
-  end
+  # DELETED with `Canvas.HwpPages` (2026-07-26): seven blocks that pinned the
+  # legacy HWP hook's internals — `.WasmHwpEditor` naming, its preview-highlight
+  # render order, pinned-snapshot authority handling, the no-synthetic-playback
+  # rule, the one-batch-per-revision rule and `opInsertParagraph`'s anchor. All
+  # of them read `hwp_pages.ex` as a string; that file is gone and its engine
+  # (the `:ehwp` wasm) went with the dep, so nothing they described exists.
+  # rhwp-studio's equivalents are pinned by
+  # `EcritsWeb.Live.Studio.Components.Canvas.RhwpStudioTest` against the embed
+  # protocol instead of against hook internals.
 
   test "OfficeWasm keeps only ephemeral browser-engine state in its colocated adapter" do
     source = File.read!(@office_engine_adapter)
@@ -264,7 +180,7 @@ defmodule EcritsWeb.ColocatedHookArchitectureTest do
       ~r/data-(?:document-id|document-path|scroll-top|scroll-left|document-name|contract-type-key|document-id|document-format|bytes-url|editor-mirror|preview-turn-id|preview-text|preview-delta-count|preview-highlights)=/
 
     for path <- [
-          "lib/ecrits_web/live/studio/components/canvas/hwp_pages.ex",
+          "lib/ecrits_web/live/studio/components/canvas/rhwp_studio.ex",
           "lib/ecrits_web/live/studio/components/canvas/markdown_editor.ex",
           "lib/ecrits_web/live/studio/components/canvas/office_wasm.ex"
         ] do

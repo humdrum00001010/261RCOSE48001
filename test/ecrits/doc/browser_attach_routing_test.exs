@@ -15,23 +15,24 @@ defmodule Ecrits.Doc.BrowserAttachRoutingTest do
   MOST ONE doc — the one it is currently viewing. Everything else routes to its
   server NIF, independently of what is open in the browser.
 
-  Since Phase 3 the `viewers` map + the wasm/NIF routing decision live in
-  `Ecrits.Workspace.Session` (the Pool is a server-only doc registry). So this
-  test drives `Session.attach_viewer`/`Session.route` and a Tools ctx carrying
-  `:session_path` (the per-workspace Session key) instead of the old
-  `Pool.attach_browser`/`Pool.route(:browser)`.
+  The `viewers` map lives in `Ecrits.Workspace.Session`, so this test drives
+  `Session.attach_viewer`/`Session.viewer` and a Tools ctx carrying
+  `:session_path` (the per-workspace Session key).
+
+  Scope after the 2026-07-29 Pool deletion: the viewer registry is the WHOLE
+  routing decision. A document nobody views is not routable at all, where it
+  once fell back to a server Editor — so the cases here assert the registry's
+  own invariants (exclusive per viewer, newest-active, promote on detach/DOWN)
+  and that doc.* reaches the browser arm for exactly the named document.
   """
   use ExUnit.Case, async: false
 
-  alias Ecrits.Doc.Pool
+  alias Ecrits.Doc.DocumentId
   alias Ecrits.Doc.Tools
-  alias Ecrits.Test.FakeEhwpRuntime
   alias Ecrits.Workspace.Session
 
   setup do
     prev = Application.get_env(:ehwp, :runtime)
-    Application.put_env(:ehwp, :runtime, FakeEhwpRuntime)
-    {:ok, pool} = start_supervised({Pool, name: nil})
     # A unique workspace path keys this test's Session (started lazily by the
     # viewer/ownership calls); the app supervision tree runs the SessionSupervisor.
     path = Path.join(System.tmp_dir!(), "ws_route_#{System.unique_integer([:positive])}")
@@ -41,13 +42,12 @@ defmodule Ecrits.Doc.BrowserAttachRoutingTest do
       restore(:ehwp, :runtime, prev)
     end)
 
-    {:ok, pool: pool, path: path}
+    {:ok, path: path}
   end
 
   # An agent ctx that routes via the workspace Session (the production path).
-  defp ctx(pool, path) do
+  defp ctx(path) do
     %{
-      pool: pool,
       agent_id: "fg",
       instance_id: "fg-instance",
       turn_id: "fg-turn",
@@ -109,37 +109,14 @@ defmodule Ecrits.Doc.BrowserAttachRoutingTest do
     end
   end
 
-  defp fake_render_editor(parent) do
-    spawn(fn -> fake_render_editor_loop(parent) end)
-  end
-
-  defp fake_render_editor_loop(parent) do
-    receive do
-      {:"$gen_call", from, {:render, page, path, opts}} ->
-        send(parent, {:server_render, page, opts})
-        File.write!(path, "PNG")
-        GenServer.reply(from, :ok)
-        fake_render_editor_loop(parent)
-
-      :stop ->
-        :ok
-    end
-  end
-
-  defp put_pool_doc(pool, id, path, kind, editor) do
-    :sys.replace_state(pool, fn state ->
-      doc = %{kind: kind, backend: Ecrits.Doc.backend_for(kind), path: path, editor: editor}
-
-      state
-      |> Map.update!(:docs, &Map.put(&1, id, doc))
-      |> Map.update!(:by_path, &Map.put(&1, path, id))
-    end)
-  end
+  # The handle a document has whether or not anything holds it: a pure function
+  # of (path, kind), which is exactly what the viewer registry is keyed by.
+  defp doc_id(path, kind \\ :hwp), do: DocumentId.for_path(path, kind)
 
   describe "attach_viewer is exclusive per viewer (the navigation invariant)" do
-    test "viewing a second doc detaches the viewer from the first", %{pool: pool, path: path} do
-      {:ok, doc1} = Pool.open(pool, "/abs/doc1.hwp", kind: :hwp, open_opts: [__text__: "ONE"])
-      {:ok, doc2} = Pool.open(pool, "/abs/doc2.hwp", kind: :hwp, open_opts: [__text__: "TWO"])
+    test "viewing a second doc detaches the viewer from the first", %{path: path} do
+      doc1 = doc_id("/abs/doc1.hwp")
+      doc2 = doc_id("/abs/doc2.hwp")
 
       lv = idle_lv()
 
@@ -147,18 +124,16 @@ defmodule Ecrits.Doc.BrowserAttachRoutingTest do
       :ok = Session.attach_viewer(path, doc1, lv)
       :ok = Session.attach_viewer(path, doc2, lv)
 
-      # doc2 (currently viewed) routes to the browser; doc1 (no longer viewed)
-      # must fall back to its server editor — NOT stay stuck on the stale viewer.
-      # Session.route consults the Pool (passed via the started pool) for the
-      # server editor; here we route the named docs through the test pool.
-      assert {:browser, ^lv} = Session.route(path, doc2)
-      assert {:server, editor1} = Pool.route(pool, doc1)
-      assert is_pid(editor1)
+      # doc2 (currently viewed) is held by the browser; doc1 (no longer viewed)
+      # must have NO viewer — NOT stay stuck on the stale one. Nothing else can
+      # hold it, so doc1 is now unaddressable, which is the accepted price.
+      assert Session.viewer(path, doc2) == lv
+      assert Session.viewer(path, doc1) == nil
     end
 
-    test "two distinct viewers each keep their own one browser-backed doc", %{path: path} = ctx do
-      {:ok, doc1} = Pool.open(ctx.pool, "/abs/v1.hwp", kind: :hwp, open_opts: [__text__: "A"])
-      {:ok, doc2} = Pool.open(ctx.pool, "/abs/v2.hwp", kind: :hwp, open_opts: [__text__: "B"])
+    test "two distinct viewers each keep their own one browser-backed doc", %{path: path} do
+      doc1 = doc_id("/abs/v1.hwp")
+      doc2 = doc_id("/abs/v2.hwp")
 
       lv_a = idle_lv()
       lv_b = idle_lv()
@@ -167,16 +142,12 @@ defmodule Ecrits.Doc.BrowserAttachRoutingTest do
       :ok = Session.attach_viewer(path, doc2, lv_b)
 
       # Independent viewers do not poach each other's attachment.
-      assert {:browser, ^lv_a} = Session.route(path, doc1)
-      assert {:browser, ^lv_b} = Session.route(path, doc2)
+      assert Session.viewer(path, doc1) == lv_a
+      assert Session.viewer(path, doc2) == lv_b
     end
 
-    test "same-document viewers promote the next live pid on detach and DOWN", %{
-      pool: pool,
-      path: path
-    } do
-      {:ok, doc} =
-        Pool.open(pool, "/abs/concurrent.hwp", kind: :hwp, open_opts: [__text__: "SHARED"])
+    test "same-document viewers promote the next live pid on detach and DOWN", %{path: path} do
+      doc = doc_id("/abs/concurrent.hwp")
 
       lv_a = idle_lv()
       lv_b = idle_lv()
@@ -185,11 +156,9 @@ defmodule Ecrits.Doc.BrowserAttachRoutingTest do
       :ok = Session.attach_viewer(path, doc, lv_b)
 
       assert Session.viewer(path, doc) == lv_b
-      assert {:browser, ^lv_b} = Session.route(path, doc)
 
       :ok = Session.detach_viewer(path, doc, lv_b)
       assert Session.viewer(path, doc) == lv_a
-      assert {:browser, ^lv_a} = Session.route(path, doc)
 
       :ok = Session.attach_viewer(path, doc, lv_b)
       assert Session.viewer(path, doc) == lv_b
@@ -199,31 +168,16 @@ defmodule Ecrits.Doc.BrowserAttachRoutingTest do
       assert_receive {:DOWN, ^ref, :process, ^lv_b, :normal}
 
       assert Session.viewer(path, doc) == lv_a
-      assert {:browser, ^lv_a} = Session.route(path, doc)
 
       :ok = Session.detach_viewer(path, doc, lv_a)
       assert Session.viewer(path, doc) == nil
-      assert {:server, editor} = Pool.route(pool, doc)
-      assert is_pid(editor)
 
       send(lv_a, :stop)
     end
 
-    test "moving a fallback viewer preserves the other document viewer", %{
-      pool: pool,
-      path: path
-    } do
-      {:ok, doc1} =
-        Pool.open(pool, "/abs/shared-then-moved.hwp",
-          kind: :hwp,
-          open_opts: [__text__: "ONE"]
-        )
-
-      {:ok, doc2} =
-        Pool.open(pool, "/abs/fallback-destination.hwp",
-          kind: :hwp,
-          open_opts: [__text__: "TWO"]
-        )
+    test "moving a fallback viewer preserves the other document viewer", %{path: path} do
+      doc1 = doc_id("/abs/shared-then-moved.hwp")
+      doc2 = doc_id("/abs/fallback-destination.hwp")
 
       lv_a = idle_lv()
       lv_b = idle_lv()
@@ -236,19 +190,13 @@ defmodule Ecrits.Doc.BrowserAttachRoutingTest do
 
       assert Session.viewer(path, doc1) == lv_b
       assert Session.viewer(path, doc2) == lv_a
-      assert {:browser, ^lv_b} = Session.route(path, doc1)
-      assert {:browser, ^lv_a} = Session.route(path, doc2)
 
       send(lv_a, :stop)
       send(lv_b, :stop)
     end
 
-    test "legacy hot state with one viewer pid normalizes before promotion", %{
-      pool: pool,
-      path: path
-    } do
-      {:ok, doc} =
-        Pool.open(pool, "/abs/legacy-viewer.hwp", kind: :hwp, open_opts: [__text__: "OLD"])
+    test "legacy hot state with one viewer pid normalizes before promotion", %{path: path} do
+      doc = doc_id("/abs/legacy-viewer.hwp")
 
       legacy_lv = idle_lv()
       newest_lv = idle_lv()
@@ -274,69 +222,24 @@ defmodule Ecrits.Doc.BrowserAttachRoutingTest do
       send(newest_lv, :stop)
     end
 
-    test "detach_viewer/3 relinquishes a viewer's browser claim", %{pool: pool, path: path} do
-      {:ok, doc} = Pool.open(pool, "/abs/d.hwp", kind: :hwp, open_opts: [__text__: "X"])
+    test "detach_viewer/3 relinquishes a viewer's browser claim", %{path: path} do
+      doc = doc_id("/abs/d.hwp")
       lv = idle_lv()
 
       :ok = Session.attach_viewer(path, doc, lv)
-      assert {:browser, ^lv} = Session.route(path, doc)
+      assert Session.viewer(path, doc) == lv
 
       :ok = Session.detach_viewer(path, doc, lv)
-      assert {:server, editor} = Pool.route(pool, doc)
-      assert is_pid(editor)
+      assert Session.viewer(path, doc) == nil
     end
   end
 
-  describe "doc.* operate on the NAMED doc while a viewer is attached (server arm)" do
-    test "VFS doc.find reads the freshly committed server file instead of a stale viewer", %{
-      pool: pool,
-      path: path
-    } do
-      document_path = Path.join(path, "committed-find.hwp")
-      File.mkdir_p!(path)
-      File.write!(document_path, "committed bytes")
-
-      {:ok, doc} = Pool.open(pool, document_path, kind: :hwp)
-
-      stale_viewer =
-        browser_reply_lv(self(), %{
-          "pattern" => "제2조",
-          "type" => "paragraph",
-          "matches" => []
-        })
-
-      :ok = Session.attach_viewer(path, doc, stale_viewer)
-
-      committed_ctx =
-        ctx(pool, path)
-        |> Map.put(:active_doc, doc)
-        |> Map.put(:document_path, "committed-find.hwp")
-        |> Map.put(:doc_find_authority, :committed_server)
-
-      assert {:ok, %{"matches" => matches}} =
-               Tools.call(committed_ctx, "doc.find", %{
-                 "document" => doc,
-                 "type" => "paragraph",
-                 "pattern" => "제2조"
-               })
-
-      assert [%{"text" => text, "ref" => ref}] = matches
-      assert %{"paragraph" => 1} = Jason.decode!(ref)
-      assert text =~ "제2조"
-      refute_receive {:browser_request, :find, _payload}
-
-      send(stale_viewer, :stop)
-    end
-
+  describe "doc.* operate on the NAMED doc while a viewer is attached" do
     test "browser-routed batch edit rejects retired metadata before it reaches the browser", %{
-      pool: pool,
       path: path
     } do
-      {:ok, %{"document" => doc}} =
-        Tools.call(ctx(pool, path), "doc.open", %{
-          "path" => Path.join(path, "viewed-batch.hwp"),
-          "open_opts" => [__text__: "A B"]
-        })
+      File.mkdir_p!(path)
+      doc = doc_id(Path.join(path, "viewed-batch.hwp"))
 
       live_result = %{
         "ok" => true,
@@ -349,7 +252,7 @@ defmodule Ecrits.Doc.BrowserAttachRoutingTest do
       :ok = Session.attach_viewer(path, doc, lv)
 
       assert {:error, %{"error" => "invalid_op", "message" => message}} =
-               Tools.call(ctx(pool, path), "doc.edit", %{
+               Tools.call(ctx(path), "doc.edit", %{
                  "document" => doc,
                  "ops" => [
                    %{
@@ -373,14 +276,9 @@ defmodule Ecrits.Doc.BrowserAttachRoutingTest do
       send(lv, :stop)
     end
 
-    test "doc.get on a viewed office document resolves through the browser IR", %{
-      pool: pool,
-      path: path
-    } do
-      doc = "d_docx_browser_get"
+    test "doc.get on a viewed office document resolves through the browser IR", %{path: path} do
       doc_path = Path.join(path, "browser.docx")
-      editor = idle_lv()
-      put_pool_doc(pool, doc, doc_path, :docx, editor)
+      doc = doc_id(doc_path, :docx)
 
       live_result = %{
         "ref" => "tbl[Table1]/cell[A1]",
@@ -396,8 +294,16 @@ defmodule Ecrits.Doc.BrowserAttachRoutingTest do
       lv = browser_reply_lv(self(), live_result)
       :ok = Session.attach_viewer(path, doc, lv)
 
+      # doc.get is office-only, and "is this office?" is now answered by the
+      # caller's own active document, not by a registry row.
+      tool_ctx =
+        path
+        |> ctx()
+        |> Map.put(:active_doc, doc)
+        |> Map.put(:document_path, doc_path)
+
       assert {:ok, ^live_result} =
-               Tools.call(ctx(pool, path), "doc.get", %{
+               Tools.call(tool_ctx, "doc.get", %{
                  "document" => doc,
                  "ref" => "tbl[Table1]/cell[A1]"
                })
@@ -405,15 +311,11 @@ defmodule Ecrits.Doc.BrowserAttachRoutingTest do
       assert_receive {:browser_request, :get, %{ref: "tbl[Table1]/cell[A1]", props: nil}}
 
       send(lv, :stop)
-      send(editor, :stop)
     end
 
-    test "doc.save accepts the current browser document id before a pool info row exists", %{
-      pool: pool,
-      path: path
-    } do
-      doc = "d_pptx_browser_save"
+    test "doc.save accepts the current browser document id", %{path: path} do
       doc_path = Path.join(path, "browser-save.pptx")
+      doc = doc_id(doc_path, :pptx)
       bytes = "PPTX-BROWSER-BYTES"
       File.mkdir_p!(path)
 
@@ -426,7 +328,8 @@ defmodule Ecrits.Doc.BrowserAttachRoutingTest do
       :ok = Session.attach_viewer(path, doc, lv)
 
       tool_ctx =
-        ctx(pool, path)
+        path
+        |> ctx()
         |> Map.put(:active_doc, doc)
         |> Map.put(:document_path, doc_path)
 
@@ -444,64 +347,33 @@ defmodule Ecrits.Doc.BrowserAttachRoutingTest do
       send(lv, :stop)
     end
 
-    test "doc.render on a clean viewed office document uses the server twin without browser save",
-         %{pool: pool, path: path} do
-      doc = "d_pptx_clean_render"
-      doc_path = Path.join(path, "clean-render.pptx")
-      editor = fake_render_editor(self())
-      put_pool_doc(pool, doc, doc_path, :pptx, editor)
-
-      lv = render_viewer_lv(self(), false)
-      :ok = Session.attach_viewer(path, doc, lv)
-
-      assert {:ok, %{"ok" => true, "rendered" => ["Slide1"], "files" => [_file]}} =
-               Tools.call(ctx(pool, path), "doc.render", %{
-                 "document" => doc,
-                 "page" => "Slide1",
-                 "width" => 640
-               })
-
-      assert_receive {:viewer_state_request, ^doc}
-      assert_receive {:server_render, "Slide1", [width: 640]}
-      refute_receive {:browser_request, :save, %{}}, 50
-
-      send(lv, :stop)
-      send(editor, :stop)
-    end
-
-    test "doc.render on a dirty viewed office document still snapshots the browser",
-         %{pool: pool, path: path} do
-      doc = "d_pptx_dirty_render"
+    # doc.render always snapshots the viewer now. It used to take a server-twin
+    # fast path for a CLEAN viewed office document, asking the viewer whether it
+    # was dirty first; that twin never existed, so the question is gone too.
+    test "doc.render on a viewed office document snapshots the browser", %{path: path} do
       doc_path = Path.join(path, "dirty-render.pptx")
-      editor = fake_render_editor(self())
-      put_pool_doc(pool, doc, doc_path, :pptx, editor)
+      doc = doc_id(doc_path, :pptx)
 
       lv = render_viewer_lv(self(), true)
       :ok = Session.attach_viewer(path, doc, lv)
 
       assert {:error, %{"error" => error}} =
-               Tools.call(ctx(pool, path), "doc.render", %{
+               Tools.call(ctx(path), "doc.render", %{
                  "document" => doc,
                  "page" => "Slide1",
                  "width" => 640
                })
 
       assert error =~ "forced browser snapshot"
-
-      assert_receive {:viewer_state_request, ^doc}
       assert_receive {:browser_request, :save, %{}}
-      refute_receive {:server_render, _page, _opts}, 50
+      refute_receive {:viewer_state_request, ^doc}, 50
 
       send(lv, :stop)
-      send(editor, :stop)
     end
 
-    test "viewed xlsx is a browser-backed current doc without a server pool twin", %{
-      pool: pool,
-      path: path
-    } do
+    test "a viewed xlsx is the browser-backed current document", %{path: path} do
       workbook_path = Path.join(path, "sample.xlsx")
-      doc = Pool.document_id_for(workbook_path, :xlsx)
+      doc = doc_id(workbook_path, :xlsx)
 
       live_result = %{
         "pattern" => "Revenue",
@@ -522,7 +394,7 @@ defmodule Ecrits.Doc.BrowserAttachRoutingTest do
       :ok = Session.attach_viewer(path, doc, lv)
 
       agent_ctx =
-        ctx(pool, path)
+        ctx(path)
         |> Map.put(:active_doc, doc)
         |> Map.put(:document_path, "sample.xlsx")
 
@@ -545,12 +417,9 @@ defmodule Ecrits.Doc.BrowserAttachRoutingTest do
       send(lv, :stop)
     end
 
-    test "browser-backed doc.find compacts long match text before returning", %{
-      pool: pool,
-      path: path
-    } do
+    test "browser-backed doc.find compacts long match text before returning", %{path: path} do
       deck_path = Path.join(path, "long-find.pptx")
-      doc = Pool.document_id_for(deck_path, :pptx)
+      doc = doc_id(deck_path, :pptx)
 
       text =
         String.duplicate("Intro ", 40) <>
@@ -573,7 +442,7 @@ defmodule Ecrits.Doc.BrowserAttachRoutingTest do
       :ok = Session.attach_viewer(path, doc, lv)
 
       agent_ctx =
-        ctx(pool, path)
+        ctx(path)
         |> Map.put(:active_doc, doc)
         |> Map.put(:document_path, "long-find.pptx")
 
@@ -594,128 +463,28 @@ defmodule Ecrits.Doc.BrowserAttachRoutingTest do
       send(lv, :stop)
     end
 
+    # A path argument resolves by DERIVING the id from (path, kind) and asking
+    # whether a viewer holds it — the id scheme is what makes a path a handle.
     test "doc.save accepts the viewed document path and routes to the browser model", %{
-      pool: pool,
       path: path
     } do
       relative_path = "viewed-save.hwp"
       absolute_path = Path.join(path, relative_path)
       File.mkdir_p!(path)
 
-      {:ok, %{"document" => doc}} =
-        Tools.call(ctx(pool, path), "doc.open", %{
-          "path" => absolute_path,
-          "open_opts" => [__text__: "SERVER COPY"]
-        })
+      File.write!(absolute_path, "DISK COPY")
+      doc = doc_id(absolute_path)
 
       lv = browser_reply_lv(self(), %{"bytes_base64" => Base.encode64("VIEWER BYTES")})
       :ok = Session.attach_viewer(path, doc, lv)
 
       assert {:ok, %{"ok" => true}} =
-               Tools.call(ctx(pool, path), "doc.save", %{"document" => relative_path})
+               Tools.call(ctx(path), "doc.save", %{"document" => relative_path})
 
       assert_receive {:browser_request, :save, %{}}
       assert File.read!(absolute_path) == "VIEWER BYTES"
 
       send(lv, :stop)
-    end
-
-    test "open + read + find + edit target the second doc, not the viewed one", %{
-      pool: pool,
-      path: path
-    } do
-      # Viewed doc (HWP-B) — browser-backed by a viewer.
-      {:ok, %{"document" => viewed}} =
-        Tools.call(ctx(pool, path), "doc.open", %{
-          "path" => Path.join(path, "HWP-B.hwp"),
-          "open_opts" => [__text__: "VIEWED-B 제1조 (viewed only)"]
-        })
-
-      lv = idle_lv()
-      :ok = Session.attach_viewer(path, viewed, lv)
-
-      # Agent opens a SECOND, distinct headless doc (HWP-A) it must read.
-      {:ok, %{"document" => second}} =
-        Tools.call(ctx(pool, path), "doc.open", %{
-          "path" => Path.join(path, "HWP-A.hwp"),
-          "open_opts" => [__text__: "SECOND-A 제9조 (source text)"]
-        })
-
-      # (a) distinct ids
-      refute second == viewed
-
-      # The viewed doc routes to the browser; the second routes to its server NIF.
-      assert {:browser, ^lv} = Session.route(path, viewed)
-      assert {:server, _editor} = Pool.route(pool, second)
-
-      # (b) doc.find on the second returns ITS content (not the viewed one).
-      assert {:ok, %{"matches" => [second_text | _]}} =
-               Tools.call(ctx(pool, path), "doc.find", %{
-                 "document" => second,
-                 "pattern" => "SECOND-A"
-               })
-
-      assert second_text["text"] =~ "SECOND-A"
-      refute second_text["text"] =~ "VIEWED-B"
-
-      assert {:ok, %{"matches" => [m | _]}} =
-               Tools.call(ctx(pool, path), "doc.find", %{"document" => second, "pattern" => "제9조"})
-
-      assert m["text"] =~ "제9조"
-
-      # (c) an edit lands on the second doc ONLY.
-      assert {:ok, %{"ok" => true}} =
-               Tools.call(ctx(pool, path), "doc.edit", %{
-                 "document" => second,
-                 "op" => %{"op" => "replace_text", "query" => "제9조", "replacement" => "ARTICLE9"}
-               })
-
-      assert {:ok, %{"matches" => [_ | _]}} =
-               Tools.call(ctx(pool, path), "doc.find", %{
-                 "document" => second,
-                 "pattern" => "ARTICLE9"
-               })
-
-      # The viewed doc still routes to the browser (its own model is the authority).
-      assert {:browser, ^lv} = Session.route(path, viewed)
-    end
-
-    test "the previously-viewed file (now navigated away) reads via the server arm", %{
-      pool: pool,
-      path: path
-    } do
-      # User views doc1, then navigates to doc2 in the same viewer.
-      {:ok, %{"document" => doc1}} =
-        Tools.call(ctx(pool, path), "doc.open", %{
-          "path" => Path.join(path, "L3-8.hwp"),
-          "open_opts" => [__text__: "L3-8 SOURCE 제3조"]
-        })
-
-      {:ok, %{"document" => doc2}} =
-        Tools.call(ctx(pool, path), "doc.open", %{
-          "path" => Path.join(path, "plan.hwp"),
-          "open_opts" => [__text__: "PLAN VIEWED 제1조"]
-        })
-
-      lv = idle_lv()
-      :ok = Session.attach_viewer(path, doc1, lv)
-      :ok = Session.attach_viewer(path, doc2, lv)
-
-      # Agent is asked to use the text of the *previously-viewed* L3-8 file. doc1
-      # has no viewer (the viewer moved to doc2), so it routes to its server NIF
-      # and the search returns L3-8's own text, not the currently-viewed doc2.
-      assert reopened = doc1
-      assert Session.viewer(path, doc1) == nil
-      assert {:server, _} = Pool.route(pool, doc1)
-
-      assert {:ok, %{"matches" => [text | _]}} =
-               Tools.call(ctx(pool, path), "doc.find", %{
-                 "document" => reopened,
-                 "pattern" => "L3-8 SOURCE"
-               })
-
-      assert text["text"] =~ "L3-8 SOURCE"
-      refute text["text"] =~ "PLAN VIEWED"
     end
   end
 

@@ -45,7 +45,7 @@ defmodule Ecrits.Workspace.DurableChatRailStoreTest do
     ]
 
     {:ok, first_ws} = Session.attach(workspace, settings)
-    :ok = Session.subscribe_file_events(workspace)
+    :ok = Session.subscribe_events(workspace)
     :ok = Session.subscribe_agent(first_ws.agent_id)
 
     {:ok, %{id: first_turn_id}} =
@@ -383,7 +383,7 @@ defmodule Ecrits.Workspace.DurableChatRailStoreTest do
     ]
 
     {:ok, ws} = Session.attach(workspace, settings)
-    :ok = Session.subscribe_file_events(workspace)
+    :ok = Session.subscribe_events(workspace)
     :ok = Session.subscribe_agent(ws.agent_id)
     {:ok, %{id: turn_id}} = AcpAgent.send_turn(nil, ws.agent_id, "keep this history")
     assert_receive {:agent_event, %{type: :turn_completed, turn_id: ^turn_id}}, 2_000

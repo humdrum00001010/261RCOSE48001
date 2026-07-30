@@ -19,12 +19,15 @@ defmodule Ecrits.SupervisionTest do
              DNSCluster,
              Swoosh.Finch,
              Ecrits.Finch.OpenAI,
+             # ecrits owns exfuse as of 2026-07-27 — FIRST of the document
+             # services so it terminates LAST, after the things holding mounts.
+             Exfuse.Supervisor,
              Ecrits.RhwpSnapshot.Materializer,
-             Ecrits.Doc.Office.Instance,
              Ecrits.Doc.PreviewTaskSupervisor,
              Ecrits.Doc.BrowserTransactionSupervisor,
-             Ecrits.Doc.Pool,
              Ecrits.Fuse.OpenDocs,
+             Ecrits.Doc.EditSessionRegistry,
+             Ecrits.Doc.EditSessionSupervisor,
              EcritsWeb.Endpoint,
              Ecrits.Document.Registry,
              Ecrits.Document.Supervisor,

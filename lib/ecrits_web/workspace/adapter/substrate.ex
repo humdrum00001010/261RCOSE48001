@@ -9,9 +9,9 @@ defmodule EcritsWeb.Workspace.Adapter.Substrate do
 
   @impl true
   def mount(path) when is_binary(path) do
-    with :ok <- ensure_exported(@workspace, :new, 1),
+    with :ok <- ensure_exported(@workspace, :init, 1),
          :ok <- ensure_exported(@workspace, :list, 2),
-         workspace <- apply(@workspace, :new, [path]),
+         {:ok, workspace} <- apply(@workspace, :init, [path]),
          {:ok, tree} <- build_tree(workspace, MapSet.new()) do
       {:ok,
        %{
@@ -114,6 +114,6 @@ defmodule EcritsWeb.Workspace.Adapter.Substrate do
   end
 
   defp missing_api_message do
-    "Local workspace substrate unavailable: expected Ecrits.Workspace.new/1 and Ecrits.Workspace.list/2."
+    "Local workspace substrate unavailable: expected Ecrits.Workspace.init/1 and Ecrits.Workspace.list/2."
   end
 end

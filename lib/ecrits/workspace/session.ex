@@ -23,13 +23,14 @@ defmodule Ecrits.Workspace.Session do
   and the single entry point the LiveView uses.
 
   Later phases extend the roster (background/worker agents), add the
-  `viewers`/`owners` maps + the wasm/NIF routing decision, and the doc topic.
+  `viewers`/`owners` maps and the doc topic.
   For Phase 1 the doc topic is a stable no-op stub.
   """
 
+  import Ecrits.Guards
+
   use GenServer
 
-  alias Ecrits.Doc.Pool
   alias Ecrits.AcpAgent
   alias Ecrits.WorkspaceHandoff
   alias Ecrits.Workspace.Foreground
@@ -109,8 +110,7 @@ defmodule Ecrits.Workspace.Session do
               task_pid: pid(),
               status: :active | :awaiting_task_down | :crashed
             }
-          },
-          optional(:fs_watcher_pid) => pid() | nil
+          }
         }
 
   @typedoc "Opaque handle the LiveView holds for a workspace Session."
@@ -316,7 +316,7 @@ defmodule Ecrits.Workspace.Session do
   the in-roster check this phase.
   """
   @spec fetch_agent(String.t()) :: {:ok, pid()} | :error
-  def fetch_agent(agent_id) when is_binary(agent_id) and agent_id != "" do
+  def fetch_agent(agent_id) when is_present(agent_id) do
     case AcpAgent.whereis(agent_id) do
       pid when is_pid(pid) -> {:ok, pid}
       _ -> :error
@@ -395,9 +395,9 @@ defmodule Ecrits.Workspace.Session do
   def finalize_turn(ws, turn_id, opts \\ [])
 
   def finalize_turn(%{path: path, agent_id: agent_id}, turn_id, opts)
-      when is_binary(path) and is_binary(agent_id) and is_binary(turn_id) and turn_id != "" and
+      when is_binary(path) and is_binary(agent_id) and is_present(turn_id) and
              is_list(opts) do
-    with instance_id when is_binary(instance_id) and instance_id != "" <-
+    with instance_id when is_present(instance_id) <-
            Keyword.get(opts, :instance_id) || current_agent_instance_id(agent_id) do
       call_if_alive(
         path,
@@ -430,9 +430,8 @@ defmodule Ecrits.Workspace.Session do
         task_pid,
         mode
       )
-      when is_binary(workspace_path) and workspace_path != "" and is_binary(agent_id) and
-             agent_id != "" and is_binary(instance_id) and instance_id != "" and
-             is_binary(turn_id) and turn_id != "" and is_pid(owner_pid) and is_pid(task_pid) and
+      when is_present(workspace_path) and is_present(agent_id) and is_present(instance_id) and
+             is_present(turn_id) and is_pid(owner_pid) and is_pid(task_pid) and
              mode in [:sync, :async] do
     case whereis(workspace_path) do
       pid when is_pid(pid) ->
@@ -470,9 +469,8 @@ defmodule Ecrits.Workspace.Session do
         guardian_pid,
         worker_pid
       )
-      when is_binary(workspace_path) and workspace_path != "" and is_binary(agent_id) and
-             agent_id != "" and is_binary(instance_id) and instance_id != "" and
-             is_binary(turn_id) and turn_id != "" and is_pid(guardian_pid) and
+      when is_present(workspace_path) and is_present(agent_id) and is_present(instance_id) and
+             is_present(turn_id) and is_pid(guardian_pid) and
              is_pid(worker_pid) do
     case whereis(workspace_path) do
       pid when is_pid(pid) ->
@@ -510,9 +508,8 @@ defmodule Ecrits.Workspace.Session do
         },
         reply_to
       )
-      when is_binary(workspace_path) and workspace_path != "" and is_binary(agent_id) and
-             agent_id != "" and is_binary(instance_id) and instance_id != "" and
-             is_binary(turn_id) and turn_id != "" and
+      when is_present(workspace_path) and is_present(agent_id) and is_present(instance_id) and
+             is_present(turn_id) and
              (is_pid(reply_to) or is_nil(reply_to)) do
     case whereis(workspace_path) do
       pid when is_pid(pid) ->
@@ -586,7 +583,10 @@ defmodule Ecrits.Workspace.Session do
 
   def update_options(%{agent_id: agent_id}, adapter_opts)
       when is_binary(agent_id) and is_list(adapter_opts) do
-    AcpAgent.update_session_options(agent_id, adapter_opts)
+    # Client-side, so an exit here kills the CALLER (a LiveView) rather than the
+    # Session — but the clause below already promises an error tuple, so a dead
+    # or slow agent should answer in kind, not crash the caller.
+    delegate_to_agent(fn -> AcpAgent.update_session_options(agent_id, adapter_opts) end)
   end
 
   def update_options(_ws, _opts), do: {:error, :no_agent}
@@ -675,43 +675,23 @@ defmodule Ecrits.Workspace.Session do
     end
   end
 
-  # ── doc ownership + viewers + wasm/NIF routing (Phase 3) ────────────
+  # ── doc ownership + viewers (Phase 3) ────────────
   #
   # The per-doc `owners` (one agent per doc — invariant 2) and `viewers` (a human
   # LiveView rendering a doc → its browser WASM model is the authority) maps live
-  # HERE, in the per-workspace Session, not in the global `Ecrits.Doc.Pool`
-  # (Phase 2 parked ownership in the Pool; this is its real home). The Session is
-  # also where the wasm/NIF routing decision is made: a doc with a live registered
-  # viewer routes to that viewer's browser WASM; otherwise to the server NIF
-  # Editor (resolved from the Pool's doc-runtime registry).
-
-  @doc """
-  Resolve where a document's authoritative model lives for `path`'s workspace:
-
-    * `{:browser, lv}` — a human viewer is rendering it (its WASM model is
-      authority); agent edits route to that LiveView.
-    * `{:server, editor}` — no viewer; the server NIF Editor is authority.
-    * `{:error, :not_found}` — the doc is not open in this workspace's runtime.
-
-  This is the single wasm/NIF routing decision (design invariant 4): `viewers`
-  decides browser-vs-server, the Pool supplies the live server Editor pid.
-  """
-  @spec route(String.t(), String.t()) ::
-          {:browser, pid()} | {:server, pid()} | {:error, :not_found}
-  def route(path, document_id) when is_binary(path) and is_binary(document_id) do
-    case viewer(path, document_id) do
-      lv when is_pid(lv) -> {:browser, lv}
-      nil -> Pool.route(document_id)
-    end
-  end
+  # HERE, in the per-workspace Session (Phase 2 parked ownership in the global
+  # doc registry; this is its real home, and the registry is gone).
+  #
+  # There is no routing decision left to make, only a registry: `viewer/2` says
+  # WHICH TAB holds a document, which is a real question when several are open
+  # on one workspace. Callers that still need a server Editor pid (the
+  # write-back path) ask `viewer/2` and nothing else — there is no second arm.
 
   @doc """
   The active human viewer (browser WASM authority) for `document_id` in `path`'s
   workspace, or nil. The most recently attached live viewer is active; older
   concurrent viewers remain eligible as fallbacks. Returns a pid ONLY while that
-  viewer is alive, promoting the next live viewer before falling back to the
-  server NIF. The wasm/NIF routing decision is `viewer present? → browser :
-  server`; callers that hold their own Pool (tests) compose this with their pool.
+  viewer is alive, promoting the next live viewer before answering nil.
   """
   @spec viewer(String.t(), String.t()) :: pid() | nil
   def viewer(path, document_id) when is_binary(path) and is_binary(document_id) do
@@ -719,6 +699,23 @@ defmodule Ecrits.Workspace.Session do
       lv when is_pid(lv) -> if Process.alive?(lv), do: lv, else: nil
       _ -> nil
     end
+  end
+
+  @doc """
+  Every `document_id` in `path`'s workspace that a LIVE viewer currently holds.
+
+  ONE call for the whole set, deliberately: the doc VFS derives its `readdir`
+  listing from this, and asking `viewer/2` per candidate would cost one round
+  trip into this GenServer per document in the workspace. Liveness is `viewer/2`'s
+  — `ensure_maps/1` prunes dead pids and drops emptied documents while
+  normalising, so every key here has at least one live browser authority.
+
+  Empty when no Session is running for `path` (nothing is viewed if nothing is
+  open), never `nil`.
+  """
+  @spec viewed_document_ids(String.t()) :: MapSet.t(String.t())
+  def viewed_document_ids(path) when is_binary(path) do
+    path |> call_if_alive(:viewed_document_ids, []) |> MapSet.new()
   end
 
   @doc """
@@ -732,13 +729,26 @@ defmodule Ecrits.Workspace.Session do
   def attach_viewer(path, document_id, lv)
       when is_binary(path) and is_binary(document_id) and is_pid(lv) do
     with {:ok, _pid} <- ensure_started(canonical_path(path)) do
-      GenServer.call(via(canonical_path(path)), {:attach_viewer, document_id, lv})
+      result = GenServer.call(via(canonical_path(path)), {:attach_viewer, document_id, lv})
+
+      # Attaching is the moment this document becomes LISTABLE — `DocFs.readdir`
+      # lists exactly the documents a live viewer holds, and sizes each entry
+      # from the projection cache. An entry it cannot size would have to be
+      # advertised as 0, and a vnode that observes 0 is stuck at "empty"
+      # permanently (2026-07-28, 98/98 measurements).
+      #
+      # Warming HERE rather than in the LiveView is deliberate: every attach path
+      # must warm, and the LiveView is only one of them — putting it there left
+      # every other caller (including tests) listing nothing.
+      Ecrits.Fuse.DocMount.warm_projection(canonical_path(path), document_id)
+
+      result
     else
       _ -> :ok
     end
   end
 
-  @doc "Detach `lv` from `document_id`, promoting another live viewer or falling back to the server NIF."
+  @doc "Detach `lv` from `document_id`, promoting another live viewer or leaving the document unviewed."
   @spec detach_viewer(String.t(), String.t(), pid()) :: :ok
   def detach_viewer(path, document_id, lv)
       when is_binary(path) and is_binary(document_id) and is_pid(lv) do
@@ -781,30 +791,43 @@ defmodule Ecrits.Workspace.Session do
   def doc_topic(path) when is_binary(path), do: "workspace_doc:" <> canonical_path(path)
 
   @doc """
-  Subscribe the caller to file-system changes for `path` and ensure the shared
-  per-workspace watcher is running.
-
-  The watcher is owned by the durable `Workspace.Session`, not by any particular
-  LiveView socket, so multiple tabs/reloads of the same workspace do not spawn
-  duplicate macOS watcher processes.
+  Subscribe the caller to workspace lifecycle events such as terminal turn
+  finalization. Filesystem events are delivered directly by Exfuse to their
+  subscribers and never pass through this Session.
   """
-  @spec subscribe_file_events(ws() | String.t()) :: :ok
-  def subscribe_file_events(%{path: path}) when is_binary(path), do: subscribe_file_events(path)
+  @spec subscribe_events(ws() | String.t()) :: :ok
+  def subscribe_events(%{path: path}) when is_binary(path), do: subscribe_events(path)
 
-  def subscribe_file_events(path) when is_binary(path) do
+  def subscribe_events(path) when is_binary(path) do
     canonical = canonical_path(path)
-    :ok = Phoenix.PubSub.subscribe(@pubsub, file_events_topic(canonical))
-
-    with {:ok, _pid} <- ensure_started(canonical) do
-      GenServer.call(via(canonical), :ensure_file_watcher)
-    end
-
-    :ok
+    Phoenix.PubSub.subscribe(@pubsub, events_topic(canonical))
   end
 
   @doc "Canonicalize a workspace path so the key is stable regardless of trailing slash etc."
   @spec canonical_path(String.t()) :: String.t()
   def canonical_path(path) when is_binary(path), do: Ecrits.Fuse.DocMount.canonical_root(path)
+
+  @doc """
+  The canonical root of the RUNNING workspace session that contains `abs_path`,
+  or nil.
+
+  A recovery lookup for callers that hold only a document path — `viewer/2` is
+  keyed by workspace root, and the doc VFS projection needs to resolve a document
+  it was handed by absolute path. Every VFS caller that already knows its root
+  should pass it instead; this exists so the fallback is a deliberate,
+  longest-prefix match against live sessions rather than a guess.
+  """
+  @spec workspace_for(String.t()) :: String.t() | nil
+  def workspace_for(abs_path) when is_binary(abs_path) do
+    dir = abs_path |> Path.expand() |> Path.dirname()
+
+    @registry
+    |> Registry.select([{{:"$1", :_, :_}, [], [:"$1"]}])
+    |> Enum.filter(&(dir == &1 or String.starts_with?(dir, &1 <> "/")))
+    |> Enum.max_by(&String.length/1, fn -> nil end)
+  end
+
+  def workspace_for(_abs_path), do: nil
 
   @doc "Whereis the per-path Session GenServer (nil when none)."
   def whereis(path) when is_binary(path) do
@@ -851,7 +874,7 @@ defmodule Ecrits.Workspace.Session do
 
   defp current_agent_instance_id(agent_id) do
     case AcpAgent.agent_snapshot(agent_id) do
-      %{instance_id: instance_id} when is_binary(instance_id) and instance_id != "" ->
+      %{instance_id: instance_id} when is_present(instance_id) ->
         instance_id
 
       _missing ->
@@ -859,6 +882,24 @@ defmodule Ecrits.Workspace.Session do
     end
   catch
     :exit, _reason -> nil
+  end
+
+  # Every one of these delegations is a `GenServer.call` INTO an agent session,
+  # made from inside this Session's own `handle_call`. A busy agent that misses
+  # the 5s default therefore exited the caller — and the caller is the workspace
+  # Session, so the whole workspace died and every later mount attempt reported
+  # the generic "Workspace could not be mounted." with the real cause nowhere in
+  # sight. Observed: `GenServer.call(#PID<…>, {:rename, …}, 5000)` timing out and
+  # terminating `{Ecrits.Workspace.SessionRegistry, "/Users/phihu/Downloads"}`.
+  #
+  # A slow or wedged agent must degrade THAT call, never take the workspace with
+  # it, so the exit becomes an ordinary error reply the LiveView can render.
+  defp delegate_to_agent(fun) when is_function(fun, 0) do
+    fun.()
+  catch
+    :exit, {:timeout, _call} -> {:error, :agent_timeout}
+    :exit, {:noproc, _call} -> {:error, :no_agent}
+    :exit, reason -> {:error, {:agent_unavailable, reason}}
   end
 
   defp ws(path, live_session_id, rail_key, agent_id) do
@@ -904,10 +945,10 @@ defmodule Ecrits.Workspace.Session do
        # DIFFERENT provider must restart the agent rather than reuse it.
        foreground_provider: nil,
        # Per-doc ownership (invariant 2): %{document_id => agent_id}. The real home
-       # of what Phase 2 temporarily parked in `Ecrits.Doc.Pool`.
+       # of what Phase 2 temporarily parked in the global doc registry.
        owners: %{},
        # Per-doc human viewers (browser WASM authority), newest first:
-       # %{document_id => [lv_pid]}. `route/2` uses the first live viewer and
+       # %{document_id => [lv_pid]}. `viewer/2` uses the first live viewer and
        # retains the rest as fallbacks for overlapping/reconnecting LiveViews.
        viewers: %{},
        # Terminal document work is serialized once per workspace. Completed
@@ -924,10 +965,7 @@ defmodule Ecrits.Workspace.Session do
        documents: %{},
        open_document_paths: [],
        active_document_path: nil,
-       document_element_picker_enabled?: false,
-       # Shared file-system watcher for this workspace root. LiveViews subscribe to
-       # this Session's PubSub topic instead of each starting their own watcher.
-       fs_watcher_pid: nil
+       document_element_picker_enabled?: false
      }
      |> restore_chat_rail_state()}
   end
@@ -1077,7 +1115,7 @@ defmodule Ecrits.Workspace.Session do
            not is_nil(agent_crash_barrier_key(state, agent_id)) do
         {:reply, {:error, :foreground_transition_in_progress}, state}
       else
-        {:reply, AcpAgent.flush_queue(agent_id), state}
+        {:reply, delegate_to_agent(fn -> AcpAgent.flush_queue(agent_id) end), state}
       end
     else
       _ -> {:reply, {:error, :no_agent}, state}
@@ -1088,7 +1126,7 @@ defmodule Ecrits.Workspace.Session do
     state = ensure_foregrounds(state)
 
     with {:ok, agent_id} <- current_foreground_agent_id(state, live_view_pid) do
-      {:reply, AcpAgent.cancel(nil, agent_id, turn_id), state}
+      {:reply, delegate_to_agent(fn -> AcpAgent.cancel(nil, agent_id, turn_id) end), state}
     else
       _ -> {:reply, {:error, :no_agent}, state}
     end
@@ -1098,7 +1136,7 @@ defmodule Ecrits.Workspace.Session do
     state = ensure_foregrounds(state)
 
     with {:ok, agent_id} <- current_foreground_agent_id(state, live_view_pid) do
-      {:reply, AcpAgent.rename(agent_id, title), state}
+      {:reply, delegate_to_agent(fn -> AcpAgent.rename(agent_id, title) end), state}
     else
       _ -> {:reply, {:error, :no_agent}, state}
     end
@@ -1118,7 +1156,9 @@ defmodule Ecrits.Workspace.Session do
            not is_nil(agent_crash_barrier_key(state, agent_id)) do
         {:reply, {:error, :foreground_transition_in_progress}, state}
       else
-        {:reply, AcpAgent.update_session_options(agent_id, adapter_opts), state}
+        {:reply,
+         delegate_to_agent(fn -> AcpAgent.update_session_options(agent_id, adapter_opts) end),
+         state}
       end
     else
       _ -> {:reply, {:error, :no_agent}, state}
@@ -1328,6 +1368,11 @@ defmodule Ecrits.Workspace.Session do
     {:reply, state.viewers |> Map.get(document_id, []) |> List.first(), state}
   end
 
+  def handle_call(:viewed_document_ids, _from, state) do
+    state = ensure_maps(state)
+    {:reply, Map.keys(state.viewers), state}
+  end
+
   def handle_call({:attach_viewer, document_id, lv}, _from, state) do
     state = ensure_maps(state)
     monitor_live_view_once(lv)
@@ -1377,10 +1422,6 @@ defmodule Ecrits.Workspace.Session do
       end
 
     {:reply, :ok, %{state | owners: owners}}
-  end
-
-  def handle_call(:ensure_file_watcher, _from, state) do
-    {:reply, :ok, ensure_file_watcher(state)}
   end
 
   defp select_foreground_reply(state, rail_key, settings, live_view_pid) do
@@ -1433,27 +1474,6 @@ defmodule Ecrits.Workspace.Session do
   end
 
   @impl true
-  def handle_info({:file_event, pid, :stop}, %{fs_watcher_pid: pid} = state) do
-    {:noreply, %{state | fs_watcher_pid: nil}}
-  end
-
-  def handle_info({:file_event, pid, {path, _events}}, %{fs_watcher_pid: pid} = state)
-      when is_binary(path) do
-    # Ignore churn from the document VFS mount itself (<root>/.ecrits); it
-    # is never user content and would otherwise trigger pointless tree refreshes.
-    unless String.contains?(path, "/.ecrits/") do
-      Phoenix.PubSub.broadcast(
-        @pubsub,
-        file_events_topic(state.path),
-        {:workspace_fs_event, path}
-      )
-    end
-
-    {:noreply, state}
-  end
-
-  def handle_info({:file_event, _pid, _payload}, state), do: {:noreply, state}
-
   def handle_info({:agent_turn_started, key, owner_pid, task_pid}, state) do
     {:noreply, register_agent_turn_owner(state, key, owner_pid, task_pid)}
   end
@@ -1472,8 +1492,7 @@ defmodule Ecrits.Workspace.Session do
         {:agent_turn_terminal, {agent_id, instance_id, turn_id} = key, reply_to},
         state
       )
-      when is_binary(agent_id) and agent_id != "" and is_binary(instance_id) and
-             instance_id != "" and is_binary(turn_id) and turn_id != "" and
+      when is_present(agent_id) and is_present(instance_id) and is_present(turn_id) and
              (is_pid(reply_to) or is_nil(reply_to)) do
     state = state |> ensure_maps() |> ensure_foregrounds() |> ensure_turn_finalizations()
 
@@ -1589,8 +1608,6 @@ defmodule Ecrits.Workspace.Session do
 
   @impl true
   def terminate(reason, state) do
-    _ = stop_file_watcher(state)
-
     # Mount and agents follow the WORKSPACE lifetime, not this process's: a
     # crash-restart of the coordinator is not the workspace ending. Tearing
     # the mount down on a crash left the agent's mounted projection ENOENT
@@ -1621,7 +1638,6 @@ defmodule Ecrits.Workspace.Session do
     |> Map.put_new(:owners, %{})
     |> Map.put_new(:viewers, %{})
     |> Map.update!(:viewers, &normalize_viewers/1)
-    |> Map.put_new(:fs_watcher_pid, nil)
     |> ensure_turn_finalizations()
     |> ensure_document_state()
   end
@@ -1695,8 +1711,7 @@ defmodule Ecrits.Workspace.Session do
          owner_pid,
          task_pid
        )
-       when is_binary(agent_id) and agent_id != "" and is_binary(instance_id) and
-              instance_id != "" and is_binary(turn_id) and turn_id != "" and
+       when is_present(agent_id) and is_present(instance_id) and is_present(turn_id) and
               is_pid(owner_pid) and is_pid(task_pid) do
     state = state |> ensure_maps() |> ensure_foregrounds() |> ensure_turn_finalizations()
 
@@ -2105,7 +2120,7 @@ defmodule Ecrits.Workspace.Session do
 
     Phoenix.PubSub.broadcast(
       @pubsub,
-      file_events_topic(state.path),
+      events_topic(state.path),
       {:workspace_turn_finalized,
        %{
          workspace_path: state.path,
@@ -2336,43 +2351,7 @@ defmodule Ecrits.Workspace.Session do
 
   defp attr_value(_attrs, _key), do: nil
 
-  defp ensure_file_watcher(state) do
-    state = ensure_maps(state)
-
-    case state.fs_watcher_pid do
-      pid when is_pid(pid) ->
-        if Process.alive?(pid),
-          do: state,
-          else: start_file_watcher(%{state | fs_watcher_pid: nil})
-
-      _ ->
-        start_file_watcher(state)
-    end
-  end
-
-  defp start_file_watcher(state) do
-    if is_binary(state.path) and state.path != "" do
-      case FileSystem.start_link(dirs: [state.path]) do
-        {:ok, pid} ->
-          FileSystem.subscribe(pid)
-          %{state | fs_watcher_pid: pid}
-
-        _other ->
-          state
-      end
-    else
-      state
-    end
-  end
-
-  defp stop_file_watcher(%{fs_watcher_pid: pid}) when is_pid(pid) do
-    if Process.alive?(pid), do: GenServer.stop(pid, :normal, 1_000)
-    :ok
-  end
-
-  defp stop_file_watcher(_state), do: :ok
-
-  defp file_events_topic(path), do: "workspace_files:" <> canonical_path(path)
+  defp events_topic(path), do: "workspace_events:" <> canonical_path(path)
 
   # ── foreground-agent binding ───────────────────────────────────────
 
@@ -2421,7 +2400,7 @@ defmodule Ecrits.Workspace.Session do
 
     case AcpAgent.start_session(nil, opts) do
       {:ok, %{id: agent_id}} when agent_id == meta.agent_id ->
-        _ = AcpAgent.reconcile_workspace(agent_id, state.path)
+        _ = delegate_to_agent(fn -> AcpAgent.reconcile_workspace(agent_id, state.path) end)
         put_live_foreground_agent(state, agent_id)
 
       _error ->
@@ -2473,7 +2452,7 @@ defmodule Ecrits.Workspace.Session do
               # provider rejects them (observed: "'sonnet' not supported with Codex").
               restart_foreground_agent(state, settings, rail_key, live_view_key)
             else
-              _ = AcpAgent.reconcile_workspace(agent_id, state.path)
+              _ = delegate_to_agent(fn -> AcpAgent.reconcile_workspace(agent_id, state.path) end)
               _ = maybe_apply_settings(agent_id, settings)
 
               state =
@@ -2505,7 +2484,7 @@ defmodule Ecrits.Workspace.Session do
     case AcpAgent.start_session(nil, opts) do
       {:ok, %{id: ^agent_id}} ->
         pid = AcpAgent.whereis(agent_id)
-        _ = AcpAgent.reconcile_workspace(agent_id, state.path)
+        _ = delegate_to_agent(fn -> AcpAgent.reconcile_workspace(agent_id, state.path) end)
         requested_provider = Keyword.get(settings, :provider)
         bound_provider = live_agent_provider(agent_id) || requested_provider
 
@@ -2576,8 +2555,8 @@ defmodule Ecrits.Workspace.Session do
 
       # The remembered settings are attach-time state; the DOCUMENT binding
       # usually arrived later. The retried send carries the current binding —
-      # without it a revived session resolved doc.open_doc {path:"current"}
-      # against nothing and answered "unsupported document type: ".
+      # without it a revived session resolved `{document: "current"}` against
+      # nothing and answered "unsupported document type: ".
       settings =
         settings
         |> maybe_put_setting(:document_path, Keyword.get(send_opts, :document_path))
@@ -2666,7 +2645,7 @@ defmodule Ecrits.Workspace.Session do
 
   defp live_agent_provider(agent_id) do
     case AcpAgent.agent_snapshot(agent_id) do
-      %{provider: provider} when is_binary(provider) and provider != "" -> provider
+      %{provider: provider} when is_present(provider) -> provider
       _missing -> nil
     end
   catch
@@ -2779,7 +2758,7 @@ defmodule Ecrits.Workspace.Session do
           # failed replacement must keep the durable rail intact for retry.
           _ = WorkspaceHandoff.reset_agent_state(state.path, agent_id)
           pid = AcpAgent.whereis(agent_id)
-          _ = AcpAgent.reconcile_workspace(agent_id, state.path)
+          _ = delegate_to_agent(fn -> AcpAgent.reconcile_workspace(agent_id, state.path) end)
 
           state =
             state
@@ -3088,7 +3067,12 @@ defmodule Ecrits.Workspace.Session do
       opts when is_list(opts) and opts != [] ->
         live_opts = Keyword.drop(opts, @session_owned_opts)
 
-        if live_opts != [], do: AcpAgent.update_session_options(agent_id, live_opts)
+        # Runs INSIDE handle_call, so an agent that is dead or slow would exit the
+        # Session and take the workspace with it — the same failure the other
+        # four AcpAgent calls are wrapped against.
+        if live_opts != [],
+          do: delegate_to_agent(fn -> AcpAgent.update_session_options(agent_id, live_opts) end)
+
         :ok
 
       _ ->
@@ -3098,7 +3082,7 @@ defmodule Ecrits.Workspace.Session do
 
   defp foreground_session_key(settings) when is_list(settings) do
     case Keyword.get(settings, :live_session_id) do
-      id when is_binary(id) and id != "" -> id
+      id when is_present(id) -> id
       _ -> @default_live_session_id
     end
   end
@@ -3114,7 +3098,7 @@ defmodule Ecrits.Workspace.Session do
 
   defp foreground_live_view_key(settings, pid) when is_list(settings) and is_pid(pid) do
     case Keyword.get(settings, :chat_rail_id) do
-      id when is_binary(id) and id != "" ->
+      id when is_present(id) ->
         "tab-" <>
           (:crypto.hash(:sha256, foreground_session_key(settings) <> <<0>> <> id)
            |> Base.url_encode64(padding: false)

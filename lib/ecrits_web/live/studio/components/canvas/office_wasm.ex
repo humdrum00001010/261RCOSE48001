@@ -1,23 +1,38 @@
 defmodule EcritsWeb.Live.Studio.Components.Canvas.OfficeWasm do
   @moduledoc """
   Client-WASM office document surface — the SOLE office renderer (LibreOffice->
-  WASM in the browser), the office counterpart to the HWP `HwpPages`/
-  `WasmHwpEditor` path.
+  WASM in the browser), the office counterpart to the HWP `RhwpStudio` path.
 
   This surface loads the document bytes into a LibreOffice WASM build IN THE
   BROWSER and renders pages/slides to per-page `<canvas>` elements via the
   build's `paintTile`/`getDocumentSize`/`getParts` exports. The
   colocated `WasmOfficeEditor` browser-engine adapter owns the DOM under
   `[data-role='office-wasm-pages']` and fetches the raw bytes from
-  `bytes_url` (the same `/document-bytes` controller the HWP hook uses).
+  `bytes_url` (the same `/document/*document` controller the HWP hook uses).
 
   All office documents (docx/pptx/xlsx) route here; there is no server-side
   LibreOfficeKit render/edit path.
+
+  ## Which build this drives
+
+  The **headless** (`--disable-gui`) LibreOffice-for-emscripten build, whose
+  `main()` calls `libreofficekit_hook_2()` + `lok_start_worker()` +
+  `lok_set_fully_ready()` and which therefore answers the `LokEditBindings`
+  embind API this hook speaks. Delivered by `mix assets.office_wasm` /
+  `OFFICE_WASM_DIST` and served at `/assets/office/` by
+  `EcritsWeb.Plugs.CrossOriginIsolationPlug`.
+
+  A Qt6 GUI build is not a drop-in: it links the same static library (the
+  symbols are present) but its `main()` goes to `soffice_main()`, so the worker
+  thread is never spawned and `lok_is_ready()` never flips — the boot below
+  polls that gate forever. See the office go/no-go section of
+  `docs/plans/2026-07-26-doclang-engine-migration.md`.
   """
 
   use EcritsWeb, :html
 
   alias Ecrits.DocumentCanvasState
+  alias EcritsWeb.Plugs.CrossOriginIsolationPlug
 
   attr :id, :string, required: true
   attr :state, :map, required: true
@@ -5695,6 +5710,21 @@ defmodule EcritsWeb.Live.Studio.Components.Canvas.OfficeWasm do
                     case "get":
                       reply({ result: this.officeGet(payload) })
                       break
+                    // The doc VFS projection's IR source: the WHOLE element tree
+                    // in one reply, which is exactly what `getElements()` already
+                    // returns (paragraphs, tables, cells, shapes, runs). Unlike
+                    // the HWP arm this is the build's own full IR, so the office
+                    // projection is COMPLETE and says so.
+                    case "elements":
+                      reply({
+                        result: {
+                          elements: this.officeElements(),
+                          coverage: "full_ir",
+                          complete: true,
+                          note: null
+                        }
+                      })
+                      break
                     case "save":
                       reply({ result: await this.officeSave() })
                       break
@@ -6738,13 +6768,17 @@ defmodule EcritsWeb.Live.Studio.Components.Canvas.OfficeWasm do
   end
 
   def office_asset_version do
-    # Hash the matched LibreOffice WASM set from the canonical dep priv dir so
+    # Hash the matched LibreOffice WASM set the plug will actually serve, so
     # glue, engine, metadata, or data-only redeploys all bust the browser cache.
+    # Resolved through `CrossOriginIsolationPlug.office_dir/0` — one definition
+    # of "where the bundle is", shared by the server that serves it and the
+    # cache-buster that versions it. (It used to be
+    # `Application.app_dir(:libreofficex, ...)`, which RAISES for an unloaded
+    # app; that took 118 tests down with the dep. A missing engine must be a
+    # cache key of "no bundle", never a render-time raise.)
     stats =
       for name <- ["soffice.js", "soffice.wasm", "soffice.data", "soffice.data.js.metadata"] do
-        path = Application.app_dir(:libreofficex, "priv/wasm/#{name}")
-
-        case File.stat(path) do
+        case File.stat(Path.join(CrossOriginIsolationPlug.office_dir(), name)) do
           {:ok, %File.Stat{mtime: mtime, size: size}} -> {name, mtime, size}
           {:error, reason} -> {name, :missing, reason}
         end

@@ -12,11 +12,41 @@ defmodule Ecrits.AcpAgent.PermissionHandlerTest do
 
   setup do
     root =
-      Path.join(System.tmp_dir!(), "permission-handler-#{System.unique_integer([:positive])}")
+      Path.join(resolved_tmp_dir(), "permission-handler-#{System.unique_integer([:positive])}")
 
     File.mkdir_p!(root)
     on_exit(fn -> File.rm_rf!(root) end)
     %{root: root}
+  end
+
+  # `resolved_tmp_dir/0`, not `System.tmp_dir!/0`. `PermissionHandler.init/1`
+  # realpaths the workspace root, and `confined_path?/2` REJECTS any candidate
+  # whose path traverses a symlink — both correct. macOS `/var` is a symlink to
+  # `/private/var`, so a fixture under the raw temp dir makes every in-workspace
+  # path fail confinement for a reason that has nothing to do with the code under
+  # test. `Path.expand/1` does not follow symlinks; this does, one level per
+  # component, which is all `/var` needs.
+  defp resolved_tmp_dir do
+    System.tmp_dir!()
+    |> Path.expand()
+    |> Path.split()
+    |> Enum.reduce("/", fn
+      "/", acc ->
+        acc
+
+      segment, acc ->
+        joined = Path.join(acc, segment)
+
+        case :file.read_link(joined) do
+          {:ok, target} ->
+            if Path.type(target) == :absolute,
+              do: Path.expand(target),
+              else: Path.expand(target, acc)
+
+          _ ->
+            joined
+        end
+    end)
   end
 
   test "read-only rejects a provider-native tool escalation once", %{root: root} do

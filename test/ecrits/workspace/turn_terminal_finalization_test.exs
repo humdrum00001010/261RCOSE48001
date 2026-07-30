@@ -2,9 +2,6 @@ defmodule Ecrits.Workspace.TurnTerminalFinalizationTest do
   use ExUnit.Case, async: false
 
   alias Ecrits.AcpAgent
-  alias Ecrits.Doc.Pool
-  alias Ecrits.Fuse.OpenDocs
-  alias Ecrits.Test.FakeEhwpRuntime
   alias Ecrits.Workspace.Session
 
   setup do
@@ -114,7 +111,7 @@ defmodule Ecrits.Workspace.TurnTerminalFinalizationTest do
              Session.send_turn(terminal.ws, "after kill")
 
     agent_pid = Ecrits.AcpAgent.Session.whereis(terminal.ws.agent_id)
-    pool_pid = Process.whereis(Ecrits.Doc.Pool)
+    open_docs_pid = Process.whereis(Ecrits.Fuse.OpenDocs)
 
     %{
       acp_client: old_client,
@@ -122,7 +119,7 @@ defmodule Ecrits.Workspace.TurnTerminalFinalizationTest do
     } = :sys.get_state(agent_pid)
 
     assert is_pid(old_client)
-    :ok = :sys.suspend(pool_pid)
+    :ok = :sys.suspend(open_docs_pid)
 
     try do
       Process.exit(task_pid, :kill)
@@ -160,7 +157,7 @@ defmodule Ecrits.Workspace.TurnTerminalFinalizationTest do
       refute Process.alive?(old_client)
       refute_receive {:agent_event, %{type: :turn_started, turn_id: ^queued_turn}}, 100
     after
-      :ok = :sys.resume(pool_pid)
+      :ok = :sys.resume(open_docs_pid)
     end
 
     assert_terminal_finalized(terminal, turn_id)
@@ -174,134 +171,6 @@ defmodule Ecrits.Workspace.TurnTerminalFinalizationTest do
     assert_terminal_finalized(terminal, queued_turn)
   end
 
-  test "terminal invalid stage is rejected once and queued work starts without an error turn", %{
-    base: base
-  } do
-    install_fake_ehwp_runtime()
-
-    terminal =
-      attach_terminal_workspace(base, "invalid-stage-queue",
-        wait_for: :release_prompt,
-        test_pid: self(),
-        script: [{:text_delta, "done"}]
-      )
-
-    assert {:ok, %{id: first_turn, status: :running}} =
-             Session.send_turn(terminal.ws, "stage invalid json")
-
-    assert_receive {:agent_adapter_waiting, first_adapter}, 2_000
-    stage_invalid_jsonl(terminal, first_turn, "queue-invalid.hwp")
-
-    assert {:ok, %{id: queued_turn, status: :queued}} =
-             Session.send_turn(terminal.ws, "run after terminal rejection")
-
-    send(first_adapter, :release_prompt)
-
-    assert_receive {:vfs_doc_edited,
-                    %{
-                      phase: :rejected,
-                      doc: "queue-invalid.hwp",
-                      edit_id: "invalid-edit-queue-invalid.hwp",
-                      agent_id: agent_id,
-                      instance_id: instance_id,
-                      turn_id: ^first_turn
-                    }},
-                   2_000
-
-    assert agent_id == terminal.ws.agent_id
-    assert instance_id == terminal.instance_id
-    assert OpenDocs.staged(terminal.path, "queue-invalid.hwp") == :error
-    assert_terminal_finalized(terminal, first_turn)
-
-    refute_receive {:agent_event, %{type: :turn_failed, turn_id: ^first_turn}}, 50
-    assert_receive {:agent_event, %{type: :turn_started, turn_id: ^queued_turn}}, 2_000
-    assert_receive {:agent_adapter_waiting, _queued_adapter}, 2_000
-
-    assert {:ok, %{id: ^queued_turn, status: :cancelled}} =
-             Session.cancel(terminal.ws, queued_turn)
-
-    assert_terminal_finalized(terminal, queued_turn)
-  end
-
-  test "foreground restart crosses an invalid terminal stage and accepts new work", %{base: base} do
-    install_fake_ehwp_runtime()
-
-    path = Path.join(base, "invalid-stage-restart")
-    File.mkdir_p!(path)
-
-    settings = [
-      live_session_id: "invalid-stage-restart",
-      chat_rail_id: "invalid-stage-restart-tab",
-      provider: "codex",
-      adapter_opts: [
-        exmcp_adapter: EcritsWeb.FakeAcpAdapter,
-        wait_for: :release_restarted_prompt,
-        test_pid: self(),
-        script: [{:text_delta, "done"}]
-      ],
-      workspace_root: path
-    ]
-
-    {:ok, ws} = Session.attach(path, settings)
-    :ok = Session.subscribe_file_events(path)
-    :ok = Session.subscribe_agent(ws.agent_id)
-    assert_receive {:workspace_foreground_rebound, ^ws}, 1_000
-
-    old_instance_id = AcpAgent.agent_snapshot(ws.agent_id).instance_id
-    terminal = %{path: path, ws: ws, instance_id: old_instance_id}
-
-    assert {:ok, %{id: old_turn, status: :running}} =
-             Session.send_turn(ws, "restart after invalid json")
-
-    assert_receive {:agent_adapter_waiting, _old_adapter}, 2_000
-    stage_invalid_jsonl(terminal, old_turn, "restart-invalid.hwp")
-
-    assert {:pending, pending_ws} = Session.restart_foreground(path, settings)
-    assert pending_ws.agent_id == ws.agent_id
-
-    assert_receive {:vfs_doc_edited,
-                    %{
-                      phase: :rejected,
-                      doc: "restart-invalid.hwp",
-                      agent_id: agent_id,
-                      instance_id: ^old_instance_id,
-                      turn_id: ^old_turn
-                    }},
-                   2_000
-
-    assert agent_id == ws.agent_id
-
-    assert_receive {:workspace_turn_finalized,
-                    %{
-                      agent_id: ^agent_id,
-                      instance_id: ^old_instance_id,
-                      turn_id: ^old_turn,
-                      summary: %{successful?: true}
-                    }},
-                   2_000
-
-    assert_receive {:workspace_foreground_rebound, restarted_ws}, 2_000
-    assert restarted_ws.agent_id == ws.agent_id
-    assert OpenDocs.staged(path, "restart-invalid.hwp") == :error
-
-    new_instance_id = AcpAgent.agent_snapshot(restarted_ws.agent_id).instance_id
-    refute new_instance_id == old_instance_id
-
-    assert {:ok, %{id: new_turn, status: :running}} =
-             Session.send_turn(restarted_ws, "new work after restart")
-
-    assert_receive {:agent_event, %{type: :turn_started, turn_id: ^new_turn}}, 2_000
-    assert_receive {:agent_adapter_waiting, _new_adapter}, 2_000
-
-    assert {:ok, %{id: ^new_turn, status: :cancelled}} =
-             Session.cancel(restarted_ws, new_turn)
-
-    assert_terminal_finalized(
-      %{terminal | ws: restarted_ws, instance_id: new_instance_id},
-      new_turn
-    )
-  end
-
   test "unsuccessful finalizers keep queued work behind the exact ack until success", %{
     base: base
   } do
@@ -310,8 +179,8 @@ defmodule Ecrits.Workspace.TurnTerminalFinalizationTest do
 
     agent_pid = Ecrits.AcpAgent.Session.whereis(terminal.ws.agent_id)
     session_pid = Session.whereis(terminal.path)
-    pool_pid = Process.whereis(Ecrits.Doc.Pool)
-    :ok = :sys.suspend(pool_pid)
+    open_docs_pid = Process.whereis(Ecrits.Fuse.OpenDocs)
+    :ok = :sys.suspend(open_docs_pid)
 
     {first_turn, queued_turn} =
       try do
@@ -458,7 +327,7 @@ defmodule Ecrits.Workspace.TurnTerminalFinalizationTest do
 
         {first_turn, queued_turn}
       after
-        :ok = :sys.resume(pool_pid)
+        :ok = :sys.resume(open_docs_pid)
       end
 
     assert {:ok, {:completed, %{successful?: true}}} =
@@ -526,13 +395,13 @@ defmodule Ecrits.Workspace.TurnTerminalFinalizationTest do
              Session.send_turn(terminal.ws, "keep queued")
 
     agent_pid = Ecrits.AcpAgent.Session.whereis(terminal.ws.agent_id)
-    pool_pid = Process.whereis(Ecrits.Doc.Pool)
+    open_docs_pid = Process.whereis(Ecrits.Fuse.OpenDocs)
 
     %{current: %{task_pid: old_task_pid, task_ref: old_task_ref}} =
       :sys.get_state(agent_pid)
 
     :erlang.suspend_process(old_task_pid)
-    :ok = :sys.suspend(pool_pid)
+    :ok = :sys.suspend(open_docs_pid)
 
     timeout_token =
       try do
@@ -590,7 +459,7 @@ defmodule Ecrits.Workspace.TurnTerminalFinalizationTest do
         token
       after
         if Process.alive?(old_task_pid), do: :erlang.resume_process(old_task_pid)
-        :ok = :sys.resume(pool_pid)
+        :ok = :sys.resume(open_docs_pid)
       end
 
     assert_terminal_finalized(terminal, cancelled_turn)
@@ -636,11 +505,11 @@ defmodule Ecrits.Workspace.TurnTerminalFinalizationTest do
              Session.send_turn(terminal.ws, "run after cancellation")
 
     agent_pid = Ecrits.AcpAgent.Session.whereis(terminal.ws.agent_id)
-    pool_pid = Process.whereis(Ecrits.Doc.Pool)
+    open_docs_pid = Process.whereis(Ecrits.Fuse.OpenDocs)
     %{current: %{task_pid: old_task_pid}} = :sys.get_state(agent_pid)
 
     :erlang.suspend_process(old_task_pid)
-    :ok = :sys.suspend(pool_pid)
+    :ok = :sys.suspend(open_docs_pid)
 
     timeout_token =
       try do
@@ -695,7 +564,7 @@ defmodule Ecrits.Workspace.TurnTerminalFinalizationTest do
         token
       after
         if Process.alive?(old_task_pid), do: :erlang.resume_process(old_task_pid)
-        :ok = :sys.resume(pool_pid)
+        :ok = :sys.resume(open_docs_pid)
       end
 
     assert_terminal_finalized(terminal, cancelled_turn)
@@ -719,55 +588,6 @@ defmodule Ecrits.Workspace.TurnTerminalFinalizationTest do
     assert_terminal_finalized(terminal, queued_turn)
   end
 
-  defp install_fake_ehwp_runtime do
-    previous_runtime = Application.get_env(:ehwp, :runtime)
-    Application.put_env(:ehwp, :runtime, FakeEhwpRuntime)
-
-    on_exit(fn ->
-      if previous_runtime do
-        Application.put_env(:ehwp, :runtime, previous_runtime)
-      else
-        Application.delete_env(:ehwp, :runtime)
-      end
-    end)
-  end
-
-  defp stage_invalid_jsonl(terminal, turn_id, name) do
-    path = Path.join(terminal.path, name)
-    File.write!(path, "fixture")
-
-    OpenDocs.open(terminal.path, name,
-      agent_id: terminal.ws.agent_id,
-      instance_id: terminal.instance_id,
-      turn_id: turn_id
-    )
-
-    OpenDocs.set_writable(terminal.path, true)
-
-    Phoenix.PubSub.subscribe(
-      Ecrits.PubSub,
-      "doc_vfs:" <> Ecrits.Fuse.DocMount.canonical_root(terminal.path)
-    )
-
-    OpenDocs.stage(
-      terminal.path,
-      name,
-      "[",
-      {:invalid_ir_json, "["},
-      %{
-        edit_id: "invalid-edit-" <> name,
-        agent_id: terminal.ws.agent_id,
-        instance_id: terminal.instance_id,
-        turn_id: turn_id
-      }
-    )
-
-    on_exit(fn ->
-      Pool.close_by_path(path)
-      OpenDocs.close(terminal.path, name)
-    end)
-  end
-
   defp attach_terminal_workspace(base, suffix, adapter_opts) do
     path = Path.join(base, suffix)
     File.mkdir_p!(path)
@@ -781,7 +601,7 @@ defmodule Ecrits.Workspace.TurnTerminalFinalizationTest do
         workspace_root: path
       )
 
-    :ok = Session.subscribe_file_events(path)
+    :ok = Session.subscribe_events(path)
     :ok = Session.subscribe_agent(ws.agent_id)
 
     %{path: path, ws: ws, instance_id: AcpAgent.agent_snapshot(ws.agent_id).instance_id}

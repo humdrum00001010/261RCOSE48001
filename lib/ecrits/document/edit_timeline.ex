@@ -6,6 +6,8 @@ defmodule Ecrits.Document.EditTimeline do
   asynchronous durable snapshot publication cannot discard earlier highlights.
   """
 
+  import Ecrits.Guards
+
   @type phase :: :candidate | :committed | :rejected | :snapshot_ready
 
   @type t :: %__MODULE__{
@@ -219,7 +221,7 @@ defmodule Ecrits.Document.EditTimeline do
     edit_id = field(event, :edit_id)
     revision = field(event, :revision)
 
-    if is_binary(edit_id) and edit_id != "" and is_binary(revision) and revision != "" do
+    if is_present(edit_id) and is_present(revision) do
       {:ok, edit_id, revision}
     else
       {:error, :missing_revision_identity}

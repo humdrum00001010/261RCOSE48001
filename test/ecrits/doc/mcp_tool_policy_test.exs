@@ -11,25 +11,22 @@ defmodule Ecrits.Doc.MCPToolPolicyTest do
 
     names = Enum.map(tools, &(&1["namespace"] <> "." <> &1["name"]))
 
-    assert names == ["doc.open_doc", "doc.find", "doc.edit"]
+    # No entry point left: the mount IS the surface and its listing is derived,
+    # so what survives is the marker lookup and the one native picture fallback.
+    assert names == ["doc.find", "doc.edit"]
     refute "doc.preflight" in names
     refute "doc.context" in names
+    refute "doc.open_doc" in names
     refute "doc.close_doc" in names
 
-    open_doc_tool = Enum.find(tools, &(&1["name"] == "open_doc"))
     find_tool = Enum.find(tools, &(&1["name"] == "find"))
     edit_tool = Enum.find(tools, &(&1["name"] == "edit"))
 
-    assert open_doc_tool["description"] =~ "workspace document once"
-    assert open_doc_tool["description"] =~ "mounted ACP projection"
-    assert open_doc_tool["description"] =~ "document id"
-    # Both path forms must be documented. The agent reads this description, not
-    # the policy source: allowing explicit paths in the gate changed nothing
-    # until the manual said so.
-    assert open_doc_tool["description"] =~ "`current`"
-    assert open_doc_tool["description"] =~ "workspace-relative path"
-    refute open_doc_tool["description"] =~ "JSONL"
-    refute open_doc_tool["description"] =~ "mounted_at"
+    # A document id had exactly one source — the deleted tool's result — so both
+    # surviving tools pin `document` to the keyword the server resolves.
+    for tool <- [find_tool, edit_tool] do
+      assert get_in(tool, ["inputSchema", "properties", "document", "const"]) == "current"
+    end
 
     assert find_tool["description"] =~ "One post-commit marker lookup only"
     assert find_tool["description"] =~ "before_marker_ref"
@@ -46,7 +43,6 @@ defmodule Ecrits.Doc.MCPToolPolicyTest do
     assert edit_tool["description"] =~ "requested picture"
     assert edit_tool["description"] =~ "text or table edits never belong here"
     assert edit_tool["description"] =~ "placement and sizing are server-owned"
-    assert edit_tool["description"] =~ "doc.open_doc"
     assert "fallback" in get_in(edit_tool, ["inputSchema", "required"])
     assert "document" in get_in(edit_tool, ["inputSchema", "required"])
 
@@ -106,14 +102,14 @@ defmodule Ecrits.Doc.MCPToolPolicyTest do
       |> Enum.map(&(&1["namespace"] <> "." <> &1["name"]))
 
     assert names == normal_names
-    assert "doc.close_doc" in names
+    refute "doc.close_doc" in names
   end
 
   test "cached disallowed calls return a compact primary-surface policy" do
-    message = MCPToolPolicy.disabled_in_vfs_message("doc.close_doc")
+    message = MCPToolPolicy.disabled_in_vfs_message("doc.context")
 
     assert message["error"] == "disabled_in_fuse_mode"
-    assert message["tool"] == "doc.close_doc"
+    assert message["tool"] == "doc.context"
     assert byte_size(message["message"]) < 250
     assert message["message"] =~ "primary workspace document surface"
     assert message["message"] =~ "doc.edit"
@@ -247,60 +243,16 @@ defmodule Ecrits.Doc.MCPToolPolicyTest do
   test "mounted ACP sequence accepts one generic exact existing-marker picture ref" do
     sequence = MCPToolPolicy.new_vfs_sequence()
 
-    assert {:error, %{"error" => "native_marker_find_before_open"}} =
-             MCPToolPolicy.authorize_vfs_sequence("doc.find", %{}, sequence)
+    # There is no "open first" phase left: a fresh sequence is already
+    # :acp_primary, because the mount's listing is derived from the live viewers
+    # and so the primary surface is open before the turn begins.
+    assert %{phase: :acp_primary} = sequence
 
-    assert {:error, %{"error" => "doc_open_required_first"}} =
+    assert {:error, %{"error" => "disabled_in_fuse_mode"}} =
              MCPToolPolicy.authorize_vfs_sequence("doc.context", %{}, sequence)
 
-    # An explicit workspace-relative path is authorized. It used to be refused
-    # here, which deadlocked the agent whenever no editor tab was open: `current`
-    # fails with "no document is bound ... or pass the document's
-    # workspace-relative path explicitly", and this gate then rejected exactly
-    # that fallback. Confinement is not this gate's job —
-    # `resolve_vfs_document_candidate/2` confines to the workspace root.
-    assert :ok =
-             MCPToolPolicy.authorize_vfs_sequence(
-               "doc.open_doc",
-               %{"path" => "contract.hwp"},
-               sequence
-             )
-
-    assert :ok =
-             MCPToolPolicy.authorize_vfs_sequence(
-               "doc.open_doc",
-               %{"path" => "current"},
-               sequence
-             )
-
-    # Only a missing or blank path is refused.
-    assert {:error, %{"error" => "current_document_open_required"}} =
-             MCPToolPolicy.authorize_vfs_sequence("doc.open_doc", %{"path" => "  "}, sequence)
-
-    assert {:error, %{"error" => "current_document_open_required"}} =
-             MCPToolPolicy.authorize_vfs_sequence("doc.open_doc", %{}, sequence)
-
-    sequence =
-      MCPToolPolicy.record_vfs_open(
-        sequence,
-        %{
-          "document" => "d_contract",
-          "mounted_at" => "/workspace/.ecrits/contract.hwp.doclang.xml",
-          "mount_name" => "contract.hwp",
-          "path" => "/workspace/contract.hwp"
-        },
-        <<1>>
-      )
-
-    assert {:error, %{"error" => "doc_already_opened_for_turn"}} =
-             MCPToolPolicy.authorize_vfs_sequence(
-               "doc.open_doc",
-               %{"path" => "current"},
-               sequence
-             )
-
     find_args = %{
-      "document" => "d_contract",
+      "document" => "current",
       "pattern" => "Place the product photo at [[PHOTO]] before publishing",
       "type" => "paragraph",
       "marker" => "[[PHOTO]]",
@@ -371,7 +323,7 @@ defmodule Ecrits.Doc.MCPToolPolicyTest do
              })
 
     edit_args = %{
-      "document" => "d_contract",
+      "document" => "current",
       "op" => %{
         "op" => "insert_picture",
         "ref" => ref,
@@ -405,20 +357,10 @@ defmodule Ecrits.Doc.MCPToolPolicyTest do
   # unique-pattern lookup could not address the intended one and the failure
   # was misreported as a missing commit.
   test "repeated committed paragraphs are addressable with occurrence" do
-    sequence =
-      MCPToolPolicy.new_vfs_sequence()
-      |> MCPToolPolicy.record_vfs_open(
-        %{
-          "document" => "d_contract",
-          "mounted_at" => "/workspace/.ecrits/contract.hwp.doclang.xml",
-          "mount_name" => "contract.hwp",
-          "path" => "/workspace/contract.hwp"
-        },
-        <<1>>
-      )
+    sequence = MCPToolPolicy.new_vfs_sequence()
 
     find_args = %{
-      "document" => "d_contract",
+      "document" => "current",
       "pattern" => "대표자 성명 : 김에크리츠 (인)",
       "type" => "paragraph",
       "marker" => "(인)",
@@ -538,34 +480,9 @@ defmodule Ecrits.Doc.MCPToolPolicyTest do
              MCPToolPolicy.finalize_vfs_find_result({:ok, result}, %{"marker" => "(인)"})
   end
 
-  test "partial or failed open results never advance the turn" do
-    awaiting = MCPToolPolicy.new_vfs_sequence()
-
-    valid = %{
-      "document" => "d_contract",
-      "mounted_at" => "/workspace/.ecrits/contract.hwp.doclang.xml",
-      "mount_name" => "contract.hwp",
-      "path" => "/workspace/contract.hwp",
-      "mount_error" => nil
-    }
-
-    for result <- [
-          %{valid | "document" => nil},
-          %{valid | "mounted_at" => nil},
-          %{valid | "mount_error" => "projection unavailable"}
-        ] do
-      assert MCPToolPolicy.record_vfs_open(awaiting, result, <<1>>) == awaiting
-    end
-
-    assert MCPToolPolicy.record_vfs_open(awaiting, valid, nil) == awaiting
-
-    assert %{phase: :acp_primary, baseline_revision: <<1>>} =
-             MCPToolPolicy.record_vfs_open(awaiting, valid, <<1>>)
-  end
-
   test "authorized marker edit derives server-owned overlay metadata without dimensions" do
     args = %{
-      "document" => "d_contract",
+      "document" => "current",
       "op" => %{
         "op" => "insert_picture",
         "ref" => "exact-ref",

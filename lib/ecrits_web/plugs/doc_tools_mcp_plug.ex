@@ -49,6 +49,8 @@ defmodule EcritsWeb.Plugs.DocToolsMCPPlug do
   `ExMCP.HttpPlug`, whose POST channel already works correctly.
   """
 
+  import Ecrits.Guards
+
   @behaviour Plug
 
   import Plug.Conn
@@ -123,7 +125,7 @@ defmodule EcritsWeb.Plugs.DocToolsMCPPlug do
 
   # Split the agent id off the mount tail. `[agent_id | tail]` for the per-agent
   # url; `[]` (no id) for the legacy bare mount.
-  defp pop_agent_id([agent_id | tail]) when is_binary(agent_id) and agent_id != "",
+  defp pop_agent_id([agent_id | tail]) when is_present(agent_id),
     do: {URI.decode(agent_id), tail}
 
   defp pop_agent_id(rest), do: {nil, rest}
@@ -235,7 +237,7 @@ defmodule EcritsWeb.Plugs.DocToolsMCPPlug do
   # one so the GET response always advertises a stable session.
   defp session_id(conn) do
     case get_req_header(conn, "mcp-session-id") do
-      [id | _] when is_binary(id) and id != "" -> id
+      [id | _] when is_present(id) -> id
       _ -> "sse_" <> (:crypto.strong_rand_bytes(16) |> Base.encode16(case: :lower))
     end
   end

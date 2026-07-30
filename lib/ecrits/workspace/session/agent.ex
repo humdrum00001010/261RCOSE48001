@@ -6,7 +6,13 @@ defmodule Ecrits.Workspace.Session.Agent do
   runner can be restarted or resumed from it, but does not own this state.
   """
 
+  use Ecto.Schema
+
+  import Ecto.Changeset
+
   alias Ecrits.Agent.Dialog
+
+  @primary_key false
 
   @type id :: String.t()
   @type role :: :foreground | :background
@@ -37,16 +43,37 @@ defmodule Ecrits.Workspace.Session.Agent do
           mcp_servers: [mcp_server()]
         }
 
-  defstruct id: nil,
-            role: :foreground,
-            pid: nil,
-            provider: nil,
-            provider_session_id: nil,
-            title: nil,
-            title_user_edited?: false,
-            transcript: [],
-            queue: [],
-            current_turn: nil,
-            adapter_opts: [],
-            mcp_servers: []
+  embedded_schema do
+    field :id, :string
+    field :role, Ecto.Enum, values: [:foreground, :background], default: :foreground
+    field :pid, :any, virtual: true
+    field :provider, :string
+    field :provider_session_id, :string
+    field :title, :string
+    field :title_user_edited?, :boolean, default: false
+    embeds_many :transcript, Dialog, on_replace: :delete
+    field :queue, {:array, :map}, default: []
+    field :current_turn, :map
+    field :adapter_opts, :any, virtual: true, default: []
+    field :mcp_servers, {:array, :map}, default: []
+  end
+
+  @fields [
+    :id,
+    :role,
+    :provider,
+    :provider_session_id,
+    :title,
+    :title_user_edited?,
+    :queue,
+    :current_turn,
+    :mcp_servers
+  ]
+
+  @spec changeset(t(), map()) :: Ecto.Changeset.t()
+  def changeset(%__MODULE__{} = agent, attrs) when is_map(attrs) do
+    agent
+    |> cast(attrs, @fields)
+    |> cast_embed(:transcript, with: &Dialog.changeset/2)
+  end
 end

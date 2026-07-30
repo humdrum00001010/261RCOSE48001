@@ -23,6 +23,8 @@ defmodule EcritsWeb.Live.Studio.Components.ChatRail do
     * Shift+Enter → newline
     * Send button → native form submit
   """
+
+  import Ecrits.Guards
   use EcritsWeb, :live_component
 
   alias Ecrits.Studio.ChatRailState
@@ -364,7 +366,7 @@ defmodule EcritsWeb.Live.Studio.Components.ChatRail do
 
   defp markdown_html_string({:safe, _iodata} = safe), do: Phoenix.HTML.safe_to_string(safe)
 
-  defp markdown_html_string(html) when is_binary(html) and html != "" do
+  defp markdown_html_string(html) when is_present(html) do
     html
     |> Phoenix.HTML.html_escape()
     |> Phoenix.HTML.safe_to_string()
@@ -373,7 +375,7 @@ defmodule EcritsWeb.Live.Studio.Components.ChatRail do
   defp markdown_html_string(_html), do: ""
 
   defp put_markdown_paragraph_role(html, role)
-       when is_binary(html) and is_binary(role) and role != "" do
+       when is_binary(html) and is_present(role) do
     if Regex.match?(~r/^[a-z0-9_-]+$/i, role) do
       String.replace(html, ~r/<p\b(?![^>]*\bdata-role=)([^>]*)>/, ~s(<p data-role="#{role}"\\1>))
     else
@@ -543,7 +545,7 @@ defmodule EcritsWeb.Live.Studio.Components.ChatRail do
   # ----------------------------------------------------------------------------
 
   defp chat_thread_title(%ChatRailState{thread_title: title})
-       when is_binary(title) and title != "",
+       when is_present(title),
        do: title
 
   defp chat_thread_title(_), do: dgettext("studio", "새 대화")

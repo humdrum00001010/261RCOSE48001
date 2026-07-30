@@ -53,9 +53,8 @@ end
 # releases. It runs after compilation and before the system starts, so
 # it's the right place to pull secrets from .env / the process environment.
 #
-# `config/config.exs` already hydrates System env vars from `.env` via
-# Ecrits.Env semantics, so `System.get_env/1` here works identically
-# in dev/test/prod.
+# `config/config.exs` already hydrates System env vars from `.env`, so
+# `System.get_env/1` here works identically in dev/test/prod.
 
 # ---------------------------------------------------------------------------
 # Endpoint binding
@@ -124,6 +123,34 @@ end
 # LOK_INSTALL_DIR / LOK_SDK_DIR (defaults match `~/Desktop/core`); see DEV_SETUP.
 if System.get_env("LOK_INSTALL_DIR") not in [nil, ""] do
   config :ecrits, Ecrits.Doc.Office, install_dir: System.get_env("LOK_INSTALL_DIR")
+end
+
+# ---------------------------------------------------------------------------
+# Browser engine bundles (Layer 4 delivery)
+# ---------------------------------------------------------------------------
+# The office (LibreOffice->WASM) and HWP (rhwp-studio) bundles are built in
+# sibling checkouts — this repo carries no emsdk and no Node — and used to ride
+# the deleted `:libreofficex` / `:ehwp` deps' `priv/wasm`. Two ways in, same as
+# every other path here: an env var wins, else the copy the mix task installed
+# under `priv/static/`. NO $HOME default is baked in; a developer path in the
+# build would leak and be non-reproducible.
+#
+#   OFFICE_WASM_DIST   a LibreOffice-for-emscripten build dir holding
+#                      soffice.{js,wasm,data,data.js.metadata} — the HEADLESS
+#                      (`--disable-gui`) build, i.e. the one that exports the
+#                      LokEditBindings embind API. Typically
+#                      `<core-wasm-build>/instdir/program`.
+#   RHWP_STUDIO_DIST   rhwp-studio's built `dist/`.
+#
+# Pointing at the build dir serves it IN PLACE. That matters for office: the
+# bundle is ~315 MB (197 MB soffice.wasm + 117 MB soffice.data), so installing a
+# copy doubles it on disk and drags it into `mix phx.digest`'s walk.
+if System.get_env("OFFICE_WASM_DIST") not in [nil, ""] do
+  config :ecrits, :office_wasm_dist, System.get_env("OFFICE_WASM_DIST")
+end
+
+if System.get_env("RHWP_STUDIO_DIST") not in [nil, ""] do
+  config :ecrits, :rhwp_studio_dist, System.get_env("RHWP_STUDIO_DIST")
 end
 
 # Stash the current Mix env so Ecrits.Application can branch on it

@@ -101,7 +101,7 @@ defmodule Ecrits.Workspace.SessionRestartTest do
     ]
 
     {:ok, fenced_ws} = Session.attach(path, settings)
-    :ok = Session.subscribe_file_events(path)
+    :ok = Session.subscribe_events(path)
     :ok = Session.subscribe_agent(fenced_ws.agent_id)
     assert_receive {:workspace_foreground_rebound, ^fenced_ws}, 1_000
 
@@ -116,8 +116,8 @@ defmodule Ecrits.Workspace.SessionRestartTest do
     old_instance_id = AcpAgent.agent_snapshot(agent_id).instance_id
     key = {agent_id, old_instance_id, turn_id}
     session_pid = Session.whereis(path)
-    pool_pid = Process.whereis(Ecrits.Doc.Pool)
-    :ok = :sys.suspend(pool_pid)
+    open_docs_pid = Process.whereis(Ecrits.Fuse.OpenDocs)
+    :ok = :sys.suspend(open_docs_pid)
 
     assert {:pending, pending_ws} =
              Session.restart_foreground(path, Keyword.put(settings, :provider, "claude"))
@@ -168,7 +168,7 @@ defmodule Ecrits.Workspace.SessionRestartTest do
 
       assert AcpAgent.whereis(agent_id) == old_pid
     after
-      :ok = :sys.resume(pool_pid)
+      :ok = :sys.resume(open_docs_pid)
     end
 
     assert_receive {:workspace_turn_finalized,
@@ -408,7 +408,7 @@ defmodule Ecrits.Workspace.SessionRestartTest do
     ]
 
     {:ok, ws} = Session.attach(path, settings)
-    :ok = Session.subscribe_file_events(path)
+    :ok = Session.subscribe_events(path)
 
     assert {:ok, %{id: turn_id, status: :running}} =
              Session.send_turn(ws, "cancel through guardian")
@@ -480,7 +480,7 @@ defmodule Ecrits.Workspace.SessionRestartTest do
     ]
 
     {:ok, ws} = Session.attach(path, settings)
-    :ok = Session.subscribe_file_events(path)
+    :ok = Session.subscribe_events(path)
 
     assert {:ok, %{id: turn_id, status: :running}} =
              Session.send_turn(ws, "hard cancel late worker")
@@ -511,8 +511,8 @@ defmodule Ecrits.Workspace.SessionRestartTest do
              end)
 
     :erlang.suspend_process(provider_worker_pid)
-    pool_pid = Process.whereis(Ecrits.Doc.Pool)
-    :ok = :sys.suspend(pool_pid)
+    open_docs_pid = Process.whereis(Ecrits.Fuse.OpenDocs)
+    :ok = :sys.suspend(open_docs_pid)
 
     try do
       # Recreate the only ordering that matters here: cancellation moved the
@@ -597,7 +597,7 @@ defmodule Ecrits.Workspace.SessionRestartTest do
       if Process.info(provider_worker_pid, :status) == {:status, :suspended},
         do: :erlang.resume_process(provider_worker_pid)
 
-      :ok = :sys.resume(pool_pid)
+      :ok = :sys.resume(open_docs_pid)
     end
 
     assert_receive {:workspace_turn_finalized,
@@ -643,7 +643,7 @@ defmodule Ecrits.Workspace.SessionRestartTest do
              await_workspace_state(session_pid, &(&1.foreground_live_views == %{}))
 
     assert foreground_live_views == %{}
-    :ok = Session.subscribe_file_events(path)
+    :ok = Session.subscribe_events(path)
     :ok = Session.subscribe_agent(ws.agent_id)
 
     # Bypass the Workspace facade after the only attached browser process is
@@ -672,9 +672,9 @@ defmodule Ecrits.Workspace.SessionRestartTest do
              }
            } = await_workspace_state(session_pid, &Map.has_key?(&1.agent_turn_owners, key))
 
-    pool_pid = Process.whereis(Ecrits.Doc.Pool)
+    open_docs_pid = Process.whereis(Ecrits.Fuse.OpenDocs)
     :erlang.suspend_process(provider_worker_pid)
-    :ok = :sys.suspend(pool_pid)
+    :ok = :sys.suspend(open_docs_pid)
 
     old_task_ref =
       try do
@@ -767,7 +767,7 @@ defmodule Ecrits.Workspace.SessionRestartTest do
         if Process.info(provider_worker_pid, :status) == {:status, :suspended},
           do: :erlang.resume_process(provider_worker_pid)
 
-        :ok = :sys.resume(pool_pid)
+        :ok = :sys.resume(open_docs_pid)
       end
 
     assert_receive {:workspace_turn_finalized,
@@ -840,7 +840,7 @@ defmodule Ecrits.Workspace.SessionRestartTest do
     ]
 
     {:ok, old_ws} = Session.attach(path, settings)
-    :ok = Session.subscribe_file_events(path)
+    :ok = Session.subscribe_events(path)
     :ok = Session.subscribe_agent(old_ws.agent_id)
     assert_receive {:workspace_foreground_rebound, ^old_ws}, 1_000
 
@@ -862,8 +862,8 @@ defmodule Ecrits.Workspace.SessionRestartTest do
     old_instance_id = AcpAgent.agent_snapshot(old_agent_id).instance_id
     key = {old_agent_id, old_instance_id, turn_id}
     session_pid = Session.whereis(path)
-    pool_pid = Process.whereis(Ecrits.Doc.Pool)
-    :ok = :sys.suspend(pool_pid)
+    open_docs_pid = Process.whereis(Ecrits.Fuse.OpenDocs)
+    :ok = :sys.suspend(open_docs_pid)
 
     assert {:pending, pending_ws} = Session.new_foreground(path, settings)
     refute pending_ws.agent_id == old_agent_id
@@ -908,7 +908,7 @@ defmodule Ecrits.Workspace.SessionRestartTest do
       assert %{pending: 1, queued: [%{turn_id: ^queued_turn_id}], current_turn: nil} =
                AcpAgent.agent_snapshot(old_agent_id)
     after
-      :ok = :sys.resume(pool_pid)
+      :ok = :sys.resume(open_docs_pid)
     end
 
     assert_receive {:workspace_turn_finalized,
@@ -972,7 +972,7 @@ defmodule Ecrits.Workspace.SessionRestartTest do
 
     {:ok, ws} = Session.attach(path, settings)
     assert_receive {:workspace_foreground_rebound, ^ws}, 1_000
-    :ok = Session.subscribe_file_events(path)
+    :ok = Session.subscribe_events(path)
     :ok = Session.subscribe_agent(ws.agent_id)
 
     assert {:ok, %{id: turn_id, status: :running}} =
@@ -988,8 +988,8 @@ defmodule Ecrits.Workspace.SessionRestartTest do
     instance_id = AcpAgent.agent_snapshot(agent_id).instance_id
     key = {agent_id, instance_id, turn_id}
     old_session_pid = Session.whereis(path)
-    pool_pid = Process.whereis(Ecrits.Doc.Pool)
-    :ok = :sys.suspend(pool_pid)
+    open_docs_pid = Process.whereis(Ecrits.Fuse.OpenDocs)
+    :ok = :sys.suspend(open_docs_pid)
 
     replacement_settings = Keyword.put(settings, :provider, "claude")
 
@@ -1053,7 +1053,7 @@ defmodule Ecrits.Workspace.SessionRestartTest do
 
         {pending_ws, replacement_session_pid}
       after
-        :ok = :sys.resume(pool_pid)
+        :ok = :sys.resume(open_docs_pid)
       end
 
     assert_receive {:workspace_turn_finalized,

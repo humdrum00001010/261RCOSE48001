@@ -1,6 +1,11 @@
 defmodule Ecrits.AcpAgent.CodexHome do
   @moduledoc false
 
+  import Ecrits.Guards
+
+  alias Ecrits.Fuse.DocMount
+  alias Ecrits.Fuse.SurfaceContract
+
   @type isolation :: %{
           home: String.t(),
           env: [{String.t(), String.t() | false}],
@@ -147,7 +152,7 @@ defmodule Ecrits.AcpAgent.CodexHome do
   end
 
   defp conversation_home?(conversation_id),
-    do: is_binary(conversation_id) and conversation_id != ""
+    do: is_present(conversation_id)
 
   defp conversation_slug(conversation_id) do
     :sha256
@@ -203,7 +208,7 @@ defmodule Ecrits.AcpAgent.CodexHome do
     shell_tool = if document_lane?, do: "shell_tool = true\n", else: ""
 
     document_profiles =
-      if document_lane? and is_binary(workspace_root) and workspace_root != "" do
+      if document_lane? and is_present(workspace_root) do
         expanded_home = home |> Path.expand() |> toml_string()
         expanded_global_home = global_home |> Path.expand() |> toml_string()
         expanded_workspace_root = workspace_root |> Path.expand() |> toml_string()
@@ -296,10 +301,13 @@ defmodule Ecrits.AcpAgent.CodexHome do
 
     ## The shape of a good edit turn
 
-    1. Call `doc.open_doc` once and use the returned mount path. Pass `current`
-       for the document open in the editor, or the document's workspace-relative
-       path when the user names a different file. If `current` returns a document
-       that is not the one asked for, reopen with that file's path — do not stop.
+    1. List `#{DocMount.mount_dirname()}/` in the workspace and read its
+       `#{SurfaceContract.filename()}`. That directory IS the surface: every
+       `*.doclang.xml` in it is one editable document, and the contract file is
+       the payload vocabulary. There is no tool that opens a document — the
+       listing is derived from the documents a live editor tab holds, so a name
+       you can see is a name you can edit. If the file the user named is not
+       listed, say so; do not look for a way to open it.
     2. Use native search/read plus `apply_patch` or Python/Ruby. Python/Ruby
        writes are allowed. The element containing the matching text is the edit
        target.
@@ -321,8 +329,9 @@ defmodule Ecrits.AcpAgent.CodexHome do
     6. Verify the durable document and preview before reporting success.
 
     If a native read or patch of the mounted file fails with ENOENT (no such
-    file), the projection is not registered this turn: call `doc.open_doc`
-    once, use its newly returned mount path, then retry the bounded operation.
+    file), no live editor tab holds that document, so the mount cannot serve it.
+    Relist the directory and use a name it actually shows; there is nothing to
+    call that would make the name appear.
 
     ### Example: change one field
 

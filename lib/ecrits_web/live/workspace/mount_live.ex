@@ -3,6 +3,8 @@ defmodule EcritsWeb.Workspace.MountLive do
   Unauthenticated local workspace mount screen.
   """
 
+  import Ecrits.Guards
+
   use EcritsWeb, :live_view
 
   alias Ecrits.WorkspaceHandoff
@@ -92,7 +94,7 @@ defmodule EcritsWeb.Workspace.MountLive do
 
   defp live_session_id(session) when is_map(session) do
     case session["live_session_id"] || session[:live_session_id] do
-      id when is_binary(id) and id != "" -> id
+      id when is_present(id) -> id
       _ -> Ecto.UUID.generate()
     end
   end

@@ -1,4 +1,6 @@
 defmodule EcritsWeb.Router do
+
+  import Ecrits.Guards
   use EcritsWeb, :router
 
   pipeline :browser do
@@ -45,7 +47,8 @@ defmodule EcritsWeb.Router do
     # Read-only raw bytes of a local workspace HWP/HWPX document, gated to the
     # workspace path. The browser rhwp_core WASM engine fetches these to render
     # + hit-test locally (the server keeps the bytes as source of truth).
-    get "/document-bytes", WorkspaceDocumentBytesController, :show
+    get "/document/bytes/*document", WorkspaceDocumentController, :bytes
+    get "/document/snapshot/:document_id/:id", WorkspaceDocumentController, :snapshot
 
     # Inline previews for doc.render outputs (PNG files in the render scratch
     # dir) — the chat rail swaps the render tool-call chip body for the image.
@@ -54,7 +57,7 @@ defmodule EcritsWeb.Router do
 
   defp put_live_session_id(conn, _opts) do
     case get_session(conn, :live_session_id) do
-      id when is_binary(id) and id != "" ->
+      id when is_present(id) ->
         conn
 
       _ ->

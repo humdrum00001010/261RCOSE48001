@@ -8,6 +8,7 @@ defmodule Ecrits.Prompt do
   """
 
   alias Ecrits.Fuse.DocMount
+  alias Ecrits.Fuse.SurfaceContract
 
   @doc "The provider-agnostic ACP preamble for one chat turn."
   @spec acp_preamble(keyword()) :: String.t()
@@ -45,17 +46,11 @@ defmodule Ecrits.Prompt do
     message <> sep <> block
   end
 
-  @doc "The compact VFS discovery copy shown with doc.open_doc."
-  @spec vfs_open_doc_tool_description() :: String.t()
-  def vfs_open_doc_tool_description do
-    "Open a workspace document once (`path`: `current` for the open tab, or a workspace-relative path) and return its mounted ACP projection, document id, and safe workspace file index. Read and edit listed text files with ACP file tools; reserve doc.edit for one explicitly requested native picture."
-  end
-
   @doc "The compact VFS-only fallback copy shown with doc.edit."
   @spec vfs_edit_fallback_tool_description() :: String.t()
   def vfs_edit_fallback_tool_description do
     "Fallback only for a native change the mounted ACP surface cannot represent. " <>
-      "For a requested picture at an existing marker, keep the supplied file unchanged; use the returned marker reference and doc.open_doc evidence; placement and sizing are server-owned; text or table edits never belong here."
+      "For a requested picture at an existing marker, keep the supplied file unchanged; use the returned marker reference and the committed projection; placement and sizing are server-owned; text or table edits never belong here."
   end
 
   @doc "The compact VFS-mode description for resolving a current native ref."
@@ -103,11 +98,13 @@ defmodule Ecrits.Prompt do
   end
 
   # Mounted VFS mode: each provider's native code-editor tools operate on the
-  # returned mount; doc.* remains only for opening and an evidenced native
-  # image/signature operation that the projection cannot express.
+  # mount; doc.* remains only for an evidenced native image/signature operation
+  # that the projection cannot express. Nothing opens a document any more — the
+  # mount's listing is derived from the live editor tabs — so the preamble points
+  # at the directory and lets the contract FILE carry the vocabulary.
   defp mounted_vfs_preamble(_status, opts) do
     """
-    [System] Do not edit read-only requests. Call `doc.open_doc` once and use the returned mount path; do not discover MCP resources. Use native file/search/edit/shell tools. Python/Ruby writes are allowed. Never use hwp5txt, raw-HWP extraction, or binary-document rewrites.
+    [System] Do not edit read-only requests. This workspace's documents are mounted at `#{DocMount.mount_dirname()}/`: list that directory and read its `#{SurfaceContract.filename()}` first — it is the editing contract. Every sibling `*.doclang.xml` there is one editable document; no tool opens one, and an empty listing means no editor tab holds a document. Do not discover MCP resources. Use native file/search/edit/shell tools. Python/Ruby writes are allowed. Never use hwp5txt, raw-HWP extraction, or binary-document rewrites.
 
     The mounted projection is a DocLang XML document with exactly one `<doclang>` root. Parse and write the complete tree as one XML document; element order and nesting ARE the addressing, so preserve them and every element you are not changing byte-identically. Preserve unknown elements and attributes. Never invent or copy a `<custom>` block: it carries the font/colour/named-style properties DocLang cannot express, so copying one transplants another element's formatting. A paragraph's text is the editable aggregate; derived runs must not be edited or audited. Use one fresh full read. Direct file edits and workspace-local helper scripts are both valid; choose the smallest reliable edit path. Keep the transformation order pristine read → SOURCE → FIELDS → MAP → transform. Extract SOURCE mechanically from source-data sections only; exclude procedural instructions. Keep SOURCE values as complete source literals; do not split or normalize them, or append units or suffixes already present. Freeze FIELDS from pristine before transform and identify each field by stable group/node position or table cell coordinates. Classify using visible labels and local cell structure, not a fixed label-keyword regex; never authorize a blind fill loop. MAP is the sole transform plan: map every field and requested insertion to a source fact and rendered value, then transform only MAP destinations. Every source fact from source-data sections that has a compatible labeled field or explicit requested insertion must appear in MAP; list any fact with no destination instead of silently dropping it. Every destination-less prose item is a planned MAP insertion. Materialize SOURCE, FIELDS, and MAP as data when scripting or as an explicit checklist when editing directly. Generate every mutation from MAP. Derive `unmapped_source_facts` and `unresolved_fields` as actual inventory set differences. Do not merely claim these lists are empty. Never initialize either result directly to `[]`, delete an entry to force success, or spot-check a few anchors—verify the complete inventories, never a sample. For labeled fields, preserve the pristine label, punctuation, spacing, parentheses, and units; replace only the placeholder or value span instead of retyping the label. Verify every source-derived rendering, including prose facts such as jurisdiction, exactly before writing.
 

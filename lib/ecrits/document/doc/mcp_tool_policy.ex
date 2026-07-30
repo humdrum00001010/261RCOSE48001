@@ -1,13 +1,20 @@
 defmodule Ecrits.Doc.MCPToolPolicy do
   @moduledoc false
 
+  import Ecrits.Guards
+
   alias Ecrits.Prompt
 
-  @vfs_primary_tools ~w(doc.open_doc doc.find)
+  @vfs_primary_tools ~w(doc.find)
   @vfs_fallback_tools ~w(doc.edit)
   @vfs_allowed_tools @vfs_primary_tools ++ @vfs_fallback_tools
   @vfs_edit_fallback_reasons ~w(unrepresentable)
   @vfs_native_picture_op_keys ~w(op ref src)
+
+  # The only `document` value a mounted-mode caller can supply: there is no tool
+  # left that hands out a document id, so both surviving tools take the keyword
+  # and the server resolves it to the caller's bound document.
+  @vfs_bound_document "current"
 
   # The projection owns every ordinary document mutation in VFS mode. The sole
   # native escape hatch is precise picture placement at an existing marker.
@@ -57,48 +64,23 @@ defmodule Ecrits.Doc.MCPToolPolicy do
   def authorize_vfs_call(name, _args) when name in @vfs_primary_tools, do: :ok
   def authorize_vfs_call(name, _args), do: {:error, disabled_in_vfs_message(name)}
 
-  @doc "Fresh per-turn sequence state for the mounted ACP workflow."
+  @doc """
+  Fresh per-turn sequence state for the mounted ACP workflow.
+
+  It starts at `:acp_primary` — the phase a successful `doc.open_doc` used to
+  produce — because there is nothing left to await: the primary surface is the
+  mount, whose listing is derived from the live viewers, so it is open (or the
+  document does not exist) before the turn begins. The sequence now carries only
+  what is genuinely temporal: which of the one-shot native lookups have been
+  spent, and the marker ref one of them produced.
+  """
   @spec new_vfs_sequence() :: map()
-  def new_vfs_sequence, do: %{phase: :awaiting_open}
+  def new_vfs_sequence, do: %{phase: :acp_primary}
 
   @doc "Authorize one document-tool call against the mounted ACP turn sequence."
   @spec authorize_vfs_sequence(String.t(), map(), map(), map()) ::
           :ok | {:error, map()}
   def authorize_vfs_sequence(name, args, sequence, evidence \\ %{})
-
-  # "current" is the normal path: the agent opens whatever the editor has bound.
-  #
-  # An explicit workspace-relative path is ALSO allowed, because refusing it
-  # deadlocked the agent whenever no editor tab was open. `doc.open_doc {path:
-  # current}` fails in that state with "no document is bound to this conversation
-  # yet ... or pass the document's workspace-relative path explicitly"
-  # (`tools.ex`), and this clause used to reject exactly the fallback that
-  # message advertises. Observed live 2026-07-28: the agent followed the
-  # instruction, was refused, retried, and gave up — so "edit my file" did
-  # nothing unless the user had already opened a tab.
-  #
-  # Scope is NOT enforced here. `resolve_vfs_document_candidate/2` confines the
-  # path to the workspace root and requires a projectable type, so this gate only
-  # has to reject a missing or blank path.
-  def authorize_vfs_sequence(
-        "doc.open_doc",
-        %{"path" => path},
-        %{phase: :awaiting_open},
-        _evidence
-      )
-      when is_binary(path) do
-    if String.trim(path) == "" do
-      {:error, current_open_required_message()}
-    else
-      :ok
-    end
-  end
-
-  def authorize_vfs_sequence("doc.open_doc", _args, %{phase: :awaiting_open}, _evidence),
-    do: {:error, current_open_required_message()}
-
-  def authorize_vfs_sequence("doc.open_doc", _args, _sequence, _evidence),
-    do: {:error, repeated_open_message()}
 
   def authorize_vfs_sequence(
         "doc.find",
@@ -107,13 +89,6 @@ defmodule Ecrits.Doc.MCPToolPolicy do
         _evidence
       ),
       do: {:error, native_marker_find_spent_message()}
-
-  def authorize_vfs_sequence("doc.find", _args, %{phase: :awaiting_open}, _evidence),
-    do: {:error, native_marker_find_before_open_message()}
-
-  def authorize_vfs_sequence(name, _args, %{phase: :awaiting_open}, _evidence)
-      when name != "doc.open_doc",
-      do: {:error, open_first_message(name)}
 
   def authorize_vfs_sequence("doc.find", args, %{phase: :acp_primary} = sequence, evidence) do
     with :ok <- validate_native_marker_find(args, sequence),
@@ -143,24 +118,6 @@ defmodule Ecrits.Doc.MCPToolPolicy do
 
   def authorize_vfs_sequence(name, _args, _sequence, _evidence),
     do: {:error, disabled_in_vfs_message(name)}
-
-  @doc "Record a successful `doc.open_doc` and its accepted projection revision."
-  @spec record_vfs_open(map(), map(), binary() | nil) :: map()
-  def record_vfs_open(sequence, result, revision) when is_map(result) do
-    if valid_open_result?(result, revision) do
-      %{
-        sequence
-        | phase: :acp_primary
-      }
-      |> Map.put(:document, Map.get(result, "document"))
-      |> Map.put(:mounted_at, Map.get(result, "mounted_at"))
-      |> Map.put(:mount_name, Map.get(result, "mount_name"))
-      |> Map.put(:source_path, Map.get(result, "path"))
-      |> Map.put(:baseline_revision, revision)
-    else
-      sequence
-    end
-  end
 
   @doc "Add server-owned placement details after the one native-marker fallback is authorized."
   @spec prepare_vfs_call(String.t(), map(), map()) :: map()
@@ -206,7 +163,7 @@ defmodule Ecrits.Doc.MCPToolPolicy do
           "marker" => marker,
           "marker_offset" => offset
         }
-        when is_binary(ref) and ref != "" and is_binary(marker) and marker != "" and
+        when is_present(ref) and is_present(marker) and
                is_integer(offset) and offset >= 0 and marker == requested_marker ->
           [%{ref: ref, marker: marker, offset: offset}]
 
@@ -278,7 +235,7 @@ defmodule Ecrits.Doc.MCPToolPolicy do
          },
          requested_marker
        )
-       when is_binary(ref) and ref != "" and is_binary(marker) and marker != "" and
+       when is_present(ref) and is_present(marker) and
               is_integer(offset) and offset >= 0,
        do: marker == requested_marker
 
@@ -310,24 +267,10 @@ defmodule Ecrits.Doc.MCPToolPolicy do
 
   defp vfs_tool_descriptor(tool) do
     case tool_name(tool) do
-      "doc.open_doc" -> vfs_open_doc_descriptor(tool)
       "doc.find" -> vfs_find_descriptor(tool)
       "doc.edit" -> vfs_fallback_edit_descriptor(tool)
       _name -> tool
     end
-  end
-
-  defp vfs_open_doc_descriptor(tool) do
-    tool
-    |> Map.put("description", Prompt.vfs_open_doc_tool_description())
-    |> Map.put("inputSchema", %{
-      "type" => "object",
-      "properties" => %{
-        "path" => %{"type" => "string", "const" => "current", "default" => "current"}
-      },
-      "required" => ["path"],
-      "additionalProperties" => false
-    })
   end
 
   defp vfs_find_descriptor(tool),
@@ -391,7 +334,7 @@ defmodule Ecrits.Doc.MCPToolPolicy do
       "type" => "object",
       "additionalProperties" => false,
       "properties" => %{
-        "document" => %{"type" => "string"},
+        "document" => %{"type" => "string", "const" => "current", "default" => "current"},
         "op" => picture_op_schema,
         "fallback" => fallback_schema
       },
@@ -414,7 +357,7 @@ defmodule Ecrits.Doc.MCPToolPolicy do
         "attempted" => "vfs",
         "reason" => @vfs_edit_fallback_reasons,
         "detail" => "exact unsupported native construct",
-        "mounted_at" => "the exact path returned by doc.open_doc"
+        "mounted_at" => "the absolute path of the projection file you committed"
       }
     }
   end
@@ -428,12 +371,17 @@ defmodule Ecrits.Doc.MCPToolPolicy do
     }
   end
 
+  # `document` is pinned to the literal "current". A document id used to be
+  # discoverable exactly one way — `doc.open_doc`'s result — and that tool is
+  # gone, so asking the agent for one would be asking for something it cannot
+  # know. `Ecrits.Doc.Tools.canonical_document/2` already resolves "current" to
+  # the caller's bound document, so the server answers it instead.
   defp native_marker_find_schema do
     %{
       "type" => "object",
       "additionalProperties" => false,
       "properties" => %{
-        "document" => %{"type" => "string", "minLength" => 1},
+        "document" => %{"type" => "string", "const" => "current", "default" => "current"},
         "pattern" => %{
           "type" => "string",
           "minLength" => 1,
@@ -460,13 +408,13 @@ defmodule Ecrits.Doc.MCPToolPolicy do
     }
   end
 
-  defp validate_native_marker_find(args, sequence) do
+  defp validate_native_marker_find(args, _sequence) do
     pattern = Map.get(args, "pattern")
     marker = Map.get(args, "marker")
     occurrence = Map.get(args, "occurrence")
 
     cond do
-      Map.get(args, "document") != Map.get(sequence, :document) ->
+      Map.get(args, "document") != @vfs_bound_document ->
         {:error, exact_native_marker_find_required_message()}
 
       Map.get(args, "type") != "paragraph" or
@@ -546,12 +494,16 @@ defmodule Ecrits.Doc.MCPToolPolicy do
   def non_consuming_find_error?(%{"error" => "acp_commit_required"}), do: true
   def non_consuming_find_error?(_reason), do: false
 
+  # `mounted_at` is NOT compared against the sequence any more — nothing records
+  # one. `Ecrits.Doc.MCPServer.verify_vfs_fallback_mount/3` checks the supplied
+  # path against the live mount instead, which is the stronger check: it proves
+  # the path is inside this workspace's mount AND names a document the mount is
+  # actually serving, rather than proving it equals a string a tool once returned.
   defp validate_native_picture_edit(args, sequence) do
     op = Map.get(args, "op", %{})
-    fallback = Map.get(args, "fallback", %{})
 
     cond do
-      Map.get(args, "document") != Map.get(sequence, :document) ->
+      Map.get(args, "document") != @vfs_bound_document ->
         {:error, native_marker_ref_required_message()}
 
       Map.get(op, "op") != "insert_picture" or
@@ -559,48 +511,9 @@ defmodule Ecrits.Doc.MCPToolPolicy do
           not exact_native_picture_op_keys?(op) ->
         {:error, native_marker_ref_required_message()}
 
-      Map.get(fallback, "mounted_at") != Map.get(sequence, :mounted_at) ->
-        {:error, native_marker_ref_required_message()}
-
       true ->
         :ok
     end
-  end
-
-  defp valid_open_result?(result, revision) do
-    nonempty_binary?(Map.get(result, "document")) and
-      nonempty_binary?(Map.get(result, "mounted_at")) and
-      nonempty_binary?(Map.get(result, "mount_name")) and
-      nonempty_binary?(Map.get(result, "path")) and
-      is_nil(Map.get(result, "mount_error")) and is_binary(revision)
-  end
-
-  defp nonempty_binary?(value), do: is_binary(value) and String.trim(value) != ""
-
-  defp open_first_message(name) do
-    %{
-      "error" => "doc_open_required_first",
-      "tool" => name,
-      "message" => "Call doc.open_doc once with path current before any other document tool."
-    }
-  end
-
-  defp current_open_required_message do
-    %{
-      "error" => "current_document_open_required",
-      "tool" => "doc.open_doc",
-      "message" =>
-        "doc.open_doc needs a path: use {path: current} for the open editor " <>
-          "document, or the document's workspace-relative path."
-    }
-  end
-
-  defp repeated_open_message do
-    %{
-      "error" => "doc_already_opened_for_turn",
-      "tool" => "doc.open_doc",
-      "message" => "The current projection is already open for this turn; keep using it."
-    }
   end
 
   defp acp_commit_required_message do
@@ -648,15 +561,6 @@ defmodule Ecrits.Doc.MCPToolPolicy do
     }
   end
 
-  defp native_marker_find_before_open_message do
-    %{
-      "error" => "native_marker_find_before_open",
-      "tool" => "doc.find",
-      "message" =>
-        "The one native-marker lookup was attempted before doc.open_doc and is now consumed. Do not call doc.find again in this turn. Open the current document, finish supported ACP edits, and report that the native picture fallback could not run."
-    }
-  end
-
   defp exact_native_marker_find_required_message do
     %{
       "error" => "exact_native_marker_find_required",
@@ -680,7 +584,7 @@ defmodule Ecrits.Doc.MCPToolPolicy do
       "error" => "native_marker_ref_required",
       "tool" => "doc.edit",
       "message" =>
-        "Insert one requested picture at the exact existing-marker ref returned by this turn's lookup and the exact mounted_at returned by doc.open_doc. Placement and sizing are server-owned."
+        "Insert one requested picture at the exact existing-marker ref returned by this turn's lookup, with mounted_at set to the projection file you committed. Placement and sizing are server-owned."
     }
   end
 
@@ -713,7 +617,7 @@ defmodule Ecrits.Doc.MCPToolPolicy do
     }
   end
 
-  defp maybe_put_marker_length(placement, marker) when is_binary(marker) and marker != "",
+  defp maybe_put_marker_length(placement, marker) when is_present(marker),
     do: Map.put(placement, "overlay_marker_length", String.length(marker))
 
   defp maybe_put_marker_length(placement, _marker), do: placement
@@ -736,7 +640,7 @@ defmodule Ecrits.Doc.MCPToolPolicy do
            "src" => src
          } = op
        )
-       when is_binary(ref) and is_binary(src) and src != "" do
+       when is_binary(ref) and is_present(src) do
     with true <- exact_native_picture_op_keys?(op),
          {:ok, decoded} <- Jason.decode(ref),
          section when is_integer(section) and section >= 0 <- Map.get(decoded, "section"),

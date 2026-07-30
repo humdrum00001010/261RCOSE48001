@@ -3,6 +3,8 @@ defmodule EcritsWeb.Workspace.AgentProviderSetupLive do
   Local agent provider setup instructions.
   """
 
+  import Ecrits.Guards
+
   use EcritsWeb, :live_view
 
   alias Ecrits.AcpAgent
@@ -121,19 +123,19 @@ defmodule EcritsWeb.Workspace.AgentProviderSetupLive do
   end
 
   defp provider_setup_status(%{status: :ready, detail: detail})
-       when is_binary(detail) and detail != "" do
+       when is_present(detail) do
     "Ready - #{detail}"
   end
 
   defp provider_setup_status(%{status: :ready}), do: "Ready"
 
   defp provider_setup_status(%{status: :login_required, detail: detail})
-       when is_binary(detail) and detail != "" do
+       when is_present(detail) do
     "Login required - #{detail}"
   end
 
   defp provider_setup_status(%{status: :missing, detail: detail})
-       when is_binary(detail) and detail != "" do
+       when is_present(detail) do
     "Install required - #{detail}"
   end
 

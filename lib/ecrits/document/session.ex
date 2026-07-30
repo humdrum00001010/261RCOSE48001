@@ -6,6 +6,8 @@ defmodule Ecrits.Document.Session do
   canonical workspace file atomically; checkpoints are in-memory only.
   """
 
+  import Ecrits.Guards
+
   use GenServer
 
   alias Ecrits.Document
@@ -59,9 +61,10 @@ defmodule Ecrits.Document.Session do
 
   @impl true
   def init(args) do
-    path = Keyword.fetch!(args, :path)
+    fs = Keyword.fetch!(args, :workspace_fs)
+    relative_path = Keyword.fetch!(args, :relative_path)
 
-    with {:ok, bytes} <- File.read(path) do
+    with {:ok, bytes} <- Exfuse.Fs.read(fs, "/" <> relative_path) do
       document = Document.build(args, bytes)
 
       {:ok,
@@ -95,9 +98,9 @@ defmodule Ecrits.Document.Session do
 
   def handle_call({:save, bytes, attrs}, _from, state) when is_binary(bytes) do
     with :ok <-
-           Ecrits.FS.write(
-             state.document.workspace_root,
-             state.document.relative_path,
+           Exfuse.Fs.write(
+             Keyword.fetch!(state.args, :workspace_fs),
+             "/" <> state.document.relative_path,
              bytes
            ) do
       persist_snapshot(state, bytes, attrs, write_canonical?: true)
@@ -189,7 +192,7 @@ defmodule Ecrits.Document.Session do
 
   defp string_param(envelope, primary, fallback) do
     case Map.get(envelope, primary) || Map.get(envelope, fallback) do
-      value when is_binary(value) and value != "" -> value
+      value when is_present(value) -> value
       _value -> nil
     end
   end

@@ -128,6 +128,37 @@ defmodule Ecrits.Workspace.SessionDocumentStateTest do
     assert {:error, :invalid_path} = Session.update_document_scroll(ws, "../outside.docx", top: 1)
   end
 
+  # The doc VFS derives its whole listing from this set, so it must answer for
+  # every document in one call and must agree with `viewer/2` on liveness.
+  test "viewed_document_ids answers the live viewer set in one call", %{ws: ws} do
+    path = ws.path
+
+    assert Session.viewed_document_ids(path) == MapSet.new()
+
+    first = spawn(fn -> receive(do: (:stop -> :ok)) end)
+    second = spawn(fn -> receive(do: (:stop -> :ok)) end)
+
+    :ok = Session.attach_viewer(path, "doc-a", first)
+    :ok = Session.attach_viewer(path, "doc-b", second)
+
+    assert Session.viewed_document_ids(path) == MapSet.new(["doc-a", "doc-b"])
+
+    ref = Process.monitor(second)
+    send(second, :stop)
+    assert_receive {:DOWN, ^ref, :process, ^second, _reason}
+
+    # A dead viewer's document disappears without waiting for the Session's
+    # :DOWN — normalisation prunes it, which is why `viewer/2` and this agree.
+    assert Session.viewed_document_ids(path) == MapSet.new(["doc-a"])
+    assert Session.viewer(path, "doc-b") == nil
+
+    send(first, :stop)
+  end
+
+  test "viewed_document_ids is empty for a workspace with no running session" do
+    assert Session.viewed_document_ids("/nowhere/at/all") == MapSet.new()
+  end
+
   test "canonicalizes the macOS /tmp alias the same way as the VFS mount" do
     assert Session.canonical_path("/tmp/ecrits-session-alias") ==
              Ecrits.Fuse.DocMount.canonical_root("/tmp/ecrits-session-alias")

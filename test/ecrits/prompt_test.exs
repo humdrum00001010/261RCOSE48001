@@ -39,7 +39,12 @@ defmodule Ecrits.PromptTest do
 
       assert byte_size(prompt) <= 7_000
       assert byte_size(ultracode_prompt) <= 7_000
-      assert prompt =~ "Call `doc.open_doc` once and use the returned mount path"
+      # Discovery is now `ls` + `cat`, not a tool call: the preamble names the
+      # mount directory and the contract file, and says nothing opens a document.
+      assert prompt =~ "documents are mounted at `.ecrits/`"
+      assert prompt =~ "read its `CONTRACT.json` first"
+      assert prompt =~ "no tool opens one"
+      refute prompt =~ "doc.open_doc"
       assert prompt =~ "Python/Ruby writes are allowed"
       assert prompt =~ "Direct file edits and workspace-local helper scripts are both valid"
       assert prompt =~ "one fresh full read"
@@ -163,21 +168,13 @@ defmodule Ecrits.PromptTest do
   end
 
   test "VFS MCP copy stays compact and recipe-free" do
-    open_doc = Prompt.vfs_open_doc_tool_description()
     fallback = Prompt.vfs_edit_fallback_tool_description()
     find = Prompt.vfs_native_ref_tool_description()
 
-    assert byte_size(open_doc) < 300
+    # The under-300-byte bound is why the editing contract lives in the MOUNT and
+    # not here: it is orders of magnitude larger than any tool description.
     assert byte_size(fallback) < 300
-    assert open_doc =~ "workspace document once"
-    assert open_doc =~ "mounted ACP projection"
-    assert open_doc =~ "document id"
-    assert open_doc =~ "ACP file tools"
-    # Both path forms stay documented here. The agent reads this copy, not the
-    # policy source: authorizing explicit paths in the gate changed nothing
-    # until this sentence said they existed.
-    assert open_doc =~ "`current`"
-    assert open_doc =~ "workspace-relative path"
+    refute {:vfs_open_doc_tool_description, 0} in Prompt.__info__(:functions)
     assert fallback =~ "Fallback only"
     assert fallback =~ "requested picture"
     assert fallback =~ "supplied file unchanged"
@@ -186,7 +183,7 @@ defmodule Ecrits.PromptTest do
     assert find =~ "One post-commit marker lookup only"
     assert find =~ "exact requested target paragraph"
     assert find =~ "before_marker_ref verbatim"
-    refute open_doc =~ "JSONL"
     refute fallback =~ "cellPath"
+    refute fallback =~ "doc.open_doc"
   end
 end

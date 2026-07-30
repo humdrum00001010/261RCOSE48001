@@ -42,6 +42,8 @@ defmodule EcritsWeb.Components.CommandPalette do
     * `Enter` fires the selected command.
     * `Esc` closes the palette (or backs out of an `:info`/search mode).
   """
+
+  import Ecrits.Guards
   use EcritsWeb, :live_component
 
   alias Ecrits.IO.LawMCP
@@ -267,7 +269,7 @@ defmodule EcritsWeb.Components.CommandPalette do
         # — use that to pick the highlighted command.
         query =
           case Map.get(params, "value") do
-            value when is_binary(value) and value != "" -> value
+            value when is_present(value) -> value
             _ -> socket.assigns.query
           end
 
@@ -757,9 +759,9 @@ defmodule EcritsWeb.Components.CommandPalette do
   defp scope_perms(%{perms: perms}) when is_list(perms), do: perms
   defp scope_perms(_), do: []
 
-  defp scope_document_id(%{current_document_id: id}) when is_binary(id) and id != "", do: id
-  defp scope_document_id(%{document_id: id}) when is_binary(id) and id != "", do: id
-  defp scope_document_id(%{selected_document_id: id}) when is_binary(id) and id != "", do: id
+  defp scope_document_id(%{current_document_id: id}) when is_present(id), do: id
+  defp scope_document_id(%{document_id: id}) when is_present(id), do: id
+  defp scope_document_id(%{selected_document_id: id}) when is_present(id), do: id
   defp scope_document_id(_), do: nil
 
   defp perms_ok?(%Command{scopes_required: []}, _perms), do: true

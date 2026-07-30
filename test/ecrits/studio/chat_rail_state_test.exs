@@ -2,12 +2,11 @@ defmodule Ecrits.Studio.ChatRailStateTest do
   use ExUnit.Case, async: true
 
   alias Ecrits.Studio.ChatRailState
-  alias Ecrits.Studio.State
 
   test "projects the rail's application state through one embedded schema" do
     state =
       ChatRailState.new(%{
-        studio_state: %State{mode: :reviewing, agent_run_id: "run-1"},
+        studio_state: %{mode: :reviewing, agent_run_id: "run-1"},
         agent_document_status: %{
           current_attempt: %{id: "run-1"},
           queue: [%{id: "run-2"}]

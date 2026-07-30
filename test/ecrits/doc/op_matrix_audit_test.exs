@@ -93,7 +93,6 @@ defmodule Ecrits.Doc.OpMatrixAuditTest do
     # list, you are changing the agent-facing tool surface — re-read the module
     # doc first (codex tool-discovery deferral is the constraint).
     assert Enum.sort(Ecrits.Doc.Tools.tool_names()) == [
-             "doc.close_doc",
              "doc.context",
              "doc.create",
              "doc.edit",
@@ -101,7 +100,6 @@ defmodule Ecrits.Doc.OpMatrixAuditTest do
              "doc.get",
              "doc.list",
              "doc.open",
-             "doc.open_doc",
              "doc.read",
              "doc.render",
              "doc.save",

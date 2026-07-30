@@ -1,13 +1,13 @@
 defmodule Ecrits.Fuse.DocFsTest do
   use ExUnit.Case, async: false
+  use ExUnitProperties
 
-  alias Ecrits.Doc.Pool
-  alias Ecrits.Doc.Projection
+  alias Ecrits.Doc.DocumentId
   alias Ecrits.Fuse.DocFs
   alias Ecrits.Fuse.DocMount
   alias Ecrits.Fuse.OpenDocs
-
-  @hwpx_fixture Path.expand("../../fixtures/hwpx/real_contract.hwpx", __DIR__)
+  alias Ecrits.Fuse.SurfaceContract
+  alias Ecrits.Workspace.Session
 
   test "terminal cleanup CAS cannot remove a newer same-owner edit generation" do
     root = tmp_root("doc_fs_staged_generation")
@@ -28,7 +28,7 @@ defmodule Ecrits.Fuse.DocFsTest do
       root,
       "doc.hwpx",
       "[",
-      {:invalid_ir_json, "["},
+      {:malformed_xml, "["},
       owner
     )
 
@@ -39,7 +39,7 @@ defmodule Ecrits.Fuse.DocFsTest do
       root,
       "doc.hwpx",
       "[",
-      {:invalid_ir_json, "["},
+      {:malformed_xml, "["},
       owner
     )
 
@@ -93,7 +93,7 @@ defmodule Ecrits.Fuse.DocFsTest do
       edit_id: "closed-edit"
     }
 
-    OpenDocs.stage(root, "closed.hwpx", "[", {:invalid_ir_json, "["}, owner)
+    OpenDocs.stage(root, "closed.hwpx", "[", {:malformed_xml, "["}, owner)
 
     assert %{
              committed: [],
@@ -129,57 +129,358 @@ defmodule Ecrits.Fuse.DocFsTest do
       assert OpenDocs.writable?(real_root)
       assert DocMount.mount_point(root) == Path.join(real_root, ".ecrits")
 
-      assert Pool.document_id_for(Path.join(root, "doc.hwpx"), :hwpx) ==
-               Pool.document_id_for(Path.join(real_root, "doc.hwpx"), :hwpx)
+      assert DocumentId.for_path(Path.join(root, "doc.hwpx"), :hwpx) ==
+               DocumentId.for_path(Path.join(real_root, "doc.hwpx"), :hwpx)
     end
   end
 
-  test "readdir projects opened supported root documents as jsonl names" do
+  # The editing contract is served as a FILE so it needs no tool: this is the
+  # whole reason `doc.open_doc`, which used to carry it in its result, could be
+  # deleted. It must be discoverable by `ls`, readable by `cat`, and immutable.
+  describe "the mount-level editing contract" do
+    test "is listed with a real size, stat-able and readable end to end" do
+      root = tmp_root("doc_fs_contract")
+      socket = Exfuse.Socket.new(DocMount.mount_point(root), %{root: root})
+      name = SurfaceContract.filename()
+      json = SurfaceContract.json()
+
+      # Not a dotfile: a bare `ls` has to show it, or the discovery path this
+      # file exists to create does not exist.
+      refute String.starts_with?(name, ".")
+      # Cannot collide with a projection — every one of those ends in this suffix.
+      refute String.ends_with?(name, ".doclang.xml")
+
+      assert {:reply, [{^name, {0o0444, 2, size, _mtime}}], socket} =
+               DocFs.handle_event(:readdir, %{path: "/"}, socket)
+
+      assert size == byte_size(json)
+
+      assert {:reply, {0o0444, 2, ^size, _mtime}, socket} =
+               DocFs.handle_event(:getattr, %{path: "/" <> name}, socket)
+
+      assert {:reply, ^json, socket} =
+               DocFs.handle_event(:read, %{path: "/" <> name, offset: 0, size: 1_000_000}, socket)
+
+      assert {:reply, _handle, _socket} =
+               DocFs.handle_event(:open, %{path: "/" <> name, flags: 0}, socket)
+
+      assert {:ok, decoded} = Jason.decode(json)
+      assert decoded["format"]["commit"]["target_path"] == "<document>.doclang.xml"
+      assert decoded["format"]["commit"]["temp_path"] == "<document>.doclang.xml.tmp"
+    end
+
+    test "refuses every write path" do
+      root = tmp_root("doc_fs_contract_readonly")
+      OpenDocs.set_writable(root, true)
+      on_exit(fn -> OpenDocs.set_writable(root, false) end)
+
+      socket = Exfuse.Socket.new(DocMount.mount_point(root), %{root: root})
+      path = "/" <> SurfaceContract.filename()
+
+      # 13 = EACCES. A read-only file the agent cannot replace, truncate,
+      # unlink, chmod, or rename a document over.
+      assert {:error, 13, _} = DocFs.handle_event(:create, %{path: path, mode: 0o644}, socket)
+
+      assert {:error, 13, _} =
+               DocFs.handle_event(:write, %{path: path, offset: 0, data: "x"}, socket)
+
+      assert {:error, 13, _} = DocFs.handle_event(:truncate, %{path: path, size: 0}, socket)
+      assert {:error, 13, _} = DocFs.handle_event(:chmod, %{path: path, mode: 0o644}, socket)
+      assert {:error, 13, _} = DocFs.handle_event(:unlink, %{path: path}, socket)
+
+      assert {:error, 13, _} =
+               DocFs.handle_event(:rename, %{path: path, target: "/moved.json"}, socket)
+
+      assert {:error, 13, _} =
+               DocFs.handle_event(:rename, %{path: "/other.tmp", target: path}, socket)
+    end
+  end
+
+  # The listing is derived from the workspace + the viewer registry, so these
+  # tests never call `OpenDocs.open/2`: no tool decides what the mount shows.
+  test "readdir lists a viewed root document and nothing else" do
     root = tmp_root("doc_fs_readdir")
 
-    on_exit(fn ->
-      OpenDocs.close(root, "doc.hwpx")
-      OpenDocs.close(root, "notes.txt")
-      File.rm_rf(root)
-    end)
+    File.write!(Path.join(root, "doc.hwpx"), "fake-hwpx")
+    # A supported document with NO viewer has no engine, so it could not answer
+    # `getattr` with a real size — listing it would poison its vnode at size 0.
+    File.write!(Path.join(root, "unviewed.hwpx"), "fake-hwpx")
+    # Not projectable at all: `.txt` has no adapter, `.doc` is in FileIndex's
+    # office set but outside `Projection.supported_exts/0`.
+    File.write!(Path.join(root, "notes.txt"), "text")
+    File.write!(Path.join(root, "legacy.doc"), "binary")
 
-    OpenDocs.open(root, "doc.hwpx")
-    OpenDocs.open(root, "notes.txt")
+    attach_viewer(root, Path.join(root, "doc.hwpx"), :hwpx)
 
     socket = Exfuse.Socket.new(DocMount.mount_point(root), %{root: root})
 
     assert {:reply, names, _socket} = DocFs.handle_event(:readdir, %{path: "/"}, socket)
-    assert names == [{"doc.hwpx.jsonl", {0o0644, 2, 0}}]
+    assert names == [contract_entry(), {"doc.hwpx.doclang.xml", {0o0644, 2, 0}}]
   end
 
-  test "readdir projects opened nested documents through a flat mount name" do
+  test "readdir lists a viewed nested document through a flat mount name" do
     root = tmp_root("doc_fs_nested_readdir")
     source = Path.join(root, "drafts/doc.hwpx")
-    mount_name = "drafts%2Fdoc.hwpx"
-
-    on_exit(fn ->
-      OpenDocs.close(root, mount_name)
-      File.rm_rf(root)
-    end)
 
     File.mkdir_p!(Path.dirname(source))
     File.write!(source, "fake-hwpx")
-    OpenDocs.open(root, mount_name, source_path: source)
+
+    attach_viewer(root, source, :hwpx)
 
     socket = Exfuse.Socket.new(DocMount.mount_point(root), %{root: root})
 
     assert {:reply, names, _socket} = DocFs.handle_event(:readdir, %{path: "/"}, socket)
-    assert names == [{"drafts%2Fdoc.hwpx.jsonl", {0o0644, 2, 0}}]
+    assert names == [contract_entry(), {"drafts%2Fdoc.hwpx.doclang.xml", {0o0644, 2, 0}}]
+  end
+
+  test "readdir is empty when every document's viewer has died" do
+    root = tmp_root("doc_fs_dead_viewer_readdir")
+
+    File.write!(Path.join(root, "doc.hwpx"), "fake-hwpx")
+
+    lv = attach_viewer(root, Path.join(root, "doc.hwpx"), :hwpx)
+    ref = Process.monitor(lv)
+    send(lv, :stop)
+    assert_receive {:DOWN, ^ref, :process, ^lv, _reason}
+
+    socket = Exfuse.Socket.new(DocMount.mount_point(root), %{root: root})
+
+    # The contract survives an empty listing on purpose: an agent that finds no
+    # documents still gets the manual that explains why.
+    assert {:reply, names, _socket} = DocFs.handle_event(:readdir, %{path: "/"}, socket)
+    assert names == [contract_entry()]
+  end
+
+  # The bug this pair pins: `readdir` derived its listing while `getattr`/`read`
+  # resolved through `OpenDocs`, so `ls` and `ls -l` answered different questions
+  # — a viewed document nobody had registered was listed and then reported
+  # "No such file or directory" on stat.
+  test "a viewed document is listed AND stat-able AND readable with no registration" do
+    root = tmp_root("doc_fs_viewed_resolves")
+    source = Path.join(root, "doc.hwpx")
+    projected = ~s(<doclang version="0.6"></doclang>)
+
+    on_exit(fn -> OpenDocs.close(root, "doc.hwpx") end)
+
+    File.write!(source, "fake-hwpx")
+    attach_viewer(root, source, :hwpx)
+    refute OpenDocs.member?(root, "doc.hwpx")
+
+    socket = Exfuse.Socket.new(DocMount.mount_point(root), %{root: root})
+
+    assert {:reply, [_contract, {"doc.hwpx.doclang.xml", _attr}], socket} =
+             DocFs.handle_event(:readdir, %{path: "/"}, socket)
+
+    # The engine is browser-side, so this test has no live projection; the served
+    # bytes come from the same cache a completed write-back leaves behind.
+    OpenDocs.cache_committed(root, "doc.hwpx", projected)
+
+    assert {:reply, {_mode, _nlink, size, _mtime}, socket} =
+             DocFs.handle_event(:getattr, %{path: "/doc.hwpx.doclang.xml"}, socket)
+
+    assert size == byte_size(projected)
+
+    assert {:reply, ^projected, socket} =
+             DocFs.handle_event(
+               :read,
+               %{path: "/doc.hwpx.doclang.xml", offset: 0, size: 4096},
+               socket
+             )
+
+    assert {:reply, _handle, _socket} =
+             DocFs.handle_event(:open, %{path: "/doc.hwpx.doclang.xml", flags: 0}, socket)
+  end
+
+  test "an unviewed document is neither listed nor stat-able even when registered" do
+    root = tmp_root("doc_fs_unviewed_enoent")
+    source = Path.join(root, "unviewed.hwpx")
+
+    on_exit(fn -> OpenDocs.close(root, "unviewed.hwpx") end)
+
+    File.write!(source, "fake-hwpx")
+    OpenDocs.open(root, "unviewed.hwpx", source_path: source)
+    assert OpenDocs.member?(root, "unviewed.hwpx")
+
+    socket = Exfuse.Socket.new(DocMount.mount_point(root), %{root: root})
+
+    assert {:reply, [_contract], socket} = DocFs.handle_event(:readdir, %{path: "/"}, socket)
+
+    assert {:error, 2, socket} =
+             DocFs.handle_event(:getattr, %{path: "/unviewed.hwpx.doclang.xml"}, socket)
+
+    assert {:error, 2, socket} =
+             DocFs.handle_event(
+               :read,
+               %{path: "/unviewed.hwpx.doclang.xml", offset: 0, size: 4096},
+               socket
+             )
+
+    assert {:error, 2, _socket} =
+             DocFs.handle_event(:open, %{path: "/unviewed.hwpx.doclang.xml", flags: 0}, socket)
+  end
+
+  test "a viewed nested document resolves under the exact flat name readdir listed" do
+    root = tmp_root("doc_fs_nested_resolves")
+    source = Path.join(root, "drafts/doc.hwpx")
+    projected = ~s(<doclang version="0.6"></doclang>)
+
+    on_exit(fn -> OpenDocs.close(root, "drafts%2Fdoc.hwpx") end)
+
+    File.mkdir_p!(Path.dirname(source))
+    File.write!(source, "fake-hwpx")
+    attach_viewer(root, source, :hwpx)
+
+    socket = Exfuse.Socket.new(DocMount.mount_point(root), %{root: root})
+
+    assert {:reply, [_contract, {"drafts%2Fdoc.hwpx.doclang.xml", _attr}], socket} =
+             DocFs.handle_event(:readdir, %{path: "/"}, socket)
+
+    # Keyed by the MOUNT name: the staging/committed cache is per mount entry, so
+    # a decoded key here would serve nothing.
+    OpenDocs.cache_committed(root, "drafts%2Fdoc.hwpx", projected)
+
+    assert {:reply, {_mode, _nlink, size, _mtime}, socket} =
+             DocFs.handle_event(:getattr, %{path: "/drafts%2Fdoc.hwpx.doclang.xml"}, socket)
+
+    assert size == byte_size(projected)
+
+    assert {:reply, ^projected, _socket} =
+             DocFs.handle_event(
+               :read,
+               %{path: "/drafts%2Fdoc.hwpx.doclang.xml", offset: 0, size: 4096},
+               socket
+             )
+  end
+
+  test "a decoded name cannot escape the workspace root" do
+    root = tmp_root("doc_fs_decoded_traversal")
+    outside = Path.join(Path.dirname(root), "outside-#{System.unique_integer([:positive])}.hwpx")
+
+    File.write!(outside, "fake-hwpx")
+    on_exit(fn -> File.rm_rf(outside) end)
+
+    # Both the file AND its viewer exist, so only the confinement can refuse it.
+    attach_viewer(root, outside, :hwpx)
+
+    socket = Exfuse.Socket.new(DocMount.mount_point(root), %{root: root})
+
+    assert {:reply, [_contract], socket} = DocFs.handle_event(:readdir, %{path: "/"}, socket)
+
+    escapes = [
+      # decodes to `../<outside>` — a `..` SEGMENT, which
+      # `Exfuse.Fs.Path.canonical/1` rejects instead of resolving
+      "..%2F" <> Path.basename(outside),
+      "..%2F..%2Fetc%2Fpasswd",
+      # `%2E` is not a marker this encoder emits, so this decodes to a literal
+      # directory named `%2E%2E` inside the root, not to `..`
+      "%2E%2E%2F%2E%2E%2Fetc%2Fpasswd",
+      "%2E%2E%2F" <> Path.basename(outside),
+      # a name that really contains `%`: decoding must not run twice and turn
+      # `%252E` back into `.`
+      "%252E%252E%252F%252E%252E%252Fetc%252Fpasswd",
+      "%252E%252E%252F" <> Path.basename(outside)
+    ]
+
+    for name <- escapes do
+      path = "/" <> Ecrits.Doc.Projection.projected_name(name)
+
+      assert {:error, 2, _socket} = DocFs.handle_event(:getattr, %{path: path}, socket),
+             "#{name} resolved instead of being refused"
+
+      assert {:error, 2, _socket} =
+               DocFs.handle_event(:read, %{path: path, offset: 0, size: 16}, socket),
+             "#{name} was readable instead of being refused"
+    end
+  end
+
+  test "a document whose name contains a literal % is listed and resolves under that name" do
+    root = tmp_root("doc_fs_percent_name")
+    source = Path.join(root, "50%.hwpx")
+    projected = ~s(<doclang version="0.6"></doclang>)
+
+    on_exit(fn -> OpenDocs.close(root, "50%.hwpx") end)
+
+    File.write!(source, "fake-hwpx")
+    attach_viewer(root, source, :hwpx)
+    OpenDocs.cache_committed(root, "50%.hwpx", projected)
+
+    socket = Exfuse.Socket.new(DocMount.mount_point(root), %{root: root})
+
+    assert {:reply, [_contract, {"50%.hwpx.doclang.xml", _attr}], socket} =
+             DocFs.handle_event(:readdir, %{path: "/"}, socket)
+
+    assert {:reply, ^projected, _socket} =
+             DocFs.handle_event(
+               :read,
+               %{path: "/50%.hwpx.doclang.xml", offset: 0, size: 4096},
+               socket
+             )
+  end
+
+  test "the root directory mtime advances with the DERIVED listing" do
+    root = tmp_root("doc_fs_root_mtime")
+    source = Path.join(root, "doc.hwpx")
+
+    File.write!(source, "fake-hwpx")
+
+    socket = Exfuse.Socket.new(DocMount.mount_point(root), %{root: root})
+
+    assert {:reply, {_mode, _nlink, _size, empty_mtime}, socket} =
+             DocFs.handle_event(:getattr, %{path: "/"}, socket)
+
+    attach_viewer(root, source, :hwpx)
+
+    assert {:reply, {_mode, _nlink, _size, viewed_mtime}, socket} =
+             DocFs.handle_event(:getattr, %{path: "/"}, socket)
+
+    assert viewed_mtime > empty_mtime
+
+    assert {:reply, {_mode, _nlink, _size, ^viewed_mtime}, _socket} =
+             DocFs.handle_event(:getattr, %{path: "/"}, socket)
+  end
+
+  # `mount_name/1` folds a nested path into one mount segment; `source_name/1`
+  # must give the path back for EVERY name the workspace scan can produce, or
+  # some listed document is unresolvable.
+  property "mount_name and source_name round-trip every relative path" do
+    # The curated segments are the ones that broke the old pass-through: a
+    # literal `%`, and names that already spell an encoder marker.
+    segment =
+      StreamData.one_of([
+        StreamData.member_of(["a", "%", "%25", "%2F", "%252F", "a%2Fb.hwp", "plan..v2", "가"]),
+        StreamData.string(:printable, max_length: 8)
+      ])
+
+    check all(segments <- StreamData.list_of(segment, min_length: 1, max_length: 4)) do
+      relative = Enum.join(segments, "/")
+
+      assert relative |> DocMount.mount_name() |> DocMount.source_name() == relative
+    end
+  end
+
+  test "mount_name is injective across the nested/root-level boundary" do
+    # The collision the pass-through used to admit: root `a%2Fb.hwp` and nested
+    # `a/b.hwp` mounted under one entry, so one of them could never be resolved.
+    refute DocMount.mount_name("a%2Fb.hwp") == DocMount.mount_name("a/b.hwp")
+    assert DocMount.source_name(DocMount.mount_name("a%2Fb.hwp")) == "a%2Fb.hwp"
+    assert DocMount.source_name(DocMount.mount_name("a/b.hwp")) == "a/b.hwp"
+
+    # Every ordinary name still mounts unchanged.
+    assert DocMount.mount_name("50%.hwpx") == "50%.hwpx"
+    assert DocMount.mount_name("report.hwp") == "report.hwp"
   end
 
   test "chmod accepts writable projected files and atomic rewrite temps" do
     root = tmp_root("doc_fs_chmod")
+    source = Path.join(root, "doc.hwpx")
 
     on_exit(fn ->
       OpenDocs.close(root, "doc.hwpx")
       File.rm_rf(root)
     end)
 
+    File.write!(source, "fake-hwpx")
+    attach_viewer(root, source, :hwpx)
     OpenDocs.open(root, "doc.hwpx")
     OpenDocs.set_writable(root, true)
 
@@ -188,21 +489,21 @@ defmodule Ecrits.Fuse.DocFsTest do
     assert {:noreply, socket} =
              DocFs.handle_event(
                :chmod,
-               %{path: "/doc.hwpx.jsonl", mode: 0o0644},
+               %{path: "/doc.hwpx.doclang.xml", mode: 0o0644},
                socket
              )
 
     assert {:reply, _handle, socket} =
              DocFs.handle_event(
                :create,
-               %{path: "/doc.hwpx.jsonl.tmp", flags: 0, mode: 0o0600},
+               %{path: "/doc.hwpx.doclang.xml.tmp", flags: 0, mode: 0o0600},
                socket
              )
 
     assert {:noreply, _socket} =
              DocFs.handle_event(
                :chmod,
-               %{path: "/doc.hwpx.jsonl.tmp", mode: 0o0644},
+               %{path: "/doc.hwpx.doclang.xml.tmp", mode: 0o0644},
                socket
              )
   end
@@ -219,6 +520,7 @@ defmodule Ecrits.Fuse.DocFsTest do
     end)
 
     File.write!(source, "fake-hwpx")
+    attach_viewer(root, source, :hwpx)
     OpenDocs.open(root, "doc.hwpx", source_path: source)
     OpenDocs.cache_committed(root, "doc.hwpx", committed)
     OpenDocs.stage(root, "doc.hwpx", staged, :structural_change)
@@ -228,12 +530,12 @@ defmodule Ecrits.Fuse.DocFsTest do
     assert {:reply, ^staged, socket} =
              DocFs.handle_event(
                :read,
-               %{path: "/doc.hwpx.jsonl", offset: 0, size: byte_size(committed)},
+               %{path: "/doc.hwpx.doclang.xml", offset: 0, size: byte_size(committed)},
                socket
              )
 
     assert {:reply, {_mode, _nlink, size, _mtime}, _socket} =
-             DocFs.handle_event(:getattr, %{path: "/doc.hwpx.jsonl"}, socket)
+             DocFs.handle_event(:getattr, %{path: "/doc.hwpx.doclang.xml"}, socket)
 
     assert size == byte_size(staged)
   end
@@ -662,7 +964,7 @@ defmodule Ecrits.Fuse.DocFsTest do
 
     stage =
       Task.Supervisor.async_nolink(supervisor, fn ->
-        OpenDocs.stage(root, "other.hwpx", "[", {:invalid_ir_json, "["}, owner)
+        OpenDocs.stage(root, "other.hwpx", "[", {:malformed_xml, "["}, owner)
       end)
 
     assert :ok = Task.await(stage, 1_000)
@@ -714,7 +1016,7 @@ defmodule Ecrits.Fuse.DocFsTest do
     assert :ok = Task.await(stage, 500)
     refute OpenDocs.member?(root, "doc.hwpx")
     assert OpenDocs.canonical_echo(root, temp) == :error
-    assert {:ok, "partial-canonical-echo"} = Ecrits.FS.raw_read(temp_path)
+    assert {:ok, "partial-canonical-echo"} = Exfuse.Fs.Real.read_native(temp_path)
 
     :ok = :sys.resume(file_server)
     assert :ok = Task.await(close, 1_000)
@@ -830,6 +1132,7 @@ defmodule Ecrits.Fuse.DocFsTest do
       File.rm_rf(root)
     end)
 
+    attach_viewer(root, source, :hwpx)
     OpenDocs.open(root, "doc.hwpx", source_path: source)
     OpenDocs.set_writable(root, false)
     OpenDocs.accept_projection(root, "doc.hwpx", "raw", "canonical", %{source_path: source})
@@ -859,7 +1162,7 @@ defmodule Ecrits.Fuse.DocFsTest do
     assert {:error, 5, _socket} =
              DocFs.handle_event(
                :rename,
-               %{path: "/" <> guessed, target: "/doc.hwpx.jsonl"},
+               %{path: "/" <> guessed, target: "/doc.hwpx.doclang.xml"},
                socket
              )
 
@@ -879,7 +1182,7 @@ defmodule Ecrits.Fuse.DocFsTest do
     assert {:reply, "canonical", _read_socket} =
              DocFs.handle_event(
                :read,
-               %{path: "/doc.hwpx.jsonl", offset: 0, size: 64},
+               %{path: "/doc.hwpx.doclang.xml", offset: 0, size: 64},
                read_socket
              )
   end
@@ -960,1306 +1263,11 @@ defmodule Ecrits.Fuse.DocFsTest do
     assert {:error, 5, _socket} =
              DocFs.handle_event(
                :rename,
-               %{path: "/" <> temp, target: "/doc.hwpx.jsonl"},
+               %{path: "/" <> temp, target: "/doc.hwpx.doclang.xml"},
                socket
              )
 
     assert {:ok, "fresh-open"} = OpenDocs.committed(root, "doc.hwpx")
-  end
-
-  test "release rejects a complete unsupported structural rewrite while preserving it for correction" do
-    if not ehwp_available?(@hwpx_fixture) do
-      IO.puts("\n[skip] ehwp NIF unavailable; skipping DocFs structural release e2e")
-    else
-      root = tmp_root("doc_fs_structural_release")
-      path = Path.join(root, "doc.hwpx")
-      File.cp!(@hwpx_fixture, path)
-
-      on_exit(fn ->
-        _ = Pool.close_by_path(path)
-        OpenDocs.close(root, "doc.hwpx")
-        File.rm_rf(root)
-      end)
-
-      OpenDocs.open(root, "doc.hwpx")
-      OpenDocs.set_writable(root, true)
-
-      projected = Projection.projected_name("doc.hwpx")
-      socket = Exfuse.Socket.new(DocMount.mount_point(root), %{root: root})
-
-      {:reply, handle, socket} =
-        DocFs.handle_event(:open, %{path: "/" <> projected, flags: 0}, socket)
-
-      {:ok, bytes} = Projection.project_file(path)
-      new_bytes = insert_duplicate_paragraph(bytes)
-
-      {:noreply, socket} =
-        DocFs.handle_event(:truncate, %{path: "/" <> projected, size: 0}, socket)
-
-      assert {:reply, size, socket} =
-               DocFs.handle_event(
-                 :write,
-                 %{path: "/" <> projected, handle: handle, offset: 0, data: new_bytes},
-                 socket
-               )
-
-      assert size == byte_size(new_bytes)
-
-      assert {:error, 22, socket} =
-               DocFs.handle_event(
-                 :release,
-                 %{path: "/" <> projected, flags: 0, handle: handle},
-                 socket
-               )
-
-      assert {:ok, ^new_bytes, {:structural_change, detail}} =
-               OpenDocs.staged(root, "doc.hwpx")
-
-      assert is_binary(detail) and detail != ""
-
-      assert {:reply, ^new_bytes, _socket} =
-               DocFs.handle_event(
-                 :read,
-                 %{path: "/" <> projected, offset: 0, size: byte_size(new_bytes)},
-                 socket
-               )
-
-      assert {:ok, after_bytes} = Projection.project_file(path)
-      refute after_bytes == new_bytes
-    end
-  end
-
-  test "release failure broadcasts the exact provisional preview rejection" do
-    if not ehwp_available?(@hwpx_fixture) do
-      IO.puts("\n[skip] ehwp NIF unavailable; skipping DocFs release rejection e2e")
-    else
-      root = tmp_root("doc_fs_release_preview_rejection")
-      path = Path.join(root, "doc.hwpx")
-      File.cp!(@hwpx_fixture, path)
-      owner = %{agent_id: "agent-a", instance_id: "instance-a", turn_id: "turn-a"}
-
-      on_exit(fn ->
-        _ = Pool.close_by_path(path)
-        OpenDocs.close(root, "doc.hwpx")
-        File.rm_rf(root)
-      end)
-
-      OpenDocs.open(root, "doc.hwpx",
-        agent_id: owner.agent_id,
-        instance_id: owner.instance_id,
-        turn_id: owner.turn_id,
-        source_path: path
-      )
-
-      OpenDocs.set_writable(root, true)
-      Phoenix.PubSub.subscribe(Ecrits.PubSub, "doc_vfs:" <> DocMount.canonical_root(root))
-
-      projected = Projection.projected_name("doc.hwpx")
-      socket = Exfuse.Socket.new(DocMount.mount_point(root), %{root: root})
-
-      {:reply, handle, socket} =
-        DocFs.handle_event(:open, %{path: "/" <> projected, flags: 0}, socket)
-
-      {:ok, original} = Projection.project_file(path)
-      edited = replace_first_cell_text(original, "DOCFS_RELEASE_REJECTED_PREVIEW")
-
-      assert {:ok, %{id: document_id}} = Pool.info_by_path(path)
-      assert {:server, editor} = Pool.route(document_id)
-      assert %{handle: %{ehwp: %Ehwp.Handle{id: ehwp_handle_id}}} = :sys.get_state(editor)
-      assert [{ehwp_session, _value}] = Registry.lookup(Ehwp.Registry, ehwp_handle_id)
-
-      :sys.replace_state(ehwp_session, fn state ->
-        %{state | runtime: Ecrits.Test.FailingEditEhwpRuntime}
-      end)
-
-      previous_runtime = Application.get_env(:ehwp, :runtime)
-      Application.put_env(:ehwp, :runtime, Ecrits.Test.FailingEditEhwpRuntime)
-
-      on_exit(fn ->
-        if previous_runtime do
-          Application.put_env(:ehwp, :runtime, previous_runtime)
-        else
-          Application.delete_env(:ehwp, :runtime)
-        end
-
-        if Process.alive?(ehwp_session) do
-          :sys.replace_state(ehwp_session, &%{&1 | runtime: Ehwp.Runtime})
-        end
-      end)
-
-      {:noreply, socket} =
-        DocFs.handle_event(:truncate, %{path: "/" <> projected, size: 0}, socket)
-
-      assert {:reply, size, socket} =
-               DocFs.handle_event(
-                 :write,
-                 %{path: "/" <> projected, handle: handle, offset: 0, data: edited},
-                 socket
-               )
-
-      assert size == byte_size(edited)
-      assert_receive {:vfs_doc_edited, %{preview_only: true} = preview}
-      refute_receive {:vfs_doc_edited, %{phase: :rejected}}
-
-      assert {:error, _errno, _socket} =
-               DocFs.handle_event(
-                 :release,
-                 %{path: "/" <> projected, flags: 0, handle: handle},
-                 socket
-               )
-
-      assert_receive {:vfs_doc_edited, %{phase: :rejected} = rejected}
-      assert rejected.edit_id == preview.edit_id
-      assert rejected.revision == preview.revision
-      assert Map.take(rejected, [:agent_id, :instance_id, :turn_id]) == owner
-      refute_receive {:vfs_doc_edited, %{phase: :rejected}}, 20
-    end
-  end
-
-  test "sibling temp rename rejects an unsupported structural rewrite as EINVAL and keeps the temp" do
-    if not ehwp_available?(@hwpx_fixture) do
-      IO.puts("\n[skip] ehwp NIF unavailable; skipping DocFs structural temp rename e2e")
-    else
-      root = tmp_root("doc_fs_structural_temp_rename")
-      path = Path.join(root, "doc.hwpx")
-      File.cp!(@hwpx_fixture, path)
-
-      on_exit(fn ->
-        _ = Pool.close_by_path(path)
-        OpenDocs.close(root, "doc.hwpx")
-        File.rm_rf(root)
-      end)
-
-      OpenDocs.open(root, "doc.hwpx")
-      OpenDocs.set_writable(root, true)
-
-      projected = Projection.projected_name("doc.hwpx")
-      temp = projected <> ".tmp"
-      socket = Exfuse.Socket.new(DocMount.mount_point(root), %{root: root})
-
-      {:reply, temp_handle, socket} =
-        DocFs.handle_event(:create, %{path: "/" <> temp, flags: 0}, socket)
-
-      {:ok, bytes} = Projection.project_file(path)
-      OpenDocs.cache_committed(root, "doc.hwpx", bytes)
-      new_bytes = insert_duplicate_paragraph(bytes)
-
-      assert {:reply, size, socket} =
-               DocFs.handle_event(
-                 :write,
-                 %{path: "/" <> temp, handle: temp_handle, offset: 0, data: new_bytes},
-                 socket
-               )
-
-      assert size == byte_size(new_bytes)
-
-      assert {:noreply, socket} =
-               DocFs.handle_event(
-                 :release,
-                 %{path: "/" <> temp, flags: 0, handle: temp_handle},
-                 socket
-               )
-
-      OpenDocs.stage(root, "doc.hwpx", new_bytes, :structural_change)
-      assert {:ok, ^new_bytes, :structural_change} = OpenDocs.staged(root, "doc.hwpx")
-
-      assert {:error, 22, socket} =
-               DocFs.handle_event(
-                 :rename,
-                 %{path: "/" <> temp, target: "/" <> projected},
-                 socket
-               )
-
-      assert {:reply, ^new_bytes, _socket} =
-               DocFs.handle_event(
-                 :read,
-                 %{path: "/" <> temp, offset: 0, size: byte_size(new_bytes)},
-                 socket
-               )
-
-      assert OpenDocs.staged(root, "doc.hwpx") == :error
-      assert {:ok, ^bytes} = OpenDocs.committed(root, "doc.hwpx")
-
-      assert {:reply, ^bytes, socket} =
-               DocFs.handle_event(
-                 :read,
-                 %{path: "/" <> projected, offset: 0, size: byte_size(new_bytes)},
-                 socket
-               )
-
-      assert {:reply, {_mode, _nlink, target_size, _mtime}, _socket} =
-               DocFs.handle_event(:getattr, %{path: "/" <> projected}, socket)
-
-      assert target_size == byte_size(bytes)
-      assert {:ok, ^bytes} = Projection.project_file(path)
-    end
-  end
-
-  test "chunked in-place rewrite commits once the buffer is valid" do
-    if not ehwp_available?(@hwpx_fixture) do
-      IO.puts("\n[skip] ehwp NIF unavailable; skipping DocFs HWPX write-back e2e")
-    else
-      root = tmp_root("doc_fs_chunked_release")
-      path = Path.join(root, "doc.hwpx")
-      File.cp!(@hwpx_fixture, path)
-
-      on_exit(fn ->
-        _ = Pool.close_by_path(path)
-        OpenDocs.close(root, "doc.hwpx")
-        File.rm_rf(root)
-      end)
-
-      origin = %{agent_id: "agent-a", instance_id: "instance-a", turn_id: "turn-a"}
-
-      OpenDocs.open(root, "doc.hwpx",
-        agent_id: origin.agent_id,
-        instance_id: origin.instance_id,
-        turn_id: origin.turn_id
-      )
-
-      OpenDocs.set_writable(root, true)
-
-      Phoenix.PubSub.subscribe(Ecrits.PubSub, "doc_vfs:" <> DocMount.canonical_root(root))
-
-      projected = Projection.projected_name("doc.hwpx")
-      socket = Exfuse.Socket.new(DocMount.mount_point(root), %{root: root})
-
-      {:reply, handle, socket} =
-        DocFs.handle_event(:open, %{path: "/" <> projected, flags: 0}, socket)
-
-      {:ok, bytes} = Projection.project_file(path)
-      new_bytes = replace_first_cell_text(bytes, "DOCFS_CHUNKED_RELEASE_OK")
-      {left, right} = :erlang.split_binary(new_bytes, 97)
-      left_size = byte_size(left)
-      right_size = byte_size(right)
-
-      {:noreply, socket} =
-        DocFs.handle_event(:truncate, %{path: "/" <> projected, size: 0}, socket)
-
-      {:reply, ^left_size, socket} =
-        DocFs.handle_event(
-          :write,
-          %{path: "/" <> projected, handle: handle, offset: 0, data: left},
-          socket
-        )
-
-      {:ok, visible_before_complete} = Projection.project_file(path)
-      refute visible_before_complete =~ "DOCFS_CHUNKED_RELEASE_OK"
-      left_error = String.slice(left, 0, 80)
-      assert {:ok, ^left, {:invalid_ir_json, ^left_error}} = OpenDocs.staged(root, "doc.hwpx")
-
-      # Opening the same projection for another agent mutates OpenDocs, but the
-      # already-started write must retain the tuple pinned before this invalid
-      # first chunk failed preview parsing.
-      OpenDocs.open(root, "doc.hwpx",
-        agent_id: "agent-b",
-        instance_id: "instance-b",
-        turn_id: "turn-b"
-      )
-
-      assert {:noreply, socket} =
-               DocFs.handle_event(
-                 :flush,
-                 %{path: "/" <> projected, flags: 0, handle: handle},
-                 socket
-               )
-
-      {:ok, visible_after_flush} = Projection.project_file(path)
-      refute visible_after_flush =~ "DOCFS_CHUNKED_RELEASE_OK"
-
-      {:reply, ^right_size, socket} =
-        DocFs.handle_event(
-          :write,
-          %{path: "/" <> projected, handle: handle, offset: left_size, data: right},
-          socket
-        )
-
-      assert {:ok, after_live_write_bytes} = Projection.project_file(path)
-      assert after_live_write_bytes =~ "DOCFS_CHUNKED_RELEASE_OK"
-      assert OpenDocs.staged(root, "doc.hwpx") == :error
-
-      assert_receive {:vfs_doc_edited, preview}
-      assert preview.preview_only
-      assert preview.phase == :candidate
-      assert is_binary(preview.edit_id)
-      assert is_binary(preview.revision)
-      refute Map.has_key?(preview, :preview_steps)
-      assert Map.take(preview, [:agent_id, :instance_id, :turn_id]) == origin
-
-      assert_receive {:vfs_doc_edited, committed}
-      assert committed.edit_id == preview.edit_id
-      assert committed.phase == :committed
-      assert committed.revision == preview.revision
-      assert Map.take(committed, [:agent_id, :instance_id, :turn_id]) == origin
-      assert committed.preview_continuation
-      refute Map.get(committed, :preview_only, false)
-
-      assert {:noreply, _socket} =
-               DocFs.handle_event(
-                 :release,
-                 %{path: "/" <> projected, flags: 0, handle: handle},
-                 socket
-               )
-
-      assert {:ok, after_bytes} = Projection.project_file(path)
-      assert after_bytes =~ "DOCFS_CHUNKED_RELEASE_OK"
-    end
-  end
-
-  test "temp preview and final rename retain the owner pinned before another agent opens" do
-    if not ehwp_available?(@hwpx_fixture) do
-      IO.puts("\n[skip] ehwp NIF unavailable; skipping DocFs temp owner pin e2e")
-    else
-      root = tmp_root("doc_fs_temp_owner_pin")
-      path = Path.join(root, "doc.hwpx")
-      File.cp!(@hwpx_fixture, path)
-
-      on_exit(fn ->
-        _ = Pool.close_by_path(path)
-        OpenDocs.close(root, "doc.hwpx")
-        File.rm_rf(root)
-      end)
-
-      origin = %{agent_id: "agent-a", instance_id: "instance-a", turn_id: "turn-a"}
-
-      OpenDocs.open(root, "doc.hwpx",
-        agent_id: origin.agent_id,
-        instance_id: origin.instance_id,
-        turn_id: origin.turn_id
-      )
-
-      OpenDocs.set_writable(root, true)
-      Phoenix.PubSub.subscribe(Ecrits.PubSub, "doc_vfs:" <> DocMount.canonical_root(root))
-
-      projected = Projection.projected_name("doc.hwpx")
-      temp = "/doc.hwpx.jsonl.tmp"
-      socket = Exfuse.Socket.new(DocMount.mount_point(root), %{root: root})
-
-      {:reply, temp_handle, socket} =
-        DocFs.handle_event(:create, %{path: temp, flags: 0}, socket)
-
-      {:ok, bytes} = Projection.project_file(path)
-      new_bytes = replace_first_cell_text(bytes, "DOCFS_TEMP_OWNER_PIN_OK")
-
-      {:reply, size, socket} =
-        DocFs.handle_event(
-          :write,
-          %{path: temp, handle: temp_handle, offset: 0, data: new_bytes},
-          socket
-        )
-
-      assert size == byte_size(new_bytes)
-      assert_receive {:vfs_doc_edited, preview}
-      assert preview.preview_only
-      assert Map.take(preview, [:agent_id, :instance_id, :turn_id]) == origin
-
-      OpenDocs.open(root, "doc.hwpx",
-        agent_id: "agent-b",
-        instance_id: "instance-b",
-        turn_id: "turn-b"
-      )
-
-      {:noreply, socket} =
-        DocFs.handle_event(
-          :release,
-          %{path: temp, flags: 0, handle: temp_handle},
-          socket
-        )
-
-      assert {:noreply, _socket} =
-               DocFs.handle_event(
-                 :rename,
-                 %{path: temp, target: "/" <> projected},
-                 socket
-               )
-
-      assert_receive {:vfs_doc_edited, committed}
-      assert committed.edit_id == preview.edit_id
-      assert Map.take(committed, [:agent_id, :instance_id, :turn_id]) == origin
-      assert {:ok, after_bytes} = Projection.project_file(path)
-      assert after_bytes =~ "DOCFS_TEMP_OWNER_PIN_OK"
-    end
-  end
-
-  test "rejected complete temp rename retracts its preview and preserves the source temp" do
-    if not ehwp_available?(@hwpx_fixture) do
-      IO.puts("\n[skip] ehwp NIF unavailable; skipping DocFs rejected temp preview e2e")
-    else
-      root = tmp_root("doc_fs_rejected_temp_preview")
-      path = Path.join(root, "doc.hwpx")
-      File.cp!(@hwpx_fixture, path)
-
-      on_exit(fn ->
-        _ = Pool.close_by_path(path)
-        OpenDocs.close(root, "doc.hwpx")
-        File.rm_rf(root)
-      end)
-
-      owner = %{agent_id: "agent-a", instance_id: "instance-a", turn_id: "turn-a"}
-
-      OpenDocs.open(root, "doc.hwpx",
-        agent_id: owner.agent_id,
-        instance_id: owner.instance_id,
-        turn_id: owner.turn_id
-      )
-
-      OpenDocs.set_writable(root, true)
-      Phoenix.PubSub.subscribe(Ecrits.PubSub, "doc_vfs:" <> DocMount.canonical_root(root))
-
-      projected = Projection.projected_name("doc.hwpx")
-      temp = "/doc.hwpx.jsonl.tmp"
-      socket = Exfuse.Socket.new(DocMount.mount_point(root), %{root: root})
-
-      {:reply, handle, socket} = DocFs.handle_event(:create, %{path: temp, flags: 0}, socket)
-      {:ok, original} = Projection.project_file(path)
-      edited = replace_first_cell_text(original, "DOCFS_REJECTED_PREVIEW")
-
-      assert {:reply, size, socket} =
-               DocFs.handle_event(
-                 :write,
-                 %{path: temp, handle: handle, offset: 0, data: edited},
-                 socket
-               )
-
-      assert size == byte_size(edited)
-      assert_receive {:vfs_doc_edited, %{preview_only: true} = preview}
-
-      assert {:noreply, socket} =
-               DocFs.handle_event(
-                 :release,
-                 %{path: temp, flags: 0, handle: handle},
-                 socket
-               )
-
-      OpenDocs.set_writable(root, false)
-
-      assert {:error, 30, socket} =
-               DocFs.handle_event(
-                 :rename,
-                 %{path: temp, target: "/" <> projected},
-                 socket
-               )
-
-      assert_receive {:vfs_doc_edited, %{phase: :rejected} = rejected}
-      assert rejected.edit_id == preview.edit_id
-      assert rejected.revision == preview.revision
-      assert Map.take(rejected, [:agent_id, :instance_id, :turn_id]) == owner
-
-      assert {:reply, ^edited, _socket} =
-               DocFs.handle_event(
-                 :read,
-                 %{path: temp, offset: 0, size: byte_size(edited)},
-                 socket
-               )
-
-      refute Map.has_key?(
-               Exfuse.Socket.get_assign(socket, :preview_hashes, %{}),
-               "doc.hwpx.jsonl.tmp"
-             )
-
-      refute Map.has_key?(
-               Exfuse.Socket.get_assign(socket, :vfs_edit_identities, %{}),
-               "doc.hwpx.jsonl.tmp"
-             )
-
-      assert OpenDocs.staged(root, "doc.hwpx") == :error
-      assert {:ok, ^original} = Projection.project_file(path)
-      refute_receive {:vfs_doc_edited, %{preview_only: false}}, 20
-    end
-  end
-
-  test "accepted raw table bytes stay global and replay idempotently until canonical echo" do
-    if not ehwp_available?(@hwpx_fixture) do
-      IO.puts("\n[skip] ehwp NIF unavailable; skipping DocFs byte-stream cache e2e")
-    else
-      root = tmp_root("doc_fs_out_of_order_exact_bytes")
-      path = Path.join(root, "doc.hwpx")
-      File.cp!(@hwpx_fixture, path)
-
-      on_exit(fn ->
-        _ = Pool.close_by_path(path)
-        OpenDocs.close(root, "doc.hwpx")
-        File.rm_rf(root)
-      end)
-
-      OpenDocs.open(root, "doc.hwpx")
-      OpenDocs.set_writable(root, true)
-
-      projected = Projection.projected_name("doc.hwpx")
-      socket = Exfuse.Socket.new(DocMount.mount_point(root), %{root: root})
-
-      {:ok, bytes} = Projection.project_file(path)
-
-      accepted_bytes =
-        bytes
-        |> insert_compact_table("DOCFS_EXACT_TABLE")
-        |> String.replace(":0.0", ":0")
-
-      assert {:ok, _projection} = Jason.decode(accepted_bytes)
-
-      chunk_size = 512 * 1024
-
-      chunks =
-        [0, 2 * chunk_size, chunk_size, 3 * chunk_size]
-        |> Enum.map(fn offset ->
-          size = min(chunk_size, byte_size(accepted_bytes) - offset)
-          {offset, binary_part(accepted_bytes, offset, size)}
-        end)
-
-      table_temp = projected <> ".table.tmp"
-
-      {:reply, handle, socket} =
-        DocFs.handle_event(:create, %{path: "/" <> table_temp, flags: 0}, socket)
-
-      socket =
-        Enum.reduce(chunks, socket, fn {offset, data}, socket ->
-          assert {:reply, size, socket} =
-                   DocFs.handle_event(
-                     :write,
-                     %{path: "/" <> table_temp, handle: handle, offset: offset, data: data},
-                     socket
-                   )
-
-          assert size == byte_size(data)
-          socket
-        end)
-
-      assert {:noreply, socket} =
-               DocFs.handle_event(
-                 :fsync,
-                 %{path: "/" <> table_temp, handle: handle, datasync: false, flags: 0},
-                 socket
-               )
-
-      assert {:noreply, socket} =
-               DocFs.handle_event(
-                 :release,
-                 %{path: "/" <> table_temp, flags: 0, handle: handle},
-                 socket
-               )
-
-      assert {:noreply, socket} =
-               DocFs.handle_event(
-                 :rename,
-                 %{path: "/" <> table_temp, target: "/" <> projected},
-                 socket
-               )
-
-      assert OpenDocs.staged(root, "doc.hwpx") == :error
-      assert {:ok, canonical_bytes} = Projection.project_file(path)
-      assert canonical_bytes =~ "DOCFS_EXACT_TABLE_H1"
-      assert byte_size(canonical_bytes) > byte_size(accepted_bytes)
-      assert {:ok, ^accepted_bytes} = OpenDocs.committed(root, "doc.hwpx")
-
-      assert {:ok,
-              %{
-                accepted_bytes: ^accepted_bytes,
-                bytes: ^canonical_bytes,
-                name: "doc.hwpx"
-              } = pending_before_replay} = OpenDocs.pending_canonical(root, "doc.hwpx")
-
-      observer_socket = Exfuse.Socket.new(DocMount.mount_point(root), %{root: root})
-
-      assert {:reply, ^accepted_bytes, observer_socket} =
-               DocFs.handle_event(
-                 :read,
-                 %{path: "/" <> projected, offset: 0, size: byte_size(canonical_bytes)},
-                 observer_socket
-               )
-
-      assert {:reply, {_mode, _nlink, observer_size, _mtime}, _observer_socket} =
-               DocFs.handle_event(:getattr, %{path: "/" <> projected}, observer_socket)
-
-      assert observer_size == byte_size(accepted_bytes)
-
-      assert {:reply, ^accepted_bytes, socket} =
-               DocFs.handle_event(
-                 :read,
-                 %{path: "/" <> projected, offset: 0, size: byte_size(canonical_bytes)},
-                 socket
-               )
-
-      assert {:reply, {_mode, _nlink, size, _mtime}, _socket} =
-               DocFs.handle_event(:getattr, %{path: "/" <> projected}, socket)
-
-      assert size == byte_size(accepted_bytes)
-
-      Phoenix.PubSub.subscribe(Ecrits.PubSub, "doc_vfs:" <> DocMount.canonical_root(root))
-      second_socket = Exfuse.Socket.new(DocMount.mount_point(root), %{root: root})
-      replay_temp = projected <> ".replay.tmp"
-
-      {:reply, second_handle, second_socket} =
-        DocFs.handle_event(:create, %{path: "/" <> replay_temp, flags: 0}, second_socket)
-
-      assert {:reply, second_size, second_socket} =
-               DocFs.handle_event(
-                 :write,
-                 %{
-                   path: "/" <> replay_temp,
-                   handle: second_handle,
-                   offset: 0,
-                   data: accepted_bytes
-                 },
-                 second_socket
-               )
-
-      assert second_size == byte_size(accepted_bytes)
-
-      assert {:noreply, second_socket} =
-               DocFs.handle_event(
-                 :fsync,
-                 %{
-                   path: "/" <> replay_temp,
-                   handle: second_handle,
-                   datasync: false,
-                   flags: 0
-                 },
-                 second_socket
-               )
-
-      assert {:noreply, second_socket} =
-               DocFs.handle_event(
-                 :release,
-                 %{path: "/" <> replay_temp, flags: 0, handle: second_handle},
-                 second_socket
-               )
-
-      assert {:noreply, second_socket} =
-               DocFs.handle_event(
-                 :rename,
-                 %{path: "/" <> replay_temp, target: "/" <> projected},
-                 second_socket
-               )
-
-      assert {:ok, ^canonical_bytes} = Projection.project_file(path)
-      assert {:ok, ^accepted_bytes} = OpenDocs.committed(root, "doc.hwpx")
-      assert {:ok, ^pending_before_replay} = OpenDocs.pending_canonical(root, "doc.hwpx")
-
-      assert {:reply, ^accepted_bytes, _second_socket} =
-               DocFs.handle_event(
-                 :read,
-                 %{path: "/" <> projected, offset: 0, size: byte_size(canonical_bytes)},
-                 second_socket
-               )
-
-      refute_receive {:vfs_doc_edited, _info}, 50
-
-      assert %{published: ["doc.hwpx"], pending: []} =
-               DocFs.flush_canonical(root,
-                 mounted?: true,
-                 echo_fun: &echo_canonical_through_doc_fs/4
-               )
-
-      assert OpenDocs.pending_canonical(root, "doc.hwpx") == :error
-      assert {:ok, ^canonical_bytes} = OpenDocs.committed(root, "doc.hwpx")
-      refute_receive {:vfs_doc_edited, _info}, 50
-
-      third_socket = Exfuse.Socket.new(DocMount.mount_point(root), %{root: root})
-
-      assert {:reply, ^canonical_bytes, third_socket} =
-               DocFs.handle_event(
-                 :read,
-                 %{path: "/" <> projected, offset: 0, size: byte_size(canonical_bytes)},
-                 third_socket
-               )
-
-      assert {:reply, {_mode, _nlink, canonical_size, _mtime}, _third_socket} =
-               DocFs.handle_event(:getattr, %{path: "/" <> projected}, third_socket)
-
-      assert canonical_size == byte_size(canonical_bytes)
-    end
-  end
-
-  test "invalid in-place release stages instead of failing, then later valid release commits" do
-    if not ehwp_available?(@hwpx_fixture) do
-      IO.puts("\n[skip] ehwp NIF unavailable; skipping DocFs HWPX staged release e2e")
-    else
-      root = tmp_root("doc_fs_staged_release")
-      path = Path.join(root, "doc.hwpx")
-      File.cp!(@hwpx_fixture, path)
-
-      on_exit(fn ->
-        _ = Pool.close_by_path(path)
-        OpenDocs.close(root, "doc.hwpx")
-        File.rm_rf(root)
-      end)
-
-      OpenDocs.open(root, "doc.hwpx")
-      OpenDocs.set_writable(root, true)
-
-      projected = Projection.projected_name("doc.hwpx")
-      socket = Exfuse.Socket.new(DocMount.mount_point(root), %{root: root})
-
-      {:reply, handle, socket} =
-        DocFs.handle_event(:open, %{path: "/" <> projected, flags: 0}, socket)
-
-      {:noreply, socket} =
-        DocFs.handle_event(:truncate, %{path: "/" <> projected, size: 0}, socket)
-
-      {:reply, 1, socket} =
-        DocFs.handle_event(
-          :write,
-          %{path: "/" <> projected, handle: handle, offset: 0, data: "["},
-          socket
-        )
-
-      assert {:noreply, socket} =
-               DocFs.handle_event(
-                 :release,
-                 %{path: "/" <> projected, flags: 0, handle: handle},
-                 socket
-               )
-
-      assert {:ok, "[", {:invalid_ir_json, "["}} = OpenDocs.staged(root, "doc.hwpx")
-
-      {:ok, projected_bytes} = Projection.project_file(path)
-
-      {:reply, visible, socket} =
-        DocFs.handle_event(:read, %{path: "/" <> projected, offset: 0, size: 64}, socket)
-
-      assert visible == binary_part(projected_bytes, 0, 64)
-      refute visible == "["
-
-      {:reply, handle, socket} =
-        DocFs.handle_event(:open, %{path: "/" <> projected, flags: 0}, socket)
-
-      {:ok, bytes} = Projection.project_file(path)
-      new_bytes = replace_first_cell_text(bytes, "DOCFS_STAGED_RELEASE_OK")
-
-      {:noreply, socket} =
-        DocFs.handle_event(:truncate, %{path: "/" <> projected, size: 0}, socket)
-
-      {:reply, size, socket} =
-        DocFs.handle_event(
-          :write,
-          %{path: "/" <> projected, handle: handle, offset: 0, data: new_bytes},
-          socket
-        )
-
-      assert size == byte_size(new_bytes)
-
-      assert {:noreply, _socket} =
-               DocFs.handle_event(
-                 :release,
-                 %{path: "/" <> projected, flags: 0, handle: handle},
-                 socket
-               )
-
-      assert OpenDocs.staged(root, "doc.hwpx") == :error
-      assert {:ok, after_bytes} = Projection.project_file(path)
-      assert after_bytes =~ "DOCFS_STAGED_RELEASE_OK"
-    end
-  end
-
-  test "invalid temp rename fails without replacing the target, then a valid rename commits" do
-    if not ehwp_available?(@hwpx_fixture) do
-      IO.puts("\n[skip] ehwp NIF unavailable; skipping DocFs HWPX staged rename e2e")
-    else
-      root = tmp_root("doc_fs_staged_rename")
-      path = Path.join(root, "doc.hwpx")
-      File.cp!(@hwpx_fixture, path)
-
-      on_exit(fn ->
-        _ = Pool.close_by_path(path)
-        OpenDocs.close(root, "doc.hwpx")
-        File.rm_rf(root)
-      end)
-
-      OpenDocs.open(root, "doc.hwpx")
-      OpenDocs.set_writable(root, true)
-
-      projected = Projection.projected_name("doc.hwpx")
-      socket = Exfuse.Socket.new(DocMount.mount_point(root), %{root: root})
-
-      {:reply, temp_handle, socket} =
-        DocFs.handle_event(:create, %{path: "/doc.hwpx.jsonl.tmp", flags: 0}, socket)
-
-      {:reply, 1, socket} =
-        DocFs.handle_event(
-          :write,
-          %{path: "/doc.hwpx.jsonl.tmp", handle: temp_handle, offset: 0, data: "["},
-          socket
-        )
-
-      {:noreply, socket} =
-        DocFs.handle_event(
-          :release,
-          %{path: "/doc.hwpx.jsonl.tmp", flags: 0, handle: temp_handle},
-          socket
-        )
-
-      assert {:error, 22, socket} =
-               DocFs.handle_event(
-                 :rename,
-                 %{path: "/doc.hwpx.jsonl.tmp", target: "/" <> projected},
-                 socket
-               )
-
-      assert OpenDocs.staged(root, "doc.hwpx") == :error
-
-      assert {:reply, "[", socket} =
-               DocFs.handle_event(
-                 :read,
-                 %{path: "/doc.hwpx.jsonl.tmp", offset: 0, size: 1},
-                 socket
-               )
-
-      {:ok, projected_bytes} = Projection.project_file(path)
-
-      {:reply, visible, socket} =
-        DocFs.handle_event(:read, %{path: "/" <> projected, offset: 0, size: 64}, socket)
-
-      assert visible == binary_part(projected_bytes, 0, 64)
-      refute visible == "["
-
-      {:reply, temp_handle, socket} =
-        DocFs.handle_event(:create, %{path: "/doc.hwpx.jsonl.new", flags: 0}, socket)
-
-      {:ok, bytes} = Projection.project_file(path)
-      new_bytes = replace_first_cell_text(bytes, "DOCFS_STAGED_RENAME_OK")
-
-      {:reply, size, socket} =
-        DocFs.handle_event(
-          :write,
-          %{path: "/doc.hwpx.jsonl.new", handle: temp_handle, offset: 0, data: new_bytes},
-          socket
-        )
-
-      assert size == byte_size(new_bytes)
-
-      {:noreply, socket} =
-        DocFs.handle_event(
-          :release,
-          %{path: "/doc.hwpx.jsonl.new", flags: 0, handle: temp_handle},
-          socket
-        )
-
-      assert {:noreply, _socket} =
-               DocFs.handle_event(
-                 :rename,
-                 %{path: "/doc.hwpx.jsonl.new", target: "/" <> projected},
-                 socket
-               )
-
-      assert OpenDocs.staged(root, "doc.hwpx") == :error
-      assert {:ok, after_bytes} = Projection.project_file(path)
-      assert after_bytes =~ "DOCFS_STAGED_RENAME_OK"
-      assert {:ok, ^new_bytes} = OpenDocs.committed(root, "doc.hwpx")
-
-      {:reply, visible_after_commit, socket} =
-        DocFs.handle_event(
-          :read,
-          %{path: "/" <> projected, offset: 0, size: byte_size(new_bytes)},
-          socket
-        )
-
-      assert visible_after_commit == new_bytes
-
-      {:reply, attrs, _socket} =
-        DocFs.handle_event(:getattr, %{path: "/" <> projected}, socket)
-
-      assert {_mode, _nlink, size, _mtime} = attrs
-      assert size == byte_size(new_bytes)
-
-      OpenDocs.open(root, "doc.hwpx")
-      assert {:ok, ^new_bytes} = OpenDocs.committed(root, "doc.hwpx")
-
-      OpenDocs.close(root, "doc.hwpx")
-      OpenDocs.open(root, "doc.hwpx")
-      assert OpenDocs.committed(root, "doc.hwpx") == :error
-    end
-  end
-
-  test "complete non-document JSONL overwrite fails and keeps projected truth visible" do
-    if not ehwp_available?(@hwpx_fixture) do
-      IO.puts("\n[skip] ehwp NIF unavailable; skipping DocFs invalid root-shape e2e")
-    else
-      root = tmp_root("doc_fs_invalid_root_shape")
-      path = Path.join(root, "doc.hwpx")
-      File.cp!(@hwpx_fixture, path)
-
-      on_exit(fn ->
-        _ = Pool.close_by_path(path)
-        OpenDocs.close(root, "doc.hwpx")
-        File.rm_rf(root)
-      end)
-
-      OpenDocs.open(root, "doc.hwpx")
-      OpenDocs.set_writable(root, true)
-
-      projected = Projection.projected_name("doc.hwpx")
-      socket = Exfuse.Socket.new(DocMount.mount_point(root), %{root: root})
-
-      {:reply, handle, socket} =
-        DocFs.handle_event(:open, %{path: "/" <> projected, flags: 0}, socket)
-
-      bad = ~s({"text":"","type":"picture"}\n)
-
-      {:noreply, socket} =
-        DocFs.handle_event(:truncate, %{path: "/" <> projected, size: 0}, socket)
-
-      {:reply, size, socket} =
-        DocFs.handle_event(
-          :write,
-          %{path: "/" <> projected, handle: handle, offset: 0, data: bad},
-          socket
-        )
-
-      assert size == byte_size(bad)
-
-      assert {:error, 22, socket} =
-               DocFs.handle_event(
-                 :release,
-                 %{path: "/" <> projected, flags: 0, handle: handle},
-                 socket
-               )
-
-      assert OpenDocs.staged(root, "doc.hwpx") == :error
-      assert OpenDocs.write_failure(root, "doc.hwpx") == :error
-
-      {:ok, projected_bytes} = Projection.project_file(path)
-
-      {:reply, visible, _socket} =
-        DocFs.handle_event(:read, %{path: "/" <> projected, offset: 0, size: 3}, socket)
-
-      assert visible == binary_part(projected_bytes, 0, 3)
-      assert visible == "[\n["
-    end
-  end
-
-  test "read-only projected property returns EINVAL, clears stale stage, and leaves source unchanged" do
-    if not ehwp_available?(@hwpx_fixture) do
-      IO.puts("\n[skip] ehwp NIF unavailable; skipping DocFs read-only property e2e")
-    else
-      root = tmp_root("doc_fs_read_only_property")
-      path = Path.join(root, "doc.hwpx")
-      File.cp!(@hwpx_fixture, path)
-
-      on_exit(fn ->
-        _ = Pool.close_by_path(path)
-        OpenDocs.close(root, "doc.hwpx")
-        File.rm_rf(root)
-      end)
-
-      OpenDocs.open(root, "doc.hwpx")
-      OpenDocs.set_writable(root, true)
-
-      projected = Projection.projected_name("doc.hwpx")
-      socket = Exfuse.Socket.new(DocMount.mount_point(root), %{root: root})
-
-      {:reply, handle, socket} =
-        DocFs.handle_event(:open, %{path: "/" <> projected, flags: 0}, socket)
-
-      {:ok, bytes} = Projection.project_file(path)
-      invalid_bytes = change_first_paragraph_property(bytes, "paraShapeId", &(&1 + 1))
-
-      {:noreply, socket} =
-        DocFs.handle_event(:truncate, %{path: "/" <> projected, size: 0}, socket)
-
-      {:reply, size, socket} =
-        DocFs.handle_event(
-          :write,
-          %{path: "/" <> projected, handle: handle, offset: 0, data: invalid_bytes},
-          socket
-        )
-
-      assert size == byte_size(invalid_bytes)
-
-      OpenDocs.stage(root, "doc.hwpx", bytes, :structural_change)
-      assert {:ok, ^bytes, :structural_change} = OpenDocs.staged(root, "doc.hwpx")
-
-      assert {:error, 22, _socket} =
-               DocFs.handle_event(
-                 :release,
-                 %{path: "/" <> projected, flags: 0, handle: handle},
-                 socket
-               )
-
-      assert OpenDocs.staged(root, "doc.hwpx") == :error
-      assert OpenDocs.write_failure(root, "doc.hwpx") == :error
-      assert {:ok, ^bytes} = Projection.project_file(path)
-    end
-  end
-
-  test "multiple nested projection values reject rename as EINVAL and preserve the temp" do
-    if not ehwp_available?(@hwpx_fixture) do
-      IO.puts("\n[skip] ehwp NIF unavailable; skipping DocFs multiple-root rename e2e")
-    else
-      root = tmp_root("doc_fs_multiple_roots")
-      path = Path.join(root, "doc.hwpx")
-      File.cp!(@hwpx_fixture, path)
-
-      on_exit(fn ->
-        _ = Pool.close_by_path(path)
-        OpenDocs.close(root, "doc.hwpx")
-        File.rm_rf(root)
-      end)
-
-      OpenDocs.open(root, "doc.hwpx")
-      OpenDocs.set_writable(root, true)
-
-      projected = Projection.projected_name("doc.hwpx")
-      temp = "/doc.hwpx.jsonl.tmp"
-      socket = Exfuse.Socket.new(DocMount.mount_point(root), %{root: root})
-      {:ok, bytes} = Projection.project_file(path)
-      invalid_bytes = bytes <> "\n" <> bytes
-
-      {:reply, temp_handle, socket} =
-        DocFs.handle_event(:create, %{path: temp, flags: 0}, socket)
-
-      {:reply, size, socket} =
-        DocFs.handle_event(
-          :write,
-          %{path: temp, handle: temp_handle, offset: 0, data: invalid_bytes},
-          socket
-        )
-
-      assert size == byte_size(invalid_bytes)
-
-      {:noreply, socket} =
-        DocFs.handle_event(:release, %{path: temp, flags: 0, handle: temp_handle}, socket)
-
-      assert {:error, 22, socket} =
-               DocFs.handle_event(
-                 :rename,
-                 %{path: temp, target: "/" <> projected},
-                 socket
-               )
-
-      assert {:reply, ^invalid_bytes, _socket} =
-               DocFs.handle_event(
-                 :read,
-                 %{path: temp, offset: 0, size: byte_size(invalid_bytes)},
-                 socket
-               )
-
-      assert {:ok, ^bytes} = Projection.project_file(path)
-      assert OpenDocs.staged(root, "doc.hwpx") == :error
-    end
-  end
-
-  test "temp rename prefers dirty handle bytes over an empty path buffer" do
-    if not ehwp_available?(@hwpx_fixture) do
-      IO.puts("\n[skip] ehwp NIF unavailable; skipping DocFs temp handle preference e2e")
-    else
-      root = tmp_root("doc_fs_temp_handle_preference")
-      path = Path.join(root, "doc.hwpx")
-      File.cp!(@hwpx_fixture, path)
-
-      on_exit(fn ->
-        _ = Pool.close_by_path(path)
-        OpenDocs.close(root, "doc.hwpx")
-        File.rm_rf(root)
-      end)
-
-      OpenDocs.open(root, "doc.hwpx")
-      OpenDocs.set_writable(root, true)
-
-      projected = Projection.projected_name("doc.hwpx")
-      socket = Exfuse.Socket.new(DocMount.mount_point(root), %{root: root})
-
-      {:reply, temp_handle, socket} =
-        DocFs.handle_event(:create, %{path: "/doc.hwpx.jsonl.tmp", flags: 0}, socket)
-
-      {:reply, 0, socket} =
-        DocFs.handle_event(
-          :write,
-          %{path: "/doc.hwpx.jsonl.tmp", handle: 0, offset: 0, data: ""},
-          socket
-        )
-
-      {:reply, 1, socket} =
-        DocFs.handle_event(
-          :write,
-          %{path: "/doc.hwpx.jsonl.tmp", handle: temp_handle, offset: 0, data: "["},
-          socket
-        )
-
-      assert {:error, 22, socket} =
-               DocFs.handle_event(
-                 :rename,
-                 %{path: "/doc.hwpx.jsonl.tmp", target: "/" <> projected},
-                 socket
-               )
-
-      assert OpenDocs.staged(root, "doc.hwpx") == :error
-
-      assert {:reply, "[", socket} =
-               DocFs.handle_event(
-                 :read,
-                 %{path: "/doc.hwpx.jsonl.tmp", offset: 0, size: 1},
-                 socket
-               )
-
-      {:ok, projected_bytes} = Projection.project_file(path)
-
-      {:reply, visible, _socket} =
-        DocFs.handle_event(:read, %{path: "/" <> projected, offset: 0, size: 64}, socket)
-
-      assert visible == binary_part(projected_bytes, 0, 64)
-      refute visible == "["
-    end
-  end
-
-  test "turn-completion flush terminally rejects invalid staged JSONL without a pending retry" do
-    if not ehwp_available?(@hwpx_fixture) do
-      IO.puts("\n[skip] ehwp NIF unavailable; skipping DocFs invalid staged flush e2e")
-    else
-      root = tmp_root("doc_fs_invalid_staged_flush")
-      path = Path.join(root, "doc.hwpx")
-      File.cp!(@hwpx_fixture, path)
-
-      on_exit(fn ->
-        _ = Pool.close_by_path(path)
-        OpenDocs.close(root, "doc.hwpx")
-        File.rm_rf(root)
-      end)
-
-      OpenDocs.open(root, "doc.hwpx")
-      OpenDocs.set_writable(root, true)
-
-      identity = %{
-        edit_id: "invalid-terminal-edit",
-        agent_id: "invalid-terminal-agent",
-        instance_id: "invalid-terminal-instance",
-        turn_id: "invalid-terminal-turn"
-      }
-
-      Phoenix.PubSub.subscribe(Ecrits.PubSub, "doc_vfs:" <> DocMount.canonical_root(root))
-
-      OpenDocs.stage(root, "doc.hwpx", "[", {:invalid_ir_json, "["}, identity)
-      OpenDocs.record_write_failure(root, "doc.hwpx", :engine_unavailable)
-
-      assert %{
-               committed: [],
-               rejected: [{"doc.hwpx", {:invalid_ir_json, "["}}],
-               pending: []
-             } =
-               DocFs.flush_staged(root)
-
-      assert OpenDocs.staged(root, "doc.hwpx") == :error
-      assert OpenDocs.write_failure(root, "doc.hwpx") == :error
-
-      assert_receive {:vfs_doc_edited,
-                      %{
-                        phase: :rejected,
-                        doc: "doc.hwpx",
-                        edit_id: "invalid-terminal-edit",
-                        agent_id: "invalid-terminal-agent",
-                        instance_id: "invalid-terminal-instance",
-                        turn_id: "invalid-terminal-turn"
-                      }}
-
-      assert {:ok, bytes} = Projection.project_file(path)
-      assert String.starts_with?(bytes, "[\n[\n[")
-    end
-  end
-
-  test "turn-completion flush commits staged valid JSONL" do
-    if not ehwp_available?(@hwpx_fixture) do
-      IO.puts("\n[skip] ehwp NIF unavailable; skipping DocFs staged flush e2e")
-    else
-      root = tmp_root("doc_fs_staged_flush")
-      path = Path.join(root, "doc.hwpx")
-      File.cp!(@hwpx_fixture, path)
-
-      on_exit(fn ->
-        _ = Pool.close_by_path(path)
-        OpenDocs.close(root, "doc.hwpx")
-        File.rm_rf(root)
-      end)
-
-      OpenDocs.open(root, "doc.hwpx")
-      OpenDocs.set_writable(root, true)
-
-      # Every committed VFS edit must publish its chat-rail preview event —
-      # 2026-07-19 field regression: the write path stopped passing :root and
-      # broadcast_edit silently skipped, so edits committed with no preview.
-      Phoenix.PubSub.subscribe(Ecrits.PubSub, "doc_vfs:" <> root)
-
-      {:ok, bytes} = Projection.project_file(path)
-      new_bytes = replace_first_cell_text(bytes, "DOCFS_STAGED_FLUSH_OK")
-      OpenDocs.stage(root, "doc.hwpx", new_bytes, :structural_change)
-
-      assert %{committed: ["doc.hwpx"], pending: []} = DocFs.flush_staged(root)
-      assert OpenDocs.staged(root, "doc.hwpx") == :error
-      assert {:ok, after_bytes} = Projection.project_file(path)
-      assert after_bytes =~ "DOCFS_STAGED_FLUSH_OK"
-
-      assert_receive {:vfs_doc_edited, %{doc: "doc.hwpx", path: ^path} = info}, 5_000
-      assert is_binary(info.edit_id) or is_nil(info.edit_id)
-      assert info.applied >= 1
-    end
-  end
-
-  test "turn-completion flush retains the identity stored with staged bytes" do
-    if not ehwp_available?(@hwpx_fixture) do
-      IO.puts("\n[skip] ehwp NIF unavailable; skipping DocFs staged identity e2e")
-    else
-      root = tmp_root("doc_fs_staged_identity")
-      path = Path.join(root, "doc.hwpx")
-      File.cp!(@hwpx_fixture, path)
-
-      on_exit(fn ->
-        _ = Pool.close_by_path(path)
-        OpenDocs.close(root, "doc.hwpx")
-        File.rm_rf(root)
-      end)
-
-      OpenDocs.open(root, "doc.hwpx",
-        agent_id: "agent-b",
-        instance_id: "instance-b",
-        turn_id: "turn-b"
-      )
-
-      OpenDocs.set_writable(root, true)
-      Phoenix.PubSub.subscribe(Ecrits.PubSub, "doc_vfs:" <> DocMount.canonical_root(root))
-
-      {:ok, bytes} = Projection.project_file(path)
-      new_bytes = replace_first_cell_text(bytes, "DOCFS_STAGED_IDENTITY_OK")
-
-      identity = %{
-        edit_id: "staged-edit-a",
-        agent_id: "agent-a",
-        instance_id: "instance-a",
-        turn_id: "turn-a"
-      }
-
-      OpenDocs.stage(root, "doc.hwpx", new_bytes, :structural_change, identity)
-
-      assert %{committed: ["doc.hwpx"], pending: []} = DocFs.flush_staged(root)
-      assert_receive {:vfs_doc_edited, committed}
-      assert Map.take(committed, [:edit_id, :agent_id, :instance_id, :turn_id]) == identity
-    end
-  end
-
-  test "turn-completion flush commits staged pretty nested JSON" do
-    if not ehwp_available?(@hwpx_fixture) do
-      IO.puts("\n[skip] ehwp NIF unavailable; skipping DocFs staged pretty JSON flush e2e")
-    else
-      root = tmp_root("doc_fs_staged_pretty_flush")
-      path = Path.join(root, "doc.hwpx")
-      File.cp!(@hwpx_fixture, path)
-
-      on_exit(fn ->
-        _ = Pool.close_by_path(path)
-        OpenDocs.close(root, "doc.hwpx")
-        File.rm_rf(root)
-      end)
-
-      OpenDocs.open(root, "doc.hwpx")
-      OpenDocs.set_writable(root, true)
-
-      {:ok, bytes} = Projection.project_file(path)
-      new_bytes = replace_first_cell_text(bytes, "DOCFS_STAGED_PRETTY_FLUSH_OK", pretty: true)
-      OpenDocs.stage(root, "doc.hwpx", new_bytes, {:invalid_ir_json, "["})
-
-      assert %{committed: ["doc.hwpx"], pending: []} = DocFs.flush_staged(root)
-      assert OpenDocs.staged(root, "doc.hwpx") == :error
-      assert {:ok, after_bytes} = Projection.project_file(path)
-      assert after_bytes =~ "DOCFS_STAGED_PRETTY_FLUSH_OK"
-      assert {:ok, ^new_bytes} = OpenDocs.committed(root, "doc.hwpx")
-    end
   end
 
   defp assert_eventually(fun, attempts \\ 100)
@@ -2309,81 +1317,6 @@ defmodule Ecrits.Fuse.DocFsTest do
     end
   end
 
-  defp replace_first_cell_text(bytes, text, opts \\ []) do
-    doc = Jason.decode!(bytes)
-    {doc, true} = replace_first_cell_text_in_doc(doc, text, false)
-
-    if Keyword.get(opts, :pretty, false) do
-      Jason.encode!(doc, pretty: true)
-    else
-      Jason.encode!(doc) <> "\n"
-    end
-  end
-
-  defp change_first_paragraph_property(bytes, property, change) do
-    doc = Jason.decode!(bytes)
-
-    {doc, true} =
-      Enum.map_reduce(doc, false, fn section, changed? ->
-        Enum.map_reduce(section, changed?, fn paragraph, changed? ->
-          Enum.map_reduce(paragraph, changed?, fn
-            %{"type" => "paragraph"} = node, false ->
-              {Map.update!(node, property, change), true}
-
-            node, changed? ->
-              {node, changed?}
-          end)
-        end)
-      end)
-
-    Jason.encode!(doc) <> "\n"
-  end
-
-  defp insert_duplicate_paragraph(bytes) do
-    [section | remaining_sections] = Jason.decode!(bytes)
-    inserted_paragraph = section |> Enum.at(1) |> Jason.encode!() |> Jason.decode!()
-
-    Jason.encode!([List.insert_at(section, 2, inserted_paragraph) | remaining_sections])
-  end
-
-  defp insert_compact_table(bytes, marker) do
-    table = %{
-      "type" => "table",
-      "cells" => [
-        [marker <> "_H1", marker <> "_H2"],
-        [marker <> "_A", marker <> "_B"]
-      ],
-      "header" => true
-    }
-
-    {doc, true} =
-      bytes
-      |> Jason.decode!()
-      |> Enum.map_reduce(false, fn section, changed? ->
-        Enum.map_reduce(section, changed?, fn paragraph, changed? ->
-          insert_after_first_text_node(paragraph, table, changed?)
-        end)
-      end)
-
-    Jason.encode!(doc) <> "\n"
-  end
-
-  defp insert_after_first_text_node(nodes, _table, true), do: {nodes, true}
-
-  defp insert_after_first_text_node(nodes, table, false) do
-    {reversed, changed?} =
-      Enum.reduce(nodes, {[], false}, fn
-        %{"type" => "paragraph", "text" => text} = node, {acc, false}
-        when is_binary(text) and text != "" ->
-          {[table, node | acc], true}
-
-        node, {acc, changed?} ->
-          {[node | acc], changed?}
-      end)
-
-    {Enum.reverse(reversed), changed?}
-  end
-
   defp echo_canonical_through_doc_fs(root, temp, target, bytes) do
     socket = Exfuse.Socket.new(DocMount.mount_point(root), %{root: root})
 
@@ -2419,52 +1352,26 @@ defmodule Ecrits.Fuse.DocFsTest do
     :ok
   end
 
-  defp replace_first_cell_text_in_doc(sections, text, changed?) do
-    Enum.map_reduce(sections, changed?, fn section, changed? ->
-      Enum.map_reduce(section, changed?, fn paragraph, changed? ->
-        {paragraph, {changed?, _cell_seen?}} =
-          Enum.map_reduce(paragraph, {changed?, false}, fn
-            %{"type" => "cell"} = node, {changed?, _cell_seen?} ->
-              {node, {changed?, true}}
-
-            %{"type" => "paragraph", "text" => old} = node, {false, true}
-            when is_binary(old) and old != "" ->
-              {Map.put(node, "text", text), {true, true}}
-
-            node, state ->
-              {node, state}
-          end)
-
-        {paragraph, changed?}
-      end)
-    end)
-  end
+  # Real size, read-only mode, constant mtime: the contract's bytes are generated
+  # in-process, so unlike a projection it needs no engine to be sized.
+  defp contract_entry,
+    do: {SurfaceContract.filename(), {0o0444, 2, SurfaceContract.size(), 1_700_000_000}}
 
   defp tmp_root(label) do
     Path.join(System.tmp_dir!(), "ecrits-#{label}-#{System.unique_integer([:positive])}")
     |> tap(&File.mkdir_p!/1)
+    |> tap(fn root -> on_exit(fn -> File.rm_rf(root) end) end)
   end
 
-  defp ehwp_available?(fixture) do
-    root = tmp_root("doc_fs_probe")
-    path = Path.join(root, "probe.hwpx")
-    File.cp!(fixture, path)
+  # Register a stand-in browser authority for `source`, exactly as `WorkspaceLive`
+  # does once the editor hook reports `document.viewer.ready`. The id is derived
+  # the same way the registry keys it, so a second spelling here would make the
+  # listing silently empty.
+  defp attach_viewer(root, source, kind) do
+    lv = spawn(fn -> receive(do: (:stop -> :ok)) end)
+    on_exit(fn -> if Process.alive?(lv), do: send(lv, :stop) end)
 
-    case Pool.open(path, kind: :hwpx) do
-      {:ok, _id} ->
-        _ = Pool.close_by_path(path)
-        File.rm_rf(root)
-        true
-
-      _ ->
-        File.rm_rf(root)
-        false
-    end
-  rescue
-    _ ->
-      false
-  catch
-    _, _ ->
-      false
+    :ok = Session.attach_viewer(root, DocumentId.for_path(source, kind), lv)
+    lv
   end
 end

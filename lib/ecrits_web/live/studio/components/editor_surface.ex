@@ -3,6 +3,8 @@ defmodule EcritsWeb.Live.Studio.Components.EditorSurface do
   Studio editor chrome reused by local document sessions.
   """
 
+  import Ecrits.Guards
+
   use EcritsWeb, :html
 
   alias Ecrits.DocumentCanvasState
@@ -11,9 +13,9 @@ defmodule EcritsWeb.Live.Studio.Components.EditorSurface do
   alias Ecrits.EditorPreviewState
   alias Ecrits.EditorSurfaceState
   alias Ecrits.ToolbarMenu
-  alias EcritsWeb.Live.Studio.Components.Canvas.HwpPages
   alias EcritsWeb.Live.Studio.Components.Canvas.MarkdownEditor
   alias EcritsWeb.Live.Studio.Components.Canvas.OfficeWasm
+  alias EcritsWeb.Live.Studio.Components.Canvas.RhwpStudio
 
   @font_families [
     "Arial",
@@ -52,7 +54,6 @@ defmodule EcritsWeb.Live.Studio.Components.EditorSurface do
   attr :toolbar_id, :string, required: true
   attr :frame_id, :string, required: true
   attr :state, :any, required: true
-  attr :hwp_pages, :any, required: true
 
   def document(%{state: %EditorSurfaceState{}} = assigns) do
     state = assigns.state
@@ -115,68 +116,19 @@ defmodule EcritsWeb.Live.Studio.Components.EditorSurface do
       >
         <section class="flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-transparent">
           <div id={@toolbar_id} class="contents">
+            <%!-- The document tab strip is gone: rhwp-studio and the LibreOffice
+            WASM editor each render their own document title inside their frame,
+            so the host strip duplicated it. `open_documents`/`active_document_id`
+            REMAIN — they are the host-side open-document model that save routing,
+            dirty marking and doc.* routing read. These attributes keep that state
+            observable (and assertable) now that no chrome renders it. --%>
             <header
               id="studio-document-header"
+              data-active-document={@state.active_document_id}
+              data-open-document-count={length(@state.open_documents)}
+              data-dirty={to_string(@state.active_document_id in @state.dirty_document_ids)}
               class="flex min-h-9 items-stretch justify-between border-b border-base-300 bg-base-100"
             >
-              <div
-                id="studio-document-tabs"
-                role="group"
-                aria-label="Open documents"
-                data-role="document-tabs"
-                class="flex min-w-0 flex-1 items-stretch overflow-x-auto overflow-y-hidden"
-              >
-                <div
-                  :for={tab <- @state.open_documents}
-                  id={"studio-document-tab-#{tab.id}"}
-                  role="presentation"
-                  data-role="document-tab"
-                  data-tab-id={tab.id}
-                  data-active={to_string(tab.id == @state.active_document_id)}
-                  title={tab.path}
-                  class={[
-                    "group flex min-w-0 shrink-0 items-stretch border-r border-base-300 max-w-[15rem] text-[13px] leading-none transition-colors border-b-2",
-                    if(tab.id == @state.active_document_id,
-                      do: "bg-base-100 text-base-content font-medium border-b-primary",
-                      else:
-                        "bg-base-200/50 text-base-content/70 border-b-transparent hover:bg-base-100/70 hover:text-base-content"
-                    )
-                  ]}
-                >
-                  <button
-                    type="button"
-                    aria-pressed={to_string(tab.id == @state.active_document_id)}
-                    tabindex={if(tab.id == @state.active_document_id, do: "0", else: "-1")}
-                    phx-click="workspace.document.activate"
-                    phx-value-id={tab.id}
-                    data-role="document-tab-switch"
-                    class="inline-flex h-full min-w-0 flex-1 items-center gap-1 px-3 text-left outline-none"
-                    title={tab.path}
-                  >
-                    <span
-                      :if={tab.id in @state.dirty_document_ids}
-                      data-role="document-dirty-icon"
-                      class="inline-flex size-4 shrink-0 items-center justify-center text-amber-500"
-                      title="Unsaved changes"
-                      aria-label="Unsaved changes"
-                    >
-                      <.icon name="hero-pencil" class="size-3" />
-                    </span>
-                    <span class="min-w-0 truncate">{tab.name}</span>
-                  </button>
-                  <button
-                    type="button"
-                    phx-click="workspace.document.close"
-                    phx-value-id={tab.id}
-                    data-role="document-tab-close"
-                    aria-label={"Close #{tab.name}"}
-                    class="my-auto mr-1.5 inline-flex size-6 shrink-0 items-center justify-center rounded text-base-content/45 transition-colors hover:bg-base-200 hover:text-base-content"
-                  >
-                    <.icon name="hero-x-mark" class="size-3" />
-                  </button>
-                </div>
-              </div>
-
               <div class="ml-auto inline-flex min-w-0 shrink-0 items-center justify-end gap-1.5 pl-2 pr-3">
                 <span
                   id="rhwp-save-state"
@@ -187,6 +139,7 @@ defmodule EcritsWeb.Live.Studio.Components.EditorSurface do
                 </span>
 
                 <button
+                  :if={host_picker_chrome?(@state)}
                   id="document-element-picker"
                   type="button"
                   phx-click="document.element_picker.toggle"
@@ -238,7 +191,7 @@ defmodule EcritsWeb.Live.Studio.Components.EditorSurface do
               </div>
             </header>
             <div
-              :if={@state.document}
+              :if={@state.document && host_editing_chrome?(@state)}
               id="document-quick-toolbar"
               phx-hook=".EditorToolbarBridge"
               data-role="editor-toolbar"
@@ -719,15 +672,14 @@ defmodule EcritsWeb.Live.Studio.Components.EditorSurface do
           <article class="relative m-0 flex min-h-0 flex-1 overflow-hidden border-0 bg-transparent p-0 font-sans text-[15px] leading-[1.78] text-base-content shadow-none">
             <div class="relative h-full min-h-0 w-full">
               <.document_search_bar
-                :if={@state.document && not markdown_format?(@state.document.format)}
+                :if={host_search_chrome?(@state)}
                 state={@state}
                 document_search_form={@document_search_form}
               />
               <div :if={@state.document} id={@frame_id} class="contents">
-                <HwpPages.render
+                <RhwpStudio.render
                   :if={ehwp_format?(@state.document.format)}
                   id={@state.canvas_id}
-                  pages={@hwp_pages}
                   state={@canvas_state}
                 />
                 <MarkdownEditor.render
@@ -1408,10 +1360,9 @@ defmodule EcritsWeb.Live.Studio.Components.EditorSurface do
       </div>
       <div class="min-h-0 overflow-hidden bg-base-200">
         <div class="h-64">
-          <HwpPages.render
+          <RhwpStudio.render
             :if={ehwp_format?(@state.document.format)}
             id={@state.canvas_id}
-            pages={[]}
             state={@state.canvas}
           />
           <MarkdownEditor.render
@@ -1436,10 +1387,46 @@ defmodule EcritsWeb.Live.Studio.Components.EditorSurface do
   defp ehwp_format?(format), do: format in ~w(hwp hwpx)
   defp markdown_format?(format), do: format in ~w(md markdown)
 
-  defp embedded_document_title(_document, path) when is_binary(path) and path != "",
+  # ── host chrome ownership ──────────────────────────────────────────────────
+  #
+  # `hwp`/`hwpx` render inside the rhwp-studio iframe (`Canvas.RhwpStudio`),
+  # which brings its OWN toolbar, find bar and selection model. The host
+  # toolbar/search bar reach their canvas by dispatching `ecrits:editor-command`
+  # / `ecrits:document-search-command` on `document`, and the studio iframe is a
+  # separate document that never hears them — so for HWP they are buttons that
+  # do nothing. They still drive the office (LibreOffice WASM) canvas, so they
+  # are format-gated here rather than deleted outright.
+  #
+  # The element picker is NOT one of them any more. It was hidden for HWP while
+  # embed RPC v1 was request/response only — studio could not push a selection
+  # to the host, so there was nothing to rewire. Upstream's `host-events-v1`
+  # opens that direction (`rhwp-event{selection}`), and `Canvas.RhwpStudio` now
+  # subscribes while the toggle is armed and turns each pointer pick into the
+  # same `ecrits:document-element-picker.pick-toggled` the office canvas
+  # dispatches. So the picker is gated on "does this canvas hit-test picks",
+  # which is now both engine canvases — and not on `host_editing_chrome?`,
+  # whose toolbar half is still genuinely dead for HWP.
+  defp host_editing_chrome?(%EditorSurfaceState{document: %{format: format}}),
+    do: not ehwp_format?(format)
+
+  defp host_editing_chrome?(_state), do: true
+
+  # Markdown is edited as text in the host document, so it has no element to
+  # hit-test and no canvas dispatching picks.
+  defp host_picker_chrome?(%EditorSurfaceState{document: %{format: format}}),
+    do: not markdown_format?(format)
+
+  defp host_picker_chrome?(_state), do: false
+
+  defp host_search_chrome?(%EditorSurfaceState{document: %{format: format}}),
+    do: not ehwp_format?(format) and not markdown_format?(format)
+
+  defp host_search_chrome?(_state), do: false
+
+  defp embedded_document_title(_document, path) when is_present(path),
     do: Path.basename(path)
 
-  defp embedded_document_title(%{name: name}, _path) when is_binary(name) and name != "",
+  defp embedded_document_title(%{name: name}, _path) when is_present(name),
     do: name
 
   defp embedded_document_title(_document, _path), do: "document"

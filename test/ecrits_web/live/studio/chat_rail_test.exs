@@ -17,7 +17,6 @@ defmodule EcritsWeb.Live.Studio.Components.ChatRailTest do
 
   alias Ecrits.Context
   alias Ecrits.Studio.ChatRailState
-  alias Ecrits.Studio.State
   alias EcritsWeb.Live.Studio.Components.ChatRail
 
   # ---------------------------------------------------------------------------
@@ -44,7 +43,7 @@ defmodule EcritsWeb.Live.Studio.Components.ChatRailTest do
 
       state =
         session["studio_state"] ||
-          %State{
+          %{
             mode: :briefing,
             last_seen_version: 0,
             agent_run_id: nil
@@ -139,7 +138,7 @@ defmodule EcritsWeb.Live.Studio.Components.ChatRailTest do
     }
 
   defp default_state,
-    do: %State{mode: :briefing, last_seen_version: 0, agent_run_id: nil}
+    do: %{mode: :briefing, last_seen_version: 0, agent_run_id: nil}
 
   defp empty_stream do
     # `render_component/2` accepts any enumerable in place of a stream; LV
@@ -305,7 +304,7 @@ defmodule EcritsWeb.Live.Studio.Components.ChatRailTest do
     end
 
     test "no-document mode omits the ChatRail welcome dialog and keeps the composer" do
-      no_doc_state = %State{mode: :no_document, last_seen_version: 0, agent_run_id: nil}
+      no_doc_state = %{mode: :no_document, last_seen_version: 0, agent_run_id: nil}
 
       html =
         render_chat_rail(
@@ -341,7 +340,7 @@ defmodule EcritsWeb.Live.Studio.Components.ChatRailTest do
     test "no-document mode stays free of ChatRail welcome when chat messages exist", %{
       conn: conn
     } do
-      no_doc_state = %State{mode: :no_document, last_seen_version: 0, agent_run_id: nil}
+      no_doc_state = %{mode: :no_document, last_seen_version: 0, agent_run_id: nil}
 
       {:ok, lv, html} =
         live_isolated(conn, WrapperLive,
@@ -373,7 +372,7 @@ defmodule EcritsWeb.Live.Studio.Components.ChatRailTest do
       idle_html =
         render_chat_rail(
           id: "chat-rail",
-          studio_state: %State{default_state() | agent_run_id: nil},
+          studio_state: Map.put(default_state(), :agent_run_id, nil),
           streams: %{chat_messages: empty_stream()},
           current_scope: lawyer_scope()
         )
@@ -401,7 +400,7 @@ defmodule EcritsWeb.Live.Studio.Components.ChatRailTest do
       busy_html =
         render_chat_rail(
           id: "chat-rail",
-          studio_state: %State{default_state() | agent_run_id: run_id},
+          studio_state: Map.put(default_state(), :agent_run_id, run_id),
           agent_document_status: %{
             current_attempt: %{id: run_id, status: :running},
             queue: [%{id: queued_run_id, status: :pending}]
@@ -433,7 +432,7 @@ defmodule EcritsWeb.Live.Studio.Components.ChatRailTest do
                agent_queue_size: 1
              } =
                ChatRailState.new(%{
-                 studio_state: %State{default_state() | agent_run_id: run_id},
+                 studio_state: Map.put(default_state(), :agent_run_id, run_id),
                  agent_document_status: %{
                    current_attempt: %{id: run_id, status: :running},
                    queue: [%{id: queued_run_id, status: :pending}]
@@ -910,7 +909,7 @@ defmodule EcritsWeb.Live.Studio.Components.ChatRailTest do
         live_isolated(conn, WrapperLive,
           session: %{
             "scope" => lawyer_scope(),
-            "studio_state" => %State{default_state() | agent_run_id: Ecto.UUID.generate()}
+            "studio_state" => Map.put(default_state(), :agent_run_id, Ecto.UUID.generate())
           }
         )
 
@@ -1371,7 +1370,7 @@ defmodule EcritsWeb.Live.Studio.Components.ChatRailTest do
       html =
         render_chat_rail(
           id: "chat-rail",
-          studio_state: %State{default_state() | agent_run_id: agent_run_id},
+          studio_state: Map.put(default_state(), :agent_run_id, agent_run_id),
           streams: %{
             chat_messages: [
               {message_dom_id,

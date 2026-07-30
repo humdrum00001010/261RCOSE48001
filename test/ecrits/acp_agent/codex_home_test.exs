@@ -238,19 +238,20 @@ defmodule Ecrits.AcpAgent.CodexHomeTest do
     # Standing familiarity: the isolated home carries the document playbook so
     # the model does not re-derive the surface's shape every turn.
     playbook = File.read!(Path.join(isolation.home, "AGENTS.md"))
-    assert playbook =~ "one paragraph group per line"
-    assert playbook =~ "two opening `[` wrapper lines and two closing `]` wrapper lines"
-    assert playbook =~ "comma after every inner group line except the last"
-    assert playbook =~ "Do not serialize the whole root as one line"
+    # DocLang, not JSONL: one XML tree, addressed by element order/nesting.
+    assert playbook =~ "one `.doclang.xml` DocLang document"
+    assert playbook =~ "exactly one `<doclang>` root"
+    assert playbook =~ ~r/element order and\s+nesting ARE the addressing/
+    assert playbook =~ "Keep `<custom>` blocks untouched"
     assert playbook =~ "native search/read plus `apply_patch` or Python/Ruby"
-    assert playbook =~ "apply that line-sized patch"
     assert playbook =~ "occurrence"
 
-    # New paragraphs are an ordinary mounted-file write (a new line holding one
-    # bare paragraph node) — the playbook must teach that shape and must not
-    # route paragraphs through the doc.edit fallback (2026-07-19 direction:
-    # "inserting para is done through the projection, not MCP tools").
-    assert playbook =~ ~s([{"type":"paragraph","text":"..."}])
+    # New paragraphs are an ordinary mounted-file write, never the doc.edit
+    # fallback (2026-07-19 direction: "inserting para is done through the
+    # projection, not MCP tools"). The literal node shape this used to pin was
+    # the JSONL one; the playbook's insert section has not been migrated to
+    # DocLang yet (see the KNOWN RED refutes below), so only the invariant that
+    # survives the format change is asserted here.
     assert playbook =~ "Never tell the user a"
     refute playbook =~ ~s(doc.edit {op: "insert_paragraph")
   end
@@ -271,31 +272,41 @@ defmodule Ecrits.AcpAgent.CodexHomeTest do
 
     playbook = File.read!(Path.join(isolation.home, "AGENTS.md"))
 
-    assert playbook =~ "Call `doc.open_doc` once and use the returned mount path"
+    # Step 1 is `ls` + `cat`, not a tool call: the contract lives in the mount.
+    assert playbook =~ "List `.ecrits/` in the workspace and read its"
+    assert playbook =~ "`CONTRACT.json`"
+    assert playbook =~ "There is no tool that opens a document"
+    refute playbook =~ "doc.open_doc"
     assert playbook =~ "Use native search/read plus `apply_patch` or Python/Ruby"
     assert playbook =~ ~r/Python\/Ruby\s+writes are allowed/
     assert playbook =~ "Never truncate the mounted target in place"
     assert playbook =~ "sibling `.tmp` file"
-    assert playbook =~ ~r/atomically rename it over\s+the target once/
+    assert playbook =~ ~r/atomically rename it over\s+the\s+target once/
     assert playbook =~ ~r/one writer and one rename per\s+batch/
     assert playbook =~ ~r/discard\s+every saved line number/
-    assert playbook =~ ~r/Never delete or rename a rejected projection temp\s+file/
-    assert playbook =~ ~r/For a small edit, patch the required JSONL group lines/
-    assert playbook =~ "append only the `table` payload"
-    assert playbook =~ "append it to the Article 51 group's payload array"
-
-    assert playbook =~
-             ~r/Never append a paragraph\s+or title payload to that existing group/i
-
-    assert playbook =~
-             ~r/Never put embedded newlines inside\s+an existing paragraph or text node/
-
-    assert playbook =~ "separate ref-less paragraph groups"
+    assert playbook =~ ~r/Never\s+delete or rename a rejected projection temp file/
+    assert playbook =~ ~r/For a small edit, patch that element in place/
     assert playbook =~ "`acp_commit_required` does not consume the marker lookup"
 
     assert playbook =~ "wait for the VFS write-back to settle"
-    assert playbook =~ "valid UTF-8 JSONL"
-    assert playbook =~ "do not repair or rewrite transient bytes"
+    assert playbook =~ ~r/parses as a complete DocLang document/
+    assert playbook =~ ~r/Every partial prefix of the file\s+is a parse error/
+    assert playbook =~ ~r/do not repair or\s+rewrite transient bytes/
+
+    # KNOWN RED — a real `lib/` defect, deliberately left failing.
+    #
+    # `write_document_playbook/2`'s header was migrated to DocLang but its
+    # "## Inserts" and "### Example" sections were not: they still teach the
+    # retired JSONL projection (numbered LINES, `payload array`, a bare
+    # `[{"type":"paragraph","text":"..."}]` line, `{"type":"table","cells":...}`).
+    # The mount serves `.doclang.xml`, so an agent that follows the second half
+    # of its own playbook writes JSON into an XML tree and EINVALs. The same
+    # half-migration is in `Ecrits.Agent.Prompt.mounted_vfs_preamble/2`.
+    # Rewriting operator-tuned prompt prose is the plan owner's call, so this
+    # assertion stands as the standing signal rather than being relaxed.
+    refute playbook =~ ~s([{"type":"paragraph","text":"..."}])
+    refute playbook =~ "append it to the Article 51 group's payload array"
+    refute playbook =~ "apply that line-sized patch"
 
     assert playbook =~
              ~r/Use `doc\.edit` only for an IR-inexpressible native operation such as image\s+or signature insertion/

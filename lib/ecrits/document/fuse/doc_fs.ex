@@ -1,11 +1,28 @@
 defmodule Ecrits.Fuse.DocFs do
   @moduledoc """
-  `exfuse` filesystem that projects the workspace documents the agent has OPENED
-  (via the `doc.open_doc` MCP tool) as a flat directory of **DocLang v0.6 XML**
-  files. The open set lives in `Ecrits.Fuse.OpenDocs` (per-workspace ETS); a doc
-  appears as `<mount-name>.doclang.xml` only while it is open, and the projection
-  bytes come from `Ecrits.Doc.Projection.project_file/1`. Each projected file is
-  one `<doclang version="0.6">…</doclang>` document.
+  `exfuse` filesystem that projects workspace documents as a flat directory of
+  **DocLang v0.6 XML** files, one `<doclang version="0.6">…</doclang>` per entry,
+  rendered by `Ecrits.Doc.Projection.project_file/1`.
+
+  The LISTING is derived, not registered: `readdir` scans the workspace for
+  documents the projection supports and keeps the ones a live viewer holds
+  (`Ecrits.Workspace.Session.viewed_document_ids/1`). It shows what can be
+  SERVED — the engine is browser-side, so an unviewed document has no engine and
+  cannot answer `getattr` with a real size, which the FSKit vnode-poisoning
+  measurement makes mandatory.
+
+  NAME RESOLUTION is derived from the same facts (`source_path/2`), so `ls` and
+  `ls -l` cannot disagree. Resolving through `Ecrits.Fuse.OpenDocs` while the
+  listing was derived made them disagree in both directions: a viewed document
+  nobody had registered was listed and then answered `:enoent` on `stat`, and a
+  registered-but-unviewed one stayed stat-able while invisible.
+  `OpenDocs` (per-workspace ETS) still backs write staging, the canonical-echo
+  lifecycle and the access gate below — it just no longer decides what exists.
+
+  Beside the projections sits one read-only generated entry,
+  `Ecrits.Fuse.SurfaceContract.filename/0`: the editing contract the agent used
+  to receive as a tool result. It is discoverable by `ls` and readable by `cat`,
+  which is what let the tool that carried it be deleted.
 
   Writable: a write to a projected file is a **file-level modification of the
   document** — on commit it routes back onto the live document via
@@ -47,10 +64,12 @@ defmodule Ecrits.Fuse.DocFs do
   (`OpenDocs.writable?/1`) → `:erofs` when read-only.
 
   Handlers touch only ETS (`OpenDocs`) and `Projection` (which reads/writes the
-  doc via the Pool/Editor) — never the BEAM `:file_server`, which a VFS handler
+  doc via the browser viewer) — never the BEAM `:file_server`, which a VFS handler
   must avoid (an in-BEAM `File.*` on the mount would deadlock it). See
   `docs/plans/2026-06-23-exfuse-doc-vfs-migration.md`.
   """
+
+  import Ecrits.Guards
 
   use Exfuse.Fs
 
@@ -60,6 +79,10 @@ defmodule Ecrits.Fuse.DocFs do
   alias Ecrits.Document
   alias Ecrits.Fuse.DocMount
   alias Ecrits.Fuse.OpenDocs
+  alias Ecrits.Fuse.SurfaceContract
+  alias Ecrits.Workspace
+  alias Ecrits.Workspace.FileIndex
+  alias Ecrits.Workspace.Session
 
   @doc """
   Try to flush staged VFS DocLang buffers for `root`.
@@ -87,8 +110,14 @@ defmodule Ecrits.Fuse.DocFs do
     end)
     |> Enum.reduce(%{committed: [], rejected: [], pending: []}, fn
       {name, bytes, previous_reason, identity}, acc ->
-        cond do
-          not OpenDocs.member?(root, name) ->
+        # Servability is DERIVED here for the same reason the listing is: the
+        # `OpenDocs` registry this used to consult only ever knew what a tool had
+        # registered, and nothing registers any more. `served_source/2` folds the
+        # three former branches (unregistered / source missing / unsupported kind)
+        # into one, because it answers all three — and "no live viewer" is what
+        # closed now means.
+        case served_source(root, name) do
+          {:error, _reason} ->
             settle_staged_cleanup(
               acc,
               root,
@@ -100,32 +129,7 @@ defmodule Ecrits.Fuse.DocFs do
               :document_closed
             )
 
-          not match?({:ok, _source}, OpenDocs.source_path(root, name)) ->
-            settle_staged_cleanup(
-              acc,
-              root,
-              name,
-              bytes,
-              previous_reason,
-              identity,
-              filters,
-              :source_missing
-            )
-
-          not source_supported?(root, name) ->
-            settle_staged_cleanup(
-              acc,
-              root,
-              name,
-              bytes,
-              previous_reason,
-              identity,
-              filters,
-              :source_unsupported
-            )
-
-          true ->
-            {:ok, source} = OpenDocs.source_path(root, name)
+          {:ok, source} ->
             OpenDocs.clear_write_failure(root, name)
 
             case write_back_unless_accepted(
@@ -299,32 +303,75 @@ defmodule Ecrits.Fuse.DocFs do
     Map.update!(opts, :root, &DocMount.canonical_root/1)
   end
 
+  # The listing is DERIVED from the workspace, not read out of a registry — which
+  # is what makes `doc.open_doc` unnecessary, since populating that registry was
+  # its only job here.
+  #
+  # It lists what can be SERVED, not everything that exists. The engine is
+  # browser-side, so a document with no live viewer cannot be projected at all,
+  # and the FSKit measurement of 2026-07-28 rules out deferring that work: a vnode
+  # that once observed size 0 stays empty PERMANENTLY (98/98 probes — no getattr
+  # after open, `read` never invoked), so `getattr` must answer a real size and a
+  # projection must therefore exist at `stat` time. Listing unservable documents
+  # would make `ls -l` error on most entries.
+  # Every entry carries a REAL size. macOS serves `ls -l` from readdir's
+  # attributes rather than a per-entry `getattr`, so a bare `attr(type: :file)`
+  # serialises as 0 — and a vnode that observes 0 is stuck at "empty"
+  # permanently (2026-07-28, 98/98). A correct `getattr` never rescues it,
+  # because it is never asked.
+  #
+  # Sizes come from the projection cache, never from projecting inline: that
+  # made `ls` one browser round trip per entry and hung four tests on the 60s
+  # timeout. The cache is warmed at VIEWER ATTACH (`Session.attach_viewer/3` ->
+  # `DocMount.warm_projection/2`), which is the same moment a document becomes
+  # listable at all, so a listed-but-unsized entry is a narrow race rather than
+  # the normal case.
   readdir "/" do
-    opened = OpenDocs.list(state.root)
+    # A warm entry carries its REAL size. A cold one is still LISTED, without a
+    # size — omitting it would hide a document that `getattr`/`read` serve
+    # perfectly well, and the listing would then depend on whether a background
+    # warm had finished.
+    entries =
+      Enum.map(listed_names(state.root), fn name ->
+        case cached_size(state.root, name) do
+          nil -> {name, attr(type: :file)}
+          size -> {name, attr(type: :file, size: size)}
+        end
+      end)
 
-    names =
-      opened
-      |> Enum.filter(&source_supported?(state.root, &1))
-      |> Enum.map(&{Projection.projected_name(&1), attr(type: :file)})
-
-    {:reply, names, socket}
+    {:reply, [{SurfaceContract.filename(), contract_attr()} | entries], socket}
   end
 
   getattr "/" do
-    {mtime, socket} = content_mtime(socket, "/", Enum.sort(OpenDocs.list(state.root)))
+    # The directory mtime is what makes the kernel drop its cached listing, so it
+    # must advance when the DERIVED listing changes (a viewer attaches, a viewer
+    # dies, a document appears). Hashing `OpenDocs.list/1` keyed it to a registry
+    # the listing no longer consults: `doc.open_doc` moved the mtime while an
+    # actual `ls` change did not.
+    {mtime, socket} = content_mtime(socket, "/", listed_names(state.root))
     {:reply, attr(type: :dir, mtime: mtime), socket}
   end
 
   getattr "/:name" do
     cond do
+      SurfaceContract.contract_name?(name) ->
+        {:reply, contract_attr(), socket}
+
       is_binary(name_buffer(socket, name)) ->
         buf = name_buffer(socket, name)
         {mtime, socket} = content_mtime(socket, name, buf)
         {:reply, attr(type: :file, size: byte_size(buf), mtime: mtime), socket}
 
       match?({:ok, _}, source_path(state.root, name)) ->
-        {size, mtime, socket} = projected_attrs(socket, state.root, name)
-        {:reply, attr(type: :file, size: size, mtime: mtime), socket}
+        case projected_attrs(socket, state.root, name) do
+          {:ok, size, mtime, socket} ->
+            {:reply, attr(type: :file, size: size, mtime: mtime), socket}
+
+          # EIO, not a size-0 file: the caller learns the projection failed
+          # instead of caching an "empty" vnode it can never recover from.
+          {:error, socket} ->
+            {:error, :eio, socket}
+        end
 
       true ->
         {:error, :enoent, socket}
@@ -333,6 +380,9 @@ defmodule Ecrits.Fuse.DocFs do
 
   read "/:name" do
     cond do
+      SurfaceContract.contract_name?(name) ->
+        {:reply, slice(SurfaceContract.json(), event.offset, event.size), socket}
+
       match?({:ok, _}, source_path(state.root, name)) ->
         case projected_bytes(state.root, name) do
           {:ok, bytes} -> {:reply, slice(bytes, event.offset, event.size), socket}
@@ -349,6 +399,10 @@ defmodule Ecrits.Fuse.DocFs do
 
   open "/:name" do
     cond do
+      SurfaceContract.contract_name?(name) ->
+        {handle, socket} = new_handle(socket, name)
+        {:reply, handle, socket}
+
       match?({:ok, _}, source_path(state.root, name)) ->
         {handle, socket} = new_handle(socket, name)
         {:reply, handle, socket}
@@ -369,6 +423,9 @@ defmodule Ecrits.Fuse.DocFs do
     internal_echo? = OpenDocs.canonical_echo_temp?(state.root, name)
 
     cond do
+      SurfaceContract.contract_name?(name) ->
+        {:error, :eacces, socket}
+
       canonical_temp_name?(name) and not internal_echo? ->
         {:error, :eio, socket}
 
@@ -394,6 +451,9 @@ defmodule Ecrits.Fuse.DocFs do
     internal_echo? = OpenDocs.canonical_echo_temp?(state.root, name)
 
     cond do
+      SurfaceContract.contract_name?(name) ->
+        {:error, :eacces, socket}
+
       canonical_temp_name?(name) and not internal_echo? ->
         {:error, :eio, socket}
 
@@ -444,6 +504,9 @@ defmodule Ecrits.Fuse.DocFs do
     internal_echo? = OpenDocs.canonical_echo_temp?(state.root, name)
 
     cond do
+      SurfaceContract.contract_name?(name) ->
+        {:error, :eacces, socket}
+
       canonical_temp_name?(name) and not internal_echo? ->
         {:error, :eio, socket}
 
@@ -468,6 +531,9 @@ defmodule Ecrits.Fuse.DocFs do
 
   chmod "/:name" do
     cond do
+      SurfaceContract.contract_name?(name) ->
+        {:error, :eacces, socket}
+
       canonical_temp_name?(name) and
           not OpenDocs.canonical_echo_temp?(state.root, name) ->
         {:error, :eio, socket}
@@ -524,6 +590,11 @@ defmodule Ecrits.Fuse.DocFs do
 
       :error ->
         cond do
+          # Refused in BOTH directions: renaming the contract away removes the
+          # manual, renaming anything over it replaces it with a document.
+          SurfaceContract.contract_name?(name) or SurfaceContract.contract_name?(target) ->
+            {:error, :eacces, socket}
+
           canonical_temp_name?(name) ->
             {:error, :eio, socket}
 
@@ -577,8 +648,12 @@ defmodule Ecrits.Fuse.DocFs do
   end
 
   unlink "/:name" do
-    OpenDocs.cancel_canonical_echo(state.root, name)
-    {:noreply, clear_name(socket, name)}
+    if SurfaceContract.contract_name?(name) do
+      {:error, :eacces, socket}
+    else
+      OpenDocs.cancel_canonical_echo(state.root, name)
+      {:noreply, clear_name(socket, name)}
+    end
   end
 
   release "/:name" do
@@ -716,7 +791,7 @@ defmodule Ecrits.Fuse.DocFs do
 
     Enum.find_value(keys, fn key ->
       buf = buffer(socket, key)
-      if dirty?(socket, key) and is_binary(buf) and buf != "", do: buf
+      if dirty?(socket, key) and is_present(buf), do: buf
     end) ||
       Enum.find_value(keys, fn key ->
         buf = buffer(socket, key)
@@ -1002,23 +1077,23 @@ defmodule Ecrits.Fuse.DocFs do
   defp vfs_edit_opts(socket, _root, name, _source),
     do: socket |> edit_identity(name) |> identity_opts()
 
-  defp maybe_put_edit_id(opts, edit_id) when is_binary(edit_id) and edit_id != "",
+  defp maybe_put_edit_id(opts, edit_id) when is_present(edit_id),
     do: Keyword.put(opts, :edit_id, edit_id)
 
   defp maybe_put_edit_id(opts, _edit_id), do: opts
 
-  defp maybe_put_turn_id(opts, turn_id) when is_binary(turn_id) and turn_id != "",
+  defp maybe_put_turn_id(opts, turn_id) when is_present(turn_id),
     do: Keyword.put(opts, :turn_id, turn_id)
 
   defp maybe_put_turn_id(opts, _turn_id), do: opts
 
-  defp maybe_put_agent_id(opts, agent_id) when is_binary(agent_id) and agent_id != "",
+  defp maybe_put_agent_id(opts, agent_id) when is_present(agent_id),
     do: Keyword.put(opts, :agent_id, agent_id)
 
   defp maybe_put_agent_id(opts, _agent_id), do: opts
 
   defp maybe_put_instance_id(opts, instance_id)
-       when is_binary(instance_id) and instance_id != "",
+       when is_present(instance_id),
        do: Keyword.put(opts, :instance_id, instance_id)
 
   defp maybe_put_instance_id(opts, _instance_id), do: opts
@@ -1413,7 +1488,13 @@ defmodule Ecrits.Fuse.DocFs do
 
   defp staged_identity_matches?(identity, filters) when is_map(identity) do
     Enum.all?(filters, fn {key, value} ->
-      not (is_binary(value) and value != "") or Map.get(identity, key) == value
+      owner = Map.get(identity, key)
+      # An UNATTRIBUTED stage matches every filter. A kernel write carries no
+      # agent identity, and the document->owner registry that used to supply one
+      # is populated by nothing since `doc.open_doc` was deleted — so "not mine"
+      # can no longer be told from "nobody's", and stranding those buffers
+      # forever is worse than letting the next turn terminal settle them.
+      not is_present(value) or not is_present(owner) or owner == value
     end)
   end
 
@@ -1574,54 +1655,58 @@ defmodule Ecrits.Fuse.DocFs do
           {:ok, bytes}
 
         :error ->
-          case OpenDocs.committed(root, source_name) do
-            {:ok, bytes} -> {:ok, bytes}
-            :error -> Projection.project_file(source, root: root)
-          end
+          cached_or_project(root, source_name, source)
 
         {:ok, _bytes, _reason} ->
-          case OpenDocs.committed(root, source_name) do
-            {:ok, bytes} -> {:ok, bytes}
-            :error -> Projection.project_file(source, root: root)
-          end
+          cached_or_project(root, source_name, source)
       end
     end
   end
 
-  # `getattr` must report the REAL projected size plus an mtime that advances
-  # when the projection changes. The FUSE-era 64MB over-estimate floor is
-  # fatal under FSKit: the kernel believes the file is huge, the first `read`
-  # comes back short mid-file, and UserFS turns that short read into EIO
-  # (the legacy FUSE backend tolerated it). The moving mtime makes the kernel drop cached
-  # pages and pick up the new size after the live document was edited
-  # (browser UI, doc.* tools, write-back). Rendering the projection here
-  # costs the same as one `read` op — which already re-projects per call.
+  # Cache what we project. `readdir` needs a SIZE per entry and must not block to
+  # get one (projecting inline made `ls` a browser round trip per entry and hung
+  # four tests on the 60s timeout), so it reads this cache and omits anything
+  # cold. Write-back replaces the entry, so a stale size cannot outlive an edit.
+  defp cached_or_project(root, source_name, source) do
+    case OpenDocs.committed(root, source_name) do
+      {:ok, bytes} ->
+        {:ok, bytes}
+
+      :error ->
+        with {:ok, bytes} <- Projection.project_file(source, root: root) do
+          OpenDocs.cache_committed(root, source_name, bytes)
+          {:ok, bytes}
+        end
+    end
+  end
+
+  # `getattr` must report the REAL projected size, or FAIL. It must never
+  # fabricate one.
+  #
+  # Both fabrications are fatal under FSKit, measured 2026-07-28 (98/98 runs):
+  #
+  #   * an over-estimate (the FUSE-era 64MB floor) makes the kernel believe the
+  #     file is huge, so a read comes back short mid-file and UserFS turns it
+  #     into EIO. Observed on a 143KB contract: offsets 0 and 65536 returned
+  #     full chunks and passed, every offset from 131071 to real EOF failed.
+  #
+  #   * size 0 is WORSE. A vnode that has once observed 0 is stuck at "empty"
+  #     permanently: later getattrs return the true size, `stat -f%z` confirms
+  #     it, and reads STILL return 0 bytes because the `read` callback is never
+  #     invoked again. There is no recovery short of the vnode being reclaimed.
+  #     (A comment here previously claimed the advancing mtime would rescue this
+  #     case. The measurement disproved it — the control read the same file
+  #     through a second mount point, a fresh vnode, and got full content.)
+  #
+  # So an unavailable projection is an ERROR, not an empty file. `readdir` only
+  # lists documents a live viewer holds, so failing here means something is
+  # genuinely wrong rather than merely not warm yet.
   defp projected_attrs(socket, root, name) do
     with {:ok, bytes} <- projected_bytes(root, name) do
       {mtime, socket} = content_mtime(socket, name, bytes)
-      {byte_size(bytes), mtime, socket}
+      {:ok, byte_size(bytes), mtime, socket}
     else
-      # A projection failure here is usually TRANSIENT — most often the browser
-      # engine has not finished loading the document yet. Reporting the 64MB
-      # floor made that transient state PERMANENT: the comment above calls the
-      # floor fatal under FSKit, and this branch handed it to the kernel anyway.
-      # Once the kernel cached size=64MB, every later read came back short of
-      # that size and UserFS turned each one into EIO — so the file stayed
-      # unreadable even after the engine was ready and the projection succeeded.
-      #
-      # Observed live 2026-07-28 on a 143KB contract: reads at offsets 0 and
-      # 65536 returned full 64KB chunks and passed, while every offset from
-      # 131071 to real EOF returned short and failed EIO. The agent retried 12
-      # times and gave up with the document untouched.
-      #
-      # Report 0 instead: an empty file is honest ("nothing projected yet"),
-      # reads return EOF rather than EIO, and because `content_mtime` hashes the
-      # content, the mtime advances the moment the projection starts working —
-      # which is exactly the signal that makes the kernel drop the cached attrs
-      # and pick up the real size.
-      _ ->
-        {mtime, socket} = content_mtime(socket, name, :projection_unavailable)
-        {0, mtime, socket}
+      _ -> {:error, socket}
     end
   end
 
@@ -1665,26 +1750,149 @@ defmodule Ecrits.Fuse.DocFs do
     end
   end
 
-  # A projected name (`a.hwp.doclang.xml`) resolves through `OpenDocs` ONLY if that doc
-  # is in the open set. Root-level docs map to `<root>/a.hwp`; nested workspace
-  # docs map through their stored `source_path`. Guards path escapes.
-  # Non-open / non-projection names -> :enoent.
+  # The sorted listing `readdir` serves, and the single definition of what this
+  # mount contains — `getattr "/"` hashes it and `source_path/2` re-derives the
+  # same predicate for one name.
+  #
+  # It lists what can be SERVED, not everything that exists: see the `readdir`
+  # comment above. ONE `viewed_document_ids/1` call for the whole set, and FIRST
+  # — per-document `Session.viewer/2` would be a GenServer round trip per
+  # workspace file on every `ls`, and an empty set means nothing can be served,
+  # so the walk is skipped rather than run to filter everything out.
+  @doc """
+  Populate the projection cache for one mounted name, so `readdir` can size it.
+
+  Public because the warm has to be triggered from viewer attach
+  (`Ecrits.Workspace.Session.attach_viewer/3`) — every attach path must warm, and
+  `readdir` cannot do it itself: projecting inline turns `ls` into one browser
+  round trip per entry.
+  """
+  @spec warm(String.t(), String.t(), String.t()) :: :ok
+  def warm(root, source_name, abs_path) do
+    with :error <- OpenDocs.committed(root, source_name),
+         {:ok, bytes} <- Projection.project_file(abs_path, root: root) do
+      OpenDocs.cache_committed(root, source_name, bytes)
+    end
+
+    :ok
+  rescue
+    _ -> :ok
+  catch
+    _, _ -> :ok
+  end
+
+  # The size of an ALREADY-projected document. `nil` means "not warm yet" and the
+  # caller must omit the entry rather than advertise 0.
+  defp cached_size(root, name) do
+    source_name = mounted_source_name(name)
+
+    case OpenDocs.staged(root, source_name) do
+      {:ok, bytes, _reason} ->
+        byte_size(bytes)
+
+      :error ->
+        case OpenDocs.committed(root, source_name) do
+          {:ok, bytes} -> byte_size(bytes)
+          :error -> nil
+        end
+    end
+  end
+
+  defp listed_names(root) do
+    viewed = Session.viewed_document_ids(root)
+
+    if MapSet.size(viewed) == 0 do
+      []
+    else
+      root
+      |> workspace_documents()
+      |> Enum.filter(&viewed?(&1["absolute_path"], viewed))
+      |> Enum.map(&Projection.projected_name(DocMount.mount_name(&1["path"])))
+      # Sorted so the `getattr "/"` hash tracks the SET, not the scan order.
+      |> Enum.sort()
+    end
+  end
+
+  # A projected name (`a.hwp.doclang.xml`, `drafts%2Fa.hwp.doclang.xml`) resolves
+  # to a workspace document exactly when `listed_names/1` would list it, derived
+  # from the same facts.
+  #
+  # Deriving it (instead of asking `OpenDocs`, which only knew what a tool had
+  # registered) is what keeps `ls` and `ls -l` in agreement.
   defp source_path(root, name) do
-    with false <- path_escape?(name),
-         basename when is_binary(basename) <- Projection.source_basename(name),
-         false <- path_escape?(basename),
-         true <- OpenDocs.member?(root, basename),
-         {:ok, source} <- OpenDocs.source_path(root, basename) do
+    case Projection.source_basename(name) do
+      basename when is_binary(basename) -> served_source(root, basename)
+      _not_a_projection -> {:error, :enoent}
+    end
+  end
+
+  # The same question for a MOUNT name (`a.hwp`, `drafts%2Fa.hwp`) rather than a
+  # projected one: decode the flat entry back to its workspace-relative path,
+  # confine it, and require the projection support + real file + live viewer that
+  # make the document servable at all.
+  defp served_source(root, mount_name) do
+    with false <- path_escape?(mount_name),
+         {:ok, relative} <- Workspace.normalize_path(DocMount.source_name(mount_name)),
+         true <- Projection.supported?(relative),
+         source = Path.join(root, relative),
+         true <- regular_file?(source),
+         true <- viewed?(source, Session.viewed_document_ids(root)) do
       {:ok, source}
     else
       _ -> {:error, :enoent}
     end
   end
 
-  defp source_supported?(root, name) do
-    case OpenDocs.source_path(root, name) do
-      {:ok, source} -> Projection.supported?(source)
-      :error -> false
+  @doc """
+  Whether the mount currently serves `mount_name` (`contract.hwp`).
+
+  The derived replacement for "is this document registered?" — used by the MCP
+  policy to verify a `mounted_at` an agent supplies as fallback evidence.
+  """
+  @spec served?(String.t(), String.t()) :: boolean()
+  def served?(root, mount_name) when is_binary(root) and is_binary(mount_name),
+    do: match?({:ok, _source}, served_source(DocMount.canonical_root(root), mount_name))
+
+  def served?(_root, _mount_name), do: false
+
+  # Static bytes, so one constant mtime is honest: the contract has exactly one
+  # version per build. Read-only mode as well as a refusing write path, so the
+  # file looks to `ls -l` the way it behaves.
+  defp contract_attr,
+    do: attr(type: :file, mode: 0o0444, size: SurfaceContract.size(), mtime: @mtime_base)
+
+  # `:prim_file`, never `File.*`: a VFS handler that touches the BEAM
+  # `:file_server` can deadlock it (see the moduledoc). `read_link_info` also
+  # keeps the mount consistent with the scan, which skips symlinks — so a
+  # projected name cannot be a symlink out of the workspace.
+  defp regular_file?(path) do
+    case :prim_file.read_link_info(String.to_charlist(path)) do
+      {:ok, info} -> File.Stat.from_record(info).type == :regular
+      {:error, _reason} -> false
+    end
+  end
+
+  # An unreadable/unmountable workspace is an EMPTY listing, not a failed
+  # `readdir`: the mount lives inside that workspace, so erroring here would make
+  # the agent's own cwd unlistable.
+  defp workspace_documents(root) do
+    case FileIndex.list_documents(root) do
+      {:ok, documents} ->
+        documents
+
+      {:error, reason} ->
+        Logger.warning("[DocFs] document scan failed for #{root}: #{inspect(reason)}")
+        []
+    end
+  end
+
+  # Ask `Projection` for the id rather than deriving one here: the viewer registry
+  # is keyed by `Ecrits.Doc.DocumentId.for_path(path, kind)` and a second spelling of that
+  # would silently list nothing.
+  defp viewed?(absolute, viewed) when is_binary(absolute) do
+    case Projection.document_id(absolute) do
+      {:ok, document_id} -> MapSet.member?(viewed, document_id)
+      {:error, _reason} -> false
     end
   end
 
@@ -1695,7 +1903,17 @@ defmodule Ecrits.Fuse.DocFs do
 
   defp canonical_temp_name?(_name), do: false
 
-  defp path_escape?(name), do: String.contains?(name, "/") or String.contains?(name, "..")
+  # A mount entry is ONE flat segment, so a literal "/" in the name is a
+  # malformed request — `mount_name/1` encodes every separator it folds.
+  #
+  # `..` is deliberately no longer rejected as a SUBSTRING here: `plan..v2.hwpx`
+  # is a legal workspace filename that `readdir` lists, so refusing it by
+  # substring recreates the `ls`/`ls -l` disagreement this resolution exists to
+  # remove. Traversal is refused per SEGMENT after decoding, by
+  # `Workspace.normalize_path/1` -> `Exfuse.Fs.Path.canonical/1`, which rejects a
+  # `..` segment outright instead of resolving it — so a decoded
+  # `..%2F..%2Fetc%2Fpasswd` still cannot escape the root.
+  defp path_escape?(name), do: String.contains?(name, "/")
 
   defp slice(bytes, offset, size) do
     total = byte_size(bytes)

@@ -83,17 +83,11 @@ defmodule Ecrits.MixProject do
        git: "https://github.com/humdrum00001010/ex_mcp",
        ref: "7bb2e323228aa1e774664ad80968d8b702803f11",
        override: true},
-      # Headless HWP/HWPX NIF runtime backing `Ecrits.Doc.Rhwp` (the server arm of
-      # the doc-editing MCP). Provides the `Ehwp` facade used by the `doc.*` tools.
-      {:ehwp, git: "git@code.cloudxyz.org:IlYoung/ehwp.git", branch: "main"},
-      # Headless docx/pptx NIF runtime backing `Ecrits.Doc.Office` (the server arm
-      # for Office docs). Pure-UNO LibreOfficeKit bridge: the `uno_*` NIFs answer
-      # the SAME `doc.*` surface as HWP. The UNO arm only BUILDS when the LOK
-      # install/SDK env knobs are set (see config/dev.exs + DEV_SETUP below);
-      # without them the NIFs return {:error, :uno_unavailable} and Office docs are
-      # simply unsupported, so a checkout without a local LibreOffice build still
-      # compiles.
-      {:libreofficex, git: "git@code.cloudxyz.org:IlYoung/libreofficex.git", branch: "main"},
+      # REMOVED 2026-07-26 — :ehwp and :libreofficex. They carried both the server
+      # NIF authority (`Ehwp.*` / `Libreofficex.LokBackend.*`) AND the client wasm
+      # bundles (each dep's priv/wasm). Replaced by DocLang as the live IR plus
+      # upstream engine UIs (LibreOffice Qt6+JSPI, rhwp-studio embed RPC).
+      # See docs/plans/2026-07-26-doclang-engine-migration.md.
       {:orchex, git: "git@code.cloudxyz.org:IlYoung/Orchex.git", branch: "main"},
       # Markdown + TeX/TikZ composite renderer backing the .md document preview
       # (`EcritsWeb.Markdown.to_preview_html/1`). `Observex.render_body/1` emits
@@ -149,28 +143,53 @@ defmodule Ecrits.MixProject do
         "esbuild.install --if-missing",
         "assets.observex"
       ],
-      # The HWP wasm-bindgen ES module and `rhwp_bg.wasm` are served directly
-      # from the canonical `:ehwp` dependency priv/wasm directory. Keep retired
-      # copied app-static and vendor scratch output out of releases.
+      # The HWP wasm rode the deleted `:ehwp` dep's priv/wasm and fed the legacy
+      # `Canvas.HwpPages` hook. Both are gone (rhwp-studio ships its own
+      # `rhwp_bg.wasm` inside its bundle), so this only purges the retired
+      # app-static/vendor scratch output now.
       "assets.rhwp_wasm": [
         ~s(cmd sh -c "set -eu; rm -rf priv/static/assets/rhwp assets/vendor/rhwp")
       ],
-      # The LibreOffice->WASM client editor is served directly from the canonical
-      # `:libreofficex` priv/wasm directory. Keep retired app-static/vendor
-      # scratch output and stale local `.br` siblings out of releases.
-      "assets.office_wasm": [
-        ~s(cmd sh -c "set -eu; rm -rf priv/static/assets/office assets/vendor/office; env=${MIX_ENV:-dev}; wasm_dir=_build/$env/lib/libreofficex/priv/wasm; if [ ! -d $wasm_dir ]; then echo >&2 missing-wasm-dir:$wasm_dir; exit 1; fi; rm -f $wasm_dir/soffice.js.br $wasm_dir/soffice.wasm.br $wasm_dir/soffice.data.br $wasm_dir/soffice.data.js.metadata.br")
-      ],
+      # NOTE: `assets.office_wasm` is deliberately NOT an alias any more. It is a
+      # real task (`Mix.Tasks.Assets.OfficeWasm`) — office engine delivery for
+      # Layer 4, un-retired now that the wasm no longer rides the deleted
+      # `:libreofficex` dep's priv/wasm:
+      #
+      #     OFFICE_WASM_DIST=<core-wasm-build>/instdir/program mix assets.office_wasm
+      #
+      # An alias of the same name would SHADOW the task, so it was removed rather
+      # than emptied; the retired-scratch purge it used to do moved into the task.
+      # Unset/absent source is a no-op (no $HOME default — it would leak a
+      # developer path and be non-reproducible). The bundle is ~315 MB, so the env
+      # var alone (read by config/runtime.exs) serves it in place with NO copy;
+      # run the task only for a self-contained priv/static.
+      # HWP engine delivery (Layer 4). rhwp-studio is a Vite/npm app living in the
+      # rhwp_core checkout; this repo carries no Node toolchain, so the bundle is
+      # BUILT there and only the built `dist/` is copied in:
+      #
+      #     cd <rhwp_core>/rhwp-studio && npm run build -- --base=/rhwp-studio/
+      #     RHWP_STUDIO_DIST=<rhwp_core>/rhwp-studio/dist mix assets.rhwp_studio
+      #
+      # No default path is baked in on purpose (a $HOME/... default would leak a
+      # user path and be non-reproducible); an unset/absent source is a no-op so
+      # `mix assets.build` still works on a machine without the checkout.
+      # `samples/` is dropped (7.5 MB of demo documents the host never opens) and
+      # the swap is tmp-then-mv, so a live tab never fetches a half-copied wasm.
+      # Implemented as `Mix.Tasks.Assets.RhwpStudio` rather than an inline shell
+      # one-liner: the copy needs quoting, an exclude and an atomic rename, all of
+      # which read badly through `OptionParser.split/1`.
       "assets.build": [
         "compile",
         "assets.rhwp_wasm",
         "assets.office_wasm",
+        "assets.rhwp_studio",
         "tailwind ecrits",
         "esbuild ecrits"
       ],
       "assets.deploy": [
         "assets.rhwp_wasm",
         "assets.office_wasm",
+        "assets.rhwp_studio",
         "tailwind ecrits --minify",
         "esbuild ecrits --minify",
         "phx.digest"

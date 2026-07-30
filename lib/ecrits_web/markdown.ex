@@ -18,6 +18,8 @@ defmodule EcritsWeb.Markdown do
   render.
   """
 
+  import Ecrits.Guards
+
   @extension [strikethrough: true, table: true, autolink: true, tasklist: true]
   @html_tag_token ~r/(<[^>]+>)/
   @chat_prose_boundary ~r/([가-힣][.!?。！？])(?=[가-힣A-Za-z0-9])/u
@@ -28,7 +30,7 @@ defmodule EcritsWeb.Markdown do
   Returns an empty string for non-binary/empty input.
   """
   @spec to_safe_html(term()) :: Phoenix.HTML.safe() | String.t()
-  def to_safe_html(body) when is_binary(body) and body != "" do
+  def to_safe_html(body) when is_present(body) do
     Phoenix.HTML.raw(MDEx.to_html!(body, extension: @extension))
   rescue
     _ -> body
@@ -42,7 +44,7 @@ defmodule EcritsWeb.Markdown do
   Returns an empty string for non-binary/empty input.
   """
   @spec to_preview_html(term()) :: Phoenix.HTML.safe() | String.t()
-  def to_preview_html(body) when is_binary(body) and body != "" do
+  def to_preview_html(body) when is_present(body) do
     Phoenix.HTML.raw(Observex.render_body(body))
   rescue
     _ -> body
@@ -59,7 +61,7 @@ defmodule EcritsWeb.Markdown do
   untouched.
   """
   @spec repair_chat_prose_boundaries(String.t()) :: String.t()
-  def repair_chat_prose_boundaries(html) when is_binary(html) and html != "" do
+  def repair_chat_prose_boundaries(html) when is_present(html) do
     {parts, _depth} =
       Regex.split(@html_tag_token, html, include_captures: true, trim: false)
       |> Enum.map_reduce(0, fn token, depth ->

@@ -2,16 +2,16 @@ defmodule Ecrits.NormalizationSchemaBoundaryTest do
   use ExUnit.Case, async: true
 
   test "ACP Session does not own a second file-activity normalizer" do
-    source = File.read!("lib/ecrits/acp_agent/session.ex")
+    source = File.read!("lib/ecrits/agent/acp_agent/session.ex")
     refute source =~ "defp normalize_file_activity_item("
   end
 
   test "document and VFS records have one schema authority" do
     sources =
       [
-        "lib/ecrits/doc/tools.ex",
-        "lib/ecrits/doc/op.ex",
-        "lib/ecrits/fuse/open_docs.ex",
+        "lib/ecrits/document/doc/tools.ex",
+        "lib/ecrits/document/doc/op.ex",
+        "lib/ecrits/document/fuse/open_docs.ex",
         "lib/ecrits_web/live/workspace/workspace_live.ex"
       ]
       |> Enum.map_join("\n", &File.read!/1)
@@ -24,7 +24,7 @@ defmodule Ecrits.NormalizationSchemaBoundaryTest do
 
   test "workspace records have one schema authority" do
     sources =
-      ["lib/ecrits/workspace/session.ex", "lib/ecrits/workspace_handoff.ex"]
+      ["lib/ecrits/workspace/session.ex", "lib/ecrits/workspace/workspace_handoff.ex"]
       |> Enum.map_join("\n", &File.read!/1)
 
     for name <- [

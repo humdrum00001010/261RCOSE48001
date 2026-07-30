@@ -17,7 +17,7 @@ defmodule Ecrits.Workspace.FileIndexTest do
     File.write!(Path.join(root, "assets/서명.png"), "png")
     File.write!(Path.join(root, "contract.hwp"), "raw")
     File.write!(Path.join(root, ".hidden/secret.md"), "secret")
-    File.write!(Path.join(root, ".ecrits/contract.hwp.jsonl"), "{}")
+    File.write!(Path.join(root, ".ecrits/contract.hwp.doclang.xml"), "{}")
 
     outside = root <> "-outside.md"
     File.write!(outside, "outside")
